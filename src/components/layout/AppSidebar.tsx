@@ -1,0 +1,370 @@
+import { useState } from 'react';
+import { Link, useLocation, useNavigate } from 'react-router-dom';
+import { useTranslation } from 'react-i18next';
+import {
+  Users, Menu, X, PlusCircle, LogOut, Settings, Shield, UserCircle, Eye, Sparkles, Building2, Bug, CalendarDays, Shirt, Contact, ClipboardList, ChevronLeft, ChevronRight, Route, MapPinned
+} from 'lucide-react';
+import { cn } from '@/lib/utils';
+import { useAuth } from '@/contexts/AuthContext';
+import { useIsAdmin, useIsPremium } from '@/hooks/use-admin';
+import { useMyOrganizations, slugify } from '@/hooks/use-organization';
+import ReportIssueDialog from '@/components/ReportIssueDialog';
+
+interface AppSidebarProps {
+  collapsed: boolean;
+  onToggle: () => void;
+}
+
+function SidebarTooltip({ label, collapsed, children }: { label: string; collapsed: boolean; children: React.ReactNode }) {
+  if (!collapsed) return <>{children}</>;
+  return (
+    <div className="relative group/tip">
+      {children}
+      <div className="absolute left-full top-1/2 -translate-y-1/2 ml-2 px-2.5 py-1.5 rounded-lg bg-sidebar-accent text-sidebar-accent-foreground text-xs font-medium whitespace-nowrap opacity-0 pointer-events-none group-hover/tip:opacity-100 transition-opacity duration-150 z-50 shadow-lg">
+        {label}
+      </div>
+    </div>
+  );
+}
+
+export default function AppSidebar({ collapsed, onToggle }: AppSidebarProps) {
+  const location = useLocation();
+  const navigate = useNavigate();
+  const { user, signOut } = useAuth();
+  const { data: isAdmin } = useIsAdmin();
+  const { data: isPremium } = useIsPremium();
+  const { data: myOrgs } = useMyOrganizations();
+  const { t } = useTranslation();
+  const [mobileOpen, setMobileOpen] = useState(false);
+  const [reportOpen, setReportOpen] = useState(false);
+
+  const handleSignOut = async () => {
+    await signOut();
+    navigate('/auth');
+  };
+
+  const isActive = (path: string) => {
+    if (path.includes('?')) return location.pathname + location.search === path;
+    return location.pathname === path || (path !== '/' && location.pathname.startsWith(path));
+  };
+
+  const isParentActive = (path: string, childPaths: string[]) =>
+    isActive(path) && !childPaths.some(cp => isActive(cp));
+
+  const linkClass = (path: string, childPaths?: string[]) =>
+    cn(
+      'flex items-center gap-3 rounded-xl text-sm font-medium transition-all duration-200',
+      collapsed ? 'justify-center px-2 py-2.5' : 'px-4 py-2.5',
+      (childPaths ? isParentActive(path, childPaths) : isActive(path))
+        ? 'bg-sidebar-accent text-sidebar-accent-foreground shadow-sm'
+        : 'text-sidebar-foreground/70 hover:text-sidebar-foreground hover:bg-sidebar-accent/50'
+    );
+
+  const footerLinkClass = (path: string) =>
+    cn(
+      'flex items-center gap-3 rounded-lg text-xs transition-all',
+      collapsed ? 'justify-center px-2 py-1.5' : 'px-3 py-1.5',
+      isActive(path)
+        ? 'bg-sidebar-accent text-sidebar-accent-foreground'
+        : 'text-sidebar-foreground/60 hover:text-sidebar-foreground hover:bg-sidebar-accent/50'
+    );
+
+  const footerBtnClass = cn(
+    'flex items-center gap-3 rounded-lg text-xs w-full text-sidebar-foreground/60 hover:text-sidebar-foreground hover:bg-sidebar-accent/50 transition-all',
+    collapsed ? 'justify-center px-2 py-1.5' : 'px-3 py-1.5'
+  );
+
+  const sidebar = (
+    <div className="flex flex-col h-full">
+      {/* Logo + collapse toggle */}
+      <div className={cn('py-6 flex items-center', collapsed ? 'justify-center px-2' : 'justify-between px-5')}>
+        <div className="flex items-center gap-3">
+          <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-sidebar-primary to-accent flex items-center justify-center text-lg shrink-0">
+            ⚽
+          </div>
+          {!collapsed && (
+            <div>
+              <span className="text-lg font-extrabold text-sidebar-foreground tracking-tight">ScoutHub</span>
+              <p className="text-[10px] text-sidebar-muted font-medium tracking-widest uppercase">Football Scouting</p>
+            </div>
+          )}
+        </div>
+        <button
+          onClick={onToggle}
+          className="hidden lg:flex items-center justify-center w-7 h-7 rounded-lg text-sidebar-foreground/50 hover:text-sidebar-foreground hover:bg-sidebar-accent/50 transition-all shrink-0"
+        >
+          {collapsed ? <ChevronRight className="w-4 h-4" /> : <ChevronLeft className="w-4 h-4" />}
+        </button>
+      </div>
+
+      {/* Nav */}
+      <nav className={cn('flex-1 space-y-1', collapsed ? 'px-2 overflow-hidden' : 'px-3 overflow-y-auto sidebar-scroll')}>
+        <SidebarTooltip label={t('sidebar.players')} collapsed={collapsed}>
+          <Link to="/players" className={linkClass('/players', ['/player/new', '/watchlist', '/shadow-team'])} onClick={() => setMobileOpen(false)}>
+            <Users className="w-4 h-4 shrink-0" />
+            {!collapsed && t('sidebar.players')}
+          </Link>
+        </SidebarTooltip>
+
+        {/* Sub-items — hidden when collapsed */}
+        {!collapsed && (
+          <div className="pl-7 space-y-0.5">
+            <Link
+              to="/player/new"
+              className={cn(
+                'flex items-center gap-2.5 px-3 py-1.5 rounded-lg text-[13px] transition-all',
+                isActive('/player/new')
+                  ? 'bg-sidebar-accent text-sidebar-accent-foreground'
+                  : 'text-sidebar-foreground/60 hover:text-sidebar-foreground hover:bg-sidebar-accent/50'
+              )}
+              onClick={() => setMobileOpen(false)}
+            >
+              <PlusCircle className="w-3.5 h-3.5" />
+              {t('sidebar.add_player')}
+            </Link>
+            <Link
+              to="/watchlist"
+              className={cn(
+                'flex items-center gap-2.5 px-3 py-1.5 rounded-lg text-[13px] transition-all',
+                isActive('/watchlist')
+                  ? 'bg-sidebar-accent text-sidebar-accent-foreground'
+                  : 'text-sidebar-foreground/60 hover:text-sidebar-foreground hover:bg-sidebar-accent/50'
+              )}
+              onClick={() => setMobileOpen(false)}
+            >
+              <Eye className="w-3.5 h-3.5" />
+              {t('sidebar.watchlist')}
+            </Link>
+            <Link
+              to="/shadow-team"
+              className={cn(
+                'flex items-center gap-2.5 px-3 py-1.5 rounded-lg text-[13px] transition-all',
+                isActive('/shadow-team')
+                  ? 'bg-sidebar-accent text-sidebar-accent-foreground'
+                  : 'text-sidebar-foreground/60 hover:text-sidebar-foreground hover:bg-sidebar-accent/50'
+              )}
+              onClick={() => setMobileOpen(false)}
+            >
+              <Shirt className="w-3.5 h-3.5" />
+              {t('sidebar.shadow_team')}
+            </Link>
+          </div>
+        )}
+
+        <SidebarTooltip label={t('sidebar.organization')} collapsed={collapsed}>
+          <Link to="/organization" className={linkClass('/organization', myOrgs?.map(o => `/organization/${slugify(o.name)}`) ?? [])} onClick={() => setMobileOpen(false)}>
+            <Building2 className="w-4 h-4 shrink-0" />
+            {!collapsed && t('sidebar.organization')}
+          </Link>
+        </SidebarTooltip>
+
+        {/* Sub-items per organization — hidden when collapsed */}
+        {!collapsed && myOrgs && myOrgs.length > 0 && (
+          <div className="pl-7 space-y-0.5">
+            {myOrgs.map((org: any) => {
+              const slug = slugify(org.name);
+              const orgBase = `/organization/${slug}`;
+              const isOrgActive = location.pathname === orgBase || location.pathname.startsWith(orgBase + '/');
+              return (
+                <div key={org.id}>
+                  <Link
+                    to={orgBase}
+                    className={cn(
+                      'flex items-center gap-2.5 px-3 py-1.5 rounded-lg text-[13px] transition-all',
+                      isOrgActive
+                        ? 'bg-sidebar-accent text-sidebar-accent-foreground'
+                        : 'text-sidebar-foreground/60 hover:text-sidebar-foreground hover:bg-sidebar-accent/50'
+                    )}
+                    onClick={() => setMobileOpen(false)}
+                  >
+                    <Building2 className="w-3.5 h-3.5" />
+                    <span className="truncate">{org.name}</span>
+                  </Link>
+                  {isOrgActive && (
+                    <div className="pl-6 space-y-0.5 mt-0.5">
+                      <Link
+                        to={`${orgBase}/squad`}
+                        className={cn(
+                          'flex items-center gap-2.5 px-3 py-1 rounded-lg text-[12px] transition-all',
+                          isActive(`${orgBase}/squad`)
+                            ? 'bg-sidebar-accent text-sidebar-accent-foreground'
+                            : 'text-sidebar-foreground/50 hover:text-sidebar-foreground hover:bg-sidebar-accent/50'
+                        )}
+                        onClick={() => setMobileOpen(false)}
+                      >
+                        <ClipboardList className="w-3 h-3" />
+                        {t('sidebar.squad')}
+                      </Link>
+                      <Link
+                        to={`${orgBase}/players`}
+                        className={cn(
+                          'flex items-center gap-2.5 px-3 py-1 rounded-lg text-[12px] transition-all',
+                          isActive(`${orgBase}/players`)
+                            ? 'bg-sidebar-accent text-sidebar-accent-foreground'
+                            : 'text-sidebar-foreground/50 hover:text-sidebar-foreground hover:bg-sidebar-accent/50'
+                        )}
+                        onClick={() => setMobileOpen(false)}
+                      >
+                        <Users className="w-3 h-3" />
+                        {t('sidebar.org_players')}
+                      </Link>
+                      <Link
+                        to={`${orgBase}/roadmap`}
+                        className={cn(
+                          'flex items-center gap-2.5 px-3 py-1 rounded-lg text-[12px] transition-all',
+                          isActive(`${orgBase}/roadmap`)
+                            ? 'bg-sidebar-accent text-sidebar-accent-foreground'
+                            : 'text-sidebar-foreground/50 hover:text-sidebar-foreground hover:bg-sidebar-accent/50'
+                        )}
+                        onClick={() => setMobileOpen(false)}
+                      >
+                        <Route className="w-3 h-3" />
+                        {t('sidebar.roadmap')}
+                      </Link>
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        )}
+
+        <SidebarTooltip label={t('sidebar.fixtures')} collapsed={collapsed}>
+          <Link to="/fixtures" className={linkClass('/fixtures', ['/my-matches'])} onClick={() => setMobileOpen(false)}>
+            <CalendarDays className="w-4 h-4 shrink-0" />
+            {!collapsed && t('sidebar.fixtures')}
+          </Link>
+        </SidebarTooltip>
+
+        {!collapsed && (
+          <div className="pl-7 space-y-0.5">
+            <Link
+              to="/my-matches"
+              className={cn(
+                'flex items-center gap-2.5 px-3 py-1.5 rounded-lg text-[13px] transition-all',
+                isActive('/my-matches')
+                  ? 'bg-sidebar-accent text-sidebar-accent-foreground'
+                  : 'text-sidebar-foreground/60 hover:text-sidebar-foreground hover:bg-sidebar-accent/50'
+              )}
+              onClick={() => setMobileOpen(false)}
+            >
+              <MapPinned className="w-3.5 h-3.5" />
+              {t('sidebar.my_matches')}
+            </Link>
+          </div>
+        )}
+
+        <SidebarTooltip label={t('sidebar.contacts')} collapsed={collapsed}>
+          <Link to="/contacts" className={linkClass('/contacts')} onClick={() => setMobileOpen(false)}>
+            <Contact className="w-4 h-4 shrink-0" />
+            {!collapsed && t('sidebar.contacts')}
+          </Link>
+        </SidebarTooltip>
+      </nav>
+
+      {/* Upgrade CTA — free users only */}
+      {!isPremium && (
+        <div className={cn('pb-3', collapsed ? 'px-2' : 'px-3')}>
+          <SidebarTooltip label={t('sidebar.upgrade')} collapsed={collapsed}>
+            <Link
+              to="/pricing"
+              className={cn(
+                'flex items-center gap-3 rounded-xl text-sm font-bold bg-gradient-to-r from-sidebar-primary to-accent text-sidebar-primary-foreground hover:opacity-90 transition-all shadow-lg shadow-sidebar-primary/20',
+                collapsed ? 'justify-center px-2 py-3' : 'px-4 py-3'
+              )}
+              onClick={() => setMobileOpen(false)}
+            >
+              <Sparkles className="w-4 h-4 shrink-0" />
+              {!collapsed && t('sidebar.upgrade')}
+            </Link>
+          </SidebarTooltip>
+        </div>
+      )}
+
+      {/* Footer */}
+      <div className={cn('py-3 border-t border-sidebar-border shrink-0', collapsed ? 'px-2' : 'px-3')}>
+        <div className="space-y-0.5">
+          {isAdmin && (
+            <SidebarTooltip label={t('sidebar.administration')} collapsed={collapsed}>
+              <Link to="/admin" className={footerLinkClass('/admin')} onClick={() => setMobileOpen(false)}>
+                <Shield className="w-3.5 h-3.5 shrink-0" />
+                {!collapsed && t('sidebar.administration')}
+              </Link>
+            </SidebarTooltip>
+          )}
+
+          <SidebarTooltip label={t('sidebar.my_account')} collapsed={collapsed}>
+            <Link to="/account" className={footerLinkClass('/account')} onClick={() => setMobileOpen(false)}>
+              <UserCircle className="w-3.5 h-3.5 shrink-0" />
+              {!collapsed && t('sidebar.my_account')}
+            </Link>
+          </SidebarTooltip>
+
+          <SidebarTooltip label={t('sidebar.settings')} collapsed={collapsed}>
+            <Link to="/settings" className={footerLinkClass('/settings')} onClick={() => setMobileOpen(false)}>
+              <Settings className="w-3.5 h-3.5 shrink-0" />
+              {!collapsed && t('sidebar.settings')}
+            </Link>
+          </SidebarTooltip>
+
+          <SidebarTooltip label={t('sidebar.report_issue')} collapsed={collapsed}>
+            <button
+              onClick={() => { setReportOpen(true); setMobileOpen(false); }}
+              className={footerBtnClass}
+            >
+              <Bug className="w-3.5 h-3.5 shrink-0" />
+              {!collapsed && t('sidebar.report_issue')}
+            </button>
+          </SidebarTooltip>
+
+          <SidebarTooltip label={t('sidebar.signout')} collapsed={collapsed}>
+            <button onClick={handleSignOut} className={footerBtnClass}>
+              <LogOut className="w-3.5 h-3.5 shrink-0" />
+              {!collapsed && t('sidebar.signout')}
+            </button>
+          </SidebarTooltip>
+        </div>
+
+        {!collapsed && (
+          <div className="mt-3 px-3 space-y-0.5">
+            {user && (
+              <p className="text-[11px] text-sidebar-muted truncate">{user.email}</p>
+            )}
+            <p className="text-[10px] text-sidebar-muted">{t('sidebar.version')}</p>
+          </div>
+        )}
+
+      </div>
+    </div>
+  );
+
+  return (
+    <>
+      {/* Mobile toggle */}
+      <button
+        onClick={() => setMobileOpen(!mobileOpen)}
+        className="lg:hidden fixed top-4 left-4 z-50 p-2 rounded-xl bg-card shadow-md border border-border"
+      >
+        {mobileOpen ? <X className="w-5 h-5" /> : <Menu className="w-5 h-5" />}
+      </button>
+
+      {/* Mobile overlay */}
+      {mobileOpen && (
+        <div className="lg:hidden fixed inset-0 bg-foreground/40 backdrop-blur-sm z-40" onClick={() => setMobileOpen(false)} />
+      )}
+
+      {/* Sidebar */}
+      <aside
+        className={cn(
+          'fixed top-0 left-0 h-screen bg-sidebar z-40 transition-all duration-300',
+          collapsed ? 'w-[72px]' : 'w-64',
+          mobileOpen ? 'translate-x-0' : '-translate-x-full lg:translate-x-0'
+        )}
+      >
+        {sidebar}
+      </aside>
+
+      <ReportIssueDialog open={reportOpen} onOpenChange={setReportOpen} />
+    </>
+  );
+}

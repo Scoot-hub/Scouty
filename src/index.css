@@ -1,0 +1,111 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    --background: 40 33% 97%;
+    --foreground: 20 20% 12%;
+
+    --card: 40 40% 99%;
+    --card-foreground: 20 20% 12%;
+
+    --popover: 40 40% 99%;
+    --popover-foreground: 20 20% 12%;
+
+    --primary: 306 64% 32%;
+    --primary-foreground: 0 0% 100%;
+
+    --secondary: 40 25% 93%;
+    --secondary-foreground: 20 20% 12%;
+
+    --muted: 35 18% 91%;
+    --muted-foreground: 25 10% 44%;
+
+    --accent: 43 96% 56%;
+    --accent-foreground: 20 20% 12%;
+
+    --destructive: 0 72% 51%;
+    --destructive-foreground: 0 0% 100%;
+
+    --success: 306 69% 41%;
+    --success-foreground: 0 0% 100%;
+
+    --warning: 38 92% 50%;
+    --warning-foreground: 20 20% 10%;
+
+    --border: 35 20% 88%;
+    --input: 35 20% 88%;
+    --ring: 306 64% 32%;
+
+    --radius: 0.75rem;
+
+    --sidebar-background: 306 25% 13%;
+    --sidebar-foreground: 40 30% 90%;
+    --sidebar-primary: 306 69% 50%;
+    --sidebar-primary-foreground: 0 0% 100%;
+    --sidebar-accent: 306 20% 18%;
+    --sidebar-accent-foreground: 40 30% 95%;
+    --sidebar-border: 306 15% 22%;
+    --sidebar-ring: 306 69% 50%;
+    --sidebar-muted: 306 10% 38%;
+  }
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+
+  body {
+    @apply bg-background text-foreground;
+    font-family: 'Plus Jakarta Sans', system-ui, -apple-system, sans-serif;
+  }
+
+  .font-mono {
+    font-family: 'JetBrains Mono', ui-monospace, monospace;
+  }
+}
+
+/* Sidebar scrollbar — white thumb inset in sidebar purple */
+.sidebar-scroll::-webkit-scrollbar {
+  width: 8px;
+}
+
+.sidebar-scroll::-webkit-scrollbar-track {
+  background: hsl(306 20% 10%);
+  border-radius: 8px;
+  margin: 4px 0;
+  border: 2px solid hsl(306 25% 13%);
+}
+
+.sidebar-scroll::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.45);
+  border-radius: 8px;
+  border: 2px solid hsl(306 20% 10%);
+}
+
+.sidebar-scroll::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.65);
+}
+
+/* Firefox */
+.sidebar-scroll {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(255, 255, 255, 0.45) hsl(306 20% 10%);
+}
+
+@layer components {
+  .gauge-circle {
+    transition: stroke-dashoffset 1s ease-out;
+  }
+
+  .card-warm {
+    box-shadow: 0 1px 3px 0 rgba(120, 80, 20, 0.06), 0 1px 2px -1px rgba(120, 80, 20, 0.06);
+    border-color: rgba(139, 92, 246, 0.15);
+  }
+
+  .card-warm:hover {
+    box-shadow: 0 4px 12px -2px rgba(120, 80, 20, 0.1), 0 2px 4px -2px rgba(120, 80, 20, 0.06);
+  }
+}

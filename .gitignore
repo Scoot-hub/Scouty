@@ -1,0 +1,46 @@
+# Logs
+logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+
+# Runtime
+pids
+*.pid
+*.pid.lock
+*.seed
+
+# Dependencies / build outputs
+node_modules
+dist
+dist-ssr
+.vite
+coverage
+*.tsbuildinfo
+*.local
+
+# Environment / secrets
+.env
+.env.*
+!.env.example
+
+# Uploads / generated files
+public/uploads/
+tmp/
+temp/
+*.tmp
+
+# Editor directories and files
+.vscode/*
+!.vscode/extensions.json
+.idea
+.DS_Store
+Thumbs.db
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?

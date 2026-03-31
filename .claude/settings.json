@@ -1,0 +1,13 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(curl -s \"https://www.wikidata.org/w/api.php?action=wbsearchentities&search=Kylian+Mbappe&language=en&type=item&format=json&limit=3\")",
+      "Bash(curl -s \"https://www.wikidata.org/w/api.php?action=wbgetentities&ids=Q180099&props=claims&format=json\")",
+      "Bash(node server/seed-club-logos.js)",
+      "Bash(Get-Content \"C:\\\\Users\\\\commu\\\\AppData\\\\Local\\\\Temp\\\\claude\\\\c--wamp64-www-scouting-hub\\\\tasks\\\\beyeeap1s.output\" -Tail 60)"
+    ],
+    "additionalDirectories": [
+      "\\tmp"
+    ]
+  }
+}
