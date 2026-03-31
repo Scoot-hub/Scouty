@@ -29,7 +29,9 @@ import Contacts from "@/pages/Contacts";
 import ForgotPassword from "@/pages/ForgotPassword";
 import ResetPassword from "@/pages/ResetPassword";
 import NotFound from "@/pages/NotFound";
-
+import { Analytics } from "@vercel/analytics/next"
+<Analytics>
+</Analytics>
 const queryClient = new QueryClient();
 
 const App = () => (
