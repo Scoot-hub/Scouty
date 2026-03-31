@@ -3667,9 +3667,16 @@ async function ensureFixtureTables() {
   }
 }
 
-ensureFixtureTables().then(() => {
-  app.listen(port, () => {
-    console.log(`API listening on http://localhost:${port}`);
+// Export for Vercel serverless
+export default app;
+
+// Start local server only when run directly (not imported by Vercel)
+const isVercel = process.env.VERCEL === "1";
+if (!isVercel) {
+  ensureFixtureTables().then(() => {
+    app.listen(port, () => {
+      console.log(`API listening on http://localhost:${port}`);
+    });
   });
-});
+}
 
