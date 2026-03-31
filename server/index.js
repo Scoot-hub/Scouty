@@ -10,6 +10,7 @@ import fs from "fs";
 import crypto from "crypto";
 import { fileURLToPath } from "url";
 import { createRequire } from "module";
+import { createDbPoolConfig } from "./db-config.js";
 const require = createRequire(import.meta.url);
 import { v4 as uuidv4 } from "uuid";
 let nodemailer = null;
@@ -34,16 +35,7 @@ const app = express();
 const port = Number(process.env.API_PORT || 3001);
 const jwtSecret = process.env.API_JWT_SECRET || "change-this-secret";
 
-const pool = mysql.createPool({
-  host: process.env.DB_HOST || "localhost",
-  port: Number(process.env.DB_PORT || 3306),
-  user: process.env.DB_USER || "root",
-  password: process.env.DB_PASSWORD || "",
-  database: process.env.DB_NAME || "scoutinghub",
-  waitForConnections: true,
-  connectionLimit: 10,
-  queueLimit: 0,
-});
+const pool = mysql.createPool(createDbPoolConfig());
 
 app.use(cors({ origin: true, credentials: true }));
 app.use(express.json({ limit: "5mb" }));

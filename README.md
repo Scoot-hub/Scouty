@@ -84,9 +84,20 @@ USE scoutinghub;
 SOURCE server/schema.sql;
 ```
 
-2. Configure environment in `.env`:
+2. Configure environment in `.env` or in Vercel Environment Variables:
 
 ```env
+# Preferred on Vercel / TiDB
+DATABASE_URL=mysql://USER:PASSWORD@HOST:4000/DATABASE?sslaccept=strict
+
+# Or use the TiDB variables injected by the Vercel marketplace integration
+TIDB_HOST=
+TIDB_PORT=4000
+TIDB_USER=
+TIDB_PASSWORD=
+TIDB_DATABASE=
+
+# Legacy local MySQL fallback
 DB_HOST=localhost
 DB_USER=root
 DB_PASSWORD=
@@ -97,6 +108,11 @@ API_JWT_SECRET=change-this-secret
 VITE_API_URL=/api
 VITE_API_PUBLIC_URL=
 ```
+
+Connection priority is:
+1. `DATABASE_URL`
+2. `TIDB_*`
+3. legacy `DB_*`
 
 3. Install dependencies and run both apps:
 
