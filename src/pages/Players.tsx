@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
 import { useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
+import * as XLSX from 'xlsx';
 import { usePlayers } from '@/hooks/use-players';
 import { useMyOrganizations } from '@/hooks/use-organization';
 import { ShareWithOrgPopover, BulkShareDialog } from '@/components/ShareWithOrgPopover';
@@ -314,7 +315,6 @@ export default function Players() {
         return row;
       });
 
-      const XLSX = await import('xlsx');
       const ws = XLSX.utils.json_to_sheet(rows);
       const wb = XLSX.utils.book_new();
       XLSX.utils.book_append_sheet(wb, ws, 'Players');

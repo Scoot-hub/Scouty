@@ -1,3 +1,4 @@
+import { lazy, Suspense } from "react";
 import { Toaster } from "@/components/ui/toaster";
 import { Toaster as Sonner } from "@/components/ui/sonner";
 import { TooltipProvider } from "@/components/ui/tooltip";
@@ -7,29 +8,30 @@ import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
 import { AuthProvider } from "@/contexts/AuthContext";
 import ProtectedRoute from "@/components/layout/ProtectedRoute";
 import AppLayout from "@/components/layout/AppLayout";
-import Landing from "@/pages/Landing";
-import Auth from "@/pages/Auth";
-import Players from "@/pages/Players";
-import PlayerProfile from "@/pages/PlayerProfile";
-import AddPlayer from "@/pages/AddPlayer";
-import EditPlayer from "@/pages/EditPlayer";
-import Settings from "@/pages/Settings";
-import Admin from "@/pages/Admin";
-import Pricing from "@/pages/Pricing";
-import PremiumSuccess from "@/pages/PremiumSuccess";
-import Account from "@/pages/Account";
-import Organization from "@/pages/Organization";
-import OrgPlayers from "@/pages/OrgPlayers";
-import Squad from "@/pages/Squad";
-import Watchlist from "@/pages/Watchlist";
-import ShadowTeamPage from "@/pages/ShadowTeam";
-import Fixtures from "@/pages/Fixtures";
-import MyMatches from "@/pages/MyMatches";
-import OrgRoadmap from "@/pages/OrgRoadmap";
-import Contacts from "@/pages/Contacts";
-import ForgotPassword from "@/pages/ForgotPassword";
-import ResetPassword from "@/pages/ResetPassword";
-import NotFound from "@/pages/NotFound";
+
+const Landing = lazy(() => import("@/pages/Landing"));
+const Auth = lazy(() => import("@/pages/Auth"));
+const Players = lazy(() => import("@/pages/Players"));
+const PlayerProfile = lazy(() => import("@/pages/PlayerProfile"));
+const AddPlayer = lazy(() => import("@/pages/AddPlayer"));
+const EditPlayer = lazy(() => import("@/pages/EditPlayer"));
+const Settings = lazy(() => import("@/pages/Settings"));
+const Admin = lazy(() => import("@/pages/Admin"));
+const Pricing = lazy(() => import("@/pages/Pricing"));
+const PremiumSuccess = lazy(() => import("@/pages/PremiumSuccess"));
+const Account = lazy(() => import("@/pages/Account"));
+const Organization = lazy(() => import("@/pages/Organization"));
+const OrgPlayers = lazy(() => import("@/pages/OrgPlayers"));
+const Squad = lazy(() => import("@/pages/Squad"));
+const Watchlist = lazy(() => import("@/pages/Watchlist"));
+const ShadowTeamPage = lazy(() => import("@/pages/ShadowTeam"));
+const Fixtures = lazy(() => import("@/pages/Fixtures"));
+const MyMatches = lazy(() => import("@/pages/MyMatches"));
+const OrgRoadmap = lazy(() => import("@/pages/OrgRoadmap"));
+const Contacts = lazy(() => import("@/pages/Contacts"));
+const ForgotPassword = lazy(() => import("@/pages/ForgotPassword"));
+const ResetPassword = lazy(() => import("@/pages/ResetPassword"));
+const NotFound = lazy(() => import("@/pages/NotFound"));
 const queryClient = new QueryClient();
 
 const App = () => (
@@ -39,6 +41,7 @@ const App = () => (
       <Sonner />
       <BrowserRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
         <AuthProvider>
+          <Suspense fallback={null}>
           <Routes>
             {/* Public routes */}
             <Route path="/" element={<Landing />} />
@@ -74,6 +77,7 @@ const App = () => (
 
             <Route path="*" element={<NotFound />} />
           </Routes>
+          </Suspense>
         </AuthProvider>
       </BrowserRouter>
       <VercelAnalytics />
