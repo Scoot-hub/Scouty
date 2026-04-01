@@ -5,3 +5,4 @@ import "./i18n";
 import "flag-icons/css/flag-icons.min.css";
 
 createRoot(document.getElementById("root")!).render(<App />);
+
