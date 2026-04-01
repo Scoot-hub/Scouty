@@ -27,8 +27,12 @@ const __dirname = path.dirname(__filename);
 const ROOT_DIR = path.resolve(__dirname, "..");
 const UPLOAD_DIR = path.join(ROOT_DIR, "public", "uploads");
 
-if (!fs.existsSync(UPLOAD_DIR)) {
-  fs.mkdirSync(UPLOAD_DIR, { recursive: true });
+try {
+  if (!fs.existsSync(UPLOAD_DIR)) {
+    fs.mkdirSync(UPLOAD_DIR, { recursive: true });
+  }
+} catch {
+  // Vercel serverless: filesystem is read-only, skip
 }
 
 const app = express();
@@ -2385,7 +2389,7 @@ async function fetchPlayerDataFromTransfermarkt(player, tmPath = null) {
 
 // Static club→league mapping (source de vérité — prioritaire sur les APIs externes)
 let STATIC_CLUB_TO_LEAGUE = {};
-try { STATIC_CLUB_TO_LEAGUE = require('../src/data/club-to-league.json'); } catch {}
+try { STATIC_CLUB_TO_LEAGUE = require('../src/data/club-to-league.json'); } catch (e) { console.warn("[warn] Could not load club-to-league.json:", e?.message); }
 
 // ── Shared enrichment logic (single source of truth for all enrichment paths) ──
 async function enrichOnePlayer(playerInfo, row, tmPath = null) {

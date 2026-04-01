@@ -1,4 +1,10 @@
 {
+  "functions": {
+    "api/index.js": {
+      "maxDuration": 30,
+      "includeFiles": "src/data/**"
+    }
+  },
   "rewrites": [
     { "source": "/api/(.*)", "destination": "/api" },
     { "source": "/((?!api/).*)", "destination": "/index.html" }
