@@ -25,14 +25,11 @@ dotenv.config();
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const ROOT_DIR = path.resolve(__dirname, "..");
-const UPLOAD_DIR = path.join(ROOT_DIR, "public", "uploads");
+const isVercel = process.env.VERCEL === "1";
+const UPLOAD_DIR = isVercel ? "/tmp/uploads" : path.join(ROOT_DIR, "public", "uploads");
 
-try {
-  if (!fs.existsSync(UPLOAD_DIR)) {
-    fs.mkdirSync(UPLOAD_DIR, { recursive: true });
-  }
-} catch {
-  // Vercel serverless: filesystem is read-only, skip
+if (!fs.existsSync(UPLOAD_DIR)) {
+  fs.mkdirSync(UPLOAD_DIR, { recursive: true });
 }
 
 const app = express();
@@ -3660,7 +3657,6 @@ async function ensureFixtureTables() {
 export default app;
 
 // Start local server only when run directly (not imported by Vercel)
-const isVercel = process.env.VERCEL === "1";
 if (!isVercel) {
   // Start listening immediately, run migrations in the background
   app.listen(port, () => {
