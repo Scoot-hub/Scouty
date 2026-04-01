@@ -29,9 +29,8 @@ import Contacts from "@/pages/Contacts";
 import ForgotPassword from "@/pages/ForgotPassword";
 import ResetPassword from "@/pages/ResetPassword";
 import NotFound from "@/pages/NotFound";
-import { Analytics } from "@vercel/analytics/next"
-<Analytics>
-</Analytics>
+import { Analytics } from "@vercel/analytics/react";
+
 const queryClient = new QueryClient();
 
 const App = () => (
@@ -79,6 +78,7 @@ const App = () => (
         </AuthProvider>
       </BrowserRouter>
     </TooltipProvider>
+    <Analytics />
   </QueryClientProvider>
 );
 
