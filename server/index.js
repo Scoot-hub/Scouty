@@ -324,375 +324,360 @@ function buildWhereClause(table, filters = [], userId) {
   };
 }
 
-// Ensure password_reset_tokens table exists (auto-migration)
-try {
-  await pool.query(`
-    CREATE TABLE IF NOT EXISTS password_reset_tokens (
-      id CHAR(36) PRIMARY KEY,
-      user_id CHAR(36) NOT NULL,
-      token CHAR(64) NOT NULL,
-      expires_at DATETIME NOT NULL,
-      used_at DATETIME NULL,
-      created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-      UNIQUE KEY uniq_reset_token (token),
-      FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
-    )
-  `);
-} catch (err) {
-  console.warn("[warn] Could not auto-create password_reset_tokens table:", err?.message);
-}
-
-// Ensure organizations & organization_members tables exist (auto-migration)
-try {
-  await pool.query(`
-    CREATE TABLE IF NOT EXISTS organizations (
-      id CHAR(36) PRIMARY KEY,
-      name VARCHAR(255) NOT NULL,
-      type VARCHAR(50) NOT NULL DEFAULT 'club',
-      invite_code VARCHAR(32) NOT NULL,
-      created_by CHAR(36) NOT NULL,
-      created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-      updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-      UNIQUE KEY uniq_invite_code (invite_code),
-      FOREIGN KEY (created_by) REFERENCES users(id) ON DELETE CASCADE
-    )
-  `);
-  await pool.query(`
-    CREATE TABLE IF NOT EXISTS organization_members (
-      id CHAR(36) PRIMARY KEY,
-      organization_id CHAR(36) NOT NULL,
-      user_id CHAR(36) NOT NULL,
-      role VARCHAR(30) NOT NULL DEFAULT 'member',
-      joined_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-      UNIQUE KEY uniq_org_user (organization_id, user_id),
-      FOREIGN KEY (organization_id) REFERENCES organizations(id) ON DELETE CASCADE,
-      FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
-    )
-  `);
-} catch (err) {
-  console.warn("[warn] Could not auto-create organization tables:", err?.message);
-}
-
-// Ensure shadow_teams & shadow_team_players tables exist (auto-migration)
-try {
-  await pool.query(`
-    CREATE TABLE IF NOT EXISTS shadow_teams (
-      id CHAR(36) PRIMARY KEY,
-      user_id CHAR(36) NOT NULL,
-      name VARCHAR(255) NOT NULL,
-      formation VARCHAR(20) NOT NULL DEFAULT '4-3-3',
-      logo_url TEXT,
-      created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-      updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-      INDEX idx_shadow_teams_user (user_id),
-      FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
-    )
-  `);
-  await pool.query(`
-    CREATE TABLE IF NOT EXISTS shadow_team_players (
-      id CHAR(36) PRIMARY KEY,
-      user_id CHAR(36) NOT NULL,
-      shadow_team_id CHAR(36) NOT NULL,
-      player_id CHAR(36) NOT NULL,
-      position_slot VARCHAR(20) NOT NULL,
-      \`rank\` INT NOT NULL DEFAULT 0,
-      added_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-      UNIQUE KEY uniq_shadow_slot_player (shadow_team_id, position_slot, player_id),
-      FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
-      FOREIGN KEY (shadow_team_id) REFERENCES shadow_teams(id) ON DELETE CASCADE,
-      FOREIGN KEY (player_id) REFERENCES players(id) ON DELETE CASCADE
-    )
-  `);
-} catch (err) {
-  console.warn("[warn] Could not auto-create shadow_team tables:", err?.message);
-}
-
-// Migrate shadow_team_players unique key if needed (old: per-slot, new: per-slot+player)
-try {
-  await pool.query(`ALTER TABLE shadow_team_players DROP INDEX uniq_shadow_slot`);
-  await pool.query(`ALTER TABLE shadow_team_players ADD UNIQUE KEY uniq_shadow_slot_player (shadow_team_id, position_slot, player_id)`);
-} catch { /* already migrated or doesn't exist */ }
-
-// Ensure rank column exists on shadow_team_players
-try {
-  await pool.query(`ALTER TABLE shadow_team_players ADD COLUMN \`rank\` INT NOT NULL DEFAULT 0`);
-  console.log("[info] Added rank column to shadow_team_players");
-} catch (err) {
-  if (err?.errno !== 1060) console.warn("[warn] rank column migration:", err?.message);
-}
-
-// Ensure squad_players table exists (auto-migration)
-try {
-  await pool.query(`
-    CREATE TABLE IF NOT EXISTS squad_players (
-      id CHAR(36) PRIMARY KEY,
-      organization_id CHAR(36) NOT NULL,
-      name VARCHAR(255) NOT NULL,
-      photo_url TEXT NULL,
-      date_of_birth DATE NULL,
-      nationality VARCHAR(120) NOT NULL DEFAULT '',
-      position VARCHAR(20) NOT NULL DEFAULT 'MC',
-      position_secondaire VARCHAR(50) NULL,
-      jersey_number INT NULL,
-      contract_start DATE NULL,
-      contract_end DATE NULL,
-      monthly_salary DECIMAL(12,2) NULL,
-      status VARCHAR(30) NOT NULL DEFAULT 'active',
-      agent_name VARCHAR(255) NOT NULL DEFAULT '',
-      agent_phone VARCHAR(100) NOT NULL DEFAULT '',
-      agent_email VARCHAR(255) NOT NULL DEFAULT '',
-      notes TEXT NULL,
-      created_by CHAR(36) NOT NULL,
-      created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-      updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-      INDEX idx_squad_org (organization_id),
-      FOREIGN KEY (organization_id) REFERENCES organizations(id) ON DELETE CASCADE,
-      FOREIGN KEY (created_by) REFERENCES users(id) ON DELETE CASCADE
-    )
-  `);
-} catch (err) {
-  console.warn("[warn] Could not auto-create squad_players table:", err?.message);
-}
-
-// Ensure shared_with_org column exists on players
-try {
-  await pool.query(`ALTER TABLE players ADD COLUMN shared_with_org TINYINT(1) NOT NULL DEFAULT 0`);
-} catch { /* column already exists */ }
-
-// Ensure task column exists on players
-try {
-  await pool.query(`ALTER TABLE players ADD COLUMN task VARCHAR(30) NULL DEFAULT NULL`);
-} catch { /* column already exists */ }
-
-// Ensure has_news column exists on players (set by enrichment when club/contract/agent changes)
-try {
-  await pool.query(`ALTER TABLE players ADD COLUMN has_news VARCHAR(50) NULL DEFAULT NULL`);
-} catch { /* column already exists — ensure it's VARCHAR */ }
-try {
-  await pool.query(`ALTER TABLE players MODIFY COLUMN has_news VARCHAR(50) NULL DEFAULT NULL`);
-  // Clean up legacy TINYINT values ("0"/"1") from before the VARCHAR migration
-  await pool.query(`UPDATE players SET has_news = NULL WHERE has_news IN ('0', '1')`);
-} catch {}
-
-// Ensure player_org_shares table exists
-try {
-  await pool.query(`
-    CREATE TABLE IF NOT EXISTS player_org_shares (
-      id CHAR(36) PRIMARY KEY,
-      player_id CHAR(36) NOT NULL,
-      organization_id CHAR(36) NOT NULL,
-      user_id CHAR(36) NOT NULL,
-      created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-      UNIQUE KEY uniq_player_org (player_id, organization_id),
-      INDEX idx_player_org_shares_org (organization_id),
-      INDEX idx_player_org_shares_user (user_id),
-      FOREIGN KEY (player_id) REFERENCES players(id) ON DELETE CASCADE,
-      FOREIGN KEY (organization_id) REFERENCES organizations(id) ON DELETE CASCADE,
-      FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
-    )
-  `);
-} catch (err) {
-  console.warn("[warn] Could not auto-create player_org_shares table:", err?.message);
-}
-
-// Ensure match_assignments table exists
-try {
-  await pool.query(`
-    CREATE TABLE IF NOT EXISTS match_assignments (
-      id CHAR(36) PRIMARY KEY,
-      user_id CHAR(36) NOT NULL,
-      organization_id CHAR(36) NULL,
-      assigned_to CHAR(36) NULL,
-      assigned_by CHAR(36) NULL,
-      home_team VARCHAR(255) NOT NULL,
-      away_team VARCHAR(255) NOT NULL,
-      match_date DATE NOT NULL,
-      match_time VARCHAR(10) NULL,
-      competition VARCHAR(255) NOT NULL DEFAULT '',
-      venue VARCHAR(255) NOT NULL DEFAULT '',
-      home_badge TEXT NULL,
-      away_badge TEXT NULL,
-      notes TEXT NULL,
-      status VARCHAR(20) NOT NULL DEFAULT 'planned',
-      created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-      updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-      INDEX idx_match_assignments_user (user_id, match_date),
-      INDEX idx_match_assignments_org (organization_id, match_date),
-      FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
-      FOREIGN KEY (organization_id) REFERENCES organizations(id) ON DELETE CASCADE,
-      FOREIGN KEY (assigned_to) REFERENCES users(id) ON DELETE SET NULL,
-      FOREIGN KEY (assigned_by) REFERENCES users(id) ON DELETE SET NULL
-    )
-  `);
-} catch (err) {
-  console.warn("[warn] Could not auto-create match_assignments table:", err?.message);
-}
-
-// Migrate legacy shared_with_org boolean to player_org_shares junction table
-try {
-  const [legacyShared] = await pool.query(
-    `SELECT p.id AS player_id, p.user_id FROM players p WHERE p.shared_with_org = 1 AND NOT EXISTS (SELECT 1 FROM player_org_shares pos WHERE pos.player_id = p.id)`
-  );
-  for (const row of legacyShared) {
-    const [memberships] = await pool.query(
-      `SELECT organization_id FROM organization_members WHERE user_id = ?`, [row.user_id]
-    );
-    for (const m of memberships) {
-      try {
-        await pool.query(
-          `INSERT IGNORE INTO player_org_shares (id, player_id, organization_id, user_id) VALUES (UUID(), ?, ?, ?)`,
-          [row.player_id, m.organization_id, row.user_id]
-        );
-      } catch { /* duplicate, skip */ }
-    }
-  }
-} catch (err) {
-  console.warn("[warn] Legacy shared_with_org migration:", err?.message);
-}
-
-// Ensure file_url column exists on reports
-try {
-  await pool.query(`ALTER TABLE reports ADD COLUMN file_url TEXT NULL`);
-} catch { /* column already exists */ }
-
-// Ensure logo_url column exists on shadow_teams
-try {
-  await pool.query(`ALTER TABLE shadow_teams ADD COLUMN logo_url TEXT NULL`);
-  console.log("[info] Added logo_url column to shadow_teams");
-} catch (err) {
-  if (err?.errno !== 1060) console.warn("[warn] logo_url migration:", err?.message);
-}
-
-// ── Purge invalid league values (club names, youth/amateur divisions, unknown countries) ──
-try {
-  const INVALID_LEAGUES = [
-    // Club names stored as leagues
-    'Los Angeles FC', 'LAFC', 'Real Salt Lake', 'LA Galaxy', 'Inter Miami CF',
-    'Atlanta United FC', 'Seattle Sounders FC', 'New York City FC',
-    // Leagues supprimées du mapping
-    'Brasileirão Série A', 'Brasileirão Série B', 'Brésil', 'Brazil',
-    // Youth / amateur / inexistant
-    'Nationale 3', 'Nationale U19', 'National U19', 'N3',
-    'Pays inexistant', 'pays inexistant', 'Unknown', 'unknown', 'N/A', 'n/a', '-',
-  ];
-  const placeholders = INVALID_LEAGUES.map(() => '?').join(', ');
-  const [result] = await pool.query(
-    `UPDATE players SET league = NULL WHERE league IN (${placeholders})`,
-    INVALID_LEAGUES
-  );
-  // Also purge league values that are themselves club names (from static mapping)
-  const CLUB_TO_LEAGUE_MAP = require('../src/data/club-to-league.json');
-  for (const clubName of Object.keys(CLUB_TO_LEAGUE_MAP)) {
-    await pool.query(
-      "UPDATE players SET league = NULL WHERE league = ? AND club != ?",
-      [clubName, clubName]
-    );
-  }
-  if (result.affectedRows > 0) {
-    console.log(`[migration] Purged ${result.affectedRows} invalid league values`);
-  }
-} catch (err) {
-  console.warn("[warn] purge-invalid-leagues migration:", err?.message);
-}
-
-// ── Normalize league name aliases (typos, API variants, trailing spaces) ──
-try {
-  const LEAGUE_ALIASES = require('../src/data/league-aliases.json');
-  let totalFixed = 0;
-  for (const [alias, canonical] of Object.entries(LEAGUE_ALIASES)) {
-    const [result] = await pool.query(
-      "UPDATE players SET league = ? WHERE league = ? OR TRIM(league) = ?",
-      [canonical, alias, alias]
-    );
-    totalFixed += result.affectedRows || 0;
-  }
-  // Also fix leagues with just trailing/leading spaces
-  await pool.query("UPDATE players SET league = TRIM(league) WHERE league != TRIM(league)");
-  if (totalFixed > 0) {
-    console.log(`[migration] Normalized ${totalFixed} league aliases`);
-  }
-} catch (err) {
-  console.warn("[warn] normalize-league-aliases migration:", err?.message);
-}
-
-// ── Fix player league data: replace country names with correct league names ──
-// Source unique : src/data/country-to-league.json
-try {
-  const COUNTRY_TO_LEAGUE = require('../src/data/country-to-league.json');
-
-  let totalFixed = 0;
-  for (const [countryName, leagueName] of Object.entries(COUNTRY_TO_LEAGUE)) {
-    const [result] = await pool.query(
-      "UPDATE players SET league = ? WHERE league = ?",
-      [leagueName, countryName]
-    );
-    totalFixed += result.affectedRows || 0;
-  }
-
-  // Also fix empty leagues using club_directory
+// All DB migrations are deferred to startup (runMigrations) to avoid blocking module load
+async function runMigrations() {
+  // Ensure password_reset_tokens table exists
   try {
-    const [result] = await pool.query(`
-      UPDATE players p
-      JOIN club_directory cd ON p.club = cd.club_name
-      SET p.league = cd.competition
-      WHERE (p.league IS NULL OR p.league = '')
-        AND cd.competition IS NOT NULL AND cd.competition != ''
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS password_reset_tokens (
+        id CHAR(36) PRIMARY KEY,
+        user_id CHAR(36) NOT NULL,
+        token CHAR(64) NOT NULL,
+        expires_at DATETIME NOT NULL,
+        used_at DATETIME NULL,
+        created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE KEY uniq_reset_token (token),
+        FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+      )
     `);
-    totalFixed += result.affectedRows || 0;
-  } catch { /* club_directory may not exist */ }
-
-  if (totalFixed > 0) {
-    console.log(`[migration] Fixed ${totalFixed} player league values (country names → correct league names)`);
-  }
-} catch (err) {
-  console.warn("[warn] fix-player-leagues migration:", err?.message);
-}
-
-// ── Purge numeric/invalid league values (API IDs stored by mistake) ──
-try {
-  // Set to NULL any league value that is purely numeric (e.g. "45719" from TheSportsDB idLeague)
-  const [result] = await pool.query(
-    "UPDATE players SET league = NULL WHERE league REGEXP '^[0-9]+$'"
-  );
-  if (result.affectedRows > 0) {
-    console.log(`[migration] Purged ${result.affectedRows} numeric league values (API IDs)`);
-  }
-} catch (err) {
-  console.warn("[warn] purge-numeric-leagues migration:", err?.message);
-}
-
-// ── Fix wrong leagues using static club→league mapping (source de vérité) ──
-// Corrige les ligues erronées venant de TheSportsDB ou d'autres APIs externes
-// Source : src/data/club-to-league.json
-try {
-  const CLUB_TO_LEAGUE = require('../src/data/club-to-league.json');
-
-  let totalFixed = 0;
-
-  // 1. Fix players whose league doesn't match the static mapping for their club
-  for (const [clubName, correctLeague] of Object.entries(CLUB_TO_LEAGUE)) {
-    const [result] = await pool.query(
-      "UPDATE players SET league = ? WHERE club = ? AND (league IS NULL OR league = '' OR league != ?)",
-      [correctLeague, clubName, correctLeague]
-    );
-    totalFixed += result.affectedRows || 0;
+  } catch (err) {
+    console.warn("[warn] Could not auto-create password_reset_tokens table:", err?.message);
   }
 
-  // 2. Fix club_directory entries where competition doesn't match the static mapping
+  // Ensure organizations & organization_members tables exist
   try {
-    for (const [clubName, correctLeague] of Object.entries(CLUB_TO_LEAGUE)) {
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS organizations (
+        id CHAR(36) PRIMARY KEY,
+        name VARCHAR(255) NOT NULL,
+        type VARCHAR(50) NOT NULL DEFAULT 'club',
+        invite_code VARCHAR(32) NOT NULL,
+        created_by CHAR(36) NOT NULL,
+        created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        UNIQUE KEY uniq_invite_code (invite_code),
+        FOREIGN KEY (created_by) REFERENCES users(id) ON DELETE CASCADE
+      )
+    `);
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS organization_members (
+        id CHAR(36) PRIMARY KEY,
+        organization_id CHAR(36) NOT NULL,
+        user_id CHAR(36) NOT NULL,
+        role VARCHAR(30) NOT NULL DEFAULT 'member',
+        joined_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE KEY uniq_org_user (organization_id, user_id),
+        FOREIGN KEY (organization_id) REFERENCES organizations(id) ON DELETE CASCADE,
+        FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+      )
+    `);
+  } catch (err) {
+    console.warn("[warn] Could not auto-create organization tables:", err?.message);
+  }
+
+  // Ensure shadow_teams & shadow_team_players tables exist
+  try {
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS shadow_teams (
+        id CHAR(36) PRIMARY KEY,
+        user_id CHAR(36) NOT NULL,
+        name VARCHAR(255) NOT NULL,
+        formation VARCHAR(20) NOT NULL DEFAULT '4-3-3',
+        logo_url TEXT,
+        created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        INDEX idx_shadow_teams_user (user_id),
+        FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+      )
+    `);
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS shadow_team_players (
+        id CHAR(36) PRIMARY KEY,
+        user_id CHAR(36) NOT NULL,
+        shadow_team_id CHAR(36) NOT NULL,
+        player_id CHAR(36) NOT NULL,
+        position_slot VARCHAR(20) NOT NULL,
+        \`rank\` INT NOT NULL DEFAULT 0,
+        added_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE KEY uniq_shadow_slot_player (shadow_team_id, position_slot, player_id),
+        FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+        FOREIGN KEY (shadow_team_id) REFERENCES shadow_teams(id) ON DELETE CASCADE,
+        FOREIGN KEY (player_id) REFERENCES players(id) ON DELETE CASCADE
+      )
+    `);
+  } catch (err) {
+    console.warn("[warn] Could not auto-create shadow_team tables:", err?.message);
+  }
+
+  // Migrate shadow_team_players unique key if needed
+  try {
+    await pool.query(`ALTER TABLE shadow_team_players DROP INDEX uniq_shadow_slot`);
+    await pool.query(`ALTER TABLE shadow_team_players ADD UNIQUE KEY uniq_shadow_slot_player (shadow_team_id, position_slot, player_id)`);
+  } catch { /* already migrated or doesn't exist */ }
+
+  // Ensure rank column exists on shadow_team_players
+  try {
+    await pool.query(`ALTER TABLE shadow_team_players ADD COLUMN \`rank\` INT NOT NULL DEFAULT 0`);
+    console.log("[info] Added rank column to shadow_team_players");
+  } catch (err) {
+    if (err?.errno !== 1060) console.warn("[warn] rank column migration:", err?.message);
+  }
+
+  // Ensure squad_players table exists
+  try {
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS squad_players (
+        id CHAR(36) PRIMARY KEY,
+        organization_id CHAR(36) NOT NULL,
+        name VARCHAR(255) NOT NULL,
+        photo_url TEXT NULL,
+        date_of_birth DATE NULL,
+        nationality VARCHAR(120) NOT NULL DEFAULT '',
+        position VARCHAR(20) NOT NULL DEFAULT 'MC',
+        position_secondaire VARCHAR(50) NULL,
+        jersey_number INT NULL,
+        contract_start DATE NULL,
+        contract_end DATE NULL,
+        monthly_salary DECIMAL(12,2) NULL,
+        status VARCHAR(30) NOT NULL DEFAULT 'active',
+        agent_name VARCHAR(255) NOT NULL DEFAULT '',
+        agent_phone VARCHAR(100) NOT NULL DEFAULT '',
+        agent_email VARCHAR(255) NOT NULL DEFAULT '',
+        notes TEXT NULL,
+        created_by CHAR(36) NOT NULL,
+        created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        INDEX idx_squad_org (organization_id),
+        FOREIGN KEY (organization_id) REFERENCES organizations(id) ON DELETE CASCADE,
+        FOREIGN KEY (created_by) REFERENCES users(id) ON DELETE CASCADE
+      )
+    `);
+  } catch (err) {
+    console.warn("[warn] Could not auto-create squad_players table:", err?.message);
+  }
+
+  // Ensure shared_with_org column exists on players
+  try {
+    await pool.query(`ALTER TABLE players ADD COLUMN shared_with_org TINYINT(1) NOT NULL DEFAULT 0`);
+  } catch { /* column already exists */ }
+
+  // Ensure task column exists on players
+  try {
+    await pool.query(`ALTER TABLE players ADD COLUMN task VARCHAR(30) NULL DEFAULT NULL`);
+  } catch { /* column already exists */ }
+
+  // Ensure has_news column exists on players
+  try {
+    await pool.query(`ALTER TABLE players ADD COLUMN has_news VARCHAR(50) NULL DEFAULT NULL`);
+  } catch { /* column already exists */ }
+  try {
+    await pool.query(`ALTER TABLE players MODIFY COLUMN has_news VARCHAR(50) NULL DEFAULT NULL`);
+    await pool.query(`UPDATE players SET has_news = NULL WHERE has_news IN ('0', '1')`);
+  } catch {}
+
+  // Ensure player_org_shares table exists
+  try {
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS player_org_shares (
+        id CHAR(36) PRIMARY KEY,
+        player_id CHAR(36) NOT NULL,
+        organization_id CHAR(36) NOT NULL,
+        user_id CHAR(36) NOT NULL,
+        created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE KEY uniq_player_org (player_id, organization_id),
+        INDEX idx_player_org_shares_org (organization_id),
+        INDEX idx_player_org_shares_user (user_id),
+        FOREIGN KEY (player_id) REFERENCES players(id) ON DELETE CASCADE,
+        FOREIGN KEY (organization_id) REFERENCES organizations(id) ON DELETE CASCADE,
+        FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+      )
+    `);
+  } catch (err) {
+    console.warn("[warn] Could not auto-create player_org_shares table:", err?.message);
+  }
+
+  // Ensure match_assignments table exists
+  try {
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS match_assignments (
+        id CHAR(36) PRIMARY KEY,
+        user_id CHAR(36) NOT NULL,
+        organization_id CHAR(36) NULL,
+        assigned_to CHAR(36) NULL,
+        assigned_by CHAR(36) NULL,
+        home_team VARCHAR(255) NOT NULL,
+        away_team VARCHAR(255) NOT NULL,
+        match_date DATE NOT NULL,
+        match_time VARCHAR(10) NULL,
+        competition VARCHAR(255) NOT NULL DEFAULT '',
+        venue VARCHAR(255) NOT NULL DEFAULT '',
+        home_badge TEXT NULL,
+        away_badge TEXT NULL,
+        notes TEXT NULL,
+        status VARCHAR(20) NOT NULL DEFAULT 'planned',
+        created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        INDEX idx_match_assignments_user (user_id, match_date),
+        INDEX idx_match_assignments_org (organization_id, match_date),
+        FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+        FOREIGN KEY (organization_id) REFERENCES organizations(id) ON DELETE CASCADE,
+        FOREIGN KEY (assigned_to) REFERENCES users(id) ON DELETE SET NULL,
+        FOREIGN KEY (assigned_by) REFERENCES users(id) ON DELETE SET NULL
+      )
+    `);
+  } catch (err) {
+    console.warn("[warn] Could not auto-create match_assignments table:", err?.message);
+  }
+
+  // Migrate legacy shared_with_org boolean to player_org_shares junction table
+  try {
+    const [legacyShared] = await pool.query(
+      `SELECT p.id AS player_id, p.user_id FROM players p WHERE p.shared_with_org = 1 AND NOT EXISTS (SELECT 1 FROM player_org_shares pos WHERE pos.player_id = p.id)`
+    );
+    for (const row of legacyShared) {
+      const [memberships] = await pool.query(
+        `SELECT organization_id FROM organization_members WHERE user_id = ?`, [row.user_id]
+      );
+      for (const m of memberships) {
+        try {
+          await pool.query(
+            `INSERT IGNORE INTO player_org_shares (id, player_id, organization_id, user_id) VALUES (UUID(), ?, ?, ?)`,
+            [row.player_id, m.organization_id, row.user_id]
+          );
+        } catch { /* duplicate, skip */ }
+      }
+    }
+  } catch (err) {
+    console.warn("[warn] Legacy shared_with_org migration:", err?.message);
+  }
+
+  // Ensure file_url column exists on reports
+  try {
+    await pool.query(`ALTER TABLE reports ADD COLUMN file_url TEXT NULL`);
+  } catch { /* column already exists */ }
+
+  // Ensure logo_url column exists on shadow_teams
+  try {
+    await pool.query(`ALTER TABLE shadow_teams ADD COLUMN logo_url TEXT NULL`);
+    console.log("[info] Added logo_url column to shadow_teams");
+  } catch (err) {
+    if (err?.errno !== 1060) console.warn("[warn] logo_url migration:", err?.message);
+  }
+
+  // Purge invalid league values
+  try {
+    const INVALID_LEAGUES = [
+      'Los Angeles FC', 'LAFC', 'Real Salt Lake', 'LA Galaxy', 'Inter Miami CF',
+      'Atlanta United FC', 'Seattle Sounders FC', 'New York City FC',
+      'Brasileirão Série A', 'Brasileirão Série B', 'Brésil', 'Brazil',
+      'Nationale 3', 'Nationale U19', 'National U19', 'N3',
+      'Pays inexistant', 'pays inexistant', 'Unknown', 'unknown', 'N/A', 'n/a', '-',
+    ];
+    const placeholders = INVALID_LEAGUES.map(() => '?').join(', ');
+    const [result] = await pool.query(
+      `UPDATE players SET league = NULL WHERE league IN (${placeholders})`,
+      INVALID_LEAGUES
+    );
+    const CLUB_TO_LEAGUE_MAP = require('../src/data/club-to-league.json');
+    for (const clubName of Object.keys(CLUB_TO_LEAGUE_MAP)) {
       await pool.query(
-        "UPDATE club_directory SET competition = ? WHERE club_name = ? AND competition != ?",
-        [correctLeague, clubName, correctLeague]
+        "UPDATE players SET league = NULL WHERE league = ? AND club != ?",
+        [clubName, clubName]
       );
     }
-  } catch { /* club_directory may not exist yet */ }
-
-  if (totalFixed > 0) {
-    console.log(`[migration] Fixed ${totalFixed} player league values (static club→league mapping)`);
+    if (result.affectedRows > 0) {
+      console.log(`[migration] Purged ${result.affectedRows} invalid league values`);
+    }
+  } catch (err) {
+    console.warn("[warn] purge-invalid-leagues migration:", err?.message);
   }
-} catch (err) {
-  console.warn("[warn] fix-club-leagues migration:", err?.message);
+
+  // Normalize league name aliases
+  try {
+    const LEAGUE_ALIASES = require('../src/data/league-aliases.json');
+    let totalFixed = 0;
+    for (const [alias, canonical] of Object.entries(LEAGUE_ALIASES)) {
+      const [result] = await pool.query(
+        "UPDATE players SET league = ? WHERE league = ? OR TRIM(league) = ?",
+        [canonical, alias, alias]
+      );
+      totalFixed += result.affectedRows || 0;
+    }
+    await pool.query("UPDATE players SET league = TRIM(league) WHERE league != TRIM(league)");
+    if (totalFixed > 0) {
+      console.log(`[migration] Normalized ${totalFixed} league aliases`);
+    }
+  } catch (err) {
+    console.warn("[warn] normalize-league-aliases migration:", err?.message);
+  }
+
+  // Fix player league data: replace country names with correct league names
+  try {
+    const COUNTRY_TO_LEAGUE = require('../src/data/country-to-league.json');
+    let totalFixed = 0;
+    for (const [countryName, leagueName] of Object.entries(COUNTRY_TO_LEAGUE)) {
+      const [result] = await pool.query(
+        "UPDATE players SET league = ? WHERE league = ?",
+        [leagueName, countryName]
+      );
+      totalFixed += result.affectedRows || 0;
+    }
+    try {
+      const [result] = await pool.query(`
+        UPDATE players p
+        JOIN club_directory cd ON p.club = cd.club_name
+        SET p.league = cd.competition
+        WHERE (p.league IS NULL OR p.league = '')
+          AND cd.competition IS NOT NULL AND cd.competition != ''
+      `);
+      totalFixed += result.affectedRows || 0;
+    } catch { /* club_directory may not exist */ }
+    if (totalFixed > 0) {
+      console.log(`[migration] Fixed ${totalFixed} player league values (country names → correct league names)`);
+    }
+  } catch (err) {
+    console.warn("[warn] fix-player-leagues migration:", err?.message);
+  }
+
+  // Purge numeric/invalid league values (API IDs stored by mistake)
+  try {
+    const [result] = await pool.query(
+      "UPDATE players SET league = NULL WHERE league REGEXP '^[0-9]+$'"
+    );
+    if (result.affectedRows > 0) {
+      console.log(`[migration] Purged ${result.affectedRows} numeric league values (API IDs)`);
+    }
+  } catch (err) {
+    console.warn("[warn] purge-numeric-leagues migration:", err?.message);
+  }
+
+  // Fix wrong leagues using static club→league mapping
+  try {
+    const CLUB_TO_LEAGUE = require('../src/data/club-to-league.json');
+    let totalFixed = 0;
+    for (const [clubName, correctLeague] of Object.entries(CLUB_TO_LEAGUE)) {
+      const [result] = await pool.query(
+        "UPDATE players SET league = ? WHERE club = ? AND (league IS NULL OR league = '' OR league != ?)",
+        [correctLeague, clubName, correctLeague]
+      );
+      totalFixed += result.affectedRows || 0;
+    }
+    try {
+      for (const [clubName, correctLeague] of Object.entries(CLUB_TO_LEAGUE)) {
+        await pool.query(
+          "UPDATE club_directory SET competition = ? WHERE club_name = ? AND competition != ?",
+          [correctLeague, clubName, correctLeague]
+        );
+      }
+    } catch { /* club_directory may not exist yet */ }
+    if (totalFixed > 0) {
+      console.log(`[migration] Fixed ${totalFixed} player league values (static club→league mapping)`);
+    }
+  } catch (err) {
+    console.warn("[warn] fix-club-leagues migration:", err?.message);
+  }
+
+  console.log("[startup] Migrations complete");
 }
 
 // ── Image proxy for CORS-free capture (used by shadow-team download) ──
@@ -3673,10 +3658,12 @@ export default app;
 // Start local server only when run directly (not imported by Vercel)
 const isVercel = process.env.VERCEL === "1";
 if (!isVercel) {
-  ensureFixtureTables().then(() => {
-    app.listen(port, () => {
-      console.log(`API listening on http://localhost:${port}`);
-    });
+  // Start listening immediately, run migrations in the background
+  app.listen(port, () => {
+    console.log(`API listening on http://localhost:${port}`);
+    Promise.all([runMigrations(), ensureFixtureTables()])
+      .then(() => console.log("[startup] All migrations done"))
+      .catch((err) => console.error("[startup] Migration error:", err));
   });
 }
 
