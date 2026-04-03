@@ -19,6 +19,17 @@ try {
 } catch {
   console.warn("[warn] nodemailer not installed – email sending disabled. Run: npm install");
 }
+let Stripe = null;
+let stripe = null;
+try {
+  Stripe = (await import("stripe")).default;
+  if (process.env.STRIPE_SECRET_KEY) {
+    stripe = new Stripe(process.env.STRIPE_SECRET_KEY);
+    console.log("[info] Stripe initialized");
+  }
+} catch {
+  console.warn("[warn] stripe not installed – payments disabled");
+}
 
 dotenv.config();
 
@@ -39,10 +50,125 @@ const jwtSecret = process.env.API_JWT_SECRET || "change-this-secret";
 const pool = mysql.createPool(createDbPoolConfig());
 
 app.use(cors({ origin: true, credentials: true }));
+
+// ── Stripe webhook (MUST be before express.json to preserve raw body) ────
+app.post("/api/stripe/webhook", express.raw({ type: "application/json" }), async (req, res) => {
+  if (!stripe) return res.status(501).json({ error: "Stripe non configuré." });
+
+  const sig = req.headers["stripe-signature"];
+  const webhookSecret = process.env.STRIPE_WEBHOOK_SECRET;
+  if (!sig || !webhookSecret) return res.status(400).json({ error: "Signature manquante." });
+
+  let event;
+  try {
+    event = stripe.webhooks.constructEvent(req.body, sig, webhookSecret);
+  } catch (err) {
+    console.error("[stripe-webhook] Signature verification failed:", err?.message);
+    return res.status(400).json({ error: "Signature invalide." });
+  }
+
+  try {
+    switch (event.type) {
+      case "checkout.session.completed": {
+        const session = event.data.object;
+        const userId = session.metadata?.user_id;
+        const planType = session.metadata?.plan_type || "scout";
+        const billingCycle = session.metadata?.billing_cycle || "monthly";
+        if (!userId) break;
+
+        // Retrieve subscription to get end date
+        let subEnd = null;
+        if (session.subscription) {
+          const sub = await stripe.subscriptions.retrieve(session.subscription);
+          subEnd = sub.current_period_end ? new Date(sub.current_period_end * 1000) : null;
+        }
+
+        const [existing] = await pool.query("SELECT id FROM user_subscriptions WHERE user_id = ? LIMIT 1", [userId]);
+        if (existing.length > 0) {
+          await pool.query(
+            `UPDATE user_subscriptions SET is_premium = 1, premium_since = COALESCE(premium_since, NOW()),
+             stripe_customer_id = ?, stripe_subscription_id = ?, plan_type = ?, billing_cycle = ?,
+             subscription_end = ?, updated_at = NOW() WHERE user_id = ?`,
+            [session.customer, session.subscription, planType, billingCycle, subEnd, userId]
+          );
+        } else {
+          await pool.query(
+            `INSERT INTO user_subscriptions (id, user_id, is_premium, premium_since, stripe_customer_id,
+             stripe_subscription_id, plan_type, billing_cycle, subscription_end)
+             VALUES (?, ?, 1, NOW(), ?, ?, ?, ?, ?)`,
+            [uuidv4(), userId, session.customer, session.subscription, planType, billingCycle, subEnd]
+          );
+        }
+        console.log(`[stripe-webhook] Subscription activated for user ${userId} (${planType}/${billingCycle})`);
+        await createNotification(userId, {
+          type: "subscription",
+          title: "Abonnement activé",
+          message: `Votre plan ${planType} est maintenant actif.`,
+          icon: "Crown",
+          link: "/account",
+        });
+        break;
+      }
+
+      case "customer.subscription.updated": {
+        const sub = event.data.object;
+        const subEnd = sub.current_period_end ? new Date(sub.current_period_end * 1000) : null;
+        const isActive = ["active", "trialing"].includes(sub.status);
+        await pool.query(
+          `UPDATE user_subscriptions SET is_premium = ?, subscription_end = ?, updated_at = NOW()
+           WHERE stripe_subscription_id = ?`,
+          [isActive ? 1 : 0, subEnd, sub.id]
+        );
+        console.log(`[stripe-webhook] Subscription ${sub.id} updated (status: ${sub.status})`);
+        break;
+      }
+
+      case "customer.subscription.deleted": {
+        const sub = event.data.object;
+        await pool.query(
+          `UPDATE user_subscriptions SET is_premium = 0, stripe_subscription_id = NULL,
+           subscription_end = NULL, updated_at = NOW() WHERE stripe_subscription_id = ?`,
+          [sub.id]
+        );
+        console.log(`[stripe-webhook] Subscription ${sub.id} deleted`);
+        break;
+      }
+
+      case "invoice.payment_failed": {
+        const invoice = event.data.object;
+        console.warn(`[stripe-webhook] Payment failed for customer ${invoice.customer}`);
+        break;
+      }
+
+      default:
+        break;
+    }
+
+    return res.json({ received: true });
+  } catch (err) {
+    console.error("[stripe-webhook] Processing error:", err);
+    return res.status(500).json({ error: "Webhook processing error." });
+  }
+});
+
 app.use(express.json({ limit: "5mb" }));
 app.use("/uploads", express.static(UPLOAD_DIR));
 
 const upload = multer({ dest: UPLOAD_DIR });
+
+// ── Stripe session status (after checkout return) ────────────────────────
+app.get("/api/stripe/session-status", async (req, res) => {
+  if (!stripe) return res.status(501).json({ error: "Stripe non configuré." });
+  const sessionId = req.query.session_id;
+  if (!sessionId) return res.status(400).json({ error: "session_id requis." });
+  try {
+    const session = await stripe.checkout.sessions.retrieve(sessionId);
+    return res.json({ status: session.status, payment_status: session.payment_status });
+  } catch (err) {
+    console.error("[session-status] Error:", err?.message);
+    return res.status(500).json({ error: "Impossible de récupérer la session." });
+  }
+});
 
 const ALLOWED_TABLES = {
   profiles: ["id", "user_id", "full_name", "club", "role", "created_at", "updated_at"],
@@ -678,7 +804,100 @@ async function runMigrations() {
     console.warn("[warn] fix-club-leagues migration:", err?.message);
   }
 
+  // Add Stripe columns to user_subscriptions
+  try {
+    await pool.query(`ALTER TABLE user_subscriptions ADD COLUMN stripe_customer_id VARCHAR(255) NULL`);
+  } catch (err) { if (err?.errno !== 1060) console.warn("[warn] stripe_customer_id migration:", err?.message); }
+  try {
+    await pool.query(`ALTER TABLE user_subscriptions ADD COLUMN stripe_subscription_id VARCHAR(255) NULL`);
+  } catch (err) { if (err?.errno !== 1060) console.warn("[warn] stripe_subscription_id migration:", err?.message); }
+  try {
+    await pool.query(`ALTER TABLE user_subscriptions ADD COLUMN plan_type VARCHAR(30) NOT NULL DEFAULT 'starter'`);
+  } catch (err) { if (err?.errno !== 1060) console.warn("[warn] plan_type migration:", err?.message); }
+  try {
+    await pool.query(`ALTER TABLE user_subscriptions ADD COLUMN billing_cycle VARCHAR(20) NULL`);
+  } catch (err) { if (err?.errno !== 1060) console.warn("[warn] billing_cycle migration:", err?.message); }
+  try {
+    await pool.query(`ALTER TABLE user_subscriptions ADD COLUMN subscription_end DATETIME NULL`);
+  } catch (err) { if (err?.errno !== 1060) console.warn("[warn] subscription_end migration:", err?.message); }
+
+  // Ensure notifications table exists
+  try {
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS notifications (
+        id CHAR(36) PRIMARY KEY,
+        user_id CHAR(36) NOT NULL,
+        type VARCHAR(50) NOT NULL,
+        title VARCHAR(255) NOT NULL,
+        message TEXT NULL,
+        icon VARCHAR(50) NULL,
+        link VARCHAR(255) NULL,
+        player_id CHAR(36) NULL,
+        is_read TINYINT(1) NOT NULL DEFAULT 0,
+        created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        INDEX idx_notifications_user (user_id, is_read, created_at),
+        FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+      )
+    `);
+  } catch (err) {
+    if (!err?.message?.includes("already exists")) console.warn("[warn] notifications table migration:", err?.message);
+  }
+
+  // Migrate user_roles.role from ENUM to VARCHAR to support custom roles
+  try {
+    await pool.query("ALTER TABLE user_roles MODIFY COLUMN role VARCHAR(50) NOT NULL DEFAULT 'user'");
+  } catch (err) {
+    if (err?.errno !== 1060) { /* already migrated or same type */ }
+  }
+
+  // Ensure page_permissions table exists
+  try {
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS page_permissions (
+        id CHAR(36) PRIMARY KEY,
+        role VARCHAR(50) NOT NULL,
+        page_key VARCHAR(100) NOT NULL,
+        allowed TINYINT(1) NOT NULL DEFAULT 1,
+        created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        UNIQUE KEY uniq_role_page (role, page_key)
+      )
+    `);
+  } catch (err) {
+    if (!err?.message?.includes("already exists")) console.warn("[warn] page_permissions table migration:", err?.message);
+  }
+
+  // Ensure feedback table exists
+  try {
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS feedback (
+        id CHAR(36) PRIMARY KEY,
+        user_id CHAR(36) NOT NULL,
+        rating TINYINT NOT NULL,
+        message TEXT NULL,
+        page_url VARCHAR(500) NULL,
+        created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        INDEX idx_feedback_user (user_id),
+        FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+      )
+    `);
+  } catch (err) {
+    if (!err?.message?.includes("already exists")) console.warn("[warn] feedback table migration:", err?.message);
+  }
+
   console.log("[startup] Migrations complete");
+}
+
+// ── Notification helper ──────────────────────────────────────────────────
+async function createNotification(userId, { type, title, message, icon, link, playerId } = {}) {
+  try {
+    await pool.query(
+      `INSERT INTO notifications (id, user_id, type, title, message, icon, link, player_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      [uuidv4(), userId, type || "system", title, message || null, icon || null, link || null, playerId || null]
+    );
+  } catch (err) {
+    console.warn("[notification] Failed to create:", err?.message);
+  }
 }
 
 // ── Image proxy for CORS-free capture (used by shadow-team download) ──
@@ -810,9 +1029,42 @@ app.post("/api/auth/login", rateLimitAuth, async (req, res) => {
       return res.status(401).json({ error: "Identifiants invalides." });
     }
 
-    // If 2FA is enabled, don't return session yet — require TOTP code
+    // If TOTP 2FA is enabled, don't return session yet — require TOTP code
     if (user.totp_enabled) {
-      return res.json({ requires2FA: true, userId: user.id });
+      return res.json({ requires2FA: true, method: 'totp', userId: user.id });
+    }
+
+    // If Email 2FA is enabled, send code by email
+    if (user.email_2fa_enabled) {
+      const code = String(Math.floor(100000 + Math.random() * 900000));
+      const expiresAt = new Date(Date.now() + 10 * 60 * 1000); // 10 minutes
+      await pool.query(
+        "UPDATE users SET email_2fa_code = ?, email_2fa_expires_at = ?, updated_at = NOW() WHERE id = ?",
+        [code, expiresAt, user.id],
+      );
+
+      const mailer = createMailer();
+      if (mailer) {
+        await mailer.sendMail({
+          from: process.env.SMTP_FROM || process.env.SMTP_USER,
+          to: user.email,
+          subject: `Scouty – Votre code de vérification : ${code}`,
+          html: `
+            <div style="font-family:sans-serif;max-width:480px;margin:0 auto">
+              <h2 style="color:#1a1a2e">Code de vérification Scouty</h2>
+              <p>Voici votre code de connexion :</p>
+              <p style="text-align:center;margin:32px 0">
+                <span style="background:#6366f1;color:#fff;padding:16px 32px;border-radius:12px;font-size:28px;font-weight:700;letter-spacing:8px;display:inline-block">${code}</span>
+              </p>
+              <p style="color:#888;font-size:13px">Ce code est valable <strong>10 minutes</strong>. Si vous n'avez pas tenté de vous connecter, ignorez cet email.</p>
+            </div>
+          `,
+        });
+      } else {
+        console.log(`[DEV] Email 2FA code for ${user.email}: ${code}`);
+      }
+
+      return res.json({ requires2FA: true, method: 'email', userId: user.id });
     }
 
     await pool.query("UPDATE users SET last_sign_in_at = NOW(), updated_at = NOW() WHERE id = ?", [user.id]);
@@ -926,6 +1178,294 @@ app.post("/api/auth/forgot-password", rateLimitAuth, async (req, res) => {
   }
 });
 
+// ── RGPD: Export all user data ────────────────────────────────────────────
+app.post("/api/account/export-data", authMiddleware, async (req, res) => {
+  const userId = req.user.id;
+  try {
+    const [profile] = await pool.query("SELECT * FROM profiles WHERE user_id = ?", [userId]);
+    const [userRow] = await pool.query("SELECT id, email, created_at, updated_at, last_sign_in_at FROM users WHERE id = ?", [userId]);
+    const [subscription] = await pool.query("SELECT * FROM user_subscriptions WHERE user_id = ?", [userId]);
+    const [players] = await pool.query("SELECT * FROM players WHERE user_id = ?", [userId]);
+    const playerIds = players.map(p => p.id);
+
+    let reports = [];
+    let customFields = [];
+    let customFieldValues = [];
+    let watchlists = [];
+    let watchlistPlayers = [];
+    let shadowTeams = [];
+    let shadowTeamPlayers = [];
+    let contacts = [];
+    let followedLeagues = [];
+    let fixtures = [];
+    let matchAssignments = [];
+
+    if (playerIds.length > 0) {
+      [reports] = await pool.query("SELECT * FROM reports WHERE player_id IN (?) AND user_id = ?", [playerIds, userId]);
+      [customFieldValues] = await pool.query("SELECT * FROM custom_field_values WHERE user_id = ?", [userId]);
+    } else {
+      [reports] = await pool.query("SELECT * FROM reports WHERE user_id = ?", [userId]);
+      [customFieldValues] = await pool.query("SELECT * FROM custom_field_values WHERE user_id = ?", [userId]);
+    }
+
+    [customFields] = await pool.query("SELECT * FROM custom_fields WHERE user_id = ?", [userId]);
+    [watchlists] = await pool.query("SELECT * FROM watchlists WHERE user_id = ?", [userId]);
+
+    const watchlistIds = watchlists.map(w => w.id);
+    if (watchlistIds.length > 0) {
+      [watchlistPlayers] = await pool.query("SELECT * FROM watchlist_players WHERE watchlist_id IN (?)", [watchlistIds]);
+    }
+
+    [shadowTeams] = await pool.query("SELECT * FROM shadow_teams WHERE user_id = ?", [userId]);
+    const shadowTeamIds = shadowTeams.map(s => s.id);
+    if (shadowTeamIds.length > 0) {
+      [shadowTeamPlayers] = await pool.query("SELECT * FROM shadow_team_players WHERE shadow_team_id IN (?)", [shadowTeamIds]);
+    }
+
+    [contacts] = await pool.query("SELECT * FROM contacts WHERE user_id = ?", [userId]);
+
+    try { [followedLeagues] = await pool.query("SELECT * FROM user_followed_leagues WHERE user_id = ?", [userId]); } catch {}
+    try { [fixtures] = await pool.query("SELECT * FROM fixtures WHERE user_id = ?", [userId]); } catch {}
+    try { [matchAssignments] = await pool.query("SELECT * FROM match_assignments WHERE user_id = ?", [userId]); } catch {}
+
+    const exportData = {
+      export_date: new Date().toISOString(),
+      user: userRow[0] || null,
+      profile: profile[0] || null,
+      subscription: subscription[0] || null,
+      players,
+      reports,
+      custom_fields: customFields,
+      custom_field_values: customFieldValues,
+      watchlists,
+      watchlist_players: watchlistPlayers,
+      shadow_teams: shadowTeams,
+      shadow_team_players: shadowTeamPlayers,
+      contacts,
+      followed_leagues: followedLeagues,
+      fixtures,
+      match_assignments: matchAssignments,
+    };
+
+    res.setHeader("Content-Type", "application/json");
+    res.setHeader("Content-Disposition", `attachment; filename="scouty-export-${userId}-${new Date().toISOString().slice(0, 10)}.json"`);
+    return res.json(exportData);
+  } catch (err) {
+    console.error("[export-data] Error:", err);
+    return res.status(500).json({ error: "Erreur lors de l'export des données." });
+  }
+});
+
+// ── RGPD: Delete account and all user data ───────────────────────────────
+app.post("/api/account/delete", authMiddleware, async (req, res) => {
+  const userId = req.user.id;
+  const { confirmation } = req.body || {};
+
+  if (confirmation !== "DELETE") {
+    return res.status(400).json({ error: "Confirmation requise. Envoyez { confirmation: 'DELETE' }." });
+  }
+
+  try {
+    // Cancel Stripe subscription if exists
+    if (stripe) {
+      const [subRows] = await pool.query("SELECT stripe_customer_id, stripe_subscription_id FROM user_subscriptions WHERE user_id = ?", [userId]);
+      const sub = subRows[0];
+      if (sub?.stripe_subscription_id) {
+        try {
+          await stripe.subscriptions.cancel(sub.stripe_subscription_id);
+          console.log(`[delete-account] Cancelled Stripe subscription ${sub.stripe_subscription_id}`);
+        } catch (e) {
+          console.warn("[delete-account] Could not cancel Stripe subscription:", e?.message);
+        }
+      }
+      if (sub?.stripe_customer_id) {
+        try {
+          await stripe.customers.del(sub.stripe_customer_id);
+          console.log(`[delete-account] Deleted Stripe customer ${sub.stripe_customer_id}`);
+        } catch (e) {
+          console.warn("[delete-account] Could not delete Stripe customer:", e?.message);
+        }
+      }
+    }
+
+    // Delete user — CASCADE will remove profiles, players, reports, watchlists, etc.
+    await pool.query("DELETE FROM users WHERE id = ?", [userId]);
+
+    console.log(`[delete-account] User ${userId} (${req.user.email}) account deleted`);
+    return res.json({ ok: true, message: "Compte et données supprimés définitivement." });
+  } catch (err) {
+    console.error("[delete-account] Error:", err);
+    return res.status(500).json({ error: "Erreur lors de la suppression du compte." });
+  }
+});
+
+// ── Notifications CRUD ────────────────────────────────────────────────────
+app.get("/api/notifications", authMiddleware, async (req, res) => {
+  try {
+    const [rows] = await pool.query(
+      "SELECT * FROM notifications WHERE user_id = ? ORDER BY created_at DESC LIMIT 50",
+      [req.user.id]
+    );
+    return res.json(rows);
+  } catch (err) {
+    console.error("[notifications] GET error:", err);
+    return res.status(500).json({ error: "Erreur serveur" });
+  }
+});
+
+app.patch("/api/notifications/:id/read", authMiddleware, async (req, res) => {
+  try {
+    await pool.query(
+      "UPDATE notifications SET is_read = 1 WHERE id = ? AND user_id = ?",
+      [req.params.id, req.user.id]
+    );
+    return res.json({ ok: true });
+  } catch (err) {
+    console.error("[notifications] PATCH read error:", err);
+    return res.status(500).json({ error: "Erreur serveur" });
+  }
+});
+
+app.post("/api/notifications/read-all", authMiddleware, async (req, res) => {
+  try {
+    await pool.query(
+      "UPDATE notifications SET is_read = 1 WHERE user_id = ? AND is_read = 0",
+      [req.user.id]
+    );
+    return res.json({ ok: true });
+  } catch (err) {
+    console.error("[notifications] read-all error:", err);
+    return res.status(500).json({ error: "Erreur serveur" });
+  }
+});
+
+app.delete("/api/notifications/:id", authMiddleware, async (req, res) => {
+  try {
+    await pool.query(
+      "DELETE FROM notifications WHERE id = ? AND user_id = ?",
+      [req.params.id, req.user.id]
+    );
+    return res.json({ ok: true });
+  } catch (err) {
+    console.error("[notifications] DELETE error:", err);
+    return res.status(500).json({ error: "Erreur serveur" });
+  }
+});
+
+// ── POST /api/report-issue ────────────────────────────────────────────────
+app.post("/api/report-issue", authMiddleware, async (req, res) => {
+  const { category, subject, message, url, userAgent } = req.body || {};
+  if (!subject || !message) return res.status(400).json({ error: "Sujet et message requis." });
+
+  const userEmail = req.user?.email || "inconnu";
+  const userName = req.user?.name || req.user?.email || "inconnu";
+  const userId = req.user?.id || "inconnu";
+
+  const categoryLabels = { bug: "Bug", feature: "Demande de fonctionnalité", other: "Autre" };
+  const catLabel = categoryLabels[category] || category || "Autre";
+
+  const recipient = process.env.REPORT_ISSUE_TO || process.env.SMTP_FROM || process.env.SMTP_USER;
+  if (!recipient) {
+    console.error("[report-issue] Aucun destinataire configuré (REPORT_ISSUE_TO / SMTP_FROM / SMTP_USER)");
+    return res.status(500).json({ error: "Email de destination non configuré." });
+  }
+
+  const mailer = createMailer();
+  if (!mailer) {
+    console.error("[report-issue] SMTP non configuré – ticket non envoyé");
+    console.log(`[DEV] Report issue from ${userEmail}: [${catLabel}] ${subject}\n${message}`);
+    return res.status(500).json({ error: "Service d'envoi d'email non configuré." });
+  }
+
+  try {
+    await mailer.sendMail({
+      from: process.env.SMTP_FROM || process.env.SMTP_USER,
+      to: recipient,
+      replyTo: userEmail,
+      subject: `[Scouty - ${catLabel}] ${subject}`,
+      html: `
+        <div style="font-family:sans-serif;max-width:600px;margin:0 auto;color:#1a1a2e">
+          <div style="background:#6366f1;color:#fff;padding:16px 24px;border-radius:8px 8px 0 0">
+            <h2 style="margin:0;font-size:18px">Nouveau ticket – ${catLabel}</h2>
+          </div>
+          <div style="border:1px solid #e5e7eb;border-top:none;padding:24px;border-radius:0 0 8px 8px">
+            <table style="width:100%;border-collapse:collapse;font-size:14px;margin-bottom:20px">
+              <tr>
+                <td style="padding:6px 12px 6px 0;color:#6b7280;font-weight:600;white-space:nowrap">Utilisateur</td>
+                <td style="padding:6px 0">${userName} (${userEmail})</td>
+              </tr>
+              <tr>
+                <td style="padding:6px 12px 6px 0;color:#6b7280;font-weight:600;white-space:nowrap">ID</td>
+                <td style="padding:6px 0;font-family:monospace;font-size:12px">${userId}</td>
+              </tr>
+              <tr>
+                <td style="padding:6px 12px 6px 0;color:#6b7280;font-weight:600;white-space:nowrap">Catégorie</td>
+                <td style="padding:6px 0">${catLabel}</td>
+              </tr>
+              <tr>
+                <td style="padding:6px 12px 6px 0;color:#6b7280;font-weight:600;white-space:nowrap">Sujet</td>
+                <td style="padding:6px 0;font-weight:600">${subject}</td>
+              </tr>
+              ${url ? `<tr>
+                <td style="padding:6px 12px 6px 0;color:#6b7280;font-weight:600;white-space:nowrap">Page</td>
+                <td style="padding:6px 0"><a href="${url}" style="color:#6366f1">${url}</a></td>
+              </tr>` : ""}
+              ${userAgent ? `<tr>
+                <td style="padding:6px 12px 6px 0;color:#6b7280;font-weight:600;white-space:nowrap">Navigateur</td>
+                <td style="padding:6px 0;font-size:12px;color:#6b7280">${userAgent}</td>
+              </tr>` : ""}
+            </table>
+            <div style="background:#f9fafb;border-radius:6px;padding:16px;font-size:14px;line-height:1.6;white-space:pre-wrap">${message}</div>
+            <p style="margin-top:20px;font-size:12px;color:#9ca3af">Ce ticket a été envoyé depuis Scouty. Répondez directement à cet email pour contacter l'utilisateur.</p>
+          </div>
+        </div>
+      `,
+    });
+
+    console.log(`[report-issue] Ticket envoyé: [${catLabel}] ${subject} — par ${userEmail}`);
+    return res.json({ ok: true });
+  } catch (err) {
+    console.error("[report-issue] Erreur envoi email:", err);
+    return res.status(500).json({ error: "Erreur lors de l'envoi de l'email." });
+  }
+});
+
+// ── POST /api/feedback ────────────────────────────────────────────────────
+app.post("/api/feedback", authMiddleware, async (req, res) => {
+  const { rating, message, page_url } = req.body || {};
+  if (!rating || rating < 1 || rating > 5) return res.status(400).json({ error: "Rating entre 1 et 5 requis." });
+
+  try {
+    const id = uuidv4();
+    await pool.query(
+      `INSERT INTO feedback (id, user_id, rating, message, page_url) VALUES (?, ?, ?, ?, ?)`,
+      [id, req.user.id, rating, message?.trim() || null, page_url || null]
+    );
+    return res.json({ ok: true, id });
+  } catch (err) {
+    console.error("[feedback] Error:", err);
+    return res.status(500).json({ error: "Erreur lors de l'enregistrement du feedback." });
+  }
+});
+
+// ── GET /api/feedback (admin) ────────────────────────────────────────────
+app.get("/api/feedback", authMiddleware, ensureAdmin, async (req, res) => {
+  try {
+    const [rows] = await pool.query(
+      `SELECT f.*, p.full_name, u.email
+       FROM feedback f
+       LEFT JOIN profiles p ON p.id = f.user_id
+       LEFT JOIN users u ON u.id = f.user_id
+       ORDER BY f.created_at DESC
+       LIMIT 200`
+    );
+    return res.json(rows);
+  } catch (err) {
+    console.error("[feedback] Error fetching:", err);
+    return res.status(500).json({ error: "Erreur serveur." });
+  }
+});
+
 // ── POST /api/auth/reset-password ──────────────────────────────────────────
 app.post("/api/auth/reset-password", rateLimitAuth, async (req, res) => {
   const { token, password } = req.body || {};
@@ -991,10 +1531,13 @@ app.patch("/api/auth/user", authMiddleware, async (req, res) => {
 app.get("/api/auth/2fa/status", authMiddleware, async (req, res) => {
   try {
     const [rows] = await pool.query(
-      "SELECT totp_enabled FROM users WHERE id = ? LIMIT 1",
+      "SELECT totp_enabled, email_2fa_enabled FROM users WHERE id = ? LIMIT 1",
       [req.user.id],
     );
-    return res.json({ enabled: !!(rows[0]?.totp_enabled) });
+    return res.json({
+      enabled: !!(rows[0]?.totp_enabled) || !!(rows[0]?.email_2fa_enabled),
+      method: rows[0]?.totp_enabled ? 'totp' : rows[0]?.email_2fa_enabled ? 'email' : null,
+    });
   } catch (err) {
     console.error("2fa status error:", err);
     return res.status(500).json({ error: "Erreur serveur" });
@@ -1097,26 +1640,129 @@ app.post("/api/auth/2fa/disable", authMiddleware, async (req, res) => {
   }
 });
 
-// POST /api/auth/2fa/validate — validate TOTP code during login
+// POST /api/auth/2fa/email/enable — enable email-based 2FA
+app.post("/api/auth/2fa/email/enable", authMiddleware, async (req, res) => {
+  try {
+    const [rows] = await pool.query("SELECT totp_enabled, email_2fa_enabled FROM users WHERE id = ? LIMIT 1", [req.user.id]);
+    if (rows[0]?.totp_enabled) return res.status(400).json({ error: "Désactivez d'abord la 2FA par application avant d'activer la 2FA par email." });
+    if (rows[0]?.email_2fa_enabled) return res.status(400).json({ error: "La 2FA par email est déjà activée." });
+
+    // Send a verification code to confirm the user receives emails
+    const code = String(Math.floor(100000 + Math.random() * 900000));
+    const expiresAt = new Date(Date.now() + 10 * 60 * 1000);
+    await pool.query(
+      "UPDATE users SET email_2fa_code = ?, email_2fa_expires_at = ?, updated_at = NOW() WHERE id = ?",
+      [code, expiresAt, req.user.id],
+    );
+
+    const mailer = createMailer();
+    if (!mailer) {
+      console.log(`[DEV] Email 2FA setup code for ${req.user.email}: ${code}`);
+      return res.status(500).json({ error: "Service d'envoi d'email non configuré." });
+    }
+
+    await mailer.sendMail({
+      from: process.env.SMTP_FROM || process.env.SMTP_USER,
+      to: req.user.email,
+      subject: `Scouty – Code d'activation 2FA : ${code}`,
+      html: `
+        <div style="font-family:sans-serif;max-width:480px;margin:0 auto">
+          <h2 style="color:#1a1a2e">Activation de la 2FA par email</h2>
+          <p>Voici votre code de vérification pour activer l'authentification à deux facteurs par email :</p>
+          <p style="text-align:center;margin:32px 0">
+            <span style="background:#6366f1;color:#fff;padding:16px 32px;border-radius:12px;font-size:28px;font-weight:700;letter-spacing:8px;display:inline-block">${code}</span>
+          </p>
+          <p style="color:#888;font-size:13px">Ce code est valable <strong>10 minutes</strong>.</p>
+        </div>
+      `,
+    });
+
+    return res.json({ ok: true, codeSent: true });
+  } catch (err) {
+    console.error("2fa email enable error:", err);
+    return res.status(500).json({ error: "Erreur serveur" });
+  }
+});
+
+// POST /api/auth/2fa/email/verify — verify the email code and activate email 2FA
+app.post("/api/auth/2fa/email/verify", authMiddleware, async (req, res) => {
+  const { code } = req.body || {};
+  if (!code) return res.status(400).json({ error: "Code requis." });
+
+  try {
+    const [rows] = await pool.query(
+      "SELECT email_2fa_code, email_2fa_expires_at FROM users WHERE id = ? LIMIT 1",
+      [req.user.id],
+    );
+    const user = rows[0];
+    if (!user?.email_2fa_code) return res.status(400).json({ error: "Aucune activation en cours." });
+    if (new Date() > new Date(user.email_2fa_expires_at)) return res.status(400).json({ error: "Code expiré. Veuillez recommencer." });
+    if (String(code).trim() !== user.email_2fa_code) return res.status(400).json({ error: "Code invalide." });
+
+    await pool.query(
+      "UPDATE users SET email_2fa_enabled = 1, email_2fa_code = NULL, email_2fa_expires_at = NULL, updated_at = NOW() WHERE id = ?",
+      [req.user.id],
+    );
+
+    return res.json({ ok: true });
+  } catch (err) {
+    console.error("2fa email verify error:", err);
+    return res.status(500).json({ error: "Erreur serveur" });
+  }
+});
+
+// POST /api/auth/2fa/email/disable — disable email 2FA
+app.post("/api/auth/2fa/email/disable", authMiddleware, async (req, res) => {
+  try {
+    const [rows] = await pool.query("SELECT email_2fa_enabled FROM users WHERE id = ? LIMIT 1", [req.user.id]);
+    if (!rows[0]?.email_2fa_enabled) return res.status(400).json({ error: "La 2FA par email n'est pas activée." });
+
+    await pool.query(
+      "UPDATE users SET email_2fa_enabled = 0, email_2fa_code = NULL, email_2fa_expires_at = NULL, updated_at = NOW() WHERE id = ?",
+      [req.user.id],
+    );
+
+    return res.json({ ok: true });
+  } catch (err) {
+    console.error("2fa email disable error:", err);
+    return res.status(500).json({ error: "Erreur serveur" });
+  }
+});
+
+// POST /api/auth/2fa/validate — validate TOTP or email code during login
 app.post("/api/auth/2fa/validate", rateLimitAuth, async (req, res) => {
-  if (!speakeasy) return res.status(501).json({ error: "2FA non disponible." });
   const { userId, code } = req.body || {};
   if (!userId || !code) return res.status(400).json({ error: "userId et code requis." });
 
   try {
     const [rows] = await pool.query(
-      "SELECT * FROM users WHERE id = ? AND totp_enabled = 1 LIMIT 1",
+      "SELECT * FROM users WHERE id = ? LIMIT 1",
       [userId],
     );
     const user = rows[0];
     if (!user) return res.status(400).json({ error: "Utilisateur introuvable." });
 
-    const valid = speakeasy.totp.verify({
-      secret: user.totp_secret,
-      encoding: "base32",
-      token: String(code),
-      window: 1,
-    });
+    let valid = false;
+
+    if (user.totp_enabled && speakeasy) {
+      // TOTP validation
+      valid = speakeasy.totp.verify({
+        secret: user.totp_secret,
+        encoding: "base32",
+        token: String(code),
+        window: 1,
+      });
+    } else if (user.email_2fa_enabled) {
+      // Email code validation
+      if (!user.email_2fa_code || new Date() > new Date(user.email_2fa_expires_at)) {
+        return res.status(401).json({ error: "Code expiré. Veuillez vous reconnecter." });
+      }
+      valid = String(code).trim() === user.email_2fa_code;
+      if (valid) {
+        // Clear used code
+        await pool.query("UPDATE users SET email_2fa_code = NULL, email_2fa_expires_at = NULL WHERE id = ?", [user.id]);
+      }
+    }
 
     if (!valid) return res.status(401).json({ error: "Code 2FA invalide." });
 
@@ -1641,6 +2287,202 @@ app.post("/api/admin/impersonate", authMiddleware, ensureAdmin, async (req, res)
   } catch (err) {
     console.error("[admin/impersonate] error:", err);
     res.status(500).json({ error: "Server error" });
+  }
+});
+
+// ── Admin: Role management ──────────────────────────────────────────────────
+
+// GET /api/admin/roles — list all distinct roles
+app.get("/api/admin/roles", authMiddleware, ensureAdmin, async (_req, res) => {
+  try {
+    const [rows] = await pool.query("SELECT DISTINCT role FROM user_roles ORDER BY role");
+    const roles = rows.map(r => r.role);
+    // Always include default roles
+    const allRoles = [...new Set(["admin", "user", ...roles])];
+    return res.json(allRoles);
+  } catch (err) {
+    console.error("[admin/roles] Error:", err);
+    return res.status(500).json({ error: "Erreur serveur." });
+  }
+});
+
+// POST /api/admin/roles/set — set a user's role
+app.post("/api/admin/roles/set", authMiddleware, ensureAdmin, async (req, res) => {
+  const { userId, role } = req.body || {};
+  if (!userId || !role) return res.status(400).json({ error: "userId and role required." });
+
+  try {
+    // Remove existing roles and set the new one
+    await pool.query("DELETE FROM user_roles WHERE user_id = ?", [userId]);
+    await pool.query(
+      "INSERT INTO user_roles (id, user_id, role, created_at) VALUES (?, ?, ?, NOW())",
+      [uuidv4(), userId, role]
+    );
+    return res.json({ ok: true });
+  } catch (err) {
+    console.error("[admin/roles/set] Error:", err);
+    return res.status(500).json({ error: "Erreur serveur." });
+  }
+});
+
+// GET /api/admin/page-permissions — list all page permissions per role
+app.get("/api/admin/page-permissions", authMiddleware, ensureAdmin, async (_req, res) => {
+  try {
+    const [rows] = await pool.query("SELECT role, page_key, allowed FROM page_permissions ORDER BY role, page_key");
+    return res.json(rows);
+  } catch (err) {
+    console.error("[admin/page-permissions] Error:", err);
+    return res.status(500).json({ error: "Erreur serveur." });
+  }
+});
+
+// POST /api/admin/page-permissions — upsert a page permission for a role
+app.post("/api/admin/page-permissions", authMiddleware, ensureAdmin, async (req, res) => {
+  const { role, page_key, allowed } = req.body || {};
+  if (!role || !page_key || typeof allowed !== "boolean") {
+    return res.status(400).json({ error: "role, page_key, and allowed required." });
+  }
+
+  try {
+    await pool.query(
+      `INSERT INTO page_permissions (id, role, page_key, allowed)
+       VALUES (?, ?, ?, ?)
+       ON DUPLICATE KEY UPDATE allowed = VALUES(allowed), updated_at = NOW()`,
+      [uuidv4(), role, page_key, allowed ? 1 : 0]
+    );
+    return res.json({ ok: true });
+  } catch (err) {
+    console.error("[admin/page-permissions] Error:", err);
+    return res.status(500).json({ error: "Erreur serveur." });
+  }
+});
+
+// GET /api/admin/analytics — comprehensive dashboard KPIs
+app.get("/api/admin/analytics", authMiddleware, ensureAdmin, async (req, res) => {
+  try {
+    const range = req.query.range || "30d"; // 1d, 7d, 30d, 90d, 1y, all
+    let dateFilter = "";
+    const rangeMap = { "1d": 1, "7d": 7, "30d": 30, "90d": 90, "1y": 365 };
+    const days = rangeMap[range];
+    if (days) {
+      dateFilter = `AND created_at >= DATE_SUB(NOW(), INTERVAL ${days} DAY)`;
+    }
+
+    // --- Users ---
+    const [[{ total_users }]] = await pool.query("SELECT COUNT(*) as total_users FROM users");
+    const [[{ new_users }]] = await pool.query(`SELECT COUNT(*) as new_users FROM users WHERE 1=1 ${dateFilter}`);
+    const [[{ active_users }]] = await pool.query(`SELECT COUNT(*) as active_users FROM users WHERE last_sign_in_at >= DATE_SUB(NOW(), INTERVAL ${days || 99999} DAY)`);
+    const [[{ active_today }]] = await pool.query("SELECT COUNT(*) as active_today FROM users WHERE last_sign_in_at >= CURDATE()");
+    const [[{ active_7d }]] = await pool.query("SELECT COUNT(*) as active_7d FROM users WHERE last_sign_in_at >= DATE_SUB(NOW(), INTERVAL 7 DAY)");
+    const [[{ active_30d }]] = await pool.query("SELECT COUNT(*) as active_30d FROM users WHERE last_sign_in_at >= DATE_SUB(NOW(), INTERVAL 30 DAY)");
+    const [[{ users_2fa }]] = await pool.query("SELECT COUNT(*) as users_2fa FROM users WHERE totp_enabled = 1 OR email_2fa_enabled = 1");
+
+    // --- Subscriptions ---
+    const [[{ premium_users }]] = await pool.query("SELECT COUNT(*) as premium_users FROM user_subscriptions WHERE is_premium = 1");
+    const [planBreakdown] = await pool.query("SELECT COALESCE(plan_type, 'starter') as plan, billing_cycle, COUNT(*) as count FROM user_subscriptions WHERE is_premium = 1 GROUP BY plan_type, billing_cycle");
+    const [[{ new_premium }]] = await pool.query(`SELECT COUNT(*) as new_premium FROM user_subscriptions WHERE is_premium = 1 AND premium_since IS NOT NULL ${dateFilter.replace(/created_at/g, 'premium_since')}`);
+    const [[{ churned }]] = await pool.query(`SELECT COUNT(*) as churned FROM user_subscriptions WHERE is_premium = 0 AND premium_since IS NOT NULL`);
+
+    // --- Players ---
+    const [[{ total_players }]] = await pool.query("SELECT COUNT(*) as total_players FROM players");
+    const [[{ new_players }]] = await pool.query(`SELECT COUNT(*) as new_players FROM players WHERE 1=1 ${dateFilter}`);
+    const [[{ enriched_players }]] = await pool.query("SELECT COUNT(*) as enriched_players FROM players WHERE external_data_fetched_at IS NOT NULL");
+    const [[{ enriched_period }]] = await pool.query(`SELECT COUNT(*) as enriched_period FROM players WHERE external_data_fetched_at IS NOT NULL ${dateFilter.replace(/created_at/g, 'external_data_fetched_at')}`);
+    const [[{ avg_players_per_user }]] = await pool.query("SELECT ROUND(AVG(cnt), 1) as avg_players_per_user FROM (SELECT COUNT(*) as cnt FROM players GROUP BY user_id) sub");
+
+    // --- Reports ---
+    const [[{ total_reports }]] = await pool.query("SELECT COUNT(*) as total_reports FROM reports");
+    const [[{ new_reports }]] = await pool.query(`SELECT COUNT(*) as new_reports FROM reports WHERE 1=1 ${dateFilter}`);
+
+    // --- Organizations ---
+    const [[{ total_orgs }]] = await pool.query("SELECT COUNT(*) as total_orgs FROM organizations");
+    const [[{ total_org_members }]] = await pool.query("SELECT COUNT(*) as total_org_members FROM organization_members");
+
+    // --- Matches ---
+    const [[{ total_matches }]] = await pool.query("SELECT COUNT(*) as total_matches FROM match_assignments");
+    const [[{ new_matches }]] = await pool.query(`SELECT COUNT(*) as new_matches FROM match_assignments WHERE 1=1 ${dateFilter}`);
+    const [matchStatusBreakdown] = await pool.query("SELECT status, COUNT(*) as count FROM match_assignments GROUP BY status");
+
+    // --- Watchlists & Shadow Teams ---
+    const [[{ total_watchlists }]] = await pool.query("SELECT COUNT(*) as total_watchlists FROM watchlists");
+    const [[{ total_shadow_teams }]] = await pool.query("SELECT COUNT(*) as total_shadow_teams FROM shadow_teams");
+
+    // --- Contacts ---
+    const [[{ total_contacts }]] = await pool.query("SELECT COUNT(*) as total_contacts FROM contacts");
+
+    // --- Feedback ---
+    const [[{ total_feedback }]] = await pool.query("SELECT COUNT(*) as total_feedback FROM feedback");
+    const [[{ avg_rating }]] = await pool.query("SELECT ROUND(AVG(rating), 2) as avg_rating FROM feedback");
+    const [ratingBreakdown] = await pool.query("SELECT rating, COUNT(*) as count FROM feedback GROUP BY rating ORDER BY rating");
+
+    // --- Notifications ---
+    const [[{ enrichment_notifs }]] = await pool.query(`SELECT COUNT(*) as enrichment_notifs FROM notifications WHERE type = 'enrichment' ${dateFilter}`);
+
+    // --- Time series (registrations by day/week) ---
+    let groupBy = "DATE(created_at)";
+    if (range === "1y" || range === "all") groupBy = "DATE_FORMAT(created_at, '%Y-%m')";
+    else if (range === "90d") groupBy = "DATE_FORMAT(created_at, '%Y-%u')"; // by week
+    const [userTimeSeries] = await pool.query(
+      `SELECT ${groupBy} as period, COUNT(*) as count FROM users WHERE 1=1 ${dateFilter} GROUP BY period ORDER BY period`
+    );
+    const [playerTimeSeries] = await pool.query(
+      `SELECT ${groupBy} as period, COUNT(*) as count FROM players WHERE 1=1 ${dateFilter} GROUP BY period ORDER BY period`
+    );
+    const [premiumTimeSeries] = await pool.query(
+      `SELECT ${groupBy} as period, COUNT(*) as count FROM user_subscriptions WHERE is_premium = 1 AND premium_since IS NOT NULL ${dateFilter.replace(/created_at/g, 'premium_since')} GROUP BY period ORDER BY period`
+    );
+
+    // --- Top users by player count ---
+    const [topUsers] = await pool.query(
+      "SELECT u.email, COUNT(p.id) as player_count FROM users u JOIN players p ON p.user_id = u.id GROUP BY u.id ORDER BY player_count DESC LIMIT 10"
+    );
+
+    // --- Opinion breakdown ---
+    const [opinionBreakdown] = await pool.query("SELECT general_opinion, COUNT(*) as count FROM players GROUP BY general_opinion ORDER BY count DESC");
+
+    res.json({
+      users: { total_users: +total_users, new_users: +new_users, active_users: +active_users, active_today: +active_today, active_7d: +active_7d, active_30d: +active_30d, users_2fa: +users_2fa },
+      subscriptions: { premium_users: +premium_users, new_premium: +new_premium, churned: +churned, plan_breakdown: planBreakdown },
+      players: { total_players: +total_players, new_players: +new_players, enriched_players: +enriched_players, enriched_period: +enriched_period, avg_players_per_user: +(avg_players_per_user || 0) },
+      reports: { total_reports: +total_reports, new_reports: +new_reports },
+      organizations: { total_orgs: +total_orgs, total_org_members: +total_org_members },
+      matches: { total_matches: +total_matches, new_matches: +new_matches, status_breakdown: matchStatusBreakdown },
+      engagement: { total_watchlists: +total_watchlists, total_shadow_teams: +total_shadow_teams, total_contacts: +total_contacts },
+      feedback: { total_feedback: +total_feedback, avg_rating: +(avg_rating || 0), rating_breakdown: ratingBreakdown },
+      enrichment: { enrichment_notifs: +enrichment_notifs },
+      timeSeries: { users: userTimeSeries, players: playerTimeSeries, premium: premiumTimeSeries },
+      topUsers,
+      opinionBreakdown,
+    });
+  } catch (err) {
+    console.error("[admin/analytics] Error:", err);
+    res.status(500).json({ error: "Erreur serveur." });
+  }
+});
+
+// GET /api/my-permissions — get current user's page permissions based on their role
+app.get("/api/my-permissions", authMiddleware, async (req, res) => {
+  try {
+    const [roleRows] = await pool.query(
+      "SELECT role FROM user_roles WHERE user_id = ? LIMIT 1",
+      [req.user.id]
+    );
+    const userRole = roleRows.length > 0 ? roleRows[0].role : "user";
+
+    const [perms] = await pool.query(
+      "SELECT page_key, allowed FROM page_permissions WHERE role = ?",
+      [userRole]
+    );
+
+    const permMap = {};
+    for (const p of perms) {
+      permMap[p.page_key] = !!p.allowed;
+    }
+
+    return res.json({ role: userRole, permissions: permMap });
+  } catch (err) {
+    console.error("[my-permissions] Error:", err);
+    return res.status(500).json({ error: "Erreur serveur." });
   }
 });
 
@@ -2589,13 +3431,18 @@ app.post("/api/functions/:name", authMiddleware, async (req, res) => {
   const { name } = req.params;
 
   if (name === "check-subscription") {
-    const [rows] = await pool.query("SELECT is_premium, premium_since FROM user_subscriptions WHERE user_id = ? LIMIT 1", [req.user.id]);
+    const [rows] = await pool.query(
+      "SELECT is_premium, premium_since, stripe_customer_id, plan_type, billing_cycle, subscription_end FROM user_subscriptions WHERE user_id = ? LIMIT 1",
+      [req.user.id]
+    );
     const sub = rows[0];
     return res.json({
       subscribed: !!sub?.is_premium,
-      source: sub?.is_premium ? "manual" : undefined,
-      subscription_end: null,
+      source: sub?.stripe_customer_id ? "stripe" : sub?.is_premium ? "admin" : undefined,
+      subscription_end: sub?.subscription_end || null,
       premium_since: sub?.premium_since || null,
+      plan_type: sub?.plan_type || "starter",
+      billing_cycle: sub?.billing_cycle || null,
     });
   }
 
@@ -2631,6 +3478,19 @@ app.post("/api/functions/:name", authMiddleware, async (req, res) => {
       const { setClauses, params, tsdb, wd, tm, contractEnd, newClub, dateOfBirth } = await enrichOnePlayer(playerInfo, rec, tmPath);
       params.push(playerId, req.user.id);
       await pool.query(`UPDATE players SET ${setClauses.join(', ')} WHERE id = ? AND user_id = ?`, params);
+
+      // Create notification for successful enrichment
+      const enrichedFields = [dateOfBirth && "date de naissance", contractEnd && "contrat", newClub !== rec.club && "club", tm && "Transfermarkt"].filter(Boolean);
+      if (enrichedFields.length > 0) {
+        await createNotification(req.user.id, {
+          type: "enrichment",
+          title: `${playerName} enrichi`,
+          message: `Données mises à jour : ${enrichedFields.join(", ")}`,
+          icon: "Zap",
+          link: `/player/${playerId}`,
+          playerId,
+        });
+      }
 
       return res.json({
         success: true,
@@ -3576,8 +4436,202 @@ app.post("/api/functions/:name", authMiddleware, async (req, res) => {
     }
   }
 
-  if (name === "create-checkout" || name === "customer-portal") {
-    return res.status(501).json({ error: "Stripe checkout/portal not yet migrated for MySQL backend." });
+  // ── Discover players (Premium) — search Transfermarkt by filters ──
+  if (name === "discover-players") {
+    // Check premium
+    const [subRows] = await pool.query("SELECT is_premium FROM user_subscriptions WHERE user_id = ? LIMIT 1", [req.user.id]);
+    if (!subRows[0]?.is_premium) {
+      return res.status(403).json({ error: "Fonctionnalité réservée aux abonnés Premium." });
+    }
+
+    const { query, competition, position, ageMin, ageMax, valueMin, valueMax, nationality, page } = req.body || {};
+    if (!query && !competition) {
+      return res.status(400).json({ error: "Saisissez un nom de joueur ou une compétition." });
+    }
+
+    try {
+      const opts = { headers: TM_HEADERS, signal: AbortSignal.timeout(15000) };
+      let results = [];
+
+      if (query) {
+        // Name-based search
+        const searchUrl = `https://www.transfermarkt.fr/schnellsuche/ergebnis/schnellsuche?query=${encodeURIComponent(query)}&Spieler_page=${page || 1}`;
+        const resp = await fetch(searchUrl, opts);
+        if (!resp.ok) throw new Error(`TM search returned ${resp.status}`);
+        const html = await resp.text();
+
+        // Parse player rows from search results
+        const tableMatch = html.match(/<table class="items"[^>]*>[\s\S]*?<\/table>/);
+        if (tableMatch) {
+          const tbody = tableMatch[0];
+          const rowRegex = /<tr[^>]*class="[^"]*(?:odd|even)[^"]*"[^>]*>([\s\S]*?)<\/tr>/g;
+          let match;
+          while ((match = rowRegex.exec(tbody)) !== null) {
+            const row = match[1];
+            // Name + link
+            const nameMatch = row.match(/class="hauptlink"[^>]*>\s*<a[^>]*href="([^"]*)"[^>]*title="([^"]*)"/);
+            if (!nameMatch) continue;
+            const path = nameMatch[1];
+            const name = nameMatch[2];
+            // Photo
+            const photoMatch = row.match(/data-src="([^"]*?)"/);
+            const photo = photoMatch ? photoMatch[1] : null;
+            // Position
+            const posMatch = row.match(/<td[^>]*class="[^"]*zentriert[^"]*"[^>]*>([^<]*)<\/td>/g);
+            let posText = '';
+            let ageText = '';
+            let natFlags = [];
+            if (posMatch) {
+              posMatch.forEach(td => {
+                const val = td.replace(/<[^>]*>/g, '').trim();
+                if (/\d{2}/.test(val) && !posText) { /* skip */ }
+                else if (val && !posText) posText = val;
+              });
+            }
+            // Age
+            const ageMatch = row.match(/<td[^>]*class="[^"]*zentriert[^"]*"[^>]*>\s*(\d{1,2})\s*<\/td>/);
+            if (ageMatch) ageText = ageMatch[1];
+            // Nationality flags
+            const flagRegex = /title="([^"]*)"[^>]*class="flaggenrahmen"/g;
+            let flagMatch;
+            while ((flagMatch = flagRegex.exec(row)) !== null) {
+              natFlags.push(flagMatch[1]);
+            }
+            // Club
+            const clubMatch = row.match(/<td[^>]*class="[^"]*zentriert[^"]*"[^>]*>[\s\S]*?<a[^>]*title="([^"]*)"[\s\S]*?<img[^>]*src="([^"]*)"[\s\S]*?<\/td>/);
+            const club = clubMatch ? clubMatch[1] : '';
+            const clubLogo = clubMatch ? clubMatch[2] : '';
+            // Market value
+            const valueMatch = row.match(/<td[^>]*class="[^"]*rechts[^"]*hauptlink[^"]*"[^>]*>([^<]*)<\/td>/);
+            const marketValue = valueMatch ? valueMatch[1].trim() : '';
+
+            const age = parseInt(ageText) || null;
+
+            // Apply filters
+            if (ageMin && age && age < parseInt(ageMin)) continue;
+            if (ageMax && age && age > parseInt(ageMax)) continue;
+            if (position && posText && !posText.toLowerCase().includes(position.toLowerCase())) continue;
+            if (nationality && natFlags.length > 0 && !natFlags.some(f => f.toLowerCase().includes(nationality.toLowerCase()))) continue;
+
+            results.push({
+              name,
+              tmPath: path,
+              tmId: path.match(/\/spieler\/(\d+)/)?.[1] || null,
+              photo: photo?.replace(/small|medium/, 'big') || photo,
+              position: posText,
+              age,
+              nationality: natFlags.join(', '),
+              club,
+              clubLogo,
+              marketValue,
+            });
+          }
+        }
+      }
+
+      // Value filter (parse market value string)
+      if (valueMin || valueMax) {
+        const parseValue = (v) => {
+          if (!v) return 0;
+          const s = v.replace(/[^0-9.,mMkK]/g, '');
+          const num = parseFloat(s.replace(',', '.'));
+          if (isNaN(num)) return 0;
+          if (/m/i.test(v)) return num * 1000000;
+          if (/k/i.test(v) || /mille/i.test(v)) return num * 1000;
+          return num;
+        };
+        const minVal = valueMin ? parseFloat(valueMin) * 1000000 : 0;
+        const maxVal = valueMax ? parseFloat(valueMax) * 1000000 : Infinity;
+        results = results.filter(r => {
+          const val = parseValue(r.marketValue);
+          return val >= minVal && val <= maxVal;
+        });
+      }
+
+      return res.json({ players: results.slice(0, 30) });
+    } catch (err) {
+      console.error("[discover-players] Error:", err);
+      return res.status(500).json({ error: "Erreur lors de la recherche. Réessayez." });
+    }
+  }
+
+  if (name === "create-checkout") {
+    if (!stripe) return res.status(501).json({ error: "Stripe non configuré sur ce serveur." });
+
+    const { plan, billing } = req.body || {};
+    const priceMap = {
+      "scout_monthly": process.env.STRIPE_PRICE_SCOUT_MONTHLY,
+      "scout_annual": process.env.STRIPE_PRICE_SCOUT_ANNUAL,
+      "pro_monthly": process.env.STRIPE_PRICE_PRO_MONTHLY,
+      "pro_annual": process.env.STRIPE_PRICE_PRO_ANNUAL,
+    };
+    const priceId = priceMap[`${plan}_${billing}`];
+    if (!priceId) return res.status(400).json({ error: `Plan ou cycle de facturation invalide (${plan}/${billing}).` });
+
+    try {
+      // Find or create Stripe customer
+      const [subRows] = await pool.query("SELECT stripe_customer_id FROM user_subscriptions WHERE user_id = ? LIMIT 1", [req.user.id]);
+      let customerId = subRows[0]?.stripe_customer_id;
+
+      if (!customerId) {
+        const customer = await stripe.customers.create({
+          email: req.user.email,
+          metadata: { user_id: req.user.id },
+        });
+        customerId = customer.id;
+
+        // Upsert customer ID
+        const [existing] = await pool.query("SELECT id FROM user_subscriptions WHERE user_id = ? LIMIT 1", [req.user.id]);
+        if (existing.length > 0) {
+          await pool.query("UPDATE user_subscriptions SET stripe_customer_id = ?, updated_at = NOW() WHERE user_id = ?", [customerId, req.user.id]);
+        } else {
+          await pool.query(
+            "INSERT INTO user_subscriptions (id, user_id, stripe_customer_id) VALUES (?, ?, ?)",
+            [uuidv4(), req.user.id, customerId]
+          );
+        }
+      }
+
+      const origin = req.headers.origin || req.headers.referer?.replace(/\/+$/, "") || `${req.protocol}://${req.get("host")}`;
+      const session = await stripe.checkout.sessions.create({
+        ui_mode: "embedded",
+        mode: "subscription",
+        customer: customerId,
+        line_items: [{ price: priceId, quantity: 1 }],
+        return_url: `${origin}/premium-success?session_id={CHECKOUT_SESSION_ID}`,
+        metadata: {
+          user_id: req.user.id,
+          plan_type: plan,
+          billing_cycle: billing,
+        },
+      });
+
+      return res.json({ clientSecret: session.client_secret });
+    } catch (err) {
+      console.error("[create-checkout] Error:", err);
+      return res.status(500).json({ error: err?.message || "Erreur Stripe." });
+    }
+  }
+
+  if (name === "customer-portal") {
+    if (!stripe) return res.status(501).json({ error: "Stripe non configuré sur ce serveur." });
+
+    try {
+      const [subRows] = await pool.query("SELECT stripe_customer_id FROM user_subscriptions WHERE user_id = ? LIMIT 1", [req.user.id]);
+      const customerId = subRows[0]?.stripe_customer_id;
+      if (!customerId) return res.status(400).json({ error: "Aucun abonnement Stripe trouvé." });
+
+      const origin = req.headers.origin || req.headers.referer?.replace(/\/+$/, "") || `${req.protocol}://${req.get("host")}`;
+      const portalSession = await stripe.billingPortal.sessions.create({
+        customer: customerId,
+        return_url: `${origin}/account`,
+      });
+
+      return res.json({ url: portalSession.url });
+    } catch (err) {
+      console.error("[customer-portal] Error:", err);
+      return res.status(500).json({ error: err?.message || "Erreur Stripe." });
+    }
   }
 
   return res.status(404).json({ error: `Unknown function: ${name}` });

@@ -13,6 +13,7 @@ import {
 import { Card, CardContent } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import stadiumHero from '@/assets/stadium-hero.jpg';
+import logo from '@/assets/logo.png';
 
 export default function Dashboard() {
   const { data: players = [] } = usePlayers();
@@ -56,7 +57,7 @@ export default function Dashboard() {
         <div className="absolute inset-0 bg-gradient-to-r from-foreground/80 via-foreground/50 to-transparent" />
         <div className="absolute inset-0 flex items-center px-8">
           <div>
-            <h1 className="text-3xl md:text-4xl font-extrabold tracking-tight text-card">⚽ {t('dashboard.title')}</h1>
+            <h1 className="text-3xl md:text-4xl font-extrabold tracking-tight text-card flex items-center gap-3"><img src={logo} alt="" className="w-10 h-10" /> {t('dashboard.title')}</h1>
             <p className="text-card/80 mt-1 text-lg">{t('dashboard.subtitle')}</p>
             <div className="flex items-center gap-2 mt-3">
               <span className="px-3 py-1 rounded-full bg-card/20 backdrop-blur text-card text-sm font-semibold">
@@ -75,7 +76,7 @@ export default function Dashboard() {
         <Card className="border-none card-warm bg-card">
           <CardContent className="p-5">
             <div className="flex items-center gap-3">
-              <div className="w-12 h-12 rounded-xl bg-gradient-to-br from-primary/20 to-primary/5 flex items-center justify-center text-2xl">⚽</div>
+              <img src={logo} alt="" className="w-12 h-12 rounded-xl" />
               <div>
                 <p className="text-sm font-medium text-muted-foreground">{t('dashboard.total_players')}</p>
                 <p className="text-3xl font-extrabold font-mono">{stats.total}</p>

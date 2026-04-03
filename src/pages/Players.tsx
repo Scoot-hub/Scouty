@@ -292,22 +292,48 @@ export default function Players() {
         valuesMap.get(v.player_id)!.set(v.custom_field_id, v.value ?? '');
       });
 
+      // Fetch reports for all exported players
+      const { data: allReports } = await supabase
+        .from('reports')
+        .select('*')
+        .in('player_id', playerIds)
+        .order('created_at', { ascending: true });
+      const reportsMap = new Map<string, any[]>();
+      (allReports ?? []).forEach((r: any) => {
+        if (!reportsMap.has(r.player_id)) reportsMap.set(r.player_id, []);
+        reportsMap.get(r.player_id)!.push(r);
+      });
+
+      // Build headers in TARGET_FIELDS order (matching import suggestions)
       const rows = playersToExport.map(p => {
+        const playerReports = reportsMap.get(p.id) ?? [];
         const row: Record<string, any> = {
-          [t('form.name')]: p.name,
-          [t('form.nationality')]: p.nationality,
-          [t('players.age')]: getPlayerAge(p.generation, p.date_of_birth),
-          [t('players.position')]: posShort[p.position],
-          [t('form.position_secondary')]: p.position_secondaire ?? '',
-          [t('players.player_type')]: p.role ?? '',
-          [t('form.club')]: p.club,
-          [t('players.league')]: resolveLeague(p),
-          [t('players.level')]: p.current_level,
-          [t('players.potential')]: p.potential,
-          [t('players.opinion')]: p.general_opinion,
-          [t('players.contract_end')]: p.contract_end ?? '',
-          [t('form.strong_foot')]: p.foot,
-          [t('players.notes')]: p.notes ?? '',
+          'Nom du joueur': p.name,
+          'Génération / Année': p.generation,
+          'Nationalité': p.nationality,
+          'Pied': p.foot,
+          'Club': p.club,
+          'Championnat': resolveLeague(p),
+          'Zone': p.zone ?? '',
+          'Poste': posShort[p.position],
+          'Type de joueur': p.role ?? '',
+          'Niveau': p.current_level,
+          'Potentiel': p.potential,
+          'Avis général': p.general_opinion,
+          'Fin de contrat': p.contract_end ?? '',
+          'Notes': p.notes ?? '',
+          'TS Report publié': p.ts_report_published ? 'Oui' : '',
+          'Poste secondaire': p.position_secondaire ?? '',
+          'Avis rapport 1': playerReports[0]?.opinion ?? '',
+          'Avis rapport 2': playerReports[1]?.opinion ?? '',
+          'Avis rapport 3': playerReports[2]?.opinion ?? '',
+          'Avis rapport 4': playerReports[3]?.opinion ?? '',
+          'Avis rapport 5': playerReports[4]?.opinion ?? '',
+          'Rapport 1': playerReports[0]?.drive_link ?? playerReports[0]?.title ?? '',
+          'Rapport 2': playerReports[1]?.drive_link ?? playerReports[1]?.title ?? '',
+          'Rapport 3': playerReports[2]?.drive_link ?? playerReports[2]?.title ?? '',
+          'Rapport 4': playerReports[3]?.drive_link ?? playerReports[3]?.title ?? '',
+          'Rapport 5': playerReports[4]?.drive_link ?? playerReports[4]?.title ?? '',
         };
         customFields.forEach(cf => {
           row[cf.field_name] = valuesMap.get(p.id)?.get(cf.id) ?? '';

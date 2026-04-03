@@ -2,13 +2,14 @@ import { useState } from 'react';
 import { Link, useLocation, useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import {
-  Users, Menu, X, PlusCircle, LogOut, Settings, Shield, UserCircle, Eye, Sparkles, Building2, Bug, CalendarDays, Shirt, Contact, ClipboardList, ChevronLeft, ChevronRight, Route, MapPinned
+  Users, Menu, X, PlusCircle, LogOut, Settings, Shield, ShieldCheck, UserCircle, Eye, Sparkles, Building2, Bug, CalendarDays, CalendarCheck, Shirt, Contact, ClipboardList, ChevronLeft, ChevronRight, Route, MapPinned, Gift, Search
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { useAuth } from '@/contexts/AuthContext';
 import { useIsAdmin, useIsPremium } from '@/hooks/use-admin';
 import { useMyOrganizations, slugify } from '@/hooks/use-organization';
 import ReportIssueDialog from '@/components/ReportIssueDialog';
+import logo from '@/assets/logo.png';
 
 interface AppSidebarProps {
   collapsed: boolean;
@@ -79,12 +80,10 @@ export default function AppSidebar({ collapsed, onToggle }: AppSidebarProps) {
       {/* Logo + collapse toggle */}
       <div className={cn('py-6 flex items-center', collapsed ? 'justify-center px-2' : 'justify-between px-5')}>
         <div className="flex items-center gap-3">
-          <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-sidebar-primary to-accent flex items-center justify-center text-lg shrink-0">
-            ⚽
-          </div>
+          <img src={logo} alt="Scouty" className="w-10 h-10 rounded-xl shrink-0" />
           {!collapsed && (
             <div>
-              <span className="text-lg font-extrabold text-sidebar-foreground tracking-tight">ScoutHub</span>
+              <span className="text-lg font-extrabold text-sidebar-foreground tracking-tight">Scouty</span>
               <p className="text-[10px] text-sidebar-muted font-medium tracking-widest uppercase">Football Scouting</p>
             </div>
           )}
@@ -260,6 +259,32 @@ export default function AppSidebar({ collapsed, onToggle }: AppSidebarProps) {
             {!collapsed && t('sidebar.contacts')}
           </Link>
         </SidebarTooltip>
+
+        <SidebarTooltip label={t('sidebar.discover')} collapsed={collapsed}>
+          <Link to="/discover" className={linkClass('/discover')} onClick={() => setMobileOpen(false)}>
+            <Search className="w-4 h-4 shrink-0" />
+            {!collapsed && (
+              <span className="flex items-center gap-2">
+                {t('sidebar.discover')}
+                <span className="text-[9px] px-1.5 py-0.5 rounded-full bg-primary/15 text-primary font-bold">PRO</span>
+              </span>
+            )}
+          </Link>
+        </SidebarTooltip>
+
+        <SidebarTooltip label={t('sidebar.booking')} collapsed={collapsed}>
+          <Link to="/booking" className={linkClass('/booking')} onClick={() => setMobileOpen(false)}>
+            <CalendarCheck className="w-4 h-4 shrink-0" />
+            {!collapsed && t('sidebar.booking')}
+          </Link>
+        </SidebarTooltip>
+
+        <SidebarTooltip label={t('sidebar.affiliate')} collapsed={collapsed}>
+          <Link to="/affiliate" className={linkClass('/affiliate')} onClick={() => setMobileOpen(false)}>
+            <Gift className="w-4 h-4 shrink-0" />
+            {!collapsed && t('sidebar.affiliate')}
+          </Link>
+        </SidebarTooltip>
       </nav>
 
       {/* Upgrade CTA — free users only */}
@@ -285,12 +310,20 @@ export default function AppSidebar({ collapsed, onToggle }: AppSidebarProps) {
       <div className={cn('py-3 border-t border-sidebar-border shrink-0', collapsed ? 'px-2' : 'px-3')}>
         <div className="space-y-0.5">
           {isAdmin && (
-            <SidebarTooltip label={t('sidebar.administration')} collapsed={collapsed}>
-              <Link to="/admin" className={footerLinkClass('/admin')} onClick={() => setMobileOpen(false)}>
-                <Shield className="w-3.5 h-3.5 shrink-0" />
-                {!collapsed && t('sidebar.administration')}
-              </Link>
-            </SidebarTooltip>
+            <>
+              <SidebarTooltip label={t('sidebar.administration')} collapsed={collapsed}>
+                <Link to="/admin" className={footerLinkClass('/admin')} onClick={() => setMobileOpen(false)}>
+                  <Shield className="w-3.5 h-3.5 shrink-0" />
+                  {!collapsed && t('sidebar.administration')}
+                </Link>
+              </SidebarTooltip>
+              <SidebarTooltip label={t('sidebar.roles')} collapsed={collapsed}>
+                <Link to="/admin/roles" className={footerLinkClass('/admin/roles')} onClick={() => setMobileOpen(false)}>
+                  <ShieldCheck className="w-3.5 h-3.5 shrink-0" />
+                  {!collapsed && t('sidebar.roles')}
+                </Link>
+              </SidebarTooltip>
+            </>
           )}
 
           <SidebarTooltip label={t('sidebar.my_account')} collapsed={collapsed}>
@@ -331,6 +364,15 @@ export default function AppSidebar({ collapsed, onToggle }: AppSidebarProps) {
               <p className="text-[11px] text-sidebar-muted truncate">{user.email}</p>
             )}
             <p className="text-[10px] text-sidebar-muted">{t('sidebar.version')}</p>
+            <Link to="/legal" className="block text-[10px] text-sidebar-muted hover:text-sidebar-foreground transition-colors" onClick={() => setMobileOpen(false)}>
+              {t('footer.legal')}
+            </Link>
+            <Link to="/about" className="block text-[10px] text-sidebar-muted hover:text-sidebar-foreground transition-colors" onClick={() => setMobileOpen(false)}>
+              {t('footer.about')}
+            </Link>
+            <Link to="/privacy" className="block text-[10px] text-sidebar-muted hover:text-sidebar-foreground transition-colors" onClick={() => setMobileOpen(false)}>
+              {t('footer.privacy')}
+            </Link>
           </div>
         )}
 

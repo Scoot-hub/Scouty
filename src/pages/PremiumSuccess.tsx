@@ -1,9 +1,9 @@
 import { useEffect, useState } from 'react';
-import { Link } from 'react-router-dom';
+import { Link, useSearchParams } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
-import { CheckCircle2, Users, Zap, FileSearch, Download, Crown, ArrowRight, Sparkles } from 'lucide-react';
+import { CheckCircle2, Users, Zap, FileSearch, Download, Crown, ArrowRight, Sparkles, Loader2 } from 'lucide-react';
 
 
 const premiumFeatures = [
@@ -23,14 +23,36 @@ const item = {
   show: { opacity: 1, y: 0, transition: { duration: 0.5, ease: 'easeOut' } },
 };
 
+const API_BASE = (import.meta.env.VITE_API_URL || '/api').replace(/\/$/, '');
+
 export default function PremiumSuccess() {
   const { t } = useTranslation();
+  const [searchParams] = useSearchParams();
   const [confetti, setConfetti] = useState(true);
+  const [verifying, setVerifying] = useState(false);
+  const [verified, setVerified] = useState(false);
+
+  const sessionId = searchParams.get('session_id');
 
   useEffect(() => {
     const timer = setTimeout(() => setConfetti(false), 3000);
     return () => clearTimeout(timer);
   }, []);
+
+  // Verify checkout session if session_id is present
+  useEffect(() => {
+    if (!sessionId) return;
+    setVerifying(true);
+    fetch(`${API_BASE}/stripe/session-status?session_id=${sessionId}`)
+      .then(res => res.json())
+      .then(data => {
+        if (data.status === 'complete' && data.payment_status === 'paid') {
+          setVerified(true);
+        }
+      })
+      .catch(() => {})
+      .finally(() => setVerifying(false));
+  }, [sessionId]);
 
   return (
     <div className="min-h-screen bg-background flex flex-col items-center justify-center p-4 relative overflow-hidden">
@@ -64,8 +86,8 @@ export default function PremiumSuccess() {
             <Crown className="w-10 h-10 text-primary" />
           </div>
           <div className="inline-flex items-center gap-2 px-4 py-1.5 rounded-full border border-primary/30 bg-primary/10 text-primary text-sm font-medium mx-auto">
-            <CheckCircle2 className="w-4 h-4" />
-            {t('premium_success.payment_confirmed')}
+            {verifying ? <Loader2 className="w-4 h-4 animate-spin" /> : <CheckCircle2 className="w-4 h-4" />}
+            {verifying ? t('premium_success.verifying') : t('premium_success.payment_confirmed')}
           </div>
           <h1 className="text-4xl md:text-5xl font-black tracking-tight">
             {t('premium_success.welcome')}{' '}

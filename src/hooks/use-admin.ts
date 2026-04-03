@@ -20,6 +20,25 @@ export function useIsAdmin() {
   });
 }
 
+const API_BASE = (import.meta.env.VITE_API_URL || '/api').replace(/\/$/, '');
+
+export function useMyPermissions() {
+  const { user } = useAuth();
+  return useQuery<{ role: string; permissions: Record<string, boolean> }>({
+    queryKey: ['my-permissions', user?.id],
+    queryFn: async () => {
+      const session = (await supabase.auth.getSession()).data.session;
+      const res = await fetch(`${API_BASE}/my-permissions`, {
+        headers: { Authorization: `Bearer ${session?.access_token}` },
+      });
+      if (!res.ok) return { role: 'user', permissions: {} };
+      return res.json();
+    },
+    enabled: !!user,
+    staleTime: 2 * 60 * 1000,
+  });
+}
+
 export function useIsPremium() {
   const { user } = useAuth();
   return useQuery({

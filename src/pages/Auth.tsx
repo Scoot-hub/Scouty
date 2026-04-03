@@ -11,6 +11,7 @@ import { useAuth } from '@/contexts/AuthContext';
 import { Eye, EyeOff } from 'lucide-react';
 import LanguageSwitcher from '@/components/LanguageSwitcher';
 import PasswordStrengthIndicator, { validatePassword } from '@/components/PasswordStrengthIndicator';
+import logo from '@/assets/logo.png';
 import { InputOTP, InputOTPGroup, InputOTPSlot } from '@/components/ui/input-otp';
 
 const ROLES = ['scout', 'recruteur', 'coach', 'agent', 'directeur_sportif', 'analyste', 'autre'] as const;
@@ -26,7 +27,9 @@ export default function Auth() {
   const [role, setRole] = useState('scout');
   const [showPassword, setShowPassword] = useState(false);
   const [loading, setLoading] = useState(false);
+  const [acceptedCGV, setAcceptedCGV] = useState(false);
   const [requires2FA, setRequires2FA] = useState(false);
+  const [twoFAMethod, setTwoFAMethod] = useState<'totp' | 'email'>('totp');
   const [pending2FAUserId, setPending2FAUserId] = useState('');
   const [otpCode, setOtpCode] = useState('');
   const { user } = useAuth();
@@ -67,6 +70,7 @@ export default function Auth() {
         // Check if 2FA is required
         if ((data as any)?.requires2FA) {
           setRequires2FA(true);
+          setTwoFAMethod((data as any).method || 'totp');
           setPending2FAUserId((data as any).userId);
           return;
         }
@@ -108,10 +112,8 @@ export default function Auth() {
         {/* Logo */}
         <div className="text-center mb-8">
           <Link to="/" className="inline-flex flex-col items-center gap-2">
-            <div className="w-14 h-14 rounded-2xl bg-gradient-to-br from-primary to-accent flex items-center justify-center text-2xl shadow-lg shadow-primary/25">
-              ⚽
-            </div>
-            <span className="text-xl font-black tracking-tight">ScoutHub</span>
+            <img src={logo} alt="Scouty" className="w-14 h-14 rounded-2xl shadow-lg shadow-primary/25" />
+            <span className="text-xl font-black tracking-tight">Scouty</span>
           </Link>
         </div>
 
@@ -122,7 +124,9 @@ export default function Auth() {
               <div className="flex items-center justify-between mb-6">
                 <div>
                   <h1 className="text-xl font-bold">{t('auth.2fa_title')}</h1>
-                  <p className="text-sm text-muted-foreground mt-1">{t('auth.2fa_subtitle')}</p>
+                  <p className="text-sm text-muted-foreground mt-1">
+                    {twoFAMethod === 'email' ? t('auth.2fa_subtitle_email') : t('auth.2fa_subtitle')}
+                  </p>
                 </div>
                 <LanguageSwitcher variant="ghost" />
               </div>
@@ -243,7 +247,24 @@ export default function Auth() {
               </div>
             )}
 
-            <Button type="submit" className="w-full font-bold" disabled={loading}>
+            {mode === 'signup' && (
+              <label className="flex items-start gap-2 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={acceptedCGV}
+                  onChange={e => setAcceptedCGV(e.target.checked)}
+                  className="mt-1 rounded border-input"
+                />
+                <span className="text-xs text-muted-foreground leading-relaxed">
+                  {t('auth.accept_cgv_prefix')}{' '}
+                  <Link to="/cgv" target="_blank" className="text-primary hover:underline">{t('auth.cgv_link')}</Link>
+                  {' '}{t('auth.accept_cgv_and')}{' '}
+                  <Link to="/cgu" target="_blank" className="text-primary hover:underline">{t('auth.cgu_link')}</Link>.
+                </span>
+              </label>
+            )}
+
+            <Button type="submit" className="w-full font-bold" disabled={loading || (mode === 'signup' && !acceptedCGV)}>
               {loading ? t('auth.loading') : mode === 'login' ? t('auth.signin_btn') : t('auth.signup_btn')}
             </Button>
           </form>

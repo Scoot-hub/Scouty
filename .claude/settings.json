@@ -4,7 +4,17 @@
       "Bash(curl -s \"https://www.wikidata.org/w/api.php?action=wbsearchentities&search=Kylian+Mbappe&language=en&type=item&format=json&limit=3\")",
       "Bash(curl -s \"https://www.wikidata.org/w/api.php?action=wbgetentities&ids=Q180099&props=claims&format=json\")",
       "Bash(node server/seed-club-logos.js)",
-      "Bash(Get-Content \"C:\\\\Users\\\\commu\\\\AppData\\\\Local\\\\Temp\\\\claude\\\\c--wamp64-www-scouting-hub\\\\tasks\\\\beyeeap1s.output\" -Tail 60)"
+      "Bash(Get-Content \"C:\\\\Users\\\\commu\\\\AppData\\\\Local\\\\Temp\\\\claude\\\\c--wamp64-www-scouting-hub\\\\tasks\\\\beyeeap1s.output\" -Tail 60)",
+      "Bash(npx tsc:*)",
+      "Bash(node -e ':*)",
+      "Bash(find /c/Users/infor/scouting-hub -type f \\\\\\( -name \"*.ts\" -o -name \"*.tsx\" -o -name \"*.js\" -o -name \"*.jsx\" \\\\\\) -path \"*/src/*\" -exec grep -l \"stripe\\\\|checkout\\\\|create-checkout\\\\|customer-portal\" {} \\\\;)",
+      "Bash(find c:/Users/infor/scouting-hub -type f \\\\\\( -name \"*.tsx\" -o -name \"*.ts\" -o -name \"*.jsx\" -o -name \"*.js\" \\\\\\) -exec grep -l \"stripe\\\\|Stripe\" {} \\\\;)",
+      "Bash(python3)",
+      "Bash(ls -la src/assets/logo*)",
+      "Bash(npm run:*)",
+      "Bash(ls -1 /c/Users/infor/scouting-hub/src/pages/*.tsx)",
+      "Bash(ls -1 /c/Users/infor/scouting-hub/src/components/*.tsx)",
+      "Bash(find /c/Users/infor/scouting-hub/src -type f \\\\\\( -name \"*.tsx\" -o -name \"*.ts\" \\\\\\) -exec grep -l \"consent\\\\|banner\\\\|modal.*cookie\" {} \\\\;)"
     ],
     "additionalDirectories": [
       "\\tmp"

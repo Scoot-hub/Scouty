@@ -7,9 +7,9 @@ import { Card, CardContent } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
-import { Shield, Crown, RotateCcw, Users, Mail, UserCheck } from 'lucide-react';
+import { Shield, Crown, RotateCcw, Users, Mail, UserCheck, BarChart3 } from 'lucide-react';
 import { toast } from 'sonner';
-import { Navigate } from 'react-router-dom';
+import { Navigate, Link } from 'react-router-dom';
 import { useAuth } from '@/contexts/AuthContext';
 
 interface AdminUser {
@@ -142,14 +142,22 @@ export default function Admin() {
 
   return (
     <div className="w-full max-w-5xl mx-auto space-y-6 overflow-hidden">
-      <div className="flex items-center gap-3">
-        <div className="w-10 h-10 rounded-xl bg-primary/10 flex items-center justify-center">
-          <Shield className="w-5 h-5 text-primary" />
+      <div className="flex items-center justify-between">
+        <div className="flex items-center gap-3">
+          <div className="w-10 h-10 rounded-xl bg-primary/10 flex items-center justify-center">
+            <Shield className="w-5 h-5 text-primary" />
+          </div>
+          <div>
+            <h1 className="text-2xl font-extrabold tracking-tight">{t('admin.title')}</h1>
+            <p className="text-sm text-muted-foreground">{t('admin.subtitle')}</p>
+          </div>
         </div>
-        <div>
-          <h1 className="text-2xl font-extrabold tracking-tight">{t('admin.title')}</h1>
-          <p className="text-sm text-muted-foreground">{t('admin.subtitle')}</p>
-        </div>
+        <Link to="/admin/analytics">
+          <Button variant="outline" className="rounded-xl gap-2">
+            <BarChart3 className="w-4 h-4" />
+            {t('admin.analytics')}
+          </Button>
+        </Link>
       </div>
 
       {/* Stats */}

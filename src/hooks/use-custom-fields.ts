@@ -5,7 +5,7 @@ export interface CustomField {
   id: string;
   user_id: string;
   field_name: string;
-  field_type: 'text' | 'number' | 'select' | 'link' | 'boolean';
+  field_type: 'text' | 'number' | 'select' | 'link' | 'boolean' | 'player' | 'match';
   field_options: string[];
   display_order: number;
   created_at: string;

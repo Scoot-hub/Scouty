@@ -4,21 +4,25 @@ import { useSearchParams, Link, useNavigate } from 'react-router-dom';
 import { useAuth } from '@/contexts/AuthContext';
 import { supabase } from '@/integrations/supabase/client';
 import { Button } from '@/components/ui/button';
-import { Check, X, Crown, Loader2, ExternalLink } from 'lucide-react';
+import { Check, X, Crown, Loader2, ExternalLink, Sparkles } from 'lucide-react';
 import { toast } from 'sonner';
 import LanguageSwitcher from '@/components/LanguageSwitcher';
+import { cn } from '@/lib/utils';
+import logo from '@/assets/logo.png';
+
+type BillingCycle = 'monthly' | 'annual';
 
 export default function Pricing() {
   const { t } = useTranslation();
   const { user } = useAuth();
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
-  const [loading, setLoading] = useState(false);
   const [checkingSubscription, setCheckingSubscription] = useState(false);
   const [subscribed, setSubscribed] = useState(false);
   const [subscriptionEnd, setSubscriptionEnd] = useState<string | null>(null);
   const [premiumSince, setPremiumSince] = useState<string | null>(null);
   const [portalLoading, setPortalLoading] = useState(false);
+  const [billing, setBilling] = useState<BillingCycle>('monthly');
 
   const success = searchParams.get('success') === 'true';
   const canceled = searchParams.get('canceled') === 'true';
@@ -26,7 +30,6 @@ export default function Pricing() {
   useEffect(() => {
     if (success) {
       toast.success(t('pricing.payment_success'));
-      // Sync subscription status
       checkSubscription();
     }
     if (canceled) {
@@ -47,7 +50,6 @@ export default function Pricing() {
         setSubscribed(data.subscribed);
         setSubscriptionEnd(data.subscription_end || null);
       }
-      // Also fetch premium_since from DB
       const { data: subRow } = await supabase.from('user_subscriptions').select('premium_since').eq('user_id', user.id).single();
       if (subRow?.premium_since) setPremiumSince(subRow.premium_since);
     } catch {
@@ -57,23 +59,12 @@ export default function Pricing() {
     }
   };
 
-  const handleCheckout = async () => {
+  const handleCheckout = (plan: string) => {
     if (!user) {
       navigate('/auth?signup=true');
       return;
     }
-    setLoading(true);
-    try {
-      const { data, error } = await supabase.functions.invoke('create-checkout');
-      if (error) throw error;
-      if (data?.url) {
-        window.location.href = data.url;
-      }
-    } catch (err: any) {
-      toast.error(err.message || t('common.error'));
-    } finally {
-      setLoading(false);
-    }
+    navigate(`/checkout?plan=${plan}&billing=${billing}`);
   };
 
   const handlePortal = async () => {
@@ -91,22 +82,74 @@ export default function Pricing() {
     }
   };
 
-  const free = [
-    { text: t('pricing.feature_players_limited'), included: true },
-    { text: t('pricing.feature_reports'), included: true },
-    { text: t('pricing.feature_custom_fields'), included: true },
-    { text: t('pricing.feature_enrichment'), included: false },
-    { text: t('pricing.feature_unlimited_players'), included: false },
-    { text: t('pricing.feature_exports'), included: false },
-  ];
-
-  const premium = [
-    { text: t('pricing.feature_players_limited'), included: true },
-    { text: t('pricing.feature_reports'), included: true },
-    { text: t('pricing.feature_custom_fields'), included: true },
-    { text: t('pricing.feature_enrichment'), included: true },
-    { text: t('pricing.feature_unlimited_players'), included: true },
-    { text: t('pricing.feature_exports'), included: true },
+  const plans = [
+    {
+      id: 'starter',
+      name: t('pricing.starter_title'),
+      tagline: t('pricing.starter_desc'),
+      price: { monthly: 0, annual: 0 },
+      popular: false,
+      highlight: false,
+      cta: 'free',
+      features: [
+        { text: t('pricing.f_players_30'), included: true },
+        { text: t('pricing.f_watchlists_2'), included: true },
+        { text: t('pricing.f_reports_basic'), included: true },
+        { text: t('pricing.f_enrichment'), included: false },
+        { text: t('pricing.f_exports'), included: false },
+      ],
+    },
+    {
+      id: 'scout',
+      name: t('pricing.scout_title'),
+      tagline: t('pricing.scout_desc'),
+      price: { monthly: 19, annual: 190 },
+      popular: false,
+      highlight: false,
+      cta: 'paid',
+      features: [
+        { text: t('pricing.f_players_200'), included: true },
+        { text: t('pricing.f_watchlists_unlimited'), included: true },
+        { text: t('pricing.f_enrichment'), included: true },
+        { text: t('pricing.f_exports'), included: true },
+        { text: t('pricing.f_calendar_missions'), included: false },
+      ],
+    },
+    {
+      id: 'pro',
+      name: t('pricing.pro_title'),
+      tagline: t('pricing.pro_desc'),
+      price: { monthly: 29, annual: 290 },
+      popular: true,
+      highlight: true,
+      cta: 'paid',
+      features: [
+        { text: t('pricing.f_players_unlimited'), included: true },
+        { text: t('pricing.f_shadow_unlimited'), included: true },
+        { text: t('pricing.f_calendar_missions'), included: true },
+        { text: t('pricing.f_api_football'), included: true },
+        { text: t('pricing.f_all_enrichment_export'), included: true },
+      ],
+    },
+    {
+      id: 'elite',
+      name: t('pricing.elite_title'),
+      tagline: t('pricing.elite_desc'),
+      price: { monthly: 99, annual: 990 },
+      perUser: { monthly: 29, annual: 290 },
+      popular: false,
+      highlight: false,
+      cta: 'contact',
+      features: [
+        { text: t('pricing.f_all_pro'), included: true },
+        { text: t('pricing.f_squad'), included: true },
+        { text: t('pricing.f_permissions'), included: true },
+        { text: t('pricing.f_onboarding'), included: true },
+        { text: t('pricing.f_support_sla'), included: true },
+        { text: t('pricing.f_integrations'), included: true },
+        { text: t('pricing.f_2fa_audit'), included: true },
+      ],
+    },
   ];
 
   return (
@@ -115,10 +158,8 @@ export default function Pricing() {
       <header className="fixed top-0 w-full z-50 border-b border-border/40 bg-background/80 backdrop-blur-md">
         <div className="max-w-7xl mx-auto px-6 h-16 flex items-center justify-between">
           <Link to="/" className="flex items-center gap-3">
-            <div className="w-9 h-9 rounded-xl bg-gradient-to-br from-primary to-accent flex items-center justify-center text-base">
-              ⚽
-            </div>
-            <span className="text-lg font-extrabold tracking-tight">ScoutHub</span>
+            <img src={logo} alt="Scouty" className="w-9 h-9 rounded-xl" />
+            <span className="text-lg font-extrabold tracking-tight">Scouty</span>
           </Link>
           <div className="flex items-center gap-3">
             <LanguageSwitcher variant="ghost" />
@@ -137,9 +178,9 @@ export default function Pricing() {
       </header>
 
       <main className="pt-32 pb-24 px-6">
-        <div className="max-w-5xl mx-auto">
+        <div className="max-w-7xl mx-auto">
           {/* Header */}
-          <div className="text-center mb-16">
+          <div className="text-center mb-12">
             <div className="inline-flex items-center gap-2 px-4 py-1.5 rounded-full border border-primary/30 bg-primary/10 text-primary text-sm font-medium mb-6">
               <Crown className="w-4 h-4" />
               {t('pricing.badge')}
@@ -147,89 +188,138 @@ export default function Pricing() {
             <h1 className="text-4xl md:text-5xl font-black tracking-tight mb-4">
               {t('pricing.title')}
             </h1>
-            <p className="text-lg text-muted-foreground max-w-xl mx-auto">
+            <p className="text-lg text-muted-foreground max-w-xl mx-auto mb-8">
               {t('pricing.subtitle')}
             </p>
+
+            {/* Billing toggle */}
+            <div className="inline-flex items-center gap-1 p-1 rounded-xl bg-muted border border-border">
+              <button
+                onClick={() => setBilling('monthly')}
+                className={cn(
+                  'px-4 py-2 rounded-lg text-sm font-medium transition-all',
+                  billing === 'monthly' ? 'bg-background shadow-sm text-foreground' : 'text-muted-foreground hover:text-foreground'
+                )}
+              >
+                {t('pricing.monthly')}
+              </button>
+              <button
+                onClick={() => setBilling('annual')}
+                className={cn(
+                  'px-4 py-2 rounded-lg text-sm font-medium transition-all flex items-center gap-2',
+                  billing === 'annual' ? 'bg-background shadow-sm text-foreground' : 'text-muted-foreground hover:text-foreground'
+                )}
+              >
+                {t('pricing.annual')}
+                <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-green-500/15 text-green-600 font-bold">-17%</span>
+              </button>
+            </div>
           </div>
 
-          {/* Plans */}
-          <div className="grid md:grid-cols-2 gap-8 max-w-4xl mx-auto">
-            {/* Free plan */}
-            <div className="rounded-2xl border border-border bg-card p-8">
-              <h3 className="text-lg font-bold mb-1">{t('pricing.free_title')}</h3>
-              <p className="text-sm text-muted-foreground mb-6">{t('pricing.free_desc')}</p>
-              <div className="mb-8">
-                <span className="text-4xl font-black">0€</span>
-                <span className="text-muted-foreground text-sm ml-1">/{t('pricing.month')}</span>
-              </div>
-              <ul className="space-y-3 mb-8">
-                {free.map((f, i) => (
-                  <li key={i} className="flex items-center gap-3 text-sm">
-                    {f.included ? (
-                      <Check className="w-4 h-4 text-primary shrink-0" />
-                    ) : (
-                      <X className="w-4 h-4 text-muted-foreground/40 shrink-0" />
-                    )}
-                    <span className={f.included ? '' : 'text-muted-foreground/60'}>{f.text}</span>
-                  </li>
-                ))}
-              </ul>
-              {!user ? (
-                <Link to="/auth?signup=true">
-                  <Button variant="outline" className="w-full">{t('pricing.get_started')}</Button>
-                </Link>
-              ) : !subscribed ? (
-                <Button variant="outline" className="w-full" disabled>{t('pricing.current_plan')}</Button>
-              ) : null}
-            </div>
+          {/* Plans grid */}
+          <div className="grid md:grid-cols-2 lg:grid-cols-4 gap-6 max-w-6xl mx-auto">
+            {plans.map((plan) => (
+              <div
+                key={plan.id}
+                className={cn(
+                  'rounded-2xl border bg-card p-6 flex flex-col relative',
+                  plan.highlight ? 'border-2 border-primary shadow-xl shadow-primary/10' : 'border-border',
+                )}
+              >
+                {plan.popular && (
+                  <div className="absolute -top-3 left-1/2 -translate-x-1/2 px-3 py-0.5 rounded-full bg-primary text-primary-foreground text-xs font-bold">
+                    {t('pricing.popular')}
+                  </div>
+                )}
 
-            {/* Premium plan */}
-            <div className="rounded-2xl border-2 border-primary bg-card p-8 relative shadow-xl shadow-primary/10">
-              <div className="absolute -top-3 left-1/2 -translate-x-1/2 px-4 py-1 rounded-full bg-primary text-primary-foreground text-xs font-bold">
-                {t('pricing.popular')}
-              </div>
-              <h3 className="text-lg font-bold mb-1">{t('pricing.premium_title')}</h3>
-              <p className="text-sm text-muted-foreground mb-6">{t('pricing.premium_desc')}</p>
-              <div className="mb-8">
-                <span className="text-4xl font-black">19,90€</span>
-                <span className="text-muted-foreground text-sm ml-1">/{t('pricing.month')}</span>
-              </div>
-              <ul className="space-y-3 mb-8">
-                {premium.map((f, i) => (
-                  <li key={i} className="flex items-center gap-3 text-sm">
-                    <Check className="w-4 h-4 text-primary shrink-0" />
-                    {f.text}
-                  </li>
-                ))}
-              </ul>
-              {subscribed ? (
-                <div className="space-y-3">
-                  {premiumSince && (
-                    <p className="text-xs text-muted-foreground text-center">
-                      {t('account.subscribed_since')} {new Date(premiumSince).toLocaleDateString(undefined, { day: 'numeric', month: 'long', year: 'numeric' })}
-                    </p>
-                  )}
-                  {subscriptionEnd && (
-                    <p className="text-xs text-muted-foreground text-center">
-                      {t('account.next_renewal')} {new Date(subscriptionEnd).toLocaleDateString(undefined, { day: 'numeric', month: 'long', year: 'numeric' })}
-                    </p>
-                  )}
-                  <Button className="w-full" disabled>
-                    <Crown className="w-4 h-4 mr-2" />
-                    {t('pricing.current_plan')}
-                  </Button>
-                  <Button variant="outline" className="w-full" onClick={handlePortal} disabled={portalLoading}>
-                    {portalLoading ? <Loader2 className="w-4 h-4 animate-spin mr-2" /> : <ExternalLink className="w-4 h-4 mr-2" />}
-                    {t('pricing.manage')}
-                  </Button>
+                <div className="mb-6">
+                  <h3 className="text-base font-bold mb-0.5">{plan.name}</h3>
+                  <p className="text-xs text-muted-foreground">{plan.tagline}</p>
                 </div>
-              ) : (
-                <Button className="w-full font-bold shadow-lg shadow-primary/25" onClick={handleCheckout} disabled={loading}>
-                  {loading ? <Loader2 className="w-4 h-4 animate-spin mr-2" /> : <Crown className="w-4 h-4 mr-2" />}
-                  {t('pricing.upgrade')}
-                </Button>
-              )}
-            </div>
+
+                {/* Price */}
+                <div className="mb-6">
+                  {plan.price.monthly === 0 ? (
+                    <div>
+                      <span className="text-3xl font-black">0€</span>
+                      <span className="text-muted-foreground text-sm ml-1">{t('pricing.forever')}</span>
+                    </div>
+                  ) : (
+                    <div>
+                      <span className="text-3xl font-black">
+                        {billing === 'annual'
+                          ? `${Math.round(plan.price.annual / 12)}€`
+                          : `${plan.price.monthly}€`
+                        }
+                      </span>
+                      <span className="text-muted-foreground text-sm ml-1">/{t('pricing.month')}</span>
+                      {billing === 'annual' && (
+                        <p className="text-xs text-muted-foreground mt-1">
+                          {t('pricing.billed_annually', { amount: plan.price.annual })}
+                        </p>
+                      )}
+                      {(plan as any).perUser && (
+                        <p className="text-xs text-primary font-medium mt-2">
+                          + {billing === 'annual' ? `${Math.round((plan as any).perUser.annual / 12)}€` : `${(plan as any).perUser.monthly}€`}/{t('pricing.per_user')}
+                        </p>
+                      )}
+                    </div>
+                  )}
+                </div>
+
+                {/* Features */}
+                <ul className="space-y-2.5 mb-8 flex-1">
+                  {plan.features.map((f, i) => (
+                    <li key={i} className="flex items-start gap-2.5 text-sm">
+                      {f.included ? (
+                        <Check className="w-4 h-4 text-primary shrink-0 mt-0.5" />
+                      ) : (
+                        <X className="w-4 h-4 text-muted-foreground/30 shrink-0 mt-0.5" />
+                      )}
+                      <span className={f.included ? '' : 'text-muted-foreground/50'}>{f.text}</span>
+                    </li>
+                  ))}
+                </ul>
+
+                {/* CTA */}
+                {plan.cta === 'free' ? (
+                  !user ? (
+                    <Link to="/auth?signup=true">
+                      <Button variant="outline" className="w-full">{t('pricing.get_started')}</Button>
+                    </Link>
+                  ) : (
+                    <Button variant="outline" className="w-full" disabled>{t('pricing.current_plan')}</Button>
+                  )
+                ) : plan.cta === 'contact' ? (
+                  <Button
+                    variant="outline"
+                    className="w-full"
+                    onClick={() => window.location.href = 'mailto:contact@scouty.app?subject=Scouty Elite'}
+                  >
+                    {t('pricing.contact_us')}
+                  </Button>
+                ) : subscribed ? (
+                  <div className="space-y-2">
+                    <Button className="w-full" disabled>
+                      <Crown className="w-4 h-4 mr-2" />
+                      {t('pricing.current_plan')}
+                    </Button>
+                    <Button variant="outline" size="sm" className="w-full" onClick={handlePortal} disabled={portalLoading}>
+                      {portalLoading ? <Loader2 className="w-4 h-4 animate-spin mr-2" /> : <ExternalLink className="w-4 h-4 mr-2" />}
+                      {t('pricing.manage')}
+                    </Button>
+                  </div>
+                ) : (
+                  <Button
+                    className={cn('w-full font-bold', plan.highlight && 'shadow-lg shadow-primary/25')}
+                    onClick={() => handleCheckout(plan.id)}
+                  >
+                    <Sparkles className="w-4 h-4 mr-2" />
+                    {t('pricing.upgrade')}
+                  </Button>
+                )}
+              </div>
+            ))}
           </div>
         </div>
       </main>

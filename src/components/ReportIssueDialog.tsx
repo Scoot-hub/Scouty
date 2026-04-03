@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import { useTranslation } from 'react-i18next';
+import { toast } from 'sonner';
 import {
   Dialog,
   DialogContent,
@@ -8,25 +9,65 @@ import {
   DialogDescription,
   DialogFooter,
 } from '@/components/ui/dialog';
+import { Button } from '@/components/ui/button';
+import { Loader2 } from 'lucide-react';
 
 interface ReportIssueDialogProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
 }
 
+const API_BASE = (import.meta.env.VITE_API_URL || '/api').replace(/\/$/, '');
+
 export default function ReportIssueDialog({ open, onOpenChange }: ReportIssueDialogProps) {
   const { t } = useTranslation();
   const [subject, setSubject] = useState('');
   const [category, setCategory] = useState('bug');
   const [message, setMessage] = useState('');
+  const [sending, setSending] = useState(false);
 
-  const handleSubmit = (e: React.FormEvent) => {
-    e.preventDefault();
-    // TODO: envoyer le mail (back à brancher plus tard)
-    onOpenChange(false);
+  const reset = () => {
     setSubject('');
     setCategory('bug');
     setMessage('');
+  };
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!subject.trim() || !message.trim()) return;
+
+    setSending(true);
+    try {
+      const session = JSON.parse(localStorage.getItem('scouthub_session') || '{}');
+      const res = await fetch(`${API_BASE}/report-issue`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(session.access_token ? { Authorization: `Bearer ${session.access_token}` } : {}),
+        },
+        body: JSON.stringify({
+          category,
+          subject: subject.trim(),
+          message: message.trim(),
+          url: window.location.href,
+          userAgent: navigator.userAgent,
+        }),
+      });
+
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        throw new Error(data.error || 'Erreur serveur');
+      }
+
+      toast.success(t('report_issue.success'));
+      reset();
+      onOpenChange(false);
+    } catch (err: any) {
+      console.error('Report issue error:', err);
+      toast.error(t('report_issue.error'));
+    } finally {
+      setSending(false);
+    }
   };
 
   return (
@@ -78,20 +119,16 @@ export default function ReportIssueDialog({ open, onOpenChange }: ReportIssueDia
             />
           </div>
 
+          <p className="text-xs text-muted-foreground">{t('report_issue.context_info')}</p>
+
           <DialogFooter>
-            <button
-              type="button"
-              onClick={() => onOpenChange(false)}
-              className="px-4 py-2 rounded-lg text-sm font-medium border border-input bg-background hover:bg-accent hover:text-accent-foreground transition-colors"
-            >
+            <Button type="button" variant="outline" onClick={() => onOpenChange(false)} disabled={sending}>
               {t('report_issue.cancel')}
-            </button>
-            <button
-              type="submit"
-              className="px-4 py-2 rounded-lg text-sm font-medium bg-primary text-primary-foreground hover:bg-primary/90 transition-colors"
-            >
-              {t('report_issue.send')}
-            </button>
+            </Button>
+            <Button type="submit" disabled={sending || !subject.trim() || !message.trim()}>
+              {sending && <Loader2 className="w-4 h-4 mr-2 animate-spin" />}
+              {sending ? t('report_issue.sending') : t('report_issue.send')}
+            </Button>
           </DialogFooter>
         </form>
       </DialogContent>

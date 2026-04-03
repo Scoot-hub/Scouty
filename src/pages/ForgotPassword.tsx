@@ -8,6 +8,7 @@ import { Label } from '@/components/ui/label';
 import { useToast } from '@/hooks/use-toast';
 import LanguageSwitcher from '@/components/LanguageSwitcher';
 import { ArrowLeft } from 'lucide-react';
+import logo from '@/assets/logo.png';
 
 export default function ForgotPassword() {
   const [email, setEmail] = useState('');
@@ -42,10 +43,8 @@ export default function ForgotPassword() {
         {/* Logo */}
         <div className="text-center mb-8">
           <Link to="/" className="inline-flex flex-col items-center gap-2">
-            <div className="w-14 h-14 rounded-2xl bg-gradient-to-br from-primary to-accent flex items-center justify-center text-2xl shadow-lg shadow-primary/25">
-              ⚽
-            </div>
-            <span className="text-xl font-black tracking-tight">ScoutHub</span>
+            <img src={logo} alt="Scouty" className="w-14 h-14 rounded-2xl shadow-lg shadow-primary/25" />
+            <span className="text-xl font-black tracking-tight">Scouty</span>
           </Link>
         </div>
 

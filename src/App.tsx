@@ -8,6 +8,8 @@ import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
 import { AuthProvider } from "@/contexts/AuthContext";
 import ProtectedRoute from "@/components/layout/ProtectedRoute";
 import AppLayout from "@/components/layout/AppLayout";
+import CookieBanner from "@/components/CookieBanner";
+import { ThemeProvider } from "@/components/ThemeProvider";
 
 const Landing = lazy(() => import("@/pages/Landing"));
 const Auth = lazy(() => import("@/pages/Auth"));
@@ -31,10 +33,22 @@ const OrgRoadmap = lazy(() => import("@/pages/OrgRoadmap"));
 const Contacts = lazy(() => import("@/pages/Contacts"));
 const ForgotPassword = lazy(() => import("@/pages/ForgotPassword"));
 const ResetPassword = lazy(() => import("@/pages/ResetPassword"));
+const Legal = lazy(() => import("@/pages/Legal"));
+const About = lazy(() => import("@/pages/About"));
+const Affiliate = lazy(() => import("@/pages/Affiliate"));
+const Checkout = lazy(() => import("@/pages/Checkout"));
+const CGV = lazy(() => import("@/pages/CGV"));
+const CGU = lazy(() => import("@/pages/CGU"));
+const Booking = lazy(() => import("@/pages/Booking"));
+const Discover = lazy(() => import("@/pages/Discover"));
+const AdminRoles = lazy(() => import("@/pages/AdminRoles"));
+const Privacy = lazy(() => import("@/pages/Privacy"));
+const AdminAnalytics = lazy(() => import("@/pages/AdminAnalytics"));
 const NotFound = lazy(() => import("@/pages/NotFound"));
 const queryClient = new QueryClient();
 
 const App = () => (
+  <ThemeProvider>
   <QueryClientProvider client={queryClient}>
     <TooltipProvider>
       <Toaster />
@@ -49,6 +63,11 @@ const App = () => (
             <Route path="/forgot-password" element={<ForgotPassword />} />
             <Route path="/reset-password" element={<ResetPassword />} />
             <Route path="/pricing" element={<Pricing />} />
+            <Route path="/legal" element={<Legal />} />
+            <Route path="/cgv" element={<CGV />} />
+            <Route path="/cgu" element={<CGU />} />
+            <Route path="/about" element={<About />} />
+            <Route path="/privacy" element={<Privacy />} />
 
             {/* Protected routes */}
             <Route element={<ProtectedRoute />}>
@@ -65,6 +84,8 @@ const App = () => (
                 <Route path="/contacts" element={<Contacts />} />
                 <Route path="/settings" element={<Settings />} />
                 <Route path="/admin" element={<Admin />} />
+                <Route path="/admin/roles" element={<AdminRoles />} />
+                <Route path="/admin/analytics" element={<AdminAnalytics />} />
                 <Route path="/premium-success" element={<PremiumSuccess />} />
                 <Route path="/account" element={<Account />} />
                 <Route path="/organization" element={<Organization />} />
@@ -72,6 +93,10 @@ const App = () => (
                 <Route path="/organization/:orgSlug/squad" element={<Squad />} />
                 <Route path="/organization/:orgSlug/players" element={<OrgPlayers />} />
                 <Route path="/organization/:orgSlug/roadmap" element={<OrgRoadmap />} />
+                <Route path="/booking" element={<Booking />} />
+                <Route path="/discover" element={<Discover />} />
+                <Route path="/checkout" element={<Checkout />} />
+                <Route path="/affiliate" element={<Affiliate />} />
               </Route>
             </Route>
 
@@ -79,10 +104,12 @@ const App = () => (
           </Routes>
           </Suspense>
         </AuthProvider>
+      <CookieBanner />
       </BrowserRouter>
       <VercelAnalytics />
     </TooltipProvider>
   </QueryClientProvider>
+  </ThemeProvider>
 );
 
 export default App;

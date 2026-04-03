@@ -4,6 +4,9 @@ import { useTranslation } from 'react-i18next';
 import { useAuth } from '@/contexts/AuthContext';
 import { X, AlertTriangle } from 'lucide-react';
 import AppSidebar from './AppSidebar';
+import NotificationCenter from '@/components/NotificationCenter';
+import ChatBot from '@/components/ChatBot';
+import FeedbackPopup from '@/components/FeedbackPopup';
 
 function ImpersonationBanner() {
   const { t } = useTranslation();
@@ -44,10 +47,15 @@ export default function AppLayout() {
       <AppSidebar collapsed={collapsed} onToggle={toggleCollapsed} />
       <div className={`${collapsed ? 'lg:ml-[72px]' : 'lg:ml-64'} min-h-screen flex flex-col transition-[margin] duration-300`}>
         {isImpersonating && <ImpersonationBanner />}
-        <main className="flex-1 p-4 lg:p-8">
+        <div className="flex items-center justify-end px-4 lg:px-8 pt-3 pb-1">
+          <NotificationCenter />
+        </div>
+        <main className="flex-1 px-4 lg:px-8 pb-4 lg:pb-8">
           <Outlet />
         </main>
       </div>
+      <ChatBot />
+      <FeedbackPopup />
     </div>
   );
 }

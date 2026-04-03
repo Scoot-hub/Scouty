@@ -9,7 +9,7 @@ import { Badge } from '@/components/ui/badge';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
 import { useToast } from '@/hooks/use-toast';
-import { useImportPlayers } from '@/hooks/use-players';
+import { useImportPlayers, usePlayers } from '@/hooks/use-players';
 import { useCustomFields, useBulkUpsertCustomFieldValues } from '@/hooks/use-custom-fields';
 import { type Opinion, type Position, type Foot, POSITIONS } from '@/types/player';
 import { Upload, FileSpreadsheet, Check, AlertTriangle, X, ArrowRight, Columns, Search, Filter, Eye, EyeOff, ChevronDown, ChevronUp } from 'lucide-react';
@@ -364,6 +364,7 @@ export function ImportPlayersDialog() {
   const { toast } = useToast();
   const { t } = useTranslation();
   const importPlayers = useImportPlayers();
+  const { data: existingPlayers = [] } = usePlayers();
   const { data: customFields = [] } = useCustomFields();
   const bulkUpsertCF = useBulkUpsertCustomFieldValues();
 
@@ -571,6 +572,23 @@ export function ImportPlayersDialog() {
 
       return parseRow(normalized, cfVals);
     });
+
+    // Check for duplicates against existing players in DB (by name + club)
+    const normalizeForMatch = (s: string) => s.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().trim();
+    for (const p of mapped) {
+      if (!p.name) continue;
+      const pName = normalizeForMatch(p.name);
+      const pClub = normalizeForMatch(p.club);
+      const duplicate = existingPlayers.find(ep => {
+        const epName = normalizeForMatch(ep.name);
+        const epClub = normalizeForMatch(ep.club);
+        return epName === pName && epClub === pClub;
+      });
+      if (duplicate) {
+        p.errors.push(`Joueur déjà existant en base (${duplicate.name}, ${duplicate.club})`);
+        p.valid = false;
+      }
+    }
 
     setParsed(mapped);
     setStep('preview');

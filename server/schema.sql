@@ -8,6 +8,9 @@
   totp_secret VARCHAR(255) NULL,
   totp_secret_temp VARCHAR(255) NULL,
   totp_enabled TINYINT(1) NOT NULL DEFAULT 0,
+  email_2fa_enabled TINYINT(1) NOT NULL DEFAULT 0,
+  email_2fa_code VARCHAR(6) NULL,
+  email_2fa_expires_at DATETIME NULL,
   UNIQUE KEY uniq_users_email (email(191))
 );
 
@@ -36,6 +39,11 @@ CREATE TABLE IF NOT EXISTS user_subscriptions (
   user_id CHAR(36) NOT NULL UNIQUE,
   is_premium TINYINT(1) NOT NULL DEFAULT 0,
   premium_since DATETIME NULL,
+  stripe_customer_id VARCHAR(255) NULL,
+  stripe_subscription_id VARCHAR(255) NULL,
+  plan_type VARCHAR(30) NOT NULL DEFAULT 'starter',
+  billing_cycle VARCHAR(20) NULL,
+  subscription_end DATETIME NULL,
   created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
@@ -373,7 +381,48 @@ CREATE TABLE IF NOT EXISTS match_assignments (
   FOREIGN KEY (assigned_by) REFERENCES users(id) ON DELETE SET NULL
 );
 
+CREATE TABLE IF NOT EXISTS notifications (
+  id CHAR(36) PRIMARY KEY,
+  user_id CHAR(36) NOT NULL,
+  type VARCHAR(50) NOT NULL,
+  title VARCHAR(255) NOT NULL,
+  message TEXT NULL,
+  icon VARCHAR(50) NULL,
+  link VARCHAR(255) NULL,
+  player_id CHAR(36) NULL,
+  is_read TINYINT(1) NOT NULL DEFAULT 0,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  INDEX idx_notifications_user (user_id, is_read, created_at),
+  FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+);
+
+-- Page permissions per role
+CREATE TABLE IF NOT EXISTS page_permissions (
+  id CHAR(36) PRIMARY KEY,
+  role VARCHAR(50) NOT NULL,
+  page_key VARCHAR(100) NOT NULL,
+  allowed TINYINT(1) NOT NULL DEFAULT 1,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  UNIQUE KEY uniq_role_page (role, page_key)
+);
+
+-- Feedback table
+CREATE TABLE IF NOT EXISTS feedback (
+  id CHAR(36) PRIMARY KEY,
+  user_id CHAR(36) NOT NULL,
+  rating TINYINT NOT NULL CHECK (rating BETWEEN 1 AND 5),
+  message TEXT NULL,
+  page_url VARCHAR(500) NULL,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  INDEX idx_feedback_user (user_id),
+  FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+);
+
 -- Migration: add 2FA TOTP columns to users table
 -- (already included in CREATE TABLE above, run these only on existing databases)
 -- ALTER TABLE users ADD COLUMN totp_secret VARCHAR(255) NULL, ADD COLUMN totp_secret_temp VARCHAR(255) NULL, ADD COLUMN totp_enabled TINYINT(1) NOT NULL DEFAULT 0;
+
+-- Migration: add email 2FA columns to users table
+-- ALTER TABLE users ADD COLUMN email_2fa_enabled TINYINT(1) NOT NULL DEFAULT 0, ADD COLUMN email_2fa_code VARCHAR(6) NULL, ADD COLUMN email_2fa_expires_at DATETIME NULL;
 

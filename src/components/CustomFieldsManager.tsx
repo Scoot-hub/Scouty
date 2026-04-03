@@ -15,6 +15,8 @@ const FIELD_TYPES = [
   { value: 'select', label: 'custom_fields.type_select' },
   { value: 'link', label: 'custom_fields.type_link' },
   { value: 'boolean', label: 'custom_fields.type_boolean' },
+  { value: 'player', label: 'custom_fields.type_player' },
+  { value: 'match', label: 'custom_fields.type_match' },
 ];
 
 export function CustomFieldsManager({ trigger, externalOpen, onExternalOpenChange }: {

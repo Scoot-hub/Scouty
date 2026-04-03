@@ -6,6 +6,7 @@ import { Users, BarChart3, FileSearch, Shield, Zap, Globe } from 'lucide-react';
 import stadiumHero from '@/assets/stadium-hero.jpg';
 import { useAuth } from '@/contexts/AuthContext';
 import LanguageSwitcher from '@/components/LanguageSwitcher';
+import logo from '@/assets/logo.png';
 
 const featureIcons = [Users, FileSearch, BarChart3, Shield, Zap, Globe];
 
@@ -26,10 +27,8 @@ export default function Landing() {
       <header className="fixed top-0 w-full z-50 border-b border-border/40 bg-background/80 backdrop-blur-md">
         <div className="max-w-7xl mx-auto px-6 h-16 flex items-center justify-between">
           <div className="flex items-center gap-3">
-            <div className="w-9 h-9 rounded-xl bg-gradient-to-br from-primary to-accent flex items-center justify-center text-base">
-              ⚽
-            </div>
-            <span className="text-lg font-extrabold tracking-tight">ScoutHub</span>
+            <img src={logo} alt="Scouty" className="w-9 h-9 rounded-xl" />
+            <span className="text-lg font-extrabold tracking-tight">Scouty</span>
           </div>
           <div className="flex items-center gap-3">
             <LanguageSwitcher variant="ghost" />
@@ -156,9 +155,26 @@ export default function Landing() {
       <footer className="border-t border-border py-8 px-6">
         <div className="max-w-7xl mx-auto flex flex-col sm:flex-row items-center justify-between gap-4">
           <div className="flex items-center gap-2">
-            <span className="text-sm">⚽</span>
-            <span className="text-sm font-bold">ScoutHub</span>
+            <img src={logo} alt="Scouty" className="w-5 h-5" />
+            <span className="text-sm font-bold">Scouty</span>
             <span className="text-xs text-muted-foreground ml-2">{t('footer.copy')}</span>
+          </div>
+          <div className="flex items-center gap-4">
+            <Link to="/cgu" className="text-xs text-muted-foreground hover:text-foreground transition-colors">
+              {t('footer.cgu')}
+            </Link>
+            <Link to="/cgv" className="text-xs text-muted-foreground hover:text-foreground transition-colors">
+              {t('footer.cgv')}
+            </Link>
+            <Link to="/legal" className="text-xs text-muted-foreground hover:text-foreground transition-colors">
+              {t('footer.legal')}
+            </Link>
+            <Link to="/about" className="text-xs text-muted-foreground hover:text-foreground transition-colors">
+              {t('footer.about')}
+            </Link>
+            <Link to="/privacy" className="text-xs text-muted-foreground hover:text-foreground transition-colors">
+              {t('footer.privacy')}
+            </Link>
           </div>
         </div>
       </footer>

@@ -1,0 +1,318 @@
+import { useState } from 'react';
+import { useNavigate, Link } from 'react-router-dom';
+import { useTranslation } from 'react-i18next';
+import { useMutation } from '@tanstack/react-query';
+import { supabase } from '@/integrations/supabase/client';
+import { useIsPremium } from '@/hooks/use-admin';
+import { Card, CardContent } from '@/components/ui/card';
+import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
+import { Badge } from '@/components/ui/badge';
+import { toast } from 'sonner';
+import { Search, Loader2, Crown, UserPlus, ExternalLink, Sparkles, Filter, Globe, Euro, Calendar, Crosshair } from 'lucide-react';
+
+interface DiscoveredPlayer {
+  name: string;
+  tmPath: string;
+  tmId: string | null;
+  photo: string | null;
+  position: string;
+  age: number | null;
+  nationality: string;
+  club: string;
+  clubLogo: string;
+  marketValue: string;
+}
+
+const POSITIONS_FILTER = [
+  { value: '', label: 'discover.all_positions' },
+  { value: 'gardien', label: 'discover.pos_gk' },
+  { value: 'défenseur', label: 'discover.pos_def' },
+  { value: 'milieu', label: 'discover.pos_mid' },
+  { value: 'attaquant', label: 'discover.pos_fwd' },
+  { value: 'ailier', label: 'discover.pos_wing' },
+];
+
+export default function Discover() {
+  const { t } = useTranslation();
+  const navigate = useNavigate();
+  const { data: isPremium } = useIsPremium();
+
+  const [query, setQuery] = useState('');
+  const [position, setPosition] = useState('');
+  const [ageMin, setAgeMin] = useState('');
+  const [ageMax, setAgeMax] = useState('');
+  const [valueMin, setValueMin] = useState('');
+  const [valueMax, setValueMax] = useState('');
+  const [nationality, setNationality] = useState('');
+  const [results, setResults] = useState<DiscoveredPlayer[]>([]);
+  const [filtersOpen, setFiltersOpen] = useState(false);
+  const [addingPlayer, setAddingPlayer] = useState<string | null>(null);
+
+  const searchMutation = useMutation({
+    mutationFn: async () => {
+      const { data, error } = await supabase.functions.invoke('discover-players', {
+        body: { query, position, ageMin, ageMax, valueMin, valueMax, nationality },
+      });
+      if (error) throw error;
+      return data as { players: DiscoveredPlayer[] };
+    },
+    onSuccess: (data) => {
+      setResults(data.players || []);
+      if ((data.players || []).length === 0) {
+        toast(t('discover.no_results'));
+      }
+    },
+    onError: (err: any) => {
+      toast.error(err.message || t('common.error'));
+    },
+  });
+
+  const handleSearch = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!query.trim()) return;
+    searchMutation.mutate();
+  };
+
+  const handleAddPlayer = async (player: DiscoveredPlayer) => {
+    setAddingPlayer(player.tmId || player.name);
+    try {
+      const { error } = await supabase.from('players').insert({
+        name: player.name,
+        club: player.club,
+        nationality: player.nationality.split(',')[0]?.trim() || '',
+        position: guessPosition(player.position),
+        generation: player.age ? new Date().getFullYear() - player.age : 2000,
+        market_value: player.marketValue,
+        transfermarkt_id: player.tmId,
+        photo_url: player.photo,
+      } as any);
+      if (error) throw error;
+      toast.success(t('discover.player_added', { name: player.name }));
+    } catch (err: any) {
+      toast.error(err.message || t('common.error'));
+    } finally {
+      setAddingPlayer(null);
+    }
+  };
+
+  // Premium gate
+  if (isPremium === false) {
+    return (
+      <div className="max-w-3xl mx-auto py-16 px-4 text-center space-y-6">
+        <div className="w-16 h-16 rounded-2xl bg-primary/10 flex items-center justify-center mx-auto">
+          <Crown className="w-8 h-8 text-primary" />
+        </div>
+        <h1 className="text-2xl font-bold">{t('discover.premium_title')}</h1>
+        <p className="text-muted-foreground max-w-md mx-auto">{t('discover.premium_desc')}</p>
+        <Link to="/pricing">
+          <Button>
+            <Sparkles className="w-4 h-4 mr-2" />
+            {t('discover.see_plans')}
+          </Button>
+        </Link>
+      </div>
+    );
+  }
+
+  return (
+    <div className="max-w-6xl mx-auto space-y-6">
+      {/* Header */}
+      <div>
+        <h1 className="text-2xl font-bold tracking-tight flex items-center gap-3">
+          <Search className="w-6 h-6 text-primary" />
+          {t('discover.title')}
+          <Badge variant="secondary" className="text-[10px] gap-1">
+            <Crown className="w-3 h-3" />
+            Premium
+          </Badge>
+        </h1>
+        <p className="text-muted-foreground text-sm mt-1">{t('discover.subtitle')}</p>
+      </div>
+
+      {/* Search form */}
+      <Card>
+        <CardContent className="p-4">
+          <form onSubmit={handleSearch} className="space-y-4">
+            <div className="flex gap-2">
+              <div className="flex-1 relative">
+                <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
+                <Input
+                  value={query}
+                  onChange={e => setQuery(e.target.value)}
+                  placeholder={t('discover.search_placeholder')}
+                  className="pl-10"
+                />
+              </div>
+              <Button type="submit" disabled={searchMutation.isPending || !query.trim()}>
+                {searchMutation.isPending ? <Loader2 className="w-4 h-4 animate-spin mr-2" /> : <Search className="w-4 h-4 mr-2" />}
+                {t('discover.search_btn')}
+              </Button>
+              <Button type="button" variant="outline" size="icon" onClick={() => setFiltersOpen(!filtersOpen)}>
+                <Filter className="w-4 h-4" />
+              </Button>
+            </div>
+
+            {/* Filters */}
+            {filtersOpen && (
+              <div className="grid grid-cols-2 md:grid-cols-5 gap-3 pt-2 border-t border-border">
+                <div className="space-y-1">
+                  <label className="text-[10px] font-medium text-muted-foreground flex items-center gap-1">
+                    <Crosshair className="w-3 h-3" /> {t('discover.filter_position')}
+                  </label>
+                  <Select value={position} onValueChange={setPosition}>
+                    <SelectTrigger className="h-8 text-xs">
+                      <SelectValue placeholder={t('discover.all_positions')} />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {POSITIONS_FILTER.map(p => (
+                        <SelectItem key={p.value} value={p.value || '_all'}>{t(p.label)}</SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div className="space-y-1">
+                  <label className="text-[10px] font-medium text-muted-foreground flex items-center gap-1">
+                    <Globe className="w-3 h-3" /> {t('discover.filter_nationality')}
+                  </label>
+                  <Input value={nationality} onChange={e => setNationality(e.target.value)} placeholder="France" className="h-8 text-xs" />
+                </div>
+                <div className="space-y-1">
+                  <label className="text-[10px] font-medium text-muted-foreground flex items-center gap-1">
+                    <Calendar className="w-3 h-3" /> {t('discover.filter_age')}
+                  </label>
+                  <div className="flex gap-1">
+                    <Input value={ageMin} onChange={e => setAgeMin(e.target.value)} placeholder="16" className="h-8 text-xs" type="number" />
+                    <Input value={ageMax} onChange={e => setAgeMax(e.target.value)} placeholder="35" className="h-8 text-xs" type="number" />
+                  </div>
+                </div>
+                <div className="space-y-1 col-span-2 md:col-span-2">
+                  <label className="text-[10px] font-medium text-muted-foreground flex items-center gap-1">
+                    <Euro className="w-3 h-3" /> {t('discover.filter_value')}
+                  </label>
+                  <div className="flex gap-1 items-center">
+                    <Input value={valueMin} onChange={e => setValueMin(e.target.value)} placeholder="0" className="h-8 text-xs" type="number" />
+                    <span className="text-xs text-muted-foreground shrink-0">-</span>
+                    <Input value={valueMax} onChange={e => setValueMax(e.target.value)} placeholder="100" className="h-8 text-xs" type="number" />
+                    <span className="text-xs text-muted-foreground shrink-0">M€</span>
+                  </div>
+                </div>
+              </div>
+            )}
+          </form>
+        </CardContent>
+      </Card>
+
+      {/* Results */}
+      {searchMutation.isPending ? (
+        <div className="flex items-center justify-center py-16">
+          <Loader2 className="w-8 h-8 animate-spin text-primary" />
+        </div>
+      ) : results.length > 0 ? (
+        <div className="space-y-2">
+          <p className="text-sm text-muted-foreground">{t('discover.results_count', { count: results.length })}</p>
+          <div className="grid gap-2">
+            {results.map((player, i) => (
+              <Card key={`${player.tmId || i}`} className="hover:border-primary/30 transition-colors">
+                <CardContent className="p-4 flex items-center gap-4">
+                  {/* Photo */}
+                  <div className="w-12 h-12 rounded-lg bg-muted overflow-hidden shrink-0">
+                    {player.photo ? (
+                      <img src={player.photo} alt={player.name} className="w-full h-full object-cover" />
+                    ) : (
+                      <div className="w-full h-full flex items-center justify-center text-lg font-bold text-muted-foreground">
+                        {player.name[0]}
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Info */}
+                  <div className="flex-1 min-w-0">
+                    <div className="flex items-center gap-2">
+                      <h3 className="text-sm font-bold truncate">{player.name}</h3>
+                      {player.age && <span className="text-xs text-muted-foreground">{player.age} {t('discover.years')}</span>}
+                    </div>
+                    <div className="flex items-center gap-3 mt-0.5 text-xs text-muted-foreground">
+                      {player.position && <span>{player.position}</span>}
+                      {player.club && (
+                        <span className="flex items-center gap-1">
+                          {player.clubLogo && <img src={player.clubLogo} alt="" className="w-3.5 h-3.5" />}
+                          {player.club}
+                        </span>
+                      )}
+                      {player.nationality && <span>{player.nationality}</span>}
+                    </div>
+                  </div>
+
+                  {/* Value */}
+                  {player.marketValue && (
+                    <Badge variant="outline" className="shrink-0 font-mono text-xs">
+                      {player.marketValue}
+                    </Badge>
+                  )}
+
+                  {/* Actions */}
+                  <div className="flex items-center gap-2 shrink-0">
+                    {player.tmPath && (
+                      <a
+                        href={`https://www.transfermarkt.fr${player.tmPath}`}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="p-2 rounded-lg hover:bg-muted transition-colors"
+                      >
+                        <ExternalLink className="w-4 h-4 text-muted-foreground" />
+                      </a>
+                    )}
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      onClick={() => handleAddPlayer(player)}
+                      disabled={addingPlayer === (player.tmId || player.name)}
+                    >
+                      {addingPlayer === (player.tmId || player.name) ? (
+                        <Loader2 className="w-3.5 h-3.5 animate-spin mr-1" />
+                      ) : (
+                        <UserPlus className="w-3.5 h-3.5 mr-1" />
+                      )}
+                      {t('discover.add')}
+                    </Button>
+                  </div>
+                </CardContent>
+              </Card>
+            ))}
+          </div>
+        </div>
+      ) : searchMutation.isSuccess ? (
+        <div className="text-center py-16">
+          <Search className="w-10 h-10 text-muted-foreground/30 mx-auto mb-3" />
+          <p className="text-sm text-muted-foreground">{t('discover.no_results')}</p>
+        </div>
+      ) : (
+        <div className="text-center py-16">
+          <Search className="w-10 h-10 text-muted-foreground/20 mx-auto mb-3" />
+          <p className="text-sm font-medium text-muted-foreground">{t('discover.empty_title')}</p>
+          <p className="text-xs text-muted-foreground/60 mt-1">{t('discover.empty_desc')}</p>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function guessPosition(posText: string): string {
+  if (!posText) return 'MC';
+  const p = posText.toLowerCase();
+  if (p.includes('gardien') || p.includes('keeper') || p.includes('tor')) return 'GK';
+  if (p.includes('défenseur central') || p.includes('innen')) return 'DC';
+  if (p.includes('latéral droit') || p.includes('rechter')) return 'LD';
+  if (p.includes('latéral gauche') || p.includes('linker')) return 'LG';
+  if (p.includes('milieu défensif') || p.includes('defensives')) return 'MDef';
+  if (p.includes('milieu central') || p.includes('zentrales')) return 'MC';
+  if (p.includes('milieu offensif') || p.includes('offensives')) return 'MO';
+  if (p.includes('ailier droit') || p.includes('rechtsaußen')) return 'AD';
+  if (p.includes('ailier gauche') || p.includes('linksaußen')) return 'AG';
+  if (p.includes('avant-centre') || p.includes('mittelstürmer') || p.includes('attaquant')) return 'ATT';
+  if (p.includes('défenseur') || p.includes('abwehr')) return 'DC';
+  if (p.includes('milieu') || p.includes('mittelfeld')) return 'MC';
+  return 'MC';
+}

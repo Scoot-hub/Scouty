@@ -8,6 +8,7 @@ import { Settings2, User, Globe, Pencil, Trash2 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import LanguageSwitcher from '@/components/LanguageSwitcher';
+import ThemeSwitcher from '@/components/ThemeSwitcher';
 import { toast } from 'sonner';
 import { supabase } from '@/integrations/supabase/client';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
@@ -192,10 +193,14 @@ export default function Settings() {
               <CardTitle>{t('settings.tab_preferences')}</CardTitle>
               <CardDescription>{t('settings.preferences_desc')}</CardDescription>
             </CardHeader>
-            <CardContent className="space-y-4">
+            <CardContent className="space-y-6">
               <div>
                 <label className="text-sm font-medium text-muted-foreground mb-2 block">{t('settings.language')}</label>
                 <LanguageSwitcher variant="outline" />
+              </div>
+              <div>
+                <label className="text-sm font-medium text-muted-foreground mb-2 block">{t('settings.theme')}</label>
+                <ThemeSwitcher variant="outline" />
               </div>
             </CardContent>
           </Card>
