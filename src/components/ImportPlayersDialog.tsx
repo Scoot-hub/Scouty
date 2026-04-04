@@ -816,22 +816,6 @@ export function ImportPlayersDialog() {
   };
 
   // Sample values for each raw header (first 3 non-empty)
-  const sampleValues = useMemo(() => {
-    const samples: Record<string, string[]> = {};
-    for (const header of rawData.headers) {
-      const vals: string[] = [];
-      for (const row of rawData.rows) {
-        const v = row[header];
-        if (v !== undefined && v !== '') {
-          vals.push(String(v).slice(0, 30));
-          if (vals.length >= 3) break;
-        }
-      }
-      samples[header] = vals;
-    }
-    return samples;
-  }, [rawData]);
-
   return (
     <Dialog open={open} onOpenChange={(o) => { setOpen(o); if (!o) reset(); }}>
       <DialogTrigger asChild>
