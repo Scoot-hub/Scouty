@@ -21,7 +21,14 @@
       "Bash(node server/index.js)",
       "Bash(disown)",
       "Bash(curl -s http://localhost:3001/api/health)",
-      "Bash(grep -E \"\\\\.\\(ts|sql|js\\)$\")"
+      "Bash(grep -E \"\\\\.\\(ts|sql|js\\)$\")",
+      "Bash(curl -s -o /dev/null -w \"%{http_code}\" \"https://cal.eu/Scouty\")",
+      "Bash(curl -s -L -o /dev/null -w \"%{http_code} -> %{url_effective}\" \"https://cal.eu/Scouty\")",
+      "Bash(curl -s -L \"https://cal.eu/embed/embed.js\")",
+      "Bash(curl -s -o /dev/null -w \"%{http_code}\" \"https://www.cal.eu/embed/embed.js\")",
+      "Bash(curl -s -L \"https://www.cal.eu/Scouty\")",
+      "WebFetch(domain:www.cal.eu)",
+      "Bash(curl -s \"http://localhost:8080/api/stripe/session-status?session_id=cs_test_a183ClIHXCJW4uvjAOzWjxSt6ZDdm3Y5DvnNXdwsUraw67rOfzmRoZf4ME\")"
     ],
     "additionalDirectories": [
       "\\tmp"

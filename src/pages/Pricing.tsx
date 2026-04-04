@@ -22,6 +22,7 @@ export default function Pricing() {
   const [subscriptionEnd, setSubscriptionEnd] = useState<string | null>(null);
   const [premiumSince, setPremiumSince] = useState<string | null>(null);
   const [portalLoading, setPortalLoading] = useState(false);
+  const [planType, setPlanType] = useState<string | null>(null);
   const [billing, setBilling] = useState<BillingCycle>('monthly');
 
   const success = searchParams.get('success') === 'true';
@@ -49,6 +50,7 @@ export default function Pricing() {
       if (!error && data) {
         setSubscribed(data.subscribed);
         setSubscriptionEnd(data.subscription_end || null);
+        setPlanType(data.plan_type || null);
       }
       const { data: subRow } = await supabase.from('user_subscriptions').select('premium_since').eq('user_id', user.id).single();
       if (subRow?.premium_since) setPremiumSince(subRow.premium_since);
@@ -287,8 +289,10 @@ export default function Pricing() {
                     <Link to="/auth?signup=true">
                       <Button variant="outline" className="w-full">{t('pricing.get_started')}</Button>
                     </Link>
-                  ) : (
+                  ) : !subscribed ? (
                     <Button variant="outline" className="w-full" disabled>{t('pricing.current_plan')}</Button>
+                  ) : (
+                    <Button variant="outline" className="w-full" disabled>{t('pricing.get_started')}</Button>
                   )
                 ) : plan.cta === 'contact' ? (
                   <Button
@@ -298,7 +302,7 @@ export default function Pricing() {
                   >
                     {t('pricing.contact_us')}
                   </Button>
-                ) : subscribed ? (
+                ) : subscribed && plan.id === planType ? (
                   <div className="space-y-2">
                     <Button className="w-full" disabled>
                       <Crown className="w-4 h-4 mr-2" />
@@ -309,6 +313,11 @@ export default function Pricing() {
                       {t('pricing.manage')}
                     </Button>
                   </div>
+                ) : subscribed ? (
+                  <Button variant="outline" className="w-full" onClick={handlePortal} disabled={portalLoading}>
+                    {portalLoading ? <Loader2 className="w-4 h-4 animate-spin mr-2" /> : <ExternalLink className="w-4 h-4 mr-2" />}
+                    {t('pricing.change_plan')}
+                  </Button>
                 ) : (
                   <Button
                     className={cn('w-full font-bold', plan.highlight && 'shadow-lg shadow-primary/25')}

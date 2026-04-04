@@ -477,30 +477,145 @@ export type Database = {
         }
         Relationships: []
       }
-      user_subscriptions: {
+      community_posts: {
         Row: {
-          created_at: string
           id: string
-          is_premium: boolean
-          premium_since: string | null
-          updated_at: string
           user_id: string
+          author_name: string
+          category: string
+          title: string
+          content: string
+          likes: number
+          replies_count: number
+          created_at: string
         }
         Insert: {
-          created_at?: string
           id?: string
-          is_premium?: boolean
-          premium_since?: string | null
-          updated_at?: string
           user_id: string
+          author_name: string
+          category?: string
+          title: string
+          content: string
+          likes?: number
+          replies_count?: number
+          created_at?: string
         }
         Update: {
-          created_at?: string
           id?: string
+          user_id?: string
+          author_name?: string
+          category?: string
+          title?: string
+          content?: string
+          likes?: number
+          replies_count?: number
+          created_at?: string
+        }
+        Relationships: []
+      }
+      community_replies: {
+        Row: {
+          id: string
+          post_id: string
+          user_id: string
+          author_name: string
+          content: string
+          created_at: string
+        }
+        Insert: {
+          id?: string
+          post_id: string
+          user_id: string
+          author_name: string
+          content: string
+          created_at?: string
+        }
+        Update: {
+          id?: string
+          post_id?: string
+          user_id?: string
+          author_name?: string
+          content?: string
+          created_at?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "community_replies_post_id_fkey"
+            columns: ["post_id"]
+            isOneToOne: false
+            referencedRelation: "community_posts"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      community_likes: {
+        Row: {
+          id: string
+          post_id: string
+          user_id: string
+          created_at: string
+        }
+        Insert: {
+          id?: string
+          post_id: string
+          user_id: string
+          created_at?: string
+        }
+        Update: {
+          id?: string
+          post_id?: string
+          user_id?: string
+          created_at?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "community_likes_post_id_fkey"
+            columns: ["post_id"]
+            isOneToOne: false
+            referencedRelation: "community_posts"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      user_subscriptions: {
+        Row: {
+          id: string
+          user_id: string
+          is_premium: boolean
+          premium_since: string | null
+          stripe_customer_id: string | null
+          stripe_subscription_id: string | null
+          plan_type: string
+          billing_cycle: string | null
+          subscription_end: string | null
+          created_at: string
+          updated_at: string
+        }
+        Insert: {
+          id?: string
+          user_id: string
           is_premium?: boolean
           premium_since?: string | null
+          stripe_customer_id?: string | null
+          stripe_subscription_id?: string | null
+          plan_type?: string
+          billing_cycle?: string | null
+          subscription_end?: string | null
+          created_at?: string
           updated_at?: string
+        }
+        Update: {
+          id?: string
           user_id?: string
+          is_premium?: boolean
+          premium_since?: string | null
+          stripe_customer_id?: string | null
+          stripe_subscription_id?: string | null
+          plan_type?: string
+          billing_cycle?: string | null
+          subscription_end?: string | null
+          created_at?: string
+          updated_at?: string
         }
         Relationships: []
       }

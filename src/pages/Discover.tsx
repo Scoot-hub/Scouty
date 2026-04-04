@@ -39,8 +39,11 @@ export default function Discover() {
   const navigate = useNavigate();
   const { data: isPremium } = useIsPremium();
 
+  const [searchMode, setSearchMode] = useState<'player' | 'club'>('player');
   const [firstName, setFirstName] = useState('');
   const [lastName, setLastName] = useState('');
+  const [clubSearch, setClubSearch] = useState('');
+  const [foundClubName, setFoundClubName] = useState('');
   const [position, setPosition] = useState('');
   const [ageMin, setAgeMin] = useState('');
   const [ageMax, setAgeMax] = useState('');
@@ -53,16 +56,44 @@ export default function Discover() {
 
   const query = [firstName.trim(), lastName.trim()].filter(Boolean).join(' ');
 
+  // Cache discover results in sessionStorage to avoid redundant scraping calls
+  const buildCacheKey = () => {
+    const parts = searchMode === 'club'
+      ? ['club', clubSearch.trim(), position, ageMin, ageMax, valueMin, valueMax, nationality]
+      : ['player', query, position, ageMin, ageMax, valueMin, valueMax, nationality];
+    return `discover_${parts.join('|')}`;
+  };
+
   const searchMutation = useMutation({
     mutationFn: async () => {
-      const { data, error } = await supabase.functions.invoke('discover-players', {
-        body: { query, position, ageMin, ageMax, valueMin, valueMax, nationality },
-      });
+      const cacheKey = buildCacheKey();
+      // Check sessionStorage cache (valid for current browser session)
+      try {
+        const cached = sessionStorage.getItem(cacheKey);
+        if (cached) {
+          const parsed = JSON.parse(cached);
+          // Cache valid for 10 min
+          if (parsed._ts && Date.now() - parsed._ts < 10 * 60 * 1000) {
+            return parsed.data as { players: DiscoveredPlayer[]; clubName?: string };
+          }
+          sessionStorage.removeItem(cacheKey);
+        }
+      } catch { /* ignore corrupt cache */ }
+
+      const body = searchMode === 'club'
+        ? { clubQuery: clubSearch.trim(), position, ageMin, ageMax, valueMin, valueMax, nationality }
+        : { query, position, ageMin, ageMax, valueMin, valueMax, nationality };
+      const { data, error } = await supabase.functions.invoke('discover-players', { body });
       if (error) throw error;
-      return data as { players: DiscoveredPlayer[] };
+      const result = data as { players: DiscoveredPlayer[]; clubName?: string };
+
+      // Store in sessionStorage
+      try { sessionStorage.setItem(cacheKey, JSON.stringify({ _ts: Date.now(), data: result })); } catch { /* quota */ }
+      return result;
     },
     onSuccess: (data) => {
       setResults(data.players || []);
+      setFoundClubName(data.clubName || '');
       if ((data.players || []).length === 0) {
         toast(t('discover.no_results'));
       }
@@ -74,7 +105,7 @@ export default function Discover() {
 
   const handleSearch = (e: React.FormEvent) => {
     e.preventDefault();
-    if (!query.trim()) return;
+    if (searchMode === 'club' ? !clubSearch.trim() : !query.trim()) return;
     searchMutation.mutate();
   };
 
@@ -138,23 +169,55 @@ export default function Discover() {
       <Card>
         <CardContent className="p-4">
           <form onSubmit={handleSearch} className="space-y-4">
-            {/* Name fields + search button */}
+            {/* Mode toggle */}
+            <div className="flex items-center gap-1 p-1 rounded-lg bg-muted w-fit">
+              <button
+                type="button"
+                onClick={() => { setSearchMode('player'); setResults([]); setFoundClubName(''); }}
+                className={`px-3 py-1.5 rounded-md text-xs font-medium transition-all ${searchMode === 'player' ? 'bg-background shadow-sm text-foreground' : 'text-muted-foreground'}`}
+              >
+                <UserPlus className="w-3.5 h-3.5 inline mr-1.5" />
+                {t('discover.mode_player')}
+              </button>
+              <button
+                type="button"
+                onClick={() => { setSearchMode('club'); setResults([]); setFoundClubName(''); }}
+                className={`px-3 py-1.5 rounded-md text-xs font-medium transition-all ${searchMode === 'club' ? 'bg-background shadow-sm text-foreground' : 'text-muted-foreground'}`}
+              >
+                <Search className="w-3.5 h-3.5 inline mr-1.5" />
+                {t('discover.mode_club')}
+              </button>
+            </div>
+
+            {/* Search inputs */}
             <div className="flex gap-2">
-              <div className="flex-1">
-                <Input
-                  value={firstName}
-                  onChange={e => setFirstName(e.target.value)}
-                  placeholder={t('discover.first_name')}
-                />
-              </div>
-              <div className="flex-1">
-                <Input
-                  value={lastName}
-                  onChange={e => setLastName(e.target.value)}
-                  placeholder={t('discover.last_name')}
-                />
-              </div>
-              <Button type="submit" disabled={searchMutation.isPending || !query.trim()}>
+              {searchMode === 'player' ? (
+                <>
+                  <div className="flex-1">
+                    <Input
+                      value={firstName}
+                      onChange={e => setFirstName(e.target.value)}
+                      placeholder={t('discover.first_name')}
+                    />
+                  </div>
+                  <div className="flex-1">
+                    <Input
+                      value={lastName}
+                      onChange={e => setLastName(e.target.value)}
+                      placeholder={t('discover.last_name')}
+                    />
+                  </div>
+                </>
+              ) : (
+                <div className="flex-1">
+                  <Input
+                    value={clubSearch}
+                    onChange={e => setClubSearch(e.target.value)}
+                    placeholder={t('discover.club_placeholder')}
+                  />
+                </div>
+              )}
+              <Button type="submit" disabled={searchMutation.isPending || (searchMode === 'club' ? !clubSearch.trim() : !query.trim())}>
                 {searchMutation.isPending ? <Loader2 className="w-4 h-4 animate-spin mr-2" /> : <Search className="w-4 h-4 mr-2" />}
                 {t('discover.search_btn')}
               </Button>
@@ -220,7 +283,11 @@ export default function Discover() {
         </div>
       ) : results.length > 0 ? (
         <div className="space-y-2">
-          <p className="text-sm text-muted-foreground">{t('discover.results_count', { count: results.length })}</p>
+          <p className="text-sm text-muted-foreground">
+            {foundClubName
+              ? t('discover.club_squad', { club: foundClubName, count: results.length })
+              : t('discover.results_count', { count: results.length })}
+          </p>
           <div className="grid gap-2">
             {results.map((player, i) => (
               <Card key={`${player.tmId || i}`} className="hover:border-primary/30 transition-colors">

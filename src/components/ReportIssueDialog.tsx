@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { toast } from 'sonner';
+import { moderateFields } from '@/lib/content-moderation';
 import {
   Dialog,
   DialogContent,
@@ -35,6 +36,11 @@ export default function ReportIssueDialog({ open, onOpenChange }: ReportIssueDia
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!subject.trim() || !message.trim()) return;
+
+    if (!moderateFields(subject, message).clean) {
+      toast.error(t('moderation.blocked'));
+      return;
+    }
 
     setSending(true);
     try {

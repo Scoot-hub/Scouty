@@ -3,7 +3,7 @@ import { Link, useSearchParams } from 'react-router-dom';
 import { useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import * as XLSX from 'xlsx';
-import { usePlayers } from '@/hooks/use-players';
+import { usePlayers, isSamePlayer } from '@/hooks/use-players';
 import { useMyOrganizations } from '@/hooks/use-organization';
 import { ShareWithOrgPopover, BulkShareDialog } from '@/components/ShareWithOrgPopover';
 import { useIsPremium } from '@/hooks/use-admin';
@@ -21,11 +21,12 @@ import { Button } from '@/components/ui/button';
 import { Checkbox } from '@/components/ui/checkbox';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from '@/components/ui/dialog';
 import { ImportPlayersDialog } from '@/components/ImportPlayersDialog';
 import { AddToWatchlistDialog } from '@/components/AddToWatchlistDialog';
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from '@/components/ui/dropdown-menu';
 import { supabase } from '@/integrations/supabase/client';
-import { Search, RotateCcw, Users, RefreshCw, ChevronDown, ChevronUp, SlidersHorizontal, Download, X, LayoutGrid, List, Building2, Eye, Zap, Check, Sparkles } from 'lucide-react';
+import { Search, RotateCcw, Users, RefreshCw, ChevronDown, ChevronUp, SlidersHorizontal, Download, X, LayoutGrid, List, Building2, Eye, Zap, Check, Sparkles, Copy, Trash2 } from 'lucide-react';
 import { toast } from 'sonner';
 
 type SortOption = 'name' | 'age-asc' | 'age-desc' | 'level' | 'potential' | 'recent' | 'contract';
@@ -66,6 +67,9 @@ export default function Players() {
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [enriching, setEnriching] = useState(false);
   const [enrichProgress, setEnrichProgress] = useState({ current: 0, total: 0 });
+  const [duplicateGroups, setDuplicateGroups] = useState<{ keep: any; duplicates: any[] }[]>([]);
+  const [duplicateDialogOpen, setDuplicateDialogOpen] = useState(false);
+  const [deletingDuplicates, setDeletingDuplicates] = useState(false);
   const [filtersOpen, setFiltersOpen] = useState<boolean>(() => loadFilters().filtersOpen ?? false);
   const [viewMode, setViewMode] = useState<'compact' | 'detailed'>(() => loadFilters().viewMode ?? 'compact');
   const [visibleCount, setVisibleCount] = useState(PAGE_SIZE);
@@ -154,6 +158,55 @@ export default function Players() {
     return Array.from(roles).sort((a, b) => a.localeCompare(b, 'fr'));
   }, [players]);
 
+  const handleFindDuplicates = () => {
+    const groups: { keep: any; duplicates: any[] }[] = [];
+    const processed = new Set<string>();
+
+    for (let i = 0; i < players.length; i++) {
+      if (processed.has(players[i].id)) continue;
+      const dupes: any[] = [];
+
+      for (let j = i + 1; j < players.length; j++) {
+        if (processed.has(players[j].id)) continue;
+        if (isSamePlayer(players[i].name, players[i].generation, players[j].name, players[j].generation, players[i].club, players[j].club)) {
+          dupes.push(players[j]);
+          processed.add(players[j].id);
+        }
+      }
+
+      if (dupes.length > 0) {
+        processed.add(players[i].id);
+        // Keep the one with more data (reports, level, etc.) — or just the first
+        groups.push({ keep: players[i], duplicates: dupes });
+      }
+    }
+
+    setDuplicateGroups(groups);
+    setDuplicateDialogOpen(true);
+
+    if (groups.length === 0) {
+      toast.success(t('players.no_duplicates'));
+    }
+  };
+
+  const handleDeleteDuplicates = async () => {
+    setDeletingDuplicates(true);
+    try {
+      const idsToDelete = duplicateGroups.flatMap(g => g.duplicates.map(d => d.id));
+      for (const id of idsToDelete) {
+        await supabase.from('players').delete().eq('id', id);
+      }
+      toast.success(t('players.duplicates_deleted', { count: idsToDelete.length }));
+      setDuplicateDialogOpen(false);
+      setDuplicateGroups([]);
+      refetch();
+    } catch {
+      toast.error(t('common.error'));
+    } finally {
+      setDeletingDuplicates(false);
+    }
+  };
+
   const handleBulkEnrich = async (mode: 'all' | 'selected') => {
     if (mode === 'all') {
       // Server-side background enrichment — returns immediately
@@ -168,9 +221,15 @@ export default function Players() {
       return;
     }
 
-    // Selected players — client-side with progress
-    const targets = filtered.filter(p => selectedIds.has(p.id));
-    if (targets.length === 0) { toast.error(t('common.error')); return; }
+    // Selected players — client-side with progress (skip recently enriched within 1h)
+    const ENRICH_COOLDOWN = 60 * 60 * 1000;
+    const allTargets = filtered.filter(p => selectedIds.has(p.id));
+    const targets = allTargets.filter(p => {
+      if (!p.external_data_fetched_at) return true;
+      return Date.now() - new Date(p.external_data_fetched_at).getTime() > ENRICH_COOLDOWN;
+    });
+    const skipped = allTargets.length - targets.length;
+    if (targets.length === 0) { toast(skipped > 0 ? t('players.enrichment_skipped') : t('common.error')); return; }
     setEnriching(true);
     setEnrichProgress({ current: 0, total: targets.length });
     let success = 0;
@@ -441,6 +500,11 @@ export default function Players() {
                     : t('players.enrich_all')}
                 </DropdownMenuItem>
               )}
+              <DropdownMenuSeparator />
+              <DropdownMenuItem onClick={handleFindDuplicates}>
+                <Copy className="w-4 h-4 mr-2" />
+                {t('players.find_duplicates')}
+              </DropdownMenuItem>
             </DropdownMenuContent>
           </DropdownMenu>
           <AddToWatchlistDialog
@@ -457,6 +521,56 @@ export default function Players() {
               onDone={handleBulkAddDone}
             />
           )}
+          {/* Duplicate detection dialog */}
+          <Dialog open={duplicateDialogOpen} onOpenChange={setDuplicateDialogOpen}>
+            <DialogContent className="max-w-2xl max-h-[80vh] overflow-y-auto">
+              <DialogHeader>
+                <DialogTitle className="flex items-center gap-2">
+                  <Copy className="w-5 h-5 text-primary" />
+                  {t('players.duplicates_title')}
+                </DialogTitle>
+                <DialogDescription>
+                  {duplicateGroups.length === 0
+                    ? t('players.no_duplicates')
+                    : t('players.duplicates_found', { count: duplicateGroups.reduce((a, g) => a + g.duplicates.length, 0), groups: duplicateGroups.length })}
+                </DialogDescription>
+              </DialogHeader>
+
+              {duplicateGroups.length > 0 && (
+                <div className="space-y-4 py-2">
+                  {duplicateGroups.map((group, gi) => (
+                    <div key={gi} className="rounded-xl border border-border p-4 space-y-2">
+                      <div className="flex items-center gap-2">
+                        <Check className="w-4 h-4 text-green-500" />
+                        <span className="text-sm font-bold">{group.keep.name}</span>
+                        <span className="text-xs text-muted-foreground">{group.keep.club} &middot; {group.keep.generation}</span>
+                        <span className="text-[10px] px-1.5 py-0.5 rounded bg-green-500/10 text-green-600 font-medium">{t('players.keep')}</span>
+                      </div>
+                      {group.duplicates.map(dup => (
+                        <div key={dup.id} className="flex items-center gap-2 pl-6 text-muted-foreground">
+                          <Trash2 className="w-3.5 h-3.5 text-destructive/60" />
+                          <span className="text-sm">{dup.name}</span>
+                          <span className="text-xs">{dup.club} &middot; {dup.generation}</span>
+                          <span className="text-[10px] px-1.5 py-0.5 rounded bg-destructive/10 text-destructive font-medium">{t('players.duplicate')}</span>
+                        </div>
+                      ))}
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              <DialogFooter>
+                <Button variant="outline" onClick={() => setDuplicateDialogOpen(false)}>{t('common.cancel')}</Button>
+                {duplicateGroups.length > 0 && (
+                  <Button variant="destructive" onClick={handleDeleteDuplicates} disabled={deletingDuplicates}>
+                    {deletingDuplicates ? <RefreshCw className="w-4 h-4 animate-spin mr-2" /> : <Trash2 className="w-4 h-4 mr-2" />}
+                    {t('players.delete_duplicates', { count: duplicateGroups.reduce((a, g) => a + g.duplicates.length, 0) })}
+                  </Button>
+                )}
+              </DialogFooter>
+            </DialogContent>
+          </Dialog>
+
           <Button variant="outline" size="sm" className="rounded-xl" onClick={handleExportExcel} disabled={exporting || playersToExport.length === 0}>
             <Download className="w-4 h-4 mr-1.5" />
             {exporting ? t('players.exporting') : selectedIds.size > 0 ? `${t('players.export_excel')} (${selectedIds.size})` : t('players.export_excel')}

@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { Link, useLocation, useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import {
-  Users, Menu, X, PlusCircle, LogOut, Settings, Shield, ShieldCheck, UserCircle, Eye, Sparkles, Building2, Bug, CalendarDays, CalendarCheck, Shirt, Contact, ClipboardList, ChevronLeft, ChevronRight, Route, MapPinned, Gift, Search, Globe, Heart
+  Users, Menu, X, PlusCircle, LogOut, Settings, Shield, ShieldCheck, UserCircle, Eye, Sparkles, Building2, Bug, CalendarDays, CalendarCheck, Shirt, Contact, ClipboardList, ChevronLeft, ChevronRight, Route, MapPinned, Gift, Search, Globe, Heart, MessageSquare
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { useAuth } from '@/contexts/AuthContext';
@@ -298,6 +298,18 @@ export default function AppSidebar({ collapsed, onToggle }: AppSidebarProps) {
             {!collapsed && (
               <span className="flex items-center gap-2">
                 {t('sidebar.discover')}
+                <span className="text-[9px] px-1.5 py-0.5 rounded-full bg-primary/15 text-primary font-bold">PRO</span>
+              </span>
+            )}
+          </Link>
+        </SidebarTooltip>
+
+        <SidebarTooltip label={t('sidebar.community')} collapsed={collapsed}>
+          <Link to="/community" className={linkClass('/community')} onClick={() => setMobileOpen(false)}>
+            <MessageSquare className="w-4 h-4 shrink-0" />
+            {!collapsed && (
+              <span className="flex items-center gap-2">
+                {t('sidebar.community')}
                 <span className="text-[9px] px-1.5 py-0.5 rounded-full bg-primary/15 text-primary font-bold">PRO</span>
               </span>
             )}

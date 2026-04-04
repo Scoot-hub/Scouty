@@ -20,6 +20,10 @@ CREATE TABLE IF NOT EXISTS profiles (
   full_name VARCHAR(100) NOT NULL DEFAULT '',
   club VARCHAR(100) NOT NULL DEFAULT '',
   role VARCHAR(50) NOT NULL DEFAULT 'scout',
+  social_x VARCHAR(100) NULL,
+  social_instagram VARCHAR(100) NULL,
+  social_linkedin VARCHAR(255) NULL,
+  social_public TINYINT(1) NOT NULL DEFAULT 0,
   created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
@@ -396,6 +400,21 @@ CREATE TABLE IF NOT EXISTS notifications (
   FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
 );
 
+-- Player research items (personal notes, youtube, articles)
+CREATE TABLE IF NOT EXISTS player_research (
+  id CHAR(36) PRIMARY KEY,
+  user_id CHAR(36) NOT NULL,
+  player_id CHAR(36) NOT NULL,
+  type VARCHAR(30) NOT NULL DEFAULT 'note',
+  title VARCHAR(500) NOT NULL,
+  url TEXT NULL,
+  content TEXT NULL,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  INDEX idx_player_research (user_id, player_id, created_at),
+  FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+  FOREIGN KEY (player_id) REFERENCES players(id) ON DELETE CASCADE
+);
+
 -- Followed clubs
 CREATE TABLE IF NOT EXISTS followed_clubs (
   id CHAR(36) PRIMARY KEY,
@@ -428,6 +447,47 @@ CREATE TABLE IF NOT EXISTS feedback (
   page_url VARCHAR(500) NULL,
   created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   INDEX idx_feedback_user (user_id),
+  FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+);
+
+-- Community posts (PRO only)
+CREATE TABLE IF NOT EXISTS community_posts (
+  id CHAR(36) PRIMARY KEY,
+  user_id CHAR(36) NOT NULL,
+  author_name VARCHAR(255) NOT NULL,
+  category ENUM('question','suggestion','match','player','general') NOT NULL DEFAULT 'general',
+  title VARCHAR(120) NOT NULL,
+  content TEXT NOT NULL,
+  likes INT NOT NULL DEFAULT 0,
+  replies_count INT NOT NULL DEFAULT 0,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  INDEX idx_community_posts_user (user_id),
+  INDEX idx_community_posts_category (category),
+  INDEX idx_community_posts_created (created_at DESC),
+  FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+);
+
+-- Community replies
+CREATE TABLE IF NOT EXISTS community_replies (
+  id CHAR(36) PRIMARY KEY,
+  post_id CHAR(36) NOT NULL,
+  user_id CHAR(36) NOT NULL,
+  author_name VARCHAR(255) NOT NULL,
+  content TEXT NOT NULL,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  INDEX idx_community_replies_post (post_id),
+  FOREIGN KEY (post_id) REFERENCES community_posts(id) ON DELETE CASCADE,
+  FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+);
+
+-- Community likes (prevent duplicates)
+CREATE TABLE IF NOT EXISTS community_likes (
+  id CHAR(36) PRIMARY KEY,
+  post_id CHAR(36) NOT NULL,
+  user_id CHAR(36) NOT NULL,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  UNIQUE KEY uniq_post_user (post_id, user_id),
+  FOREIGN KEY (post_id) REFERENCES community_posts(id) ON DELETE CASCADE,
   FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
 );
 

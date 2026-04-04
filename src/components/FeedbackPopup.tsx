@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react';
 import { useTranslation } from 'react-i18next';
 import { toast } from 'sonner';
 import { Star, X, MessageSquareHeart } from 'lucide-react';
+import { moderateText } from '@/lib/content-moderation';
 import {
   Dialog,
   DialogContent,
@@ -53,6 +54,11 @@ export default function FeedbackPopup() {
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (rating === 0) return;
+
+    if (message.trim() && !moderateText(message).clean) {
+      toast.error(t('moderation.blocked'));
+      return;
+    }
 
     setSending(true);
     try {

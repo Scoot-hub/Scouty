@@ -13,6 +13,9 @@ import { createRequire } from "module";
 import { createDbPoolConfig } from "./db-config.js";
 const require = createRequire(import.meta.url);
 import { v4 as uuidv4 } from "uuid";
+const __dotenv_filename = fileURLToPath(import.meta.url);
+const __dotenv_dirname = path.dirname(__dotenv_filename);
+dotenv.config({ path: path.resolve(__dotenv_dirname, "..", ".env") });
 let nodemailer = null;
 try {
   nodemailer = (await import("nodemailer")).default;
@@ -25,13 +28,13 @@ try {
   Stripe = (await import("stripe")).default;
   if (process.env.STRIPE_SECRET_KEY) {
     stripe = new Stripe(process.env.STRIPE_SECRET_KEY);
-    console.log("[info] Stripe initialized");
+    console.log("[info] Stripe initialized with key", process.env.STRIPE_SECRET_KEY.substring(0, 12) + "...");
+  } else {
+    console.warn("[warn] STRIPE_SECRET_KEY not found in env – payments disabled");
   }
-} catch {
-  console.warn("[warn] stripe not installed – payments disabled");
+} catch (err) {
+  console.warn("[warn] stripe not installed – payments disabled:", err?.message);
 }
-
-dotenv.config();
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -71,17 +74,47 @@ app.post("/api/stripe/webhook", express.raw({ type: "application/json" }), async
     switch (event.type) {
       case "checkout.session.completed": {
         const session = event.data.object;
-        const userId = session.metadata?.user_id;
-        const planType = session.metadata?.plan_type || "scout";
-        const billingCycle = session.metadata?.billing_cycle || "monthly";
-        if (!userId) break;
-
-        // Retrieve subscription to get end date
-        let subEnd = null;
-        if (session.subscription) {
-          const sub = await stripe.subscriptions.retrieve(session.subscription);
-          subEnd = sub.current_period_end ? new Date(sub.current_period_end * 1000) : null;
+        // Support both metadata (embedded checkout) and client_reference_id (Payment Links)
+        const userId = session.metadata?.user_id || session.client_reference_id;
+        if (!userId) {
+          console.warn("[stripe-webhook] checkout.session.completed: no user_id found (metadata or client_reference_id)");
+          break;
         }
+
+        // Retrieve subscription to get end date, plan and billing cycle
+        let subEnd = null;
+        let planType = session.metadata?.plan_type || null;
+        let billingCycle = session.metadata?.billing_cycle || null;
+
+        if (session.subscription) {
+          const sub = await stripe.subscriptions.retrieve(session.subscription, { expand: ["items.data.price.product"] });
+          subEnd = sub.current_period_end ? new Date(sub.current_period_end * 1000) : null;
+
+          // Deduce billing cycle from Stripe price interval
+          if (!billingCycle && sub.items?.data?.[0]?.price?.recurring) {
+            const interval = sub.items.data[0].price.recurring.interval;
+            billingCycle = interval === "year" ? "annual" : "monthly";
+          }
+
+          // Deduce plan type from Stripe product name or price amount
+          if (!planType && sub.items?.data?.[0]?.price) {
+            const price = sub.items.data[0].price;
+            const productName = typeof price.product === "object" ? (price.product.name || "") : "";
+            const nameLower = productName.toLowerCase();
+            if (nameLower.includes("pro")) {
+              planType = "pro";
+            } else if (nameLower.includes("scout")) {
+              planType = "scout";
+            } else {
+              // Fallback: use price amount (in cents)
+              const amount = price.unit_amount || 0;
+              planType = amount >= 2400 ? "pro" : "scout";
+            }
+          }
+        }
+
+        planType = planType || "scout";
+        billingCycle = billingCycle || "monthly";
 
         const [existing] = await pool.query("SELECT id FROM user_subscriptions WHERE user_id = ? LIMIT 1", [userId]);
         if (existing.length > 0) {
@@ -99,14 +132,45 @@ app.post("/api/stripe/webhook", express.raw({ type: "application/json" }), async
             [uuidv4(), userId, session.customer, session.subscription, planType, billingCycle, subEnd]
           );
         }
+        const wPlanLabel = planType === "pro" ? "Scout Pro" : "Scout+";
+        const wCycleLabel = billingCycle === "annual" ? "annuel" : "mensuel";
+        const wEndDateStr = subEnd ? new Date(subEnd).toLocaleDateString("fr-FR", { day: "numeric", month: "long", year: "numeric" }) : "—";
+
         console.log(`[stripe-webhook] Subscription activated for user ${userId} (${planType}/${billingCycle})`);
         await createNotification(userId, {
           type: "subscription",
           title: "Abonnement activé",
-          message: `Votre plan ${planType} est maintenant actif.`,
+          message: `Votre plan ${wPlanLabel} est maintenant actif.`,
           icon: "Crown",
           link: "/account",
         });
+
+        // Send confirmation email
+        try {
+          const [userRows] = await pool.query("SELECT email FROM users WHERE id = ? LIMIT 1", [userId]);
+          if (userRows[0]?.email) {
+            sendEmail(userRows[0].email, `Scouty – Votre abonnement ${wPlanLabel} est actif !`, `
+              <div style="font-family:sans-serif;max-width:520px;margin:0 auto;padding:24px">
+                <img src="https://scouty.app/logo.png" alt="Scouty" width="40" style="border-radius:10px;margin-bottom:16px" />
+                <h2 style="color:#1a1a2e;margin:0 0 4px">Bienvenue en ${wPlanLabel} !</h2>
+                <p style="color:#6366f1;font-size:14px;font-weight:600;margin:0 0 20px">Abonnement ${wCycleLabel}</p>
+                <div style="background:#f0f0ff;border-radius:12px;padding:20px;margin:0 0 24px">
+                  <table style="width:100%;border-collapse:collapse;font-size:14px">
+                    <tr><td style="padding:6px 0;color:#6b7280">Plan</td><td style="padding:6px 0;font-weight:700;text-align:right">${wPlanLabel}</td></tr>
+                    <tr><td style="padding:6px 0;color:#6b7280">Cycle</td><td style="padding:6px 0;font-weight:600;text-align:right">${wCycleLabel === "annuel" ? "Annuel" : "Mensuel"}</td></tr>
+                    <tr><td style="padding:6px 0;color:#6b7280">Prochain renouvellement</td><td style="padding:6px 0;font-weight:600;text-align:right">${wEndDateStr}</td></tr>
+                  </table>
+                </div>
+                <p style="color:#555;font-size:14px">Merci pour votre confiance ! Votre paiement a été validé et votre compte est mis à niveau.</p>
+                <p style="text-align:center;margin:32px 0">
+                  <a href="https://scouty.app/players" style="background:#6366f1;color:#fff;padding:14px 32px;border-radius:10px;text-decoration:none;font-weight:700;font-size:15px;display:inline-block">Accéder à mes joueurs</a>
+                </p>
+                <hr style="border:none;border-top:1px solid #eee;margin:24px 0" />
+                <p style="color:#aaa;font-size:11px;text-align:center">Scouty — Scouting footballistique professionnel</p>
+              </div>
+            `);
+          }
+        } catch (emailErr) { console.warn("[stripe-webhook] Email sending failed:", emailErr?.message); }
         break;
       }
 
@@ -163,7 +227,84 @@ app.get("/api/stripe/session-status", async (req, res) => {
   if (!sessionId) return res.status(400).json({ error: "session_id requis." });
   try {
     const session = await stripe.checkout.sessions.retrieve(sessionId);
-    return res.json({ status: session.status, payment_status: session.payment_status });
+
+    // If payment is complete, activate premium directly (backup for webhook delay/failure)
+    console.log("[session-status] Session:", session.id, "status:", session.status, "payment:", session.payment_status, "metadata:", JSON.stringify(session.metadata), "client_ref:", session.client_reference_id, "subscription:", session.subscription, "customer:", session.customer);
+    if (session.status === "complete" && session.payment_status === "paid") {
+      const userId = session.metadata?.user_id || session.client_reference_id;
+      console.log("[session-status] userId resolved:", userId);
+      if (userId) {
+        let planType = session.metadata?.plan_type || null;
+        let billingCycle = session.metadata?.billing_cycle || null;
+
+        // Retrieve subscription to get end date + deduce plan/billing if not in metadata
+        let subEnd = null;
+        if (session.subscription) {
+          try {
+            const sub = await stripe.subscriptions.retrieve(session.subscription, { expand: ["items.data.price.product"] });
+            subEnd = sub.current_period_end ? new Date(sub.current_period_end * 1000) : null;
+
+            if (!billingCycle && sub.items?.data?.[0]?.price?.recurring) {
+              billingCycle = sub.items.data[0].price.recurring.interval === "year" ? "annual" : "monthly";
+            }
+            if (!planType && sub.items?.data?.[0]?.price) {
+              const price = sub.items.data[0].price;
+              const productName = typeof price.product === "object" ? (price.product.name || "") : "";
+              if (productName.toLowerCase().includes("pro")) planType = "pro";
+              else planType = "scout";
+            }
+          } catch (e) {
+            console.warn("[session-status] Could not retrieve subscription:", e?.message);
+          }
+        }
+        planType = planType || "scout";
+        billingCycle = billingCycle || "monthly";
+
+        const [existing] = await pool.query(
+          "SELECT is_premium FROM user_subscriptions WHERE user_id = ? LIMIT 1",
+          [userId]
+        );
+
+        if (!existing.length || !existing[0].is_premium) {
+          if (existing.length > 0) {
+            await pool.query(
+              `UPDATE user_subscriptions SET is_premium = 1, premium_since = COALESCE(premium_since, NOW()),
+               stripe_customer_id = ?, stripe_subscription_id = ?, plan_type = ?, billing_cycle = ?,
+               subscription_end = ?, updated_at = NOW() WHERE user_id = ?`,
+              [session.customer, session.subscription, planType, billingCycle, subEnd, userId]
+            );
+          } else {
+            await pool.query(
+              `INSERT INTO user_subscriptions (id, user_id, is_premium, premium_since, stripe_customer_id,
+               stripe_subscription_id, plan_type, billing_cycle, subscription_end)
+               VALUES (?, ?, 1, NOW(), ?, ?, ?, ?, ?)`,
+              [uuidv4(), userId, session.customer, session.subscription, planType, billingCycle, subEnd]
+            );
+          }
+
+          console.log(`[session-status] Activated premium for user ${userId} (${planType}/${billingCycle})`);
+
+          await createNotification(userId, {
+            type: "subscription",
+            title: "Abonnement activé",
+            message: `Votre plan ${planType === "pro" ? "Scout Pro" : "Scout+"} est maintenant actif.`,
+            icon: "Crown",
+            link: "/account",
+          });
+        }
+      }
+    }
+
+    return res.json({
+      status: session.status,
+      payment_status: session.payment_status,
+      _debug: {
+        metadata_user_id: session.metadata?.user_id || null,
+        client_reference_id: session.client_reference_id || null,
+        subscription: session.subscription || null,
+        customer: session.customer || null,
+      },
+    });
   } catch (err) {
     console.error("[session-status] Error:", err?.message);
     return res.status(500).json({ error: "Impossible de récupérer la session." });
@@ -171,7 +312,7 @@ app.get("/api/stripe/session-status", async (req, res) => {
 });
 
 const ALLOWED_TABLES = {
-  profiles: ["id", "user_id", "full_name", "club", "role", "created_at", "updated_at"],
+  profiles: ["id", "user_id", "full_name", "club", "role", "social_x", "social_instagram", "social_linkedin", "social_public", "created_at", "updated_at"],
   players: [
     "id", "name", "photo_url", "generation", "nationality", "foot", "club", "league", "zone", "position", "position_secondaire", "role",
     "current_level", "potential", "general_opinion", "contract_end", "notes", "ts_report_published", "date_of_birth", "market_value",
@@ -193,6 +334,9 @@ const ALLOWED_TABLES = {
   organization_members: ["id", "organization_id", "user_id", "role", "joined_at"],
   player_org_shares: ["id", "player_id", "organization_id", "user_id", "created_at"],
   match_assignments: ["id", "user_id", "organization_id", "assigned_to", "assigned_by", "home_team", "away_team", "match_date", "match_time", "competition", "venue", "home_badge", "away_badge", "notes", "status", "created_at", "updated_at"],
+  community_posts: ["id", "user_id", "author_name", "category", "title", "content", "likes", "replies_count", "created_at"],
+  community_replies: ["id", "post_id", "user_id", "author_name", "content", "created_at"],
+  community_likes: ["id", "post_id", "user_id", "created_at"],
 };
 
 const USER_SCOPED_TABLES = new Set([
@@ -843,6 +987,32 @@ async function runMigrations() {
     if (!err?.message?.includes("already exists")) console.warn("[warn] notifications table migration:", err?.message);
   }
 
+  // Add social columns to profiles
+  for (const col of ['social_x VARCHAR(100) NULL', 'social_instagram VARCHAR(100) NULL', 'social_linkedin VARCHAR(255) NULL', 'social_public TINYINT(1) NOT NULL DEFAULT 0']) {
+    try { await pool.query(`ALTER TABLE profiles ADD COLUMN ${col}`); } catch (err) { if (err?.errno !== 1060) console.warn("[warn] profile social migration:", err?.message); }
+  }
+
+  // Ensure player_research table exists
+  try {
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS player_research (
+        id CHAR(36) PRIMARY KEY,
+        user_id CHAR(36) NOT NULL,
+        player_id CHAR(36) NOT NULL,
+        type VARCHAR(30) NOT NULL DEFAULT 'note',
+        title VARCHAR(500) NOT NULL,
+        url TEXT NULL,
+        content TEXT NULL,
+        created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        INDEX idx_player_research (user_id, player_id, created_at),
+        FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+        FOREIGN KEY (player_id) REFERENCES players(id) ON DELETE CASCADE
+      )
+    `);
+  } catch (err) {
+    if (!err?.message?.includes("already exists")) console.warn("[warn] player_research migration:", err?.message);
+  }
+
   // Ensure followed_clubs table exists
   try {
     await pool.query(`
@@ -1061,26 +1231,19 @@ app.post("/api/auth/login", rateLimitAuth, async (req, res) => {
         [code, expiresAt, user.id],
       );
 
-      const mailer = createMailer();
-      if (mailer) {
-        await mailer.sendMail({
-          from: process.env.SMTP_FROM || process.env.SMTP_USER,
-          to: user.email,
-          subject: `Scouty – Votre code de vérification : ${code}`,
-          html: `
-            <div style="font-family:sans-serif;max-width:480px;margin:0 auto">
-              <h2 style="color:#1a1a2e">Code de vérification Scouty</h2>
-              <p>Voici votre code de connexion :</p>
-              <p style="text-align:center;margin:32px 0">
-                <span style="background:#6366f1;color:#fff;padding:16px 32px;border-radius:12px;font-size:28px;font-weight:700;letter-spacing:8px;display:inline-block">${code}</span>
-              </p>
-              <p style="color:#888;font-size:13px">Ce code est valable <strong>10 minutes</strong>. Si vous n'avez pas tenté de vous connecter, ignorez cet email.</p>
-            </div>
-          `,
-        });
-      } else {
-        console.log(`[DEV] Email 2FA code for ${user.email}: ${code}`);
-      }
+      await sendEmail(user.email, `Scouty – Votre code de vérification : ${code}`, `
+        <div style="font-family:sans-serif;max-width:480px;margin:0 auto;padding:24px">
+          <img src="https://scouty.app/logo.png" alt="Scouty" width="40" style="border-radius:10px;margin-bottom:16px" />
+          <h2 style="color:#1a1a2e;margin:0 0 8px">Code de vérification</h2>
+          <p style="color:#555;margin:0 0 24px">Voici votre code de connexion :</p>
+          <p style="text-align:center;margin:32px 0">
+            <span style="background:#6366f1;color:#fff;padding:16px 32px;border-radius:12px;font-size:28px;font-weight:700;letter-spacing:8px;display:inline-block">${code}</span>
+          </p>
+          <p style="color:#888;font-size:13px">Ce code est valable <strong>10 minutes</strong>. Si vous n'avez pas tenté de vous connecter, ignorez cet email.</p>
+          <hr style="border:none;border-top:1px solid #eee;margin:24px 0" />
+          <p style="color:#aaa;font-size:11px;text-align:center">Scouty — Scouting footballistique professionnel</p>
+        </div>
+      `);
 
       return res.json({ requires2FA: true, method: 'email', userId: user.id });
     }
@@ -1124,9 +1287,11 @@ app.post("/api/auth/signout", (_req, res) => {
 });
 
 // ── Mailer (configured via SMTP_* env vars) ────────────────────────────────
+let _mailerInstance = null;
 function createMailer() {
+  if (_mailerInstance) return _mailerInstance;
   if (!nodemailer || !process.env.SMTP_HOST) return null;
-  return nodemailer.createTransport({
+  _mailerInstance = nodemailer.createTransport({
     host: process.env.SMTP_HOST,
     port: Number(process.env.SMTP_PORT || 587),
     secure: process.env.SMTP_SECURE === "true",
@@ -1135,6 +1300,37 @@ function createMailer() {
       pass: process.env.SMTP_PASS,
     },
   });
+  // Verify connection at startup
+  _mailerInstance.verify().then(() => {
+    console.log("[info] SMTP mailer connected to", process.env.SMTP_HOST);
+  }).catch(err => {
+    console.error("[error] SMTP mailer verification failed:", err?.message);
+    _mailerInstance = null;
+  });
+  return _mailerInstance;
+}
+// Initialize mailer eagerly
+createMailer();
+
+async function sendEmail(to, subject, html) {
+  const mailer = createMailer();
+  if (!mailer) {
+    console.warn(`[email] Mailer not configured — skipping email to ${to}: ${subject}`);
+    return false;
+  }
+  try {
+    await mailer.sendMail({
+      from: process.env.SMTP_FROM || process.env.SMTP_USER,
+      to,
+      subject,
+      html,
+    });
+    console.log(`[email] Sent to ${to}: ${subject}`);
+    return true;
+  } catch (err) {
+    console.error(`[email] Failed to send to ${to}:`, err?.message);
+    return false;
+  }
 }
 
 // ── POST /api/auth/forgot-password ─────────────────────────────────────────
@@ -1163,31 +1359,21 @@ app.post("/api/auth/forgot-password", rateLimitAuth, async (req, res) => {
     const baseUrl = (redirectTo || `${req.protocol}://${req.get("host")}/reset-password`).replace(/\?.*$/, "");
     const resetLink = `${baseUrl}?token=${token}`;
 
-    const mailer = createMailer();
-    if (mailer) {
-      await mailer.sendMail({
-        from: process.env.SMTP_FROM || process.env.SMTP_USER,
-        to: user.email,
-        subject: "Réinitialisation de votre mot de passe – ScoutHub",
-        html: `
-          <div style="font-family:sans-serif;max-width:480px;margin:0 auto">
-            <h2 style="color:#1a1a2e">Réinitialisation de mot de passe</h2>
-            <p>Vous avez demandé à réinitialiser votre mot de passe sur <strong>ScoutHub</strong>.</p>
-            <p>Cliquez sur le bouton ci-dessous pour choisir un nouveau mot de passe. Ce lien est valable <strong>1 heure</strong>.</p>
-            <p style="text-align:center;margin:32px 0">
-              <a href="${resetLink}"
-                 style="background:#6366f1;color:#fff;padding:12px 28px;border-radius:8px;text-decoration:none;font-weight:600;font-size:15px">
-                Réinitialiser mon mot de passe
-              </a>
-            </p>
-            <p style="color:#888;font-size:13px">Si vous n'avez pas fait cette demande, ignorez simplement cet email.</p>
-          </div>
-        `,
-      });
-    } else {
-      // Dev fallback: log the link when SMTP is not configured
-      console.log(`[DEV] Password reset link for ${user.email}: ${resetLink}`);
-    }
+    await sendEmail(user.email, "Scouty – Réinitialisation de votre mot de passe", `
+      <div style="font-family:sans-serif;max-width:480px;margin:0 auto;padding:24px">
+        <img src="https://scouty.app/logo.png" alt="Scouty" width="40" style="border-radius:10px;margin-bottom:16px" />
+        <h2 style="color:#1a1a2e;margin:0 0 8px">Réinitialisation de mot de passe</h2>
+        <p style="color:#555">Cliquez sur le bouton ci-dessous pour choisir un nouveau mot de passe. Ce lien est valable <strong>1 heure</strong>.</p>
+        <p style="text-align:center;margin:32px 0">
+          <a href="${resetLink}" style="background:#6366f1;color:#fff;padding:12px 28px;border-radius:8px;text-decoration:none;font-weight:600;font-size:15px">
+            Réinitialiser mon mot de passe
+          </a>
+        </p>
+        <p style="color:#888;font-size:13px">Si vous n'avez pas fait cette demande, ignorez simplement cet email.</p>
+        <hr style="border:none;border-top:1px solid #eee;margin:24px 0" />
+        <p style="color:#aaa;font-size:11px;text-align:center">Scouty — Scouting footballistique professionnel</p>
+      </div>
+    `);
 
     return res.json({ ok: true });
   } catch (err) {
@@ -1314,6 +1500,76 @@ app.post("/api/account/delete", authMiddleware, async (req, res) => {
   } catch (err) {
     console.error("[delete-account] Error:", err);
     return res.status(500).json({ error: "Erreur lors de la suppression du compte." });
+  }
+});
+
+// ── Public profile (for @mentions) ────────────────────────────────────────
+app.get("/api/profile/:name", async (req, res) => {
+  try {
+    const name = decodeURIComponent(req.params.name).trim();
+    const [rows] = await pool.query(
+      `SELECT p.user_id, p.full_name, p.club, p.role, p.social_x, p.social_instagram, p.social_linkedin, p.social_public, p.created_at
+       FROM profiles p WHERE LOWER(p.full_name) = LOWER(?) LIMIT 1`,
+      [name]
+    );
+    if (!rows.length) return res.status(404).json({ error: "Profil introuvable." });
+    const profile = rows[0];
+    // Only return social links if the user made them public
+    return res.json({
+      user_id: profile.user_id,
+      full_name: profile.full_name,
+      club: profile.club,
+      role: profile.role,
+      created_at: profile.created_at,
+      social_public: !!profile.social_public,
+      social_x: profile.social_public ? profile.social_x : null,
+      social_instagram: profile.social_public ? profile.social_instagram : null,
+      social_linkedin: profile.social_public ? profile.social_linkedin : null,
+    });
+  } catch (err) {
+    console.error("[public-profile] Error:", err);
+    return res.status(500).json({ error: "Erreur serveur." });
+  }
+});
+
+// ── Player Research CRUD ──────────────────────────────────────────────────
+app.get("/api/player-research/:playerId", authMiddleware, async (req, res) => {
+  try {
+    const [rows] = await pool.query(
+      "SELECT * FROM player_research WHERE user_id = ? AND player_id = ? ORDER BY created_at DESC",
+      [req.user.id, req.params.playerId]
+    );
+    return res.json(rows);
+  } catch (err) {
+    console.error("[player-research] GET error:", err);
+    return res.status(500).json({ error: "Erreur serveur" });
+  }
+});
+
+app.post("/api/player-research", authMiddleware, async (req, res) => {
+  const { player_id, type, title, url, content } = req.body || {};
+  if (!player_id || !title) return res.status(400).json({ error: "player_id et title requis." });
+  try {
+    const id = uuidv4();
+    await pool.query(
+      "INSERT INTO player_research (id, user_id, player_id, type, title, url, content) VALUES (?, ?, ?, ?, ?, ?, ?)",
+      [id, req.user.id, player_id, type || 'note', title.trim(), url || null, content || null]
+    );
+    const [rows] = await pool.query("SELECT * FROM player_research WHERE id = ?", [id]);
+    return res.json(rows[0]);
+  } catch (err) {
+    console.error("[player-research] POST error:", err);
+    return res.status(500).json({ error: "Erreur serveur" });
+  }
+});
+
+app.delete("/api/player-research/:id", authMiddleware, async (req, res) => {
+  try {
+    await pool.query("DELETE FROM player_research WHERE id = ? AND user_id = ?", [req.params.id, req.user.id]);
+    return res.json({ ok: true });
+  } catch (err) {
+    console.error("[player-research] DELETE error:", err);
+    return res.status(500).json({ error: "Erreur serveur" });
   }
 });
 
@@ -1713,27 +1969,22 @@ app.post("/api/auth/2fa/email/enable", authMiddleware, async (req, res) => {
       [code, expiresAt, req.user.id],
     );
 
-    const mailer = createMailer();
-    if (!mailer) {
-      console.log(`[DEV] Email 2FA setup code for ${req.user.email}: ${code}`);
+    const sent = await sendEmail(req.user.email, `Scouty – Code d'activation 2FA : ${code}`, `
+      <div style="font-family:sans-serif;max-width:480px;margin:0 auto;padding:24px">
+        <img src="https://scouty.app/logo.png" alt="Scouty" width="40" style="border-radius:10px;margin-bottom:16px" />
+        <h2 style="color:#1a1a2e;margin:0 0 8px">Activation de la 2FA par email</h2>
+        <p style="color:#555">Voici votre code de vérification :</p>
+        <p style="text-align:center;margin:32px 0">
+          <span style="background:#6366f1;color:#fff;padding:16px 32px;border-radius:12px;font-size:28px;font-weight:700;letter-spacing:8px;display:inline-block">${code}</span>
+        </p>
+        <p style="color:#888;font-size:13px">Ce code est valable <strong>10 minutes</strong>.</p>
+        <hr style="border:none;border-top:1px solid #eee;margin:24px 0" />
+        <p style="color:#aaa;font-size:11px;text-align:center">Scouty — Scouting footballistique professionnel</p>
+      </div>
+    `);
+    if (!sent) {
       return res.status(500).json({ error: "Service d'envoi d'email non configuré." });
     }
-
-    await mailer.sendMail({
-      from: process.env.SMTP_FROM || process.env.SMTP_USER,
-      to: req.user.email,
-      subject: `Scouty – Code d'activation 2FA : ${code}`,
-      html: `
-        <div style="font-family:sans-serif;max-width:480px;margin:0 auto">
-          <h2 style="color:#1a1a2e">Activation de la 2FA par email</h2>
-          <p>Voici votre code de vérification pour activer l'authentification à deux facteurs par email :</p>
-          <p style="text-align:center;margin:32px 0">
-            <span style="background:#6366f1;color:#fff;padding:16px 32px;border-radius:12px;font-size:28px;font-weight:700;letter-spacing:8px;display:inline-block">${code}</span>
-          </p>
-          <p style="color:#888;font-size:13px">Ce code est valable <strong>10 minutes</strong>.</p>
-        </div>
-      `,
-    });
 
     return res.json({ ok: true, codeSent: true });
   } catch (err) {
@@ -1905,6 +2156,69 @@ app.post("/api/query", authMiddleware, async (req, res) => {
         row.user_id = req.user.id;
       }
 
+      // ── Anti-spam checks for community tables ──
+      if (table === "community_posts" && op === "insert") {
+        // Rate limit: 1 post per 5 minutes
+        const [recent] = await pool.query(
+          "SELECT id FROM community_posts WHERE user_id = ? AND created_at > DATE_SUB(NOW(), INTERVAL 5 MINUTE) LIMIT 1",
+          [req.user.id]
+        );
+        if (recent.length > 0) {
+          return res.status(429).json({ error: "Veuillez patienter 5 minutes entre chaque publication." });
+        }
+        // Min content length
+        const postTitle = String(row.title || "").trim();
+        const postContent = String(row.content || "").trim();
+        if (postTitle.length < 3) return res.status(400).json({ error: "Le titre doit contenir au moins 3 caractères." });
+        if (postContent.length < 10) return res.status(400).json({ error: "Le contenu doit contenir au moins 10 caractères." });
+        // No duplicate consecutive post
+        const [lastPost] = await pool.query(
+          "SELECT title, content FROM community_posts WHERE user_id = ? ORDER BY created_at DESC LIMIT 1",
+          [req.user.id]
+        );
+        if (lastPost.length > 0 && lastPost[0].title === postTitle && lastPost[0].content === postContent) {
+          return res.status(400).json({ error: "Vous avez déjà publié ce contenu." });
+        }
+        // Max 20 posts per day
+        const [dailyCount] = await pool.query(
+          "SELECT COUNT(*) as cnt FROM community_posts WHERE user_id = ? AND created_at > DATE_SUB(NOW(), INTERVAL 1 DAY)",
+          [req.user.id]
+        );
+        if (dailyCount[0].cnt >= 20) {
+          return res.status(429).json({ error: "Vous avez atteint la limite de 20 publications par jour." });
+        }
+      }
+
+      if (table === "community_replies" && op === "insert") {
+        // Rate limit: 1 reply per 60 seconds
+        const [recentReply] = await pool.query(
+          "SELECT id FROM community_replies WHERE user_id = ? AND created_at > DATE_SUB(NOW(), INTERVAL 1 MINUTE) LIMIT 1",
+          [req.user.id]
+        );
+        if (recentReply.length > 0) {
+          return res.status(429).json({ error: "Veuillez patienter 1 minute entre chaque réponse." });
+        }
+        // Min content length
+        const replyText = String(row.content || "").trim();
+        if (replyText.length < 2) return res.status(400).json({ error: "La réponse doit contenir au moins 2 caractères." });
+        // No duplicate consecutive reply on same post
+        const [lastReply] = await pool.query(
+          "SELECT content FROM community_replies WHERE user_id = ? AND post_id = ? ORDER BY created_at DESC LIMIT 1",
+          [req.user.id, row.post_id]
+        );
+        if (lastReply.length > 0 && lastReply[0].content === replyText) {
+          return res.status(400).json({ error: "Vous avez déjà envoyé cette réponse." });
+        }
+        // Max 60 replies per day
+        const [dailyReplies] = await pool.query(
+          "SELECT COUNT(*) as cnt FROM community_replies WHERE user_id = ? AND created_at > DATE_SUB(NOW(), INTERVAL 1 DAY)",
+          [req.user.id]
+        );
+        if (dailyReplies[0].cnt >= 60) {
+          return res.status(429).json({ error: "Vous avez atteint la limite de 60 réponses par jour." });
+        }
+      }
+
       if (allowedCols.includes("id") && !row.id) {
         row.id = uuidv4();
       }
@@ -1928,6 +2242,110 @@ app.post("/api/query", authMiddleware, async (req, res) => {
           `INSERT INTO \`${table}\` (${colSql}) VALUES (${placeholders}) ON DUPLICATE KEY UPDATE ${updateSql}`,
           vals,
         );
+      }
+
+      // ── Post-insert notification hooks ──
+
+      // Notify @mentions in community posts
+      if (table === "community_posts" && op === "insert") {
+        try {
+          const postContent = String(row.content || "");
+          const postAuthor = row.author_name || req.user.email;
+          const mentionRegex = /@([A-Za-z\u00C0-\u024F0-9_ -]+)/g;
+          const notifiedIds = new Set([req.user.id]);
+          let mention;
+          while ((mention = mentionRegex.exec(postContent)) !== null) {
+            const mentionedName = mention[1].trim();
+            const [pRows] = await pool.query("SELECT user_id FROM profiles WHERE LOWER(full_name) = LOWER(?) LIMIT 1", [mentionedName]);
+            if (pRows[0] && !notifiedIds.has(pRows[0].user_id)) {
+              notifiedIds.add(pRows[0].user_id);
+              await createNotification(pRows[0].user_id, {
+                type: "community",
+                title: `${postAuthor} vous a mentionné dans un post`,
+                message: (row.title || postContent).slice(0, 120),
+                icon: "MessageSquare",
+                link: "/community",
+              });
+            }
+          }
+        } catch (err) { console.warn("[notification] community-post mention hook:", err?.message); }
+      }
+
+      if (table === "community_replies" && op === "insert" && row.post_id) {
+        try {
+          const [postRows] = await pool.query("SELECT user_id, title FROM community_posts WHERE id = ? LIMIT 1", [row.post_id]);
+          const post = postRows[0];
+          if (post) {
+            const replierName = row.author_name || req.user.email;
+            const notifiedIds = new Set([req.user.id]);
+            // Notify post author
+            if (post.user_id !== req.user.id) {
+              notifiedIds.add(post.user_id);
+              await createNotification(post.user_id, {
+                type: "community",
+                title: `${replierName} a répondu à votre post`,
+                message: post.title,
+                icon: "MessageSquare",
+                link: "/community",
+              });
+            }
+            // Notify @mentions in reply content
+            const content = String(row.content || "");
+            const mentionRegex = /@([A-Za-z\u00C0-\u024F0-9_ -]+)/g;
+            let mention;
+            while ((mention = mentionRegex.exec(content)) !== null) {
+              const mentionedName = mention[1].trim();
+              const [pRows] = await pool.query("SELECT user_id FROM profiles WHERE LOWER(full_name) = LOWER(?) LIMIT 1", [mentionedName]);
+              if (pRows[0] && !notifiedIds.has(pRows[0].user_id)) {
+                notifiedIds.add(pRows[0].user_id);
+                await createNotification(pRows[0].user_id, {
+                  type: "community",
+                  title: `${replierName} vous a mentionné`,
+                  message: content.slice(0, 120),
+                  icon: "MessageSquare",
+                  link: "/community",
+                });
+              }
+            }
+            // Notify other thread participants
+            const [otherRepliers] = await pool.query(
+              "SELECT DISTINCT user_id FROM community_replies WHERE post_id = ?",
+              [row.post_id]
+            );
+            for (const r of (otherRepliers || [])) {
+              if (!notifiedIds.has(r.user_id)) {
+                notifiedIds.add(r.user_id);
+                await createNotification(r.user_id, {
+                  type: "community",
+                  title: `Nouvelle réponse dans "${post.title}"`,
+                  message: `${replierName} a répondu à une discussion que vous suivez.`,
+                  icon: "MessageSquare",
+                  link: "/community",
+                });
+              }
+            }
+          }
+        } catch (err) { console.warn("[notification] community-reply hook:", err?.message); }
+      }
+
+      if (table === "organization_members" && op === "insert" && row.organization_id) {
+        try {
+          const [orgRows] = await pool.query("SELECT name FROM organizations WHERE id = ? LIMIT 1", [row.organization_id]);
+          const [profileRows] = await pool.query("SELECT full_name FROM profiles WHERE user_id = ? LIMIT 1", [req.user.id]);
+          const orgName = orgRows[0]?.name || "l'organisation";
+          const memberName = profileRows[0]?.full_name || req.user.email;
+          // Notify all other members
+          const [members] = await pool.query("SELECT user_id FROM organization_members WHERE organization_id = ? AND user_id != ?", [row.organization_id, req.user.id]);
+          for (const m of members) {
+            await createNotification(m.user_id, {
+              type: "organization",
+              title: `${memberName} a rejoint ${orgName}`,
+              message: `Un nouveau membre a rejoint votre organisation.`,
+              icon: "Building2",
+              link: "/organization",
+            });
+          }
+        } catch (err) { console.warn("[notification] org-join hook:", err?.message); }
       }
 
       if (!returning) return res.json({ data: null });
@@ -2235,6 +2653,24 @@ app.post("/api/rpc/upsert_squad_player", authMiddleware, async (req, res) => {
         insertVals,
       );
       const [row] = await pool.query("SELECT * FROM squad_players WHERE id = ?", [id]);
+
+      // Notify other org members about new squad player
+      try {
+        const playerName = p.name || "Un joueur";
+        const [profileRows] = await pool.query("SELECT full_name FROM profiles WHERE user_id = ? LIMIT 1", [req.user.id]);
+        const addedBy = profileRows[0]?.full_name || req.user.email;
+        const [members] = await pool.query("SELECT user_id FROM organization_members WHERE organization_id = ? AND user_id != ?", [orgId, req.user.id]);
+        for (const m of members) {
+          await createNotification(m.user_id, {
+            type: "squad",
+            title: `${playerName} ajouté à l'effectif`,
+            message: `${addedBy} a ajouté un joueur à l'effectif.`,
+            icon: "Users",
+            link: `/organization`,
+          });
+        }
+      } catch (err) { console.warn("[notification] squad-add hook:", err?.message); }
+
       return res.json({ data: row[0] });
     }
   } catch (err) {
@@ -2270,6 +2706,78 @@ app.post("/api/rpc/delete_squad_player", authMiddleware, async (req, res) => {
   } catch (err) {
     console.error("delete_squad_player error:", err);
     return res.status(500).json({ error: "Server error" });
+  }
+});
+
+// ── Community RPCs ──────────────────────────────────────────────────
+const _likeRateLimit = new Map(); // userId -> lastTimestamp
+app.post("/api/rpc/like_community_post", authMiddleware, async (req, res) => {
+  try {
+    const { post_id } = req.body || {};
+    if (!post_id) return res.status(400).json({ error: "post_id required" });
+
+    // Rate limit: 1 like action per 2 seconds per user
+    const now = Date.now();
+    const lastLike = _likeRateLimit.get(req.user.id) || 0;
+    if (now - lastLike < 2000) {
+      return res.status(429).json({ error: "Trop rapide, réessayez dans quelques secondes." });
+    }
+    _likeRateLimit.set(req.user.id, now);
+
+    // Check if already liked
+    const [existing] = await pool.query(
+      "SELECT id FROM community_likes WHERE post_id = ? AND user_id = ? LIMIT 1",
+      [post_id, req.user.id]
+    );
+
+    if (existing.length > 0) {
+      // Unlike
+      await pool.query("DELETE FROM community_likes WHERE post_id = ? AND user_id = ?", [post_id, req.user.id]);
+      await pool.query("UPDATE community_posts SET likes = GREATEST(likes - 1, 0) WHERE id = ?", [post_id]);
+      return res.json({ data: { liked: false } });
+    } else {
+      // Like
+      await pool.query(
+        "INSERT INTO community_likes (id, post_id, user_id) VALUES (?, ?, ?)",
+        [uuidv4(), post_id, req.user.id]
+      );
+      await pool.query("UPDATE community_posts SET likes = likes + 1 WHERE id = ?", [post_id]);
+      return res.json({ data: { liked: true } });
+    }
+  } catch (err) {
+    console.error("[rpc/like_community_post]", err);
+    return res.status(500).json({ error: err?.message || "Error" });
+  }
+});
+
+app.post("/api/rpc/increment_reply_count", authMiddleware, async (req, res) => {
+  try {
+    const { post_id } = req.body || {};
+    if (!post_id) return res.status(400).json({ error: "post_id required" });
+    await pool.query("UPDATE community_posts SET replies_count = replies_count + 1 WHERE id = ?", [post_id]);
+    return res.json({ data: { success: true } });
+  } catch (err) {
+    console.error("[rpc/increment_reply_count]", err);
+    return res.status(500).json({ error: err?.message || "Error" });
+  }
+});
+
+app.post("/api/rpc/community_mentionable_users", authMiddleware, async (req, res) => {
+  try {
+    const [rows] = await pool.query(
+      `SELECT DISTINCT a.author_name, p.user_id, p.club, p.role
+       FROM (
+         SELECT author_name, user_id FROM community_posts
+         UNION
+         SELECT author_name, user_id FROM community_replies
+       ) AS a
+       LEFT JOIN profiles p ON p.user_id = a.user_id
+       ORDER BY a.author_name`
+    );
+    return res.json({ data: rows });
+  } catch (err) {
+    console.error("[rpc/community_mentionable_users]", err);
+    return res.status(500).json({ error: err?.message || "Error" });
   }
 });
 
@@ -3504,6 +4012,155 @@ app.post("/api/functions/:name", authMiddleware, async (req, res) => {
     });
   }
 
+  if (name === "activate-checkout") {
+    if (!stripe) return res.status(501).json({ error: "Stripe non configuré." });
+    const { session_id } = req.body || {};
+    if (!session_id) return res.status(400).json({ error: "session_id requis." });
+
+    try {
+      const session = await stripe.checkout.sessions.retrieve(session_id);
+      if (session.status !== "complete" || session.payment_status !== "paid") {
+        return res.json({ activated: false, reason: "Paiement non complété." });
+      }
+
+      const userId = req.user.id;
+
+      // Check if already premium
+      const [existing] = await pool.query("SELECT is_premium FROM user_subscriptions WHERE user_id = ? LIMIT 1", [userId]);
+      if (existing.length > 0 && existing[0].is_premium) {
+        return res.json({ activated: true, reason: "already_premium" });
+      }
+
+      // Get subscription details from Stripe
+      let subEnd = null;
+      let planType = session.metadata?.plan_type || null;
+      let billingCycle = session.metadata?.billing_cycle || null;
+
+      if (session.subscription) {
+        try {
+          const sub = await stripe.subscriptions.retrieve(session.subscription, { expand: ["items.data.price.product"] });
+          subEnd = sub.current_period_end ? new Date(sub.current_period_end * 1000) : null;
+
+          if (!billingCycle && sub.items?.data?.[0]?.price?.recurring) {
+            billingCycle = sub.items.data[0].price.recurring.interval === "year" ? "annual" : "monthly";
+          }
+          if (!planType && sub.items?.data?.[0]?.price) {
+            const price = sub.items.data[0].price;
+            const productName = typeof price.product === "object" ? (price.product.name || "") : "";
+            if (productName.toLowerCase().includes("pro")) planType = "pro";
+            else planType = "scout";
+          }
+        } catch (e) {
+          console.warn("[activate-checkout] Could not retrieve subscription:", e?.message);
+        }
+      }
+
+      // Fallback: if no subscription (one-time payment), set end date manually
+      if (!subEnd) {
+        const now = new Date();
+        if (billingCycle === "annual") {
+          subEnd = new Date(now.getFullYear() + 1, now.getMonth(), now.getDate());
+        } else {
+          subEnd = new Date(now.getFullYear(), now.getMonth() + 1, now.getDate());
+        }
+      }
+
+      planType = planType || "scout";
+      billingCycle = billingCycle || "monthly";
+
+      // Activate premium
+      if (existing.length > 0) {
+        await pool.query(
+          `UPDATE user_subscriptions SET is_premium = 1, premium_since = COALESCE(premium_since, NOW()),
+           stripe_customer_id = ?, stripe_subscription_id = ?, plan_type = ?, billing_cycle = ?,
+           subscription_end = ?, updated_at = NOW() WHERE user_id = ?`,
+          [session.customer || null, session.subscription || null, planType, billingCycle, subEnd, userId]
+        );
+      } else {
+        await pool.query(
+          `INSERT INTO user_subscriptions (id, user_id, is_premium, premium_since, stripe_customer_id,
+           stripe_subscription_id, plan_type, billing_cycle, subscription_end)
+           VALUES (?, ?, 1, NOW(), ?, ?, ?, ?, ?)`,
+          [uuidv4(), userId, session.customer || null, session.subscription || null, planType, billingCycle, subEnd]
+        );
+      }
+
+      const planLabel = planType === "pro" ? "Scout Pro" : "Scout+";
+      const cycleLabel = billingCycle === "annual" ? "annuel" : "mensuel";
+      const endDateStr = subEnd ? new Date(subEnd).toLocaleDateString("fr-FR", { day: "numeric", month: "long", year: "numeric" }) : "—";
+
+      console.log(`[activate-checkout] Premium activated for user ${userId} (${planType}/${billingCycle}, ends ${subEnd})`);
+
+      await createNotification(userId, {
+        type: "subscription",
+        title: "Abonnement activé",
+        message: `Votre plan ${planLabel} est maintenant actif.`,
+        icon: "Crown",
+        link: "/account",
+      });
+
+      // Send confirmation email
+      sendEmail(req.user.email, `Scouty – Votre abonnement ${planLabel} est actif !`, `
+        <div style="font-family:sans-serif;max-width:520px;margin:0 auto;padding:24px">
+          <img src="https://scouty.app/logo.png" alt="Scouty" width="40" style="border-radius:10px;margin-bottom:16px" />
+          <h2 style="color:#1a1a2e;margin:0 0 4px">Bienvenue en ${planLabel} !</h2>
+          <p style="color:#6366f1;font-size:14px;font-weight:600;margin:0 0 20px">Abonnement ${cycleLabel}</p>
+
+          <div style="background:#f0f0ff;border-radius:12px;padding:20px;margin:0 0 24px">
+            <table style="width:100%;border-collapse:collapse;font-size:14px">
+              <tr>
+                <td style="padding:6px 0;color:#6b7280">Plan</td>
+                <td style="padding:6px 0;font-weight:700;text-align:right;color:#1a1a2e">${planLabel}</td>
+              </tr>
+              <tr>
+                <td style="padding:6px 0;color:#6b7280">Cycle</td>
+                <td style="padding:6px 0;font-weight:600;text-align:right;color:#1a1a2e">${cycleLabel === "annuel" ? "Annuel" : "Mensuel"}</td>
+              </tr>
+              <tr>
+                <td style="padding:6px 0;color:#6b7280">Prochain renouvellement</td>
+                <td style="padding:6px 0;font-weight:600;text-align:right;color:#1a1a2e">${endDateStr}</td>
+              </tr>
+            </table>
+          </div>
+
+          <p style="color:#555;font-size:14px;line-height:1.6">
+            Merci pour votre confiance ! Votre paiement a été validé et votre compte est désormais mis à niveau.<br/>
+            Vous avez accès à toutes les fonctionnalités ${planLabel} :
+          </p>
+          <ul style="color:#555;font-size:14px;line-height:1.8;padding-left:20px">
+            ${planType === "pro" ? `
+            <li>Joueurs illimités</li>
+            <li>Shadow teams illimitées</li>
+            <li>Calendrier & missions</li>
+            <li>API Football</li>
+            <li>Enrichissement & exports complets</li>
+            ` : `
+            <li>Jusqu'à 200 joueurs</li>
+            <li>Watchlists illimitées</li>
+            <li>Enrichissement automatique</li>
+            <li>Exports PDF & Excel</li>
+            `}
+          </ul>
+
+          <p style="text-align:center;margin:32px 0">
+            <a href="https://scouty.app/players" style="background:#6366f1;color:#fff;padding:14px 32px;border-radius:10px;text-decoration:none;font-weight:700;font-size:15px;display:inline-block">
+              Accéder à mes joueurs
+            </a>
+          </p>
+
+          <p style="color:#888;font-size:13px">Vous pouvez gérer votre abonnement à tout moment depuis votre <a href="https://scouty.app/account" style="color:#6366f1">page Compte</a>.</p>
+          <hr style="border:none;border-top:1px solid #eee;margin:24px 0" />
+          <p style="color:#aaa;font-size:11px;text-align:center">Scouty — Scouting footballistique professionnel</p>
+        </div>
+      `);
+
+      return res.json({ activated: true, plan_type: planType, billing_cycle: billingCycle, subscription_end: subEnd });
+    } catch (err) {
+      console.error("[activate-checkout] Error:", err);
+      return res.status(500).json({ error: err?.message || "Erreur." });
+    }
+  }
+
   if (name === "enrich-player") {
     const { playerName, club, playerId, nationality, generation, tmUrl } = req.body || {};
     if (!playerName || !playerId) {
@@ -4502,14 +5159,112 @@ app.post("/api/functions/:name", authMiddleware, async (req, res) => {
       return res.status(403).json({ error: "Fonctionnalité réservée aux abonnés Premium." });
     }
 
-    const { query, competition, position, ageMin, ageMax, valueMin, valueMax, nationality, page } = req.body || {};
-    if (!query && !competition) {
-      return res.status(400).json({ error: "Saisissez un nom de joueur ou une compétition." });
+    const { query, clubQuery, competition, position, ageMin, ageMax, valueMin, valueMax, nationality, page } = req.body || {};
+    if (!query && !clubQuery && !competition) {
+      return res.status(400).json({ error: "Saisissez un nom de joueur ou un club." });
     }
 
     try {
       const opts = { headers: TM_HEADERS, signal: AbortSignal.timeout(15000) };
       let results = [];
+      let clubName = '';
+
+      // ── Club squad search mode ──
+      if (clubQuery) {
+        // Step 1: search for club on TM
+        const searchUrl = `https://www.transfermarkt.fr/schnellsuche/ergebnis/schnellsuche?query=${encodeURIComponent(clubQuery)}`;
+        const searchResp = await fetch(searchUrl, opts);
+        if (!searchResp.ok) throw new Error(`TM club search returned ${searchResp.status}`);
+        const searchHtml = await searchResp.text();
+
+        // Find club in the clubs results table (hauptlink containing /startseite/verein/)
+        let clubSlug, clubId;
+        const clubLinkMatch = searchHtml.match(/<td[^>]*class="[^"]*hauptlink[^"]*"[^>]*>\s*<a[^>]*href="(\/([^"]*?)\/startseite\/verein\/(\d+))"[^>]*title="([^"]*)"/);
+        if (clubLinkMatch) {
+          clubSlug = clubLinkMatch[2]; clubId = clubLinkMatch[3]; clubName = clubLinkMatch[4];
+        } else {
+          // Fallback: first verein link anywhere
+          const fallback = searchHtml.match(/href="(\/([^"]*?)\/startseite\/verein\/(\d+))"/);
+          if (!fallback) return res.json({ players: [], clubName: '' });
+          clubSlug = fallback[2]; clubId = fallback[3]; clubName = clubQuery;
+        }
+
+        // Step 2: fetch squad page
+        await new Promise(r => setTimeout(r, 400));
+        const squadUrl = `https://www.transfermarkt.fr/${clubSlug}/kader/verein/${clubId}`;
+        const squadResp = await fetch(squadUrl, opts);
+        if (!squadResp.ok) throw new Error(`TM squad page returned ${squadResp.status}`);
+        const squadHtml = await squadResp.text();
+
+        // Find items table with nested table handling
+        const tableStart = squadHtml.indexOf('<table class="items">');
+        let tableEnd = -1;
+        if (tableStart !== -1) {
+          let d = 0;
+          for (let k = tableStart; k < squadHtml.length; k++) {
+            if (squadHtml.slice(k, k + 6) === '<table') d++;
+            if (squadHtml.slice(k, k + 8) === '</table>') { d--; if (d === 0) { tableEnd = k + 8; break; } }
+          }
+        }
+
+        if (tableStart !== -1 && tableEnd !== -1) {
+          const table = squadHtml.slice(tableStart, tableEnd);
+          const rowStarts = [];
+          const rowPattern = /<tr class="(?:odd|even)">/g;
+          let rm;
+          while ((rm = rowPattern.exec(table)) !== null) rowStarts.push(rm.index);
+
+          for (let ri = 0; ri < rowStarts.length; ri++) {
+            const start = rowStarts[ri];
+            const end = ri + 1 < rowStarts.length ? rowStarts[ri + 1] : table.length;
+            const row = table.slice(start, end);
+
+            // Name: <td class="hauptlink"><a href="/slug/profil/spieler/ID">Name</a>
+            const nameMatch = row.match(/<td class="hauptlink">\s*<a[^>]*href="([^"]*\/profil\/spieler\/\d+)"[^>]*>\s*([^<]+)/);
+            if (!nameMatch) continue;
+            const tmPath = nameMatch[1].trim();
+            const name = nameMatch[2].trim().replace(/&#0?39;/g, "'").replace(/&amp;/g, '&');
+            // Photo
+            const photoMatch = row.match(/img[^>]*src="(https:\/\/img[^"]*portrait[^"]*)"/);
+            const photo = photoMatch ? photoMatch[1].replace('/small/', '/big/').replace('/medium/', '/big/') : null;
+            // Position: zentriert td with plain text
+            const tdZ = row.match(/<td class="zentriert">([^<]{1,30})<\/td>/g) || [];
+            let posText = '', ageVal = null;
+            for (const td of tdZ) {
+              const v = td.replace(/<[^>]*>/g, '').trim();
+              if (/^\d{1,2}$/.test(v)) ageVal = parseInt(v);
+              else if (v && !posText && !/^\d+$/.test(v) && !/\d{4}/.test(v)) posText = v;
+            }
+            // Nationality
+            const natFlags = [];
+            const flagRegex = /title="([^"]*)"[^>]*class="flaggenrahmen"/g;
+            let fm;
+            while ((fm = flagRegex.exec(row)) !== null) natFlags.push(fm[1]);
+            // Market value
+            const valMatch = row.match(/<td[^>]*class="rechts hauptlink"[^>]*>([\s\S]*?)<\/td>/);
+            const marketValue = valMatch ? valMatch[1].replace(/<[^>]*>/g, '').trim() : '';
+
+            // Apply filters
+            if (ageMin && ageVal && ageVal < parseInt(ageMin)) continue;
+            if (ageMax && ageVal && ageVal > parseInt(ageMax)) continue;
+            if (position && position !== '_all' && posText && !posText.toLowerCase().includes(position.toLowerCase())) continue;
+            if (nationality && natFlags.length > 0 && !natFlags.some(f => f.toLowerCase().includes(nationality.toLowerCase()))) continue;
+
+            results.push({
+              name,
+              tmPath,
+              tmId: tmPath.match(/\/spieler\/(\d+)/)?.[1] || null,
+              photo,
+              position: posText,
+              age: ageVal,
+              nationality: natFlags.join(', '),
+              club: clubName,
+              clubLogo: '',
+              marketValue,
+            });
+          }
+        }
+      }
 
       if (query) {
         const searchUrl = `https://www.transfermarkt.fr/schnellsuche/ergebnis/schnellsuche?query=${encodeURIComponent(query)}&Spieler_page=${page || 1}`;
@@ -4622,7 +5377,7 @@ app.post("/api/functions/:name", authMiddleware, async (req, res) => {
         });
       }
 
-      return res.json({ players: results.slice(0, 30) });
+      return res.json({ players: results.slice(0, 50), clubName });
     } catch (err) {
       console.error("[discover-players] Error:", err);
       return res.status(500).json({ error: "Erreur lors de la recherche. Réessayez." });
@@ -4633,14 +5388,20 @@ app.post("/api/functions/:name", authMiddleware, async (req, res) => {
     if (!stripe) return res.status(501).json({ error: "Stripe non configuré sur ce serveur." });
 
     const { plan, billing } = req.body || {};
-    const priceMap = {
-      "scout_monthly": process.env.STRIPE_PRICE_SCOUT_MONTHLY,
-      "scout_annual": process.env.STRIPE_PRICE_SCOUT_ANNUAL,
-      "pro_monthly": process.env.STRIPE_PRICE_PRO_MONTHLY,
-      "pro_annual": process.env.STRIPE_PRICE_PRO_ANNUAL,
+    const validPlans = ["scout", "pro"];
+    const validBilling = ["monthly", "annual"];
+    if (!validPlans.includes(plan) || !validBilling.includes(billing)) {
+      return res.status(400).json({ error: `Plan ou cycle de facturation invalide (${plan}/${billing}).` });
+    }
+
+    // Price config (amounts in cents EUR)
+    const priceConfig = {
+      scout_monthly: { amount: 1900, interval: "month", name: "Scout+" },
+      scout_annual: { amount: 18800, interval: "year", name: "Scout+" },
+      pro_monthly: { amount: 2400, interval: "month", name: "Scout Pro" },
+      pro_annual: { amount: 28800, interval: "year", name: "Scout Pro" },
     };
-    const priceId = priceMap[`${plan}_${billing}`];
-    if (!priceId) return res.status(400).json({ error: `Plan ou cycle de facturation invalide (${plan}/${billing}).` });
+    const config = priceConfig[`${plan}_${billing}`];
 
     try {
       // Find or create Stripe customer
@@ -4668,11 +5429,19 @@ app.post("/api/functions/:name", authMiddleware, async (req, res) => {
 
       const origin = req.headers.origin || req.headers.referer?.replace(/\/+$/, "") || `${req.protocol}://${req.get("host")}`;
       const session = await stripe.checkout.sessions.create({
-        ui_mode: "embedded",
         mode: "subscription",
         customer: customerId,
-        line_items: [{ price: priceId, quantity: 1 }],
-        return_url: `${origin}/premium-success?session_id={CHECKOUT_SESSION_ID}`,
+        line_items: [{
+          price_data: {
+            currency: "eur",
+            product_data: { name: config.name },
+            unit_amount: config.amount,
+            recurring: { interval: config.interval },
+          },
+          quantity: 1,
+        }],
+        success_url: `${origin}/premium-success?session_id={CHECKOUT_SESSION_ID}`,
+        cancel_url: `${origin}/pricing?canceled=true`,
         metadata: {
           user_id: req.user.id,
           plan_type: plan,
@@ -4680,7 +5449,7 @@ app.post("/api/functions/:name", authMiddleware, async (req, res) => {
         },
       });
 
-      return res.json({ clientSecret: session.client_secret });
+      return res.json({ url: session.url });
     } catch (err) {
       console.error("[create-checkout] Error:", err);
       return res.status(500).json({ error: err?.message || "Erreur Stripe." });
@@ -4704,6 +5473,32 @@ app.post("/api/functions/:name", authMiddleware, async (req, res) => {
       return res.json({ url: portalSession.url });
     } catch (err) {
       console.error("[customer-portal] Error:", err);
+      return res.status(500).json({ error: err?.message || "Erreur Stripe." });
+    }
+  }
+
+  if (name === "payment-method") {
+    if (!stripe) return res.status(501).json({ error: "Stripe non configuré sur ce serveur." });
+
+    try {
+      const [subRows] = await pool.query("SELECT stripe_customer_id FROM user_subscriptions WHERE user_id = ? LIMIT 1", [req.user.id]);
+      const customerId = subRows[0]?.stripe_customer_id;
+      if (!customerId) return res.json({ payment_method: null });
+
+      const methods = await stripe.customers.listPaymentMethods(customerId, { type: "card", limit: 1 });
+      const pm = methods.data[0];
+      if (!pm) return res.json({ payment_method: null });
+
+      return res.json({
+        payment_method: {
+          brand: pm.card.brand,
+          last4: pm.card.last4,
+          exp_month: pm.card.exp_month,
+          exp_year: pm.card.exp_year,
+        },
+      });
+    } catch (err) {
+      console.error("[payment-method] Error:", err);
       return res.status(500).json({ error: err?.message || "Erreur Stripe." });
     }
   }

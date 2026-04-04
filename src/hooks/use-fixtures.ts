@@ -23,6 +23,7 @@ export interface Fixture {
 
 export function useFixtures() {
   return useQuery({
+    staleTime: 3 * 60 * 1000,
     queryKey: ['fixtures'],
     queryFn: async (): Promise<Fixture[]> => {
       const { data, error } = await supabase

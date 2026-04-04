@@ -1,6 +1,8 @@
 import { useEffect, useState } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
+import { useAuth } from '@/contexts/AuthContext';
+import { supabase } from '@/integrations/supabase/client';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
 import { CheckCircle2, Users, Zap, FileSearch, Download, Crown, ArrowRight, Sparkles, Loader2 } from 'lucide-react';
@@ -27,9 +29,10 @@ const API_BASE = (import.meta.env.VITE_API_URL || '/api').replace(/\/$/, '');
 
 export default function PremiumSuccess() {
   const { t } = useTranslation();
+  const { user } = useAuth();
   const [searchParams] = useSearchParams();
   const [confetti, setConfetti] = useState(true);
-  const [verifying, setVerifying] = useState(false);
+  const [verifying, setVerifying] = useState(true);
   const [verified, setVerified] = useState(false);
 
   const sessionId = searchParams.get('session_id');
@@ -39,20 +42,47 @@ export default function PremiumSuccess() {
     return () => clearTimeout(timer);
   }, []);
 
-  // Verify checkout session if session_id is present
+  // Activate premium via authenticated endpoint, then verify
   useEffect(() => {
-    if (!sessionId) return;
-    setVerifying(true);
-    fetch(`${API_BASE}/stripe/session-status?session_id=${sessionId}`)
-      .then(res => res.json())
-      .then(data => {
-        if (data.status === 'complete' && data.payment_status === 'paid') {
-          setVerified(true);
+    let cancelled = false;
+
+    async function verify() {
+      // Step 1: Call activate-checkout (authenticated, uses JWT user ID)
+      if (sessionId && user) {
+        try {
+          const { data, error } = await supabase.functions.invoke('activate-checkout', {
+            body: { session_id: sessionId },
+          });
+          if (!cancelled && !error && data?.activated) {
+            setVerified(true);
+            setVerifying(false);
+            return;
+          }
+        } catch {}
+      }
+
+      // Step 2: Fallback — poll check-subscription
+      if (user) {
+        const maxAttempts = 5;
+        for (let i = 0; i < maxAttempts && !cancelled; i++) {
+          try {
+            const { data } = await supabase.functions.invoke('check-subscription');
+            if (!cancelled && data?.subscribed) {
+              setVerified(true);
+              setVerifying(false);
+              return;
+            }
+          } catch {}
+          if (i < maxAttempts - 1) await new Promise(r => setTimeout(r, 2000));
         }
-      })
-      .catch(() => {})
-      .finally(() => setVerifying(false));
-  }, [sessionId]);
+      }
+
+      if (!cancelled) setVerifying(false);
+    }
+
+    verify();
+    return () => { cancelled = true; };
+  }, [sessionId, user]);
 
   return (
     <div className="min-h-screen bg-background flex flex-col items-center justify-center p-4 relative overflow-hidden">

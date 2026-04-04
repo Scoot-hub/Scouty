@@ -7,17 +7,19 @@ import { LEAGUES, CLUBS, NATIONALITIES, ZONES, POTENTIAL_SCALE, PLAYER_TASKS, ty
 import { usePositions } from '@/hooks/use-positions';
 import { useMergedClubsAndLeagues, useResolveClubLeague } from '@/hooks/use-club-directory';
 import { useUpsertPlayer, useAddReport } from '@/hooks/use-players';
+import { supabase } from '@/integrations/supabase/client';
 import { Card, CardContent } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
 import { Label } from '@/components/ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Slider } from '@/components/ui/slider';
+import { Badge } from '@/components/ui/badge';
 import { Checkbox } from '@/components/ui/checkbox';
 import { Textarea } from '@/components/ui/textarea';
 import { PhotoUpload } from '@/components/ui/photo-upload';
 import { useToast } from '@/hooks/use-toast';
-import { ArrowLeft, ArrowRight, Check, Search } from 'lucide-react';
+import { ArrowLeft, ArrowRight, Check, Search, LinkIcon, Loader2, Sparkles } from 'lucide-react';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import type { Opinion } from '@/types/player';
@@ -98,6 +100,87 @@ export default function AddPlayer() {
   const [task, setTask] = useState<PlayerTask | ''>('');
   const [videoUrl, setVideoUrl] = useState('');
 
+  // Transfermarkt import
+  const [tmUrl, setTmUrl] = useState('');
+  const [tmLoading, setTmLoading] = useState(false);
+  const [tmImported, setTmImported] = useState(false);
+
+  const handleTmImport = async () => {
+    const url = tmUrl.trim();
+    if (!url) return;
+    // Basic validation: must look like a transfermarkt URL
+    if (!url.includes('transfermarkt') || !url.includes('/profil/')) {
+      toast({ title: t('common.error'), description: t('player_form.tm_url_invalid'), variant: 'destructive' });
+      return;
+    }
+
+    setTmLoading(true);
+    try {
+      // Create a temporary player to enrich, then read back the data
+      const tempName = 'TM Import';
+      const { data: tempPlayer, error: insertErr } = await supabase
+        .from('players')
+        .insert({ name: tempName, user_id: (await supabase.auth.getUser()).data.user!.id } as any)
+        .select('id')
+        .single();
+      if (insertErr) throw insertErr;
+
+      const { data, error } = await supabase.functions.invoke('enrich-player', {
+        body: { playerName: tempName, club: '', playerId: tempPlayer.id, tmUrl: url },
+      });
+
+      if (error || !data?.success) {
+        // Clean up temp player
+        await supabase.from('players').delete().eq('id', tempPlayer.id);
+        toast({ title: t('common.error'), description: t('player_form.tm_import_failed'), variant: 'destructive' });
+        setTmLoading(false);
+        return;
+      }
+
+      // Fetch the enriched player
+      const { data: enriched } = await supabase.from('players').select('*').eq('id', tempPlayer.id).single();
+      if (!enriched) {
+        await supabase.from('players').delete().eq('id', tempPlayer.id);
+        toast({ title: t('common.error'), description: t('player_form.tm_import_failed'), variant: 'destructive' });
+        setTmLoading(false);
+        return;
+      }
+
+      // Delete the temp player — we'll create the real one via the form
+      await supabase.from('players').delete().eq('id', tempPlayer.id);
+
+      // Pre-fill the form with enriched data
+      if (enriched.name && enriched.name !== tempName) setName(enriched.name);
+      if (enriched.photo_url) setPhotoUrl(enriched.photo_url);
+      if (enriched.nationality) setNationality(enriched.nationality);
+      if (enriched.club) setClub(enriched.club);
+      if (enriched.league) setLeague(enriched.league);
+      if (enriched.position) setPosition(enriched.position as Position);
+      if (enriched.zone) setZone(enriched.zone);
+      if (enriched.generation) setGeneration(String(enriched.generation));
+      if (enriched.contract_end) setContractEnd(enriched.contract_end);
+      if (enriched.market_value) setNotes(enriched.market_value);
+      if (enriched.transfermarkt_id) {
+        // Store TM ID so we can link it later at save
+        setVideoUrl(''); // clear
+      }
+      if ((enriched as any).date_of_birth) {
+        const dob = new Date((enriched as any).date_of_birth);
+        if (!isNaN(dob.getTime())) setGeneration(String(dob.getFullYear()));
+      }
+
+      const ext = (enriched.external_data || {}) as Record<string, any>;
+      if (ext.height) setNotes(prev => prev ? `${prev}\n${t('player_form.tm_height')}: ${ext.height}` : `${t('player_form.tm_height')}: ${ext.height}`);
+
+      setTmImported(true);
+      toast({ title: t('player_form.tm_import_success'), description: enriched.name || '' });
+    } catch (err: any) {
+      toast({ title: t('common.error'), description: err.message || t('player_form.tm_import_failed'), variant: 'destructive' });
+    } finally {
+      setTmLoading(false);
+    }
+  };
+
   const STEPS = [
     t('player_form.step_basic'),
     t('player_form.step_sport'),
@@ -169,6 +252,42 @@ export default function AddPlayer() {
       <Card className="border-none shadow-sm">
         <CardContent className="p-6 space-y-5">
           {step === 0 && (<>
+            {/* Transfermarkt import */}
+            <div className="rounded-xl border border-dashed border-primary/30 bg-primary/5 p-4 space-y-3">
+              <div className="flex items-center gap-2">
+                <LinkIcon className="w-4 h-4 text-primary" />
+                <span className="text-sm font-semibold">{t('player_form.tm_import_title')}</span>
+                {tmImported && <Badge variant="secondary" className="text-[10px] gap-1"><Check className="w-3 h-3" /> {t('player_form.tm_imported')}</Badge>}
+              </div>
+              <p className="text-xs text-muted-foreground">{t('player_form.tm_import_desc')}</p>
+              <div className="flex gap-2">
+                <Input
+                  value={tmUrl}
+                  onChange={e => setTmUrl(e.target.value)}
+                  placeholder="https://www.transfermarkt.fr/joueur/profil/spieler/123456"
+                  className="flex-1 text-sm"
+                  disabled={tmLoading}
+                  onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); handleTmImport(); } }}
+                />
+                <Button
+                  type="button"
+                  size="sm"
+                  onClick={handleTmImport}
+                  disabled={tmLoading || !tmUrl.trim()}
+                  className="shrink-0 gap-1.5"
+                >
+                  {tmLoading ? <Loader2 className="w-4 h-4 animate-spin" /> : <Sparkles className="w-4 h-4" />}
+                  {tmLoading ? t('player_form.tm_loading') : t('player_form.tm_import_btn')}
+                </Button>
+              </div>
+            </div>
+
+            <div className="relative flex items-center gap-3 py-1">
+              <div className="flex-1 h-px bg-border" />
+              <span className="text-xs text-muted-foreground font-medium">{t('player_form.or_manual')}</span>
+              <div className="flex-1 h-px bg-border" />
+            </div>
+
             <div><Label>{t('player_form.name')} *</Label><Input value={name} onChange={e => setName(e.target.value)} placeholder={t('player_form.name_placeholder')} className="mt-1" /></div>
             <PhotoUpload currentUrl={photoUrl} onPhotoChange={setPhotoUrl} label={t('player_form.photo')} />
             <div><Label>{t('player_form.birth_year')} *</Label><Input type="number" min={1990} max={2010} value={generation} onChange={e => setGeneration(e.target.value)} className="mt-1" /></div>

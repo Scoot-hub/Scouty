@@ -1,6 +1,6 @@
 import { useMemo, useState, useEffect, useRef } from 'react';
 import { useTranslation } from 'react-i18next';
-import { MapContainer, TileLayer, Marker, Popup, useMap } from 'react-leaflet';
+import { MapContainer, TileLayer, Marker, Popup, Circle, useMap } from 'react-leaflet';
 import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
 import {
@@ -13,9 +13,11 @@ import { Card, CardContent } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
 import { Badge } from '@/components/ui/badge';
 import {
-  Search, Loader2, CalendarDays, ChevronLeft, ChevronRight, MapPin, Users,
+  Search, Loader2, CalendarDays, ChevronLeft, ChevronRight, MapPin, Users, Crosshair, Navigation,
 } from 'lucide-react';
+import { Button } from '@/components/ui/button';
 import { cn } from '@/lib/utils';
+import { useGeolocation, distanceKm } from '@/hooks/use-geolocation';
 
 // ---------------------------------------------------------------------------
 // Fix Leaflet default icon paths broken by bundlers
@@ -69,6 +71,18 @@ function createIcon(color: string, size: number = 28) {
 const MATCH_ICON = createIcon('#22c55e', 28);
 const MATCH_LIVE_ICON = createIcon('#ef4444', 32);
 const CLUB_ICON = createIcon('#3b82f6', 22);
+
+const USER_ICON = L.divIcon({
+  className: '',
+  iconSize: [36, 36],
+  iconAnchor: [18, 18],
+  popupAnchor: [0, -18],
+  html: `<div style="width:36px;height:36px;border-radius:50%;background:hsl(280,80%,55%);border:4px solid white;box-shadow:0 0 0 4px rgba(168,85,247,.3),0 2px 8px rgba(0,0,0,.3);display:flex;align-items:center;justify-content:center;">
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polygon points="3 11 22 2 13 21 11 13 3 11"/></svg>
+  </div>`,
+});
+
+const NEARBY_RADIUS_KM = 150; // radius for "nearby" matches
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -141,6 +155,8 @@ export default function MapView() {
   const [flyTarget, setFlyTarget] = useState<{ center: [number, number]; zoom: number } | null>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const [mapHeight, setMapHeight] = useState(500);
+  const { position: userPos, loading: geoLoading, locate } = useGeolocation();
+  const [showNearby, setShowNearby] = useState(false);
 
   // Calculate available height for the map area
   useEffect(() => {
@@ -212,6 +228,18 @@ export default function MapView() {
       .filter(Boolean) as (typeof playerClubs[number] & { coords: [number, number] })[];
   }, [playerClubs]);
 
+  // Nearby matches (sorted by distance to user)
+  const nearbyMatches = useMemo(() => {
+    if (!userPos || !matchMarkers.length) return [];
+    return matchMarkers
+      .map(m => ({
+        ...m,
+        distance: distanceKm(userPos.latitude, userPos.longitude, m.coords[0], m.coords[1]),
+      }))
+      .filter(m => m.distance <= NEARBY_RADIUS_KM)
+      .sort((a, b) => a.distance - b.distance);
+  }, [userPos, matchMarkers]);
+
   // Filter
   const filteredMatchMarkers = useMemo(() => {
     if (!search.trim()) return matchMarkers;
@@ -257,6 +285,23 @@ export default function MapView() {
               <ChevronRight className="w-4 h-4" />
             </button>
           </div>
+          <Button
+            variant={userPos ? 'default' : 'outline'}
+            size="sm"
+            className="rounded-xl gap-1.5"
+            onClick={() => {
+              if (userPos) {
+                setShowNearby(n => !n);
+                setFlyTarget({ center: [userPos.latitude, userPos.longitude], zoom: 8 });
+              } else {
+                locate();
+              }
+            }}
+            disabled={geoLoading}
+          >
+            {geoLoading ? <Loader2 className="w-4 h-4 animate-spin" /> : <Crosshair className="w-4 h-4" />}
+            {userPos ? t('map.nearby') : t('map.locate_me')}
+          </Button>
           <div className="relative w-52">
             <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
             <Input value={search} onChange={e => setSearch(e.target.value)} placeholder={t('map.search')} className="pl-9 h-9 rounded-xl" />
@@ -280,6 +325,12 @@ export default function MapView() {
           <Users className="w-3.5 h-3.5" />
           {playerClubs.length} {t('map.clubs')}
         </Badge>
+        {nearbyMatches.length > 0 && (
+          <Badge variant="outline" className="gap-1.5 border-purple-500/30 text-purple-600">
+            <Navigation className="w-3.5 h-3.5" />
+            {nearbyMatches.reduce((s, m) => s + m.comp.events.length, 0)} {t('map.nearby_count')}
+          </Badge>
+        )}
         {eventsLoading && <Loader2 className="w-4 h-4 animate-spin text-muted-foreground" />}
       </div>
 
@@ -350,11 +401,90 @@ export default function MapView() {
                 </Popup>
               </Marker>
             ))}
+
+            {/* User location marker + radius */}
+            {userPos && (
+              <>
+                <Marker position={[userPos.latitude, userPos.longitude]} icon={USER_ICON}>
+                  <Popup>
+                    <div style={{ minWidth: 160, textAlign: 'center' }}>
+                      <div style={{ fontWeight: 700, fontSize: 13 }}>{t('map.your_position')}</div>
+                      <div style={{ fontSize: 11, color: '#888', marginTop: 2 }}>
+                        {userPos.latitude.toFixed(4)}, {userPos.longitude.toFixed(4)}
+                      </div>
+                      {nearbyMatches.length > 0 && (
+                        <div style={{ fontSize: 11, marginTop: 6, color: '#a855f7', fontWeight: 600 }}>
+                          {nearbyMatches.reduce((s, m) => s + m.comp.events.length, 0)} {t('map.matches_nearby', { radius: NEARBY_RADIUS_KM })}
+                        </div>
+                      )}
+                    </div>
+                  </Popup>
+                </Marker>
+                {showNearby && (
+                  <Circle
+                    center={[userPos.latitude, userPos.longitude]}
+                    radius={NEARBY_RADIUS_KM * 1000}
+                    pathOptions={{
+                      color: '#a855f7',
+                      fillColor: '#a855f7',
+                      fillOpacity: 0.06,
+                      weight: 2,
+                      dashArray: '8 4',
+                    }}
+                  />
+                )}
+              </>
+            )}
           </MapContainer>
         </div>
 
         {/* Sidebar */}
         <div className="w-80 shrink-0 hidden lg:flex flex-col gap-2 overflow-y-auto pr-1">
+          {/* Nearby matches section */}
+          {userPos && nearbyMatches.length > 0 && (
+            <>
+              <p className="text-xs font-bold uppercase tracking-wider text-purple-500 px-1 flex items-center gap-1.5">
+                <Navigation className="w-3 h-3" />
+                {t('map.nearby_title')} ({nearbyMatches.reduce((s, m) => s + m.comp.events.length, 0)})
+              </p>
+              {nearbyMatches.map((m, i) => {
+                const hasLive = m.comp.events.some(e => isLive(e.status));
+                return (
+                  <Card
+                    key={`nearby-${i}`}
+                    className={cn(
+                      'border-purple-500/20 cursor-pointer hover:bg-purple-500/5 transition-colors',
+                      hasLive && 'ring-1 ring-destructive/30'
+                    )}
+                    onClick={() => setFlyTarget({ center: m.coords, zoom: 8 })}
+                  >
+                    <CardContent className="p-3">
+                      <div className="flex items-center gap-2 mb-1.5">
+                        <span className="text-sm">{countryFlag(m.comp.country_code)}</span>
+                        <div className="flex-1 min-w-0">
+                          <p className="text-sm font-bold truncate">{m.comp.name}</p>
+                          <p className="text-xs text-muted-foreground">{m.comp.country}</p>
+                        </div>
+                        <Badge variant="outline" className="text-[10px] shrink-0 border-purple-500/30 text-purple-600">
+                          {Math.round(m.distance)} km
+                        </Badge>
+                      </div>
+                      <div className="space-y-1">
+                        {m.comp.events.slice(0, 3).map((ev, j) => (
+                          <MatchRowCompact key={j} event={ev} />
+                        ))}
+                        {m.comp.events.length > 3 && (
+                          <p className="text-[10px] text-muted-foreground">+{m.comp.events.length - 3} {t('map.more')}</p>
+                        )}
+                      </div>
+                    </CardContent>
+                  </Card>
+                );
+              })}
+              <div className="border-b border-border my-1" />
+            </>
+          )}
+
           <p className="text-xs font-bold uppercase tracking-wider text-muted-foreground px-1">
             {t('map.competitions')} ({filteredMatchMarkers.length})
           </p>

@@ -51,7 +51,7 @@ export function useIsPremium() {
         .eq('user_id', user.id)
         .single();
       if (error || !data) return false;
-      return data.is_premium;
+      return !!data.is_premium;
     },
     enabled: !!user,
     staleTime: 60 * 1000,

@@ -11,6 +11,7 @@ async function getCurrentUserId(): Promise<string> {
 export function useContacts() {
   return useQuery({
     queryKey: ['contacts'],
+    staleTime: 3 * 60 * 1000,
     queryFn: async (): Promise<Contact[]> => {
       const { data, error } = await supabase
         .from('contacts')

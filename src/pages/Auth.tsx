@@ -223,11 +223,22 @@ export default function Auth() {
                   <button
                     type="button"
                     onClick={() => {
-                      const chars = 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789!@#$%&*?';
-                      const arr = new Uint32Array(16);
-                      crypto.getRandomValues(arr);
-                      const pwd = Array.from(arr, v => chars[v % chars.length]).join('');
-                      setPassword(pwd);
+                      const lower = 'abcdefghijklmnopqrstuvwxyz';
+                      const upper = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ';
+                      const digits = '0123456789';
+                      const symbols = '!@#$%&*?+-=_';
+                      const all = lower + upper + digits + symbols;
+                      const pick = (s: string) => s[crypto.getRandomValues(new Uint32Array(1))[0] % s.length];
+                      // Guarantee at least 2 of each category
+                      const mandatory = [pick(lower), pick(lower), pick(upper), pick(upper), pick(digits), pick(digits), pick(symbols), pick(symbols)];
+                      const rest = Array.from(crypto.getRandomValues(new Uint32Array(12)), v => all[v % all.length]);
+                      const combined = [...mandatory, ...rest];
+                      // Shuffle
+                      for (let i = combined.length - 1; i > 0; i--) {
+                        const j = crypto.getRandomValues(new Uint32Array(1))[0] % (i + 1);
+                        [combined[i], combined[j]] = [combined[j], combined[i]];
+                      }
+                      setPassword(combined.join(''));
                       setShowPassword(true);
                     }}
                     className="inline-flex items-center gap-1 text-[11px] text-primary hover:underline font-medium"

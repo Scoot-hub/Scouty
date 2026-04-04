@@ -41,6 +41,7 @@ const CGV = lazy(() => import("@/pages/CGV"));
 const CGU = lazy(() => import("@/pages/CGU"));
 const Booking = lazy(() => import("@/pages/Booking"));
 const Discover = lazy(() => import("@/pages/Discover"));
+const Community = lazy(() => import("@/pages/Community"));
 const ClubProfile = lazy(() => import("@/pages/ClubProfile"));
 const MyClubs = lazy(() => import("@/pages/MyClubs"));
 const AdminRoles = lazy(() => import("@/pages/AdminRoles"));
@@ -48,7 +49,16 @@ const Privacy = lazy(() => import("@/pages/Privacy"));
 const AdminAnalytics = lazy(() => import("@/pages/AdminAnalytics"));
 const MapView = lazy(() => import("@/pages/MapView"));
 const NotFound = lazy(() => import("@/pages/NotFound"));
-const queryClient = new QueryClient();
+const queryClient = new QueryClient({
+  defaultOptions: {
+    queries: {
+      staleTime: 2 * 60 * 1000,        // 2 min — data is fresh for 2 min after fetch
+      gcTime: 10 * 60 * 1000,           // 10 min — keep unused cache for 10 min
+      refetchOnWindowFocus: false,       // don't refetch when user alt-tabs back
+      retry: 1,                          // retry once on failure
+    },
+  },
+});
 
 const App = () => (
   <ThemeProvider>
@@ -98,6 +108,7 @@ const App = () => (
                 <Route path="/organization/:orgSlug/roadmap" element={<OrgRoadmap />} />
                 <Route path="/booking" element={<Booking />} />
                 <Route path="/discover" element={<Discover />} />
+                <Route path="/community" element={<Community />} />
                 <Route path="/club" element={<ClubProfile />} />
                 <Route path="/my-clubs" element={<MyClubs />} />
                 <Route path="/map" element={<MapView />} />

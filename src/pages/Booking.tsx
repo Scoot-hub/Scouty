@@ -1,53 +1,85 @@
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { CalendarCheck, ExternalLink } from 'lucide-react';
+import { CalendarCheck, ExternalLink, Loader2 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 
-// Cal.com configuration — set via environment variables
 const CAL_USERNAME = import.meta.env.VITE_CAL_USERNAME || '';
 const CAL_EVENT_SLUG = import.meta.env.VITE_CAL_EVENT_SLUG || '';
 const CAL_URL = import.meta.env.VITE_CAL_URL || 'https://cal.com';
 
 export default function Booking() {
   const { t } = useTranslation();
-  const embedRef = useRef<HTMLDivElement>(null);
-  const scriptLoaded = useRef(false);
+  const containerRef = useRef<HTMLDivElement>(null);
+  const [loading, setLoading] = useState(true);
+  const initDone = useRef(false);
 
-  const calLink = CAL_USERNAME
-    ? `${CAL_URL}/${CAL_USERNAME}${CAL_EVENT_SLUG ? `/${CAL_EVENT_SLUG}` : ''}`
-    : '';
+  const calPath = `${CAL_USERNAME}${CAL_EVENT_SLUG ? `/${CAL_EVENT_SLUG}` : ''}`;
+  const calLink = CAL_USERNAME ? `${CAL_URL}/${calPath}` : '';
 
   useEffect(() => {
-    if (!CAL_USERNAME || scriptLoaded.current) return;
+    if (!CAL_USERNAME || initDone.current) return;
+    initDone.current = true;
 
-    // Load Cal.com embed script
     const script = document.createElement('script');
-    script.src = `${CAL_URL}/embed/embed.js`;
-    script.async = true;
-    script.onload = () => {
-      scriptLoaded.current = true;
-      // Initialize Cal inline embed
-      if ((window as any).Cal) {
-        (window as any).Cal('init', { origin: CAL_URL });
-        (window as any).Cal('inline', {
-          elementOrSelector: '#cal-embed',
-          calLink: `${CAL_USERNAME}${CAL_EVENT_SLUG ? `/${CAL_EVENT_SLUG}` : ''}`,
-          layout: 'month_view',
-          config: {
-            theme: document.documentElement.classList.contains('dark') ? 'dark' : 'light',
-          },
-        });
-        (window as any).Cal('ui', {
-          styles: { branding: { brandColor: '#6366f1' } },
-          hideEventTypeDetails: false,
-        });
+    script.type = 'text/javascript';
+    script.innerHTML = `
+      (function (C, A, L) {
+        let p = function (a, ar) { a.q.push(ar); };
+        let d = C.document;
+        C.Cal = C.Cal || function () {
+          let cal = C.Cal;
+          let ar = arguments;
+          if (!cal.loaded) {
+            cal.ns = {};
+            cal.q = cal.q || [];
+            d.head.appendChild(d.createElement("script")).src = A;
+            cal.loaded = true;
+          }
+          if (ar[0] === L) {
+            const api = function () { p(api, arguments); };
+            const namespace = ar[1];
+            api.q = api.q || [];
+            if (typeof namespace === "string") {
+              cal.ns[namespace] = cal.ns[namespace] || api;
+              p(cal.ns[namespace], ar);
+              p(cal, ["initNamespace", namespace]);
+            } else p(cal, ar);
+            return;
+          }
+          p(cal, ar);
+        };
+      })(window, "${CAL_URL}/embed/embed.js", "init");
+
+      Cal("init", "booking", { origin: "${CAL_URL}" });
+      Cal.ns.booking("inline", {
+        elementOrSelector: "#cal-booking-inline",
+        calLink: "${calPath}",
+        layout: "month_view",
+      });
+      Cal.ns.booking("ui", {
+        styles: { branding: { brandColor: "#6366f1" } },
+        hideEventTypeDetails: false,
+      });
+    `;
+    document.body.appendChild(script);
+
+    // Observe the container for content being injected by Cal
+    const observer = new MutationObserver(() => {
+      if (containerRef.current && containerRef.current.children.length > 0) {
+        setLoading(false);
+        observer.disconnect();
       }
-    };
-    document.head.appendChild(script);
+    });
+    if (containerRef.current) {
+      observer.observe(containerRef.current, { childList: true, subtree: true });
+    }
+
+    // Fallback timeout
+    const timer = setTimeout(() => setLoading(false), 5000);
 
     return () => {
-      // Cleanup on unmount
-      if (script.parentNode) script.parentNode.removeChild(script);
+      observer.disconnect();
+      clearTimeout(timer);
     };
   }, []);
 
@@ -62,7 +94,7 @@ export default function Booking() {
 {`# .env
 VITE_CAL_USERNAME=votre-username-cal
 VITE_CAL_EVENT_SLUG=consultation    # optionnel
-VITE_CAL_URL=https://cal.com        # ou votre instance self-hosted`}
+VITE_CAL_URL=https://cal.com        # ou https://www.cal.eu`}
           </pre>
         </div>
       </div>
@@ -89,12 +121,14 @@ VITE_CAL_URL=https://cal.com        # ou votre instance self-hosted`}
         )}
       </div>
 
-      <div
-        id="cal-embed"
-        ref={embedRef}
-        className="rounded-xl border border-border overflow-hidden bg-background"
-        style={{ minHeight: '600px', width: '100%' }}
-      />
+      <div className="rounded-xl border border-border overflow-hidden bg-background relative" style={{ minHeight: '700px' }}>
+        {loading && (
+          <div className="absolute inset-0 flex items-center justify-center bg-background z-10">
+            <Loader2 className="w-8 h-8 animate-spin text-primary" />
+          </div>
+        )}
+        <div id="cal-booking-inline" ref={containerRef} style={{ minHeight: '700px', width: '100%' }} />
+      </div>
     </div>
   );
 }

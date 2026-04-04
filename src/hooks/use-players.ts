@@ -48,6 +48,7 @@ export function usePlayers() {
 export function usePlayer(id: string | undefined) {
   return useQuery({
     queryKey: ['player', id],
+    staleTime: 3 * 60 * 1000, // 3 min — player data rarely changes within a session
     queryFn: async (): Promise<Player | null> => {
       if (!id) return null;
       const { data, error } = await supabase
@@ -73,6 +74,7 @@ export function usePlayer(id: string | undefined) {
 export function useReports(playerId: string | undefined) {
   return useQuery({
     queryKey: ['reports', playerId],
+    staleTime: 3 * 60 * 1000,
     queryFn: async (): Promise<Report[]> => {
       if (!playerId) return [];
       const { data, error } = await supabase
@@ -91,6 +93,7 @@ export function useReports(playerId: string | undefined) {
 export function useAllReports() {
   return useQuery({
     queryKey: ['reports'],
+    staleTime: 2 * 60 * 1000,
     queryFn: async (): Promise<Report[]> => {
       const { data, error } = await supabase
         .from('reports')
@@ -281,7 +284,7 @@ export function useAddReport() {
 }
 
 // Normalize name for comparison: lowercase, remove diacritics, extra spaces
-function normalizeName(name: string): string {
+export function normalizeName(name: string): string {
   return name
     .normalize('NFD')
     .replace(/[\u0300-\u036f]/g, '')
@@ -292,7 +295,7 @@ function normalizeName(name: string): string {
 }
 
 // Check if two names are similar enough to be the same player
-function isSamePlayer(
+export function isSamePlayer(
   importName: string,
   importGen: number,
   dbName: string,
@@ -302,14 +305,21 @@ function isSamePlayer(
 ): boolean {
   const nA = normalizeName(importName);
   const nB = normalizeName(dbName);
+  if (!nA || !nB) return false;
 
-  // Must have same or very close generation (within 1 year)
-  if (Math.abs(importGen - dbGen) > 1) return false;
+  const sameClub = !!(importClub && dbClub && normalizeName(importClub) === normalizeName(dbClub));
+  const genClose = Math.abs(importGen - dbGen) <= 1;
+  const genDefault = importGen === 2000 || dbGen === 2000; // default value = unknown
 
-  // Exact normalized name match
-  if (nA === nB) return true;
+  // Exact name match + same club → always duplicate regardless of generation
+  if (nA === nB && sameClub) return true;
 
-  // One name contains the other (e.g. "Kylian Mbappé" vs "Mbappé" or "K. Mbappé")
+  // Exact name match + close/unknown generation → duplicate
+  if (nA === nB && (genClose || genDefault)) return true;
+
+  // For partial name matching, require generation to be close (unless default)
+  if (!genClose && !genDefault) return false;
+
   const partsA = nA.split(' ').filter(Boolean);
   const partsB = nB.split(' ').filter(Boolean);
 
@@ -317,11 +327,8 @@ function isSamePlayer(
   const lastA = partsA[partsA.length - 1];
   const lastB = partsB[partsB.length - 1];
   if (lastA === lastB && lastA.length >= 3) {
-    // Same last name + same generation = likely same player
-    // Extra confidence if first initial matches
     if (partsA[0]?.[0] === partsB[0]?.[0]) return true;
-    // If club also matches, it's very likely the same
-    if (importClub && dbClub && normalizeName(importClub) === normalizeName(dbClub)) return true;
+    if (sameClub) return true;
   }
 
   // Check if all parts of the shorter name appear in the longer name

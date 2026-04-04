@@ -23,6 +23,7 @@ export interface ShadowTeamPlayer {
 export function useShadowTeams() {
   return useQuery({
     queryKey: ['shadow_teams'],
+    staleTime: 2 * 60 * 1000,
     queryFn: async (): Promise<ShadowTeam[]> => {
       const { data, error } = await supabase
         .from('shadow_teams')
@@ -37,6 +38,7 @@ export function useShadowTeams() {
 export function useShadowTeamPlayers(shadowTeamId: string | undefined) {
   return useQuery({
     queryKey: ['shadow_team_players', shadowTeamId],
+    staleTime: 2 * 60 * 1000,
     queryFn: async (): Promise<ShadowTeamPlayer[]> => {
       if (!shadowTeamId) return [];
       const { data, error } = await supabase

@@ -28,6 +28,7 @@ async function getCurrentUserId(): Promise<string> {
 export function useCustomFields() {
   return useQuery({
     queryKey: ['custom_fields'],
+    staleTime: 5 * 60 * 1000, // 5 min — custom fields rarely change
     queryFn: async (): Promise<CustomField[]> => {
       const { data, error } = await supabase
         .from('custom_fields')
@@ -45,6 +46,7 @@ export function useCustomFields() {
 export function useCustomFieldValues(playerId: string | undefined) {
   return useQuery({
     queryKey: ['custom_field_values', playerId],
+    staleTime: 3 * 60 * 1000,
     queryFn: async (): Promise<CustomFieldValue[]> => {
       if (!playerId) return [];
       const { data, error } = await supabase

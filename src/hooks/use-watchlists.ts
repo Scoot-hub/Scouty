@@ -20,6 +20,7 @@ export interface WatchlistPlayer {
 export function useWatchlists() {
   return useQuery({
     queryKey: ['watchlists'],
+    staleTime: 2 * 60 * 1000,
     queryFn: async (): Promise<Watchlist[]> => {
       const { data, error } = await supabase
         .from('watchlists')
@@ -34,6 +35,7 @@ export function useWatchlists() {
 export function useWatchlistPlayers(watchlistId: string | undefined) {
   return useQuery({
     queryKey: ['watchlist_players', watchlistId],
+    staleTime: 2 * 60 * 1000,
     queryFn: async (): Promise<WatchlistPlayer[]> => {
       if (!watchlistId) return [];
       const { data, error } = await supabase

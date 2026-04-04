@@ -20,45 +20,58 @@ interface HelpEntry { keywords: string[]; answer: string }
 
 const ROUTE_MAP: Record<string, RouteEntry> = {
   // Core pages
-  players:        { keywords: ['joueur', 'joueurs', 'player', 'players', 'liste', 'list', 'base', 'catalogue', 'talent', 'talents', 'jugador', 'jugadores', 'effectif', 'roster'], path: '/players' },
-  addPlayer:      { keywords: ['ajouter joueur', 'nouveau joueur', 'creer joueur', 'add player', 'new player', 'create player', 'nuevo jugador', 'crear jugador', 'ajouter un joueur'], path: '/player/new' },
-  watchlist:      { keywords: ['watchlist', 'watch list', 'surveiller', 'suivi', 'observation', 'favoris', 'shortlist', 'liste de suivi'], path: '/watchlist' },
-  shadowTeam:     { keywords: ['shadow', 'equipe type', 'shadow team', 'composition', 'onze', 'xi', 'formation', 'lineup', 'meilleur onze', 'best xi'], path: '/shadow-team' },
+  players:        { keywords: ['joueur', 'joueurs', 'player', 'players', 'liste', 'list', 'base', 'catalogue', 'talent', 'talents', 'jugador', 'jugadores', 'effectif', 'roster', 'database', 'repertoire', 'scoutes', 'reperage', 'fiche joueur', 'base joueur', 'mes joueurs', 'my players', 'tous les joueurs', 'all players'], path: '/players' },
+  addPlayer:      { keywords: ['ajouter joueur', 'nouveau joueur', 'creer joueur', 'add player', 'new player', 'create player', 'nuevo jugador', 'crear jugador', 'ajouter un joueur', 'enregistrer joueur', 'saisir joueur', 'inscrire joueur', 'register player', 'nouvelle fiche'], path: '/player/new' },
+  watchlist:      { keywords: ['watchlist', 'watch list', 'surveiller', 'suivi', 'observation', 'favoris', 'shortlist', 'liste de suivi', 'liste surveillance', 'suivre joueur', 'track player', 'tracking', 'liste observation', 'liste favoris'], path: '/watchlist' },
+  shadowTeam:     { keywords: ['shadow', 'equipe type', 'shadow team', 'composition', 'onze', 'xi', 'formation', 'lineup', 'meilleur onze', 'best xi', 'equipe ideale', 'ideal team', 'titulaire', 'starting eleven', 'tactique', 'disposition', 'schema tactique'], path: '/shadow-team' },
 
   // Matches & calendar
-  fixtures:       { keywords: ['match', 'matches', 'fixture', 'fixtures', 'calendrier', 'calendar', 'rencontre', 'partido', 'programme', 'schedule'], path: '/fixtures' },
-  myMatches:      { keywords: ['mes match', 'my match', 'mes rencontres', 'missions', 'deplacement', 'mes missions', 'planning', 'mission scouting', 'planifie'], path: '/my-matches' },
+  fixtures:       { keywords: ['match', 'matches', 'fixture', 'fixtures', 'calendrier', 'calendar', 'rencontre', 'partido', 'programme', 'schedule', 'agenda', 'evenement', 'event', 'matchday', 'journee', 'prochains matchs', 'upcoming', 'resultat', 'score'], path: '/fixtures' },
+  myMatches:      { keywords: ['mes match', 'my match', 'mes rencontres', 'missions', 'deplacement', 'mes missions', 'planning', 'mission scouting', 'planifie', 'mes deplacements', 'my schedule', 'mon planning', 'mon agenda', 'mes observations', 'assigner', 'assigned'], path: '/my-matches' },
 
   // Network
-  contacts:       { keywords: ['contact', 'contacts', 'agent', 'agents', 'reseau', 'network', 'annuaire', 'intermediaire', 'directeur sportif', 'carnet d\'adresse'], path: '/contacts' },
+  contacts:       { keywords: ['contact', 'contacts', 'agent', 'agents', 'reseau', 'network', 'annuaire', 'intermediaire', 'directeur sportif', 'carnet d\'adresse', 'repertoire', 'networking', 'relation', 'partenaire', 'collaborateur', 'recruteur', 'recruiter', 'scout contact', 'telephone', 'coordonnees'], path: '/contacts' },
 
   // Organization
-  organization:   { keywords: ['organisation', 'organization', 'club', 'equipe', 'team', 'org', 'estructura', 'structure', 'membre', 'members', 'inviter', 'invite', 'rejoindre', 'join'], path: '/organization' },
+  organization:   { keywords: ['organisation', 'organization', 'club', 'equipe', 'team', 'org', 'estructura', 'structure', 'membre', 'members', 'inviter', 'invite', 'rejoindre', 'join', 'cellule recrutement', 'gestion club', 'mon club', 'my club', 'groupe scout', 'collaboratif', 'collaborative', 'equipe scouting', 'staff'], path: '/organization' },
 
   // User
-  settings:       { keywords: ['parametre', 'reglage', 'setting', 'settings', 'config', 'configuration', 'preference', 'ajuste', 'langue', 'language', 'champ personnalise', 'custom field'], path: '/settings' },
-  account:        { keywords: ['compte', 'account', 'profil', 'profile', 'mon compte', 'my account', 'mi cuenta', 'mot de passe', 'password', 'email', 'supprimer compte', 'delete account', 'donnees personnelles', '2fa', 'double authentification', 'two factor', 'securite', 'security'], path: '/account' },
-  pricing:        { keywords: ['prix', 'tarif', 'pricing', 'plan', 'abonnement', 'subscription', 'premium', 'upgrade', 'precio', 'paiement', 'payment', 'stripe', 'facturation', 'billing', 'offre', 'offer'], path: '/pricing' },
-  booking:        { keywords: ['booking', 'reservation', 'reserver', 'demo', 'rendez-vous', 'rdv', 'cal.com', 'appel', 'call', 'consultation', 'cita'], path: '/booking' },
+  settings:       { keywords: ['parametre', 'reglage', 'setting', 'settings', 'config', 'configuration', 'preference', 'ajuste', 'langue', 'language', 'champ personnalise', 'custom field', 'personnalisation', 'customization', 'options', 'theme', 'dark mode', 'mode sombre', 'apparence', 'appearance', 'notification setting'], path: '/settings' },
+  account:        { keywords: ['compte', 'account', 'profil', 'profile', 'mon compte', 'my account', 'mi cuenta', 'mot de passe', 'password', 'email', 'supprimer compte', 'delete account', 'donnees personnelles', '2fa', 'double authentification', 'two factor', 'securite', 'security', 'identifiant', 'credentials', 'connexion info', 'mes informations', 'my info', 'deconnexion', 'logout'], path: '/account' },
+  pricing:        { keywords: ['prix', 'tarif', 'pricing', 'plan', 'abonnement', 'subscription', 'premium', 'upgrade', 'precio', 'paiement', 'payment', 'stripe', 'facturation', 'billing', 'offre', 'offer', 'forfait', 'formule', 'gratuit', 'free plan', 'pro plan', 'cout', 'cost', 'combien', 'how much', 'cuanto cuesta'], path: '/pricing' },
+  booking:        { keywords: ['booking', 'reservation', 'reserver', 'demo', 'rendez-vous', 'rdv', 'cal.com', 'appel', 'call', 'consultation', 'cita', 'demonstration', 'essai', 'trial', 'prendre rdv', 'schedule call', 'planifier appel', 'contacter equipe', 'contact team'], path: '/booking' },
+
+  // Discover & clubs
+  discover:       { keywords: ['decouvrir', 'discover', 'decouverte', 'discovery', 'transfermarkt', 'recherche joueur', 'search player', 'trouver joueur', 'find player', 'marche transfert', 'transfer market', 'mercato', 'recrutement', 'recruitment', 'scouter', 'reperer', 'detect', 'detecter', 'talent externe', 'external player', 'buscar jugador', 'descubrimiento'], path: '/discover' },
+  club:           { keywords: ['fiche club', 'club profile', 'profil club', 'info club', 'information club', 'stade', 'stadium', 'entraineur', 'coach', 'manager', 'effectif club', 'club squad', 'club info', 'perfil club', 'ficha club'], path: '/club' },
+  myClubs:        { keywords: ['mes clubs', 'my clubs', 'clubs suivis', 'followed clubs', 'suivre club', 'follow club', 'mis clubes', 'clubs favoris', 'club favori', 'favorite club', 'club suivi', 'liste clubs'], path: '/my-clubs' },
+  map:            { keywords: ['carte', 'map', 'geolocalisation', 'geolocation', 'localisation', 'location', 'vue carte', 'map view', 'mapa', 'geographical', 'geographique', 'ou sont', 'where are', 'position geographique', 'world map', 'carte mondiale'], path: '/map' },
 
   // Admin
-  admin:          { keywords: ['admin', 'administration', 'gestion utilisateur', 'users management', 'panel admin', 'back office', 'impersonation', 'impersonate'], path: '/admin' },
+  admin:          { keywords: ['admin', 'administration', 'gestion utilisateur', 'users management', 'panel admin', 'back office', 'impersonation', 'impersonate', 'tableau de bord admin', 'admin dashboard', 'gerer utilisateurs', 'manage users'], path: '/admin' },
+  adminRoles:     { keywords: ['role', 'roles', 'permission', 'permissions', 'droit', 'droits', 'acces', 'access', 'gestion roles', 'role management', 'admin role', 'autorisation', 'authorization', 'privilege'], path: '/admin/roles' },
+  adminAnalytics: { keywords: ['analytics', 'statistique', 'statistiques', 'stats', 'metriques', 'metrics', 'admin analytics', 'tableau de bord', 'dashboard', 'kpi', 'usage', 'utilisation', 'activite', 'activity', 'analyse'], path: '/admin/analytics' },
 
-  // Legal
-  legal:          { keywords: ['legal', 'rgpd', 'gdpr', 'confidentialite', 'privacy', 'mention legale', 'cookies', 'donnees', 'iso 27001', 'rgaa', 'accessibilite'], path: '/legal' },
-  cgv:            { keywords: ['cgv', 'conditions generales de vente', 'conditions de vente', 'terms of sale'], path: '/cgv' },
-  cgu:            { keywords: ['cgu', 'conditions generales d\'utilisation', 'conditions d\'utilisation', 'terms of use'], path: '/cgu' },
+  // Legal & info
+  legal:          { keywords: ['legal', 'rgpd', 'gdpr', 'confidentialite', 'privacy', 'mention legale', 'cookies', 'donnees', 'iso 27001', 'rgaa', 'accessibilite', 'accessibility', 'compliance', 'conformite', 'regulation', 'reglementation'], path: '/legal' },
+  cgv:            { keywords: ['cgv', 'conditions generales de vente', 'conditions de vente', 'terms of sale', 'vente', 'sale terms'], path: '/cgv' },
+  cgu:            { keywords: ['cgu', 'conditions generales d\'utilisation', 'conditions d\'utilisation', 'terms of use', 'terms of service', 'tos', 'utilisation'], path: '/cgu' },
+  about:          { keywords: ['a propos', 'about', 'qui sommes nous', 'who are we', 'histoire', 'story', 'equipe scouty', 'scouty team', 'fondateurs', 'founders', 'mission', 'valeurs', 'values', 'quienes somos', 'acerca de', 'about us', 'presentation'], path: '/about' },
+  privacy:        { keywords: ['vie privee', 'privacy policy', 'politique confidentialite', 'politique de confidentialite', 'donnees personnelles', 'personal data', 'data protection', 'protection donnees', 'privacidad', 'datos personales'], path: '/privacy' },
+
+  // Community
+  community:      { keywords: ['communaute', 'community', 'forum', 'discussion', 'message public', 'public message', 'question scout', 'suggestion', 'echange', 'exchange', 'poster', 'post', 'fil discussion', 'thread', 'avis scout', 'opiniones', 'mensaje publico', 'foro', 'comunidad', 'debat', 'debate'], path: '/community' },
 
   // Special views (Players page with query params)
-  byLeague:       { keywords: ['par ligue', 'by league', 'par championnat', 'por liga', 'tri ligue'], path: '/players?view=by-league' },
-  byPosition:     { keywords: ['par poste', 'par position', 'by position', 'por posicion', 'tri position'], path: '/players?view=by-position' },
-  byAge:          { keywords: ['par age', 'by age', 'por edad', 'tri age', 'u21', 'jeune', 'young'], path: '/players?view=by-age' },
-  byOpinion:      { keywords: ['par avis', 'par opinion', 'by opinion', 'por opinion', 'tri opinion', 'a suivre', 'a revoir', 'defavorable'], path: '/players?view=by-opinion' },
-  byPotential:    { keywords: ['par potentiel', 'by potential', 'por potencial', 'tri potentiel', 'haut potentiel', 'elite'], path: '/players?view=by-potential' },
-  contracts:      { keywords: ['contrat', 'contract', 'fin de contrat', 'expiration', 'libre', 'free agent', 'echeance'], path: '/players?view=contracts' },
+  byLeague:       { keywords: ['par ligue', 'by league', 'par championnat', 'por liga', 'tri ligue', 'trier par ligue', 'sort by league', 'ligue 1', 'la liga', 'premier league', 'bundesliga', 'serie a', 'championnat'], path: '/players?view=by-league' },
+  byPosition:     { keywords: ['par poste', 'par position', 'by position', 'por posicion', 'tri position', 'trier par poste', 'sort by position', 'gardien', 'defenseur', 'milieu', 'attaquant', 'goalkeeper', 'defender', 'midfielder', 'forward', 'ailier', 'winger'], path: '/players?view=by-position' },
+  byAge:          { keywords: ['par age', 'by age', 'por edad', 'tri age', 'u21', 'jeune', 'young', 'trier par age', 'sort by age', 'senior', 'veteran', 'espoir', 'minime', 'cadet', 'junior', 'u19', 'u23', 'youth'], path: '/players?view=by-age' },
+  byOpinion:      { keywords: ['par avis', 'par opinion', 'by opinion', 'por opinion', 'tri opinion', 'a suivre', 'a revoir', 'defavorable', 'trier par avis', 'sort by opinion', 'evaluation', 'note', 'rating', 'appreciation'], path: '/players?view=by-opinion' },
+  byPotential:    { keywords: ['par potentiel', 'by potential', 'por potencial', 'tri potentiel', 'haut potentiel', 'elite', 'trier par potentiel', 'sort by potential', 'prometteur', 'promising', 'top talent', 'pepite', 'wonderkid', 'gem'], path: '/players?view=by-potential' },
+  contracts:      { keywords: ['contrat', 'contract', 'fin de contrat', 'expiration', 'libre', 'free agent', 'echeance', 'contract end', 'agent libre', 'sans contrat', 'out of contract', 'transfert libre', 'free transfer', 'renouvellement', 'renewal'], path: '/players?view=contracts' },
 
   // Affiliate
-  affiliate:      { keywords: ['affiliation', 'affiliate', 'parrainage', 'referral', 'parrain', 'filleul', 'commission', 'gagner argent', 'earn money', 'recommander', 'recommend', 'lien parrainage', 'referido'], path: '/affiliate' },
+  affiliate:      { keywords: ['affiliation', 'affiliate', 'parrainage', 'referral', 'parrain', 'filleul', 'commission', 'gagner argent', 'earn money', 'recommander', 'recommend', 'lien parrainage', 'referido', 'programme partenaire', 'partner program', 'ambassadeur', 'ambassador', 'sponsoring', 'revenue share'], path: '/affiliate' },
 };
 
 const HELP_TOPICS: Record<string, HelpEntry> = {
@@ -70,6 +83,7 @@ const HELP_TOPICS: Record<string, HelpEntry> = {
   enrichment:     { keywords: ['enrichir', 'enrichissement', 'enrich', 'transfermarkt', 'donnees externes', 'external data', 'auto-complete', 'completer', 'ia', 'ai'], answer: 'chatbot.help_enrich' },
   customFields:   { keywords: ['champ personnalise', 'custom field', 'champ custom', 'ajouter champ', 'nouveau champ', 'field', 'campo personalizado'], answer: 'chatbot.help_custom_fields' },
   pdf:            { keywords: ['pdf', 'generer pdf', 'generate pdf', 'telecharger rapport', 'download report', 'imprimer', 'print'], answer: 'chatbot.help_pdf' },
+  performance:    { keywords: ['performance', 'radar', 'graphique', 'chart', 'statistique joueur', 'player stats', 'indicateur', 'indicator', 'diagramme', 'diagram', 'evolution joueur', 'player evolution', 'score global', 'overall score', 'attribut', 'attribute', 'rendimiento', 'grafico'], answer: 'chatbot.help_performance' },
 
   // Watchlist & shadow
   watchlistHelp:  { keywords: ['creer watchlist', 'nouvelle watchlist', 'ajouter watchlist', 'create watchlist', 'gerer watchlist', 'manage watchlist'], answer: 'chatbot.help_watchlist' },
@@ -130,15 +144,78 @@ const QUICK_ACTIONS = [
 // ---------------------------------------------------------------------------
 
 function normalize(str: string): string {
-  return str.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/['']/g, "'");
+  return str.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/['']/g, "'").trim();
 }
 
-function matchQuery(input: string): { routes: { label: string; path: string }[]; helps: string[] } {
+/** Levenshtein distance between two strings */
+function levenshtein(a: string, b: string): number {
+  const m = a.length, n = b.length;
+  if (m === 0) return n;
+  if (n === 0) return m;
+  const dp: number[] = Array.from({ length: n + 1 }, (_, i) => i);
+  for (let i = 1; i <= m; i++) {
+    let prev = i - 1;
+    dp[0] = i;
+    for (let j = 1; j <= n; j++) {
+      const tmp = dp[j];
+      dp[j] = a[i - 1] === b[j - 1] ? prev : 1 + Math.min(prev, dp[j], dp[j - 1]);
+      prev = tmp;
+    }
+  }
+  return dp[n];
+}
+
+/** Check if any word in the input fuzzy-matches the keyword (tolerance based on word length) */
+function fuzzyMatch(inputWords: string[], keyword: string): number {
+  const kwNorm = normalize(keyword);
+  const kwWords = kwNorm.split(/\s+/);
+
+  // Exact substring match → best score
+  const inputJoined = inputWords.join(' ');
+  if (inputJoined.includes(kwNorm)) return 0;
+
+  // For single-word keywords, find best Levenshtein distance against input words
+  if (kwWords.length === 1) {
+    let best = Infinity;
+    for (const w of inputWords) {
+      // Skip very short input words for fuzzy (likely noise)
+      if (w.length < 3 && kwNorm.length > 3) continue;
+      const dist = levenshtein(w, kwNorm);
+      // Allow tolerance: 1 for words ≤5 chars, 2 for longer words
+      const tolerance = kwNorm.length <= 5 ? 1 : 2;
+      if (dist <= tolerance) best = Math.min(best, dist);
+      // Also check if input word starts with keyword or vice versa (prefix match)
+      if (w.startsWith(kwNorm) || kwNorm.startsWith(w)) best = Math.min(best, 1);
+    }
+    return best;
+  }
+
+  // For multi-word keywords, check if all keyword words fuzzy-match some input word
+  let totalDist = 0;
+  for (const kw of kwWords) {
+    let bestWord = Infinity;
+    for (const w of inputWords) {
+      const dist = levenshtein(w, kw);
+      const tolerance = kw.length <= 5 ? 1 : 2;
+      if (dist <= tolerance) bestWord = Math.min(bestWord, dist);
+      if (w.startsWith(kw) || kw.startsWith(w)) bestWord = Math.min(bestWord, 1);
+    }
+    if (bestWord === Infinity) return Infinity; // One keyword word didn't match at all
+    totalDist += bestWord;
+  }
+  return totalDist;
+}
+
+interface MatchResult { routes: { label: string; path: string }[]; helps: string[] }
+
+function matchQuery(input: string): MatchResult {
   const normalized = normalize(input);
+  const inputWords = normalized.split(/\s+/).filter(w => w.length > 0);
   const routes: { label: string; path: string }[] = [];
   const helps: string[] = [];
   const seenRoutes = new Set<string>();
 
+  // --- Exact substring matching (priority) ---
   for (const [key, { keywords, path }] of Object.entries(ROUTE_MAP)) {
     for (const kw of keywords) {
       if (normalized.includes(normalize(kw))) {
@@ -161,6 +238,51 @@ function matchQuery(input: string): { routes: { label: string; path: string }[];
         }
         break;
       }
+    }
+  }
+
+  // --- Fuzzy fallback: if no exact matches, find best fuzzy matches ---
+  if (routes.length === 0 && helps.length === 0) {
+    // Collect fuzzy scores for routes
+    const routeScores: { key: string; path: string; score: number }[] = [];
+    for (const [key, { keywords, path }] of Object.entries(ROUTE_MAP)) {
+      let bestScore = Infinity;
+      for (const kw of keywords) {
+        const score = fuzzyMatch(inputWords, kw);
+        bestScore = Math.min(bestScore, score);
+      }
+      if (bestScore < Infinity) {
+        routeScores.push({ key, path, score: bestScore });
+      }
+    }
+    routeScores.sort((a, b) => a.score - b.score);
+
+    // Collect fuzzy scores for help topics
+    const helpScores: { answer: string; score: number }[] = [];
+    for (const [, { keywords, answer }] of Object.entries(HELP_TOPICS)) {
+      let bestScore = Infinity;
+      for (const kw of keywords) {
+        const score = fuzzyMatch(inputWords, kw);
+        bestScore = Math.min(bestScore, score);
+      }
+      if (bestScore < Infinity) {
+        helpScores.push({ answer, score: bestScore });
+      }
+    }
+    helpScores.sort((a, b) => a.score - b.score);
+
+    // Take top fuzzy route matches (up to 3)
+    const addedPaths = new Set<string>();
+    for (const r of routeScores.slice(0, 3)) {
+      if (!addedPaths.has(r.path)) {
+        addedPaths.add(r.path);
+        routes.push({ label: `chatbot.route_${r.key}`, path: r.path });
+      }
+    }
+
+    // Take top fuzzy help match (only best one for relevance)
+    if (helpScores.length > 0) {
+      helps.push(helpScores[0].answer);
     }
   }
 
@@ -219,7 +341,14 @@ export default function ChatBot() {
       botText = parts.join('\n\n');
       links = routes.length > 0 ? routes.map(r => ({ ...r, label: t(r.label) })) : undefined;
     } else {
-      botText = t('chatbot.no_result');
+      // Ultimate fallback: suggest popular pages
+      botText = t('chatbot.no_result_suggest');
+      links = [
+        { label: t('chatbot.route_players'), path: '/players' },
+        { label: t('chatbot.route_discover'), path: '/discover' },
+        { label: t('chatbot.route_settings'), path: '/settings' },
+        { label: t('chatbot.route_pricing'), path: '/pricing' },
+      ];
     }
 
     const botMsg: Message = { id: nextId, role: 'bot', text: botText, links };

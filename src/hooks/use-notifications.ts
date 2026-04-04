@@ -30,7 +30,8 @@ export function useNotifications() {
       if (!res.ok) throw new Error('Failed to fetch notifications');
       return res.json();
     },
-    refetchInterval: 30000,
+    staleTime: 30 * 1000,
+    refetchInterval: 60000,
   });
 }
 

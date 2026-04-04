@@ -30,6 +30,7 @@ export function useMyMatches() {
   const { user } = useAuth();
   return useQuery({
     queryKey: ['my-matches', user?.id],
+    staleTime: 2 * 60 * 1000,
     queryFn: async (): Promise<MatchAssignment[]> => {
       const { data, error } = await supabase
         .from('match_assignments')
@@ -49,6 +50,7 @@ export function useOrgMatchAssignments(organizationId?: string) {
   const { user } = useAuth();
   return useQuery({
     queryKey: ['org-match-assignments', organizationId],
+    staleTime: 2 * 60 * 1000,
     queryFn: async (): Promise<MatchAssignment[]> => {
       const { data, error } = await supabase
         .from('match_assignments')

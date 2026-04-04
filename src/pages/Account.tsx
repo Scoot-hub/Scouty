@@ -8,7 +8,7 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Separator } from '@/components/ui/separator';
 import { toast } from 'sonner';
-import { Crown, Mail, Lock, Building2, User, CalendarDays, ExternalLink, Loader2, Shield, ShieldCheck, ShieldOff, Download, Trash2, AlertTriangle } from 'lucide-react';
+import { Crown, Mail, Lock, Building2, User, CalendarDays, ExternalLink, Loader2, Shield, ShieldCheck, ShieldOff, Download, Trash2, AlertTriangle, CreditCard } from 'lucide-react';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from '@/components/ui/dialog';
 import PasswordStrengthIndicator, { validatePassword } from '@/components/PasswordStrengthIndicator';
 import { InputOTP, InputOTPGroup, InputOTPSlot } from '@/components/ui/input-otp';
@@ -35,7 +35,7 @@ export default function Account() {
     queryFn: async () => {
       const { data, error } = await supabase.functions.invoke('check-subscription');
       if (error) throw error;
-      return data as { subscribed: boolean; source?: string; subscription_end?: string; premium_since?: string };
+      return data as { subscribed: boolean; source?: string; subscription_end?: string; premium_since?: string; plan_type?: string; billing_cycle?: string };
     },
     enabled: !!user,
   });
@@ -48,6 +48,15 @@ export default function Account() {
       return data;
     },
     enabled: !!user,
+  });
+
+  const { data: paymentMethod } = useQuery({
+    queryKey: ['payment-method', user?.id],
+    queryFn: async () => {
+      const { data } = await supabase.functions.invoke('payment-method');
+      return data?.payment_method as { brand: string; last4: string; exp_month: number; exp_year: number } | null;
+    },
+    enabled: !!user && !!subscription?.subscribed && subscription?.source === 'stripe',
   });
 
   // 2FA status
@@ -64,6 +73,10 @@ export default function Account() {
 
   const [fullName, setFullName] = useState('');
   const [club, setClub] = useState('');
+  const [socialX, setSocialX] = useState('');
+  const [socialInstagram, setSocialInstagram] = useState('');
+  const [socialLinkedin, setSocialLinkedin] = useState('');
+  const [socialPublic, setSocialPublic] = useState(false);
   const [saving, setSaving] = useState(false);
 
   const [newEmail, setNewEmail] = useState('');
@@ -88,6 +101,10 @@ export default function Account() {
     if (profile) {
       setFullName(profile.full_name || '');
       setClub(profile.club || '');
+      setSocialX(profile.social_x || '');
+      setSocialInstagram(profile.social_instagram || '');
+      setSocialLinkedin(profile.social_linkedin || '');
+      setSocialPublic(!!profile.social_public);
     }
   }, [profile]);
 
@@ -98,7 +115,11 @@ export default function Account() {
       const { error } = await supabase.from('profiles').update({
         full_name: fullName.trim(),
         club: club.trim(),
-      }).eq('user_id', user.id);
+        social_x: socialX.trim() || null,
+        social_instagram: socialInstagram.trim() || null,
+        social_linkedin: socialLinkedin.trim() || null,
+        social_public: socialPublic ? 1 : 0,
+      } as any).eq('user_id', user.id);
       if (error) throw error;
       queryClient.invalidateQueries({ queryKey: ['profile', user.id] });
       toast.success(t('account.profile_updated'));
@@ -365,6 +386,34 @@ export default function Account() {
               {user?.created_at ? new Date(user.created_at).toLocaleDateString(undefined, { day: 'numeric', month: 'long', year: 'numeric' }) : '—'}
             </p>
           </div>
+          <Separator />
+          <div>
+            <h3 className="text-sm font-semibold mb-3 flex items-center gap-2">{t('account.social_title')}</h3>
+            <div className="space-y-3">
+              <div>
+                <label className="text-xs font-medium text-muted-foreground">X (Twitter)</label>
+                <Input className="mt-1" value={socialX} onChange={e => setSocialX(e.target.value)} placeholder="@username" />
+              </div>
+              <div>
+                <label className="text-xs font-medium text-muted-foreground">Instagram</label>
+                <Input className="mt-1" value={socialInstagram} onChange={e => setSocialInstagram(e.target.value)} placeholder="@username" />
+              </div>
+              <div>
+                <label className="text-xs font-medium text-muted-foreground">LinkedIn</label>
+                <Input className="mt-1" value={socialLinkedin} onChange={e => setSocialLinkedin(e.target.value)} placeholder="https://linkedin.com/in/..." />
+              </div>
+              <label className="flex items-center gap-3 cursor-pointer pt-1">
+                <input
+                  type="checkbox"
+                  checked={socialPublic}
+                  onChange={e => setSocialPublic(e.target.checked)}
+                  className="rounded border-input"
+                />
+                <span className="text-sm">{t('account.social_public')}</span>
+              </label>
+              <p className="text-xs text-muted-foreground">{t('account.social_public_desc')}</p>
+            </div>
+          </div>
           <Button onClick={handleSaveProfile} disabled={saving} size="sm">
             {saving ? t('common.saving') : t('common.save')}
           </Button>
@@ -594,12 +643,19 @@ export default function Account() {
           ) : isPremium ? (
             <>
               <div className="p-4 rounded-xl bg-primary/5 border border-primary/20 space-y-2">
-                <div className="flex items-center gap-2">
+                <div className="flex items-center gap-2 flex-wrap">
                   <Crown className="w-5 h-5 text-primary" />
-                  <span className="font-bold text-primary">Premium</span>
+                  <span className="font-bold text-primary">
+                    {subscription?.plan_type === 'pro' ? 'Pro' : subscription?.plan_type === 'scout' ? 'Scout+' : 'Premium'}
+                  </span>
                   <span className="text-xs px-2 py-0.5 rounded-full bg-primary/10 text-primary font-medium">
                     {subscription?.source === 'admin' ? t('account.gifted') : t('account.active')}
                   </span>
+                  {subscription?.billing_cycle && (
+                    <span className="text-xs px-2 py-0.5 rounded-full bg-muted text-muted-foreground font-medium">
+                      {t(`account.billing_${subscription.billing_cycle}`)}
+                    </span>
+                  )}
                 </div>
                 {subRow?.premium_since && (
                   <p className="text-sm text-muted-foreground flex items-center gap-2">
@@ -611,6 +667,13 @@ export default function Account() {
                   <p className="text-sm text-muted-foreground flex items-center gap-2">
                     <CalendarDays className="w-4 h-4" />
                     {t('account.next_renewal')} {new Date(subscription.subscription_end).toLocaleDateString(undefined, { day: 'numeric', month: 'long', year: 'numeric' })}
+                  </p>
+                )}
+                {paymentMethod && (
+                  <p className="text-sm text-muted-foreground flex items-center gap-2">
+                    <CreditCard className="w-4 h-4" />
+                    {paymentMethod.brand.charAt(0).toUpperCase() + paymentMethod.brand.slice(1)} •••• {paymentMethod.last4}
+                    <span className="text-xs">({paymentMethod.exp_month}/{paymentMethod.exp_year})</span>
                   </p>
                 )}
               </div>

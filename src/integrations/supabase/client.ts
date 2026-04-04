@@ -131,6 +131,11 @@ class QueryBuilder {
     return this.execute();
   }
 
+  limit(count: number) {
+    this.limitRange = { from: 0, to: count - 1 };
+    return this;
+  }
+
   insert(values: any) {
     this.mode = 'insert';
     this.values = values;

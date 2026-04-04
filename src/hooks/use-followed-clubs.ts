@@ -18,6 +18,7 @@ export interface FollowedClub {
 export function useFollowedClubs() {
   return useQuery<FollowedClub[]>({
     queryKey: ['followed-clubs'],
+    staleTime: 3 * 60 * 1000,
     queryFn: async () => {
       const res = await fetch(`${API_BASE}/followed-clubs`, { headers: getAuthHeader() });
       if (!res.ok) throw new Error('Failed to fetch followed clubs');

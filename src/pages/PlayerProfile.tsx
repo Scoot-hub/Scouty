@@ -18,13 +18,18 @@ import { ClubBadge } from '@/components/ui/club-badge';
 import { ClubLink } from '@/components/ui/club-link';
 import { CircularGauge } from '@/components/ui/circular-gauge';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
+import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
+import { Textarea } from '@/components/ui/textarea';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
+import { Badge } from '@/components/ui/badge';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from '@/components/ui/dialog';
+import { usePlayerResearch, useAddResearch, useDeleteResearch, type ResearchItem } from '@/hooks/use-player-research';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from '@/components/ui/dropdown-menu';
-import { ArrowLeft, Edit, FileDown, ExternalLink, PlusCircle, Trash2, RefreshCw, Globe, TrendingUp, Calendar, Ruler, User, MapPin, Hash, Pencil, Euro, Briefcase, GripVertical, Maximize2, Minimize2, LayoutDashboard, ListPlus, Check, Building2, AlertCircle, FileText, Upload, X } from 'lucide-react';
-import { LineChart, Line, XAxis, YAxis, CartesianGrid, ResponsiveContainer, Legend } from 'recharts';
+import { ArrowLeft, Edit, FileDown, ExternalLink, PlusCircle, Trash2, RefreshCw, Globe, TrendingUp, Calendar, Ruler, User, MapPin, Hash, Pencil, Euro, Briefcase, GripVertical, Maximize2, Minimize2, LayoutDashboard, ListPlus, Check, Building2, AlertCircle, FileText, Upload, X, Clock, Youtube, Newspaper, Link2, StickyNote, Plus, Activity } from 'lucide-react';
+import { LineChart, Line, XAxis, YAxis, CartesianGrid, ResponsiveContainer, Legend, RadarChart, PolarGrid, PolarAngleAxis, PolarRadiusAxis, Radar, AreaChart, Area, Tooltip as RechartsTooltip, BarChart, Bar } from 'recharts';
 import { toast } from 'sonner';
 import { DndContext, closestCenter, KeyboardSensor, PointerSensor, useSensor, useSensors, type DragEndEvent } from '@dnd-kit/core';
 import { SortableContext, sortableKeyboardCoordinates, rectSortingStrategy, useSortable, arrayMove } from '@dnd-kit/sortable';
@@ -71,6 +76,9 @@ export default function PlayerProfile() {
   const { id } = useParams<{ id: string }>();
   const { data: player, isLoading: playerLoading } = usePlayer(id);
   const { data: reports = [] } = useReports(id);
+  const { data: research = [] } = usePlayerResearch(id);
+  const addResearch = useAddResearch();
+  const deleteResearch = useDeleteResearch();
   const { data: allPlayers = [] } = usePlayers();
   const { t, i18n } = useTranslation();
   const { positions: posLabels, positionShort: posShort } = usePositions();
@@ -88,6 +96,9 @@ export default function PlayerProfile() {
 
   // UI state
   const [editMode, setEditMode] = useState(false);
+  const [activeTab, setActiveTab] = useState('scouting');
+  const [researchForm, setResearchForm] = useState({ type: 'note', title: '', url: '', content: '' });
+  const [showResearchForm, setShowResearchForm] = useState(false);
   const [manageFieldsOpen, setManageFieldsOpen] = useState(false);
   const [deleteOpen, setDeleteOpen] = useState(false);
   const [deleteConfirm, setDeleteConfirm] = useState('');
@@ -108,12 +119,42 @@ export default function PlayerProfile() {
   const [editReportFile, setEditReportFile] = useState<File | null>(null);
   const addReport = useAddReport();
 
+  // Performance scores state (persisted per player)
+  const perfKey = id ? `perf-scores-${id}` : null;
+  const [perfScores, setPerfScores] = useState<{ physical: number; technical: number; tactical: number; mental: number }>(() => {
+    if (!perfKey) return { physical: 5, technical: 5, tactical: 5, mental: 5 };
+    try {
+      const saved = localStorage.getItem(perfKey);
+      if (saved) return JSON.parse(saved);
+    } catch { /* ignore */ }
+    return { physical: 5, technical: 5, tactical: 5, mental: 5 };
+  });
+  const updatePerfScore = useCallback((key: keyof typeof perfScores, value: number) => {
+    setPerfScores(prev => {
+      const next = { ...prev, [key]: value };
+      if (perfKey) localStorage.setItem(perfKey, JSON.stringify(next));
+      return next;
+    });
+  }, [perfKey]);
+
   const locale = i18n.language === 'es' ? 'es-ES' : i18n.language === 'en' ? 'en-GB' : 'fr-FR';
 
   // ── Handlers ──
 
+  const ENRICH_COOLDOWN = 60 * 60 * 1000; // 1 hour cooldown between enrichments
+
   const handleEnrich = async (tmUrl?: string) => {
     if (!player) return;
+
+    // Cooldown guard — skip scraping if enriched recently (unless providing a new TM URL)
+    if (!tmUrl && player.external_data_fetched_at) {
+      const lastEnrich = new Date(player.external_data_fetched_at).getTime();
+      if (Date.now() - lastEnrich < ENRICH_COOLDOWN) {
+        toast(t('profile.enrich_cooldown'));
+        return;
+      }
+    }
+
     setEnriching(true);
     try {
       const body: Record<string, unknown> = { playerName: player.name, club: player.club, playerId: player.id, nationality: player.nationality, generation: player.generation, position: player.position };
@@ -740,29 +781,535 @@ export default function PlayerProfile() {
         </div>
       </Card>
 
-      {/* Edit mode banner */}
-      {editMode && (
-        <div className="flex items-center gap-3 px-4 py-3 rounded-xl bg-primary/10 border border-primary/20">
-          <LayoutDashboard className="w-4 h-4 text-primary shrink-0" />
-          <p className="text-sm text-primary font-medium flex-1">{t('profile.edit_mode_hint')}</p>
-          <Button size="sm" className="rounded-xl" onClick={() => setEditMode(false)}>
-            <Check className="w-3.5 h-3.5 mr-1.5" />{t('profile.edit_mode_done')}
-          </Button>
-        </div>
-      )}
+      {/* Tabs */}
+      <Tabs value={activeTab} onValueChange={setActiveTab} className="w-full">
+        <TabsList className="w-full grid grid-cols-4">
+          <TabsTrigger value="scouting" className="gap-2">
+            <FileText className="w-4 h-4" />
+            <span className="hidden sm:inline">{t('profile.tab_scouting')}</span>
+          </TabsTrigger>
+          <TabsTrigger value="performance" className="gap-2">
+            <Activity className="w-4 h-4" />
+            <span className="hidden sm:inline">{t('profile.tab_performance')}</span>
+          </TabsTrigger>
+          <TabsTrigger value="history" className="gap-2">
+            <Clock className="w-4 h-4" />
+            <span className="hidden sm:inline">{t('profile.tab_history')}</span>
+          </TabsTrigger>
+          <TabsTrigger value="research" className="gap-2">
+            <Newspaper className="w-4 h-4" />
+            <span className="hidden sm:inline">{t('profile.tab_research')}</span>
+            {research.length > 0 && <Badge variant="secondary" className="ml-1 text-[10px] h-4 px-1">{research.length}</Badge>}
+          </TabsTrigger>
+        </TabsList>
 
-      {/* All cards — draggable & resizable grid */}
-      <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={handleDragEnd}>
-        <SortableContext items={visibleOrder} strategy={rectSortingStrategy}>
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            {visibleOrder.map(cardId => (
-              <SortableCard key={cardId} id={cardId} size={layout.sizes[cardId]} onToggleSize={() => toggleSize(cardId)} editMode={editMode}>
-                {cardRenderers[cardId]()}
-              </SortableCard>
-            ))}
-          </div>
-        </SortableContext>
-      </DndContext>
+        {/* ── Tab: Scouting (existing content) ── */}
+        <TabsContent value="scouting" className="mt-4 space-y-4">
+          {editMode && (
+            <div className="flex items-center gap-3 px-4 py-3 rounded-xl bg-primary/10 border border-primary/20">
+              <LayoutDashboard className="w-4 h-4 text-primary shrink-0" />
+              <p className="text-sm text-primary font-medium flex-1">{t('profile.edit_mode_hint')}</p>
+              <Button size="sm" className="rounded-xl" onClick={() => setEditMode(false)}>
+                <Check className="w-3.5 h-3.5 mr-1.5" />{t('profile.edit_mode_done')}
+              </Button>
+            </div>
+          )}
+
+          <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={handleDragEnd}>
+            <SortableContext items={visibleOrder} strategy={rectSortingStrategy}>
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                {visibleOrder.map(cardId => (
+                  <SortableCard key={cardId} id={cardId} size={layout.sizes[cardId]} onToggleSize={() => toggleSize(cardId)} editMode={editMode}>
+                    {cardRenderers[cardId]()}
+                  </SortableCard>
+                ))}
+              </div>
+            </SortableContext>
+          </DndContext>
+
+          {/* Delete zone — inside scouting tab only */}
+          <Card className="border border-destructive/20 bg-destructive/5 mt-4">
+            <CardContent className="p-6">
+              <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
+                <div>
+                  <h3 className="text-sm font-bold text-destructive">{t('profile.danger_zone')}</h3>
+                  <p className="text-xs text-muted-foreground mt-1">{t('profile.delete_confirm_desc')}</p>
+                </div>
+                <Button size="sm" variant="destructive" className="rounded-xl shrink-0" onClick={() => setDeleteOpen(true)}>
+                  <Trash2 className="w-3.5 h-3.5 mr-1.5" />{t('profile.delete')}
+                </Button>
+              </div>
+            </CardContent>
+          </Card>
+        </TabsContent>
+
+        {/* ── Tab: Performance (radar + charts) ── */}
+        <TabsContent value="performance" className="mt-4 space-y-4">
+          {(() => {
+            const { physical: physScore, technical: techScore, tactical: tacticScore, mental: mentalScore } = perfScores;
+
+            const radarData = [
+              { attr: t('profile.perf_physical'), value: physScore, full: 10 },
+              { attr: t('profile.perf_technical'), value: techScore, full: 10 },
+              { attr: t('profile.perf_tactical'), value: tacticScore, full: 10 },
+              { attr: t('profile.perf_mental'), value: mentalScore, full: 10 },
+              { attr: t('profile.perf_potential'), value: player.potential, full: 10 },
+              { attr: t('profile.perf_level'), value: player.current_level, full: 10 },
+            ];
+
+            const overallScore = Math.round((physScore + techScore + tacticScore + mentalScore + player.current_level + player.potential) / 6 * 10) / 10;
+
+            // History chart data from reports
+            const historyData = reports.slice().reverse().map((r, i) => {
+              const opinionValue = r.opinion === 'À suivre' ? 8 : r.opinion === 'À revoir' ? 5 : 3;
+              return {
+                date: new Date(r.report_date).toLocaleDateString(locale, { month: 'short', year: '2-digit' }),
+                level: player.current_level,
+                potential: player.potential,
+                opinion: opinionValue,
+                index: i + 1,
+              };
+            });
+
+            const attrSliders: { key: keyof typeof perfScores; label: string; color: string }[] = [
+              { key: 'physical', label: t('profile.perf_physical'), color: 'hsl(var(--chart-1))' },
+              { key: 'technical', label: t('profile.perf_technical'), color: 'hsl(var(--chart-2))' },
+              { key: 'tactical', label: t('profile.perf_tactical'), color: 'hsl(var(--chart-3))' },
+              { key: 'mental', label: t('profile.perf_mental'), color: 'hsl(var(--chart-4))' },
+            ];
+
+            return (
+              <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+                {/* Overall score */}
+                <Card className="card-warm lg:col-span-2">
+                  <CardContent className="p-5">
+                    <div className="flex items-center justify-between flex-wrap gap-4">
+                      <div>
+                        <h3 className="text-xs font-bold uppercase tracking-wider text-muted-foreground">{t('profile.perf_overview')}</h3>
+                        <p className="text-sm text-muted-foreground mt-1">{t('profile.perf_overview_desc')}</p>
+                      </div>
+                      <div className="flex items-center gap-6">
+                        <div className="text-center">
+                          <div className="text-4xl font-black text-primary">{overallScore}</div>
+                          <p className="text-[10px] text-muted-foreground font-medium uppercase tracking-wider">{t('profile.perf_overall')}</p>
+                        </div>
+                        <div className="text-center">
+                          <div className="text-4xl font-black text-green-500">{player.current_level}</div>
+                          <p className="text-[10px] text-muted-foreground font-medium uppercase tracking-wider">{t('profile.level')}</p>
+                        </div>
+                        <div className="text-center">
+                          <div className="text-4xl font-black text-blue-500">{player.potential}</div>
+                          <p className="text-[10px] text-muted-foreground font-medium uppercase tracking-wider">{t('profile.potential')}</p>
+                        </div>
+                      </div>
+                    </div>
+                  </CardContent>
+                </Card>
+
+                {/* Radar chart */}
+                <Card className="card-warm">
+                  <CardContent className="p-5">
+                    <h3 className="text-xs font-bold uppercase tracking-wider text-muted-foreground mb-4">{t('profile.perf_radar_title')}</h3>
+                    <ResponsiveContainer width="100%" height={300}>
+                      <RadarChart data={radarData} cx="50%" cy="50%" outerRadius="75%">
+                        <PolarGrid stroke="hsl(var(--border))" />
+                        <PolarAngleAxis
+                          dataKey="attr"
+                          tick={{ fontSize: 11, fill: 'hsl(var(--muted-foreground))' }}
+                        />
+                        <PolarRadiusAxis
+                          angle={90}
+                          domain={[0, 10]}
+                          tick={{ fontSize: 9, fill: 'hsl(var(--muted-foreground))' }}
+                          axisLine={false}
+                        />
+                        <Radar
+                          name={player.name}
+                          dataKey="value"
+                          stroke="hsl(var(--primary))"
+                          fill="hsl(var(--primary))"
+                          fillOpacity={0.2}
+                          strokeWidth={2}
+                          dot={{ r: 4, fill: 'hsl(var(--primary))' }}
+                        />
+                      </RadarChart>
+                    </ResponsiveContainer>
+                  </CardContent>
+                </Card>
+
+                {/* Editable attribute sliders */}
+                <Card className="card-warm">
+                  <CardContent className="p-5">
+                    <h3 className="text-xs font-bold uppercase tracking-wider text-muted-foreground mb-1">{t('profile.perf_attributes_title')}</h3>
+                    <p className="text-[11px] text-muted-foreground mb-4">{t('profile.perf_adjust_hint')}</p>
+                    <div className="space-y-5">
+                      {attrSliders.map(attr => (
+                        <div key={attr.key} className="space-y-1.5">
+                          <div className="flex items-center justify-between">
+                            <span className="text-sm font-medium">{attr.label}</span>
+                            <span className="text-sm font-bold tabular-nums min-w-[40px] text-right" style={{ color: attr.color }}>{perfScores[attr.key]}/10</span>
+                          </div>
+                          <div className="flex items-center gap-3">
+                            <input
+                              type="range"
+                              min={0}
+                              max={10}
+                              step={1}
+                              value={perfScores[attr.key]}
+                              onChange={e => updatePerfScore(attr.key, Number(e.target.value))}
+                              className="flex-1 h-2 rounded-full appearance-none cursor-pointer bg-muted accent-primary [&::-webkit-slider-thumb]:w-4 [&::-webkit-slider-thumb]:h-4 [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:bg-primary [&::-webkit-slider-thumb]:shadow-md"
+                              style={{ accentColor: attr.color }}
+                            />
+                          </div>
+                          <div className="h-2.5 rounded-full bg-muted overflow-hidden">
+                            <div
+                              className="h-full rounded-full transition-all duration-300 ease-out"
+                              style={{ width: `${perfScores[attr.key] * 10}%`, background: attr.color }}
+                            />
+                          </div>
+                        </div>
+                      ))}
+
+                      {/* Gap indicator */}
+                      <div className="pt-3 border-t border-border space-y-1.5">
+                        <div className="flex items-center justify-between">
+                          <span className="text-sm font-medium">{t('profile.perf_gap')}</span>
+                          <span className="text-sm font-bold text-amber-500">{Math.max(0, player.potential - player.current_level)}</span>
+                        </div>
+                        <div className="h-2.5 rounded-full bg-muted overflow-hidden relative">
+                          <div
+                            className="h-full rounded-full bg-green-500 absolute left-0 top-0"
+                            style={{ width: `${player.current_level * 10}%` }}
+                          />
+                          <div
+                            className="h-full rounded-full bg-amber-500/30 absolute top-0"
+                            style={{ left: `${player.current_level * 10}%`, width: `${Math.max(0, player.potential - player.current_level) * 10}%` }}
+                          />
+                        </div>
+                        <p className="text-[10px] text-muted-foreground">{t('profile.perf_gap_desc')}</p>
+                      </div>
+                    </div>
+                  </CardContent>
+                </Card>
+
+                {/* Evolution chart */}
+                {historyData.length >= 2 && (
+                  <Card className="card-warm lg:col-span-2">
+                    <CardContent className="p-5">
+                      <h3 className="text-xs font-bold uppercase tracking-wider text-muted-foreground mb-4">{t('profile.perf_evolution_title')}</h3>
+                      <ResponsiveContainer width="100%" height={280}>
+                        <AreaChart data={historyData}>
+                          <defs>
+                            <linearGradient id="gradLevel" x1="0" y1="0" x2="0" y2="1">
+                              <stop offset="5%" stopColor="hsl(var(--success))" stopOpacity={0.3} />
+                              <stop offset="95%" stopColor="hsl(var(--success))" stopOpacity={0} />
+                            </linearGradient>
+                            <linearGradient id="gradPotential" x1="0" y1="0" x2="0" y2="1">
+                              <stop offset="5%" stopColor="hsl(var(--primary))" stopOpacity={0.3} />
+                              <stop offset="95%" stopColor="hsl(var(--primary))" stopOpacity={0} />
+                            </linearGradient>
+                          </defs>
+                          <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" />
+                          <XAxis dataKey="date" tick={{ fontSize: 11 }} stroke="hsl(var(--muted-foreground))" />
+                          <YAxis domain={[0, 10]} tick={{ fontSize: 11 }} stroke="hsl(var(--muted-foreground))" />
+                          <RechartsTooltip
+                            contentStyle={{
+                              background: 'hsl(var(--card))',
+                              border: '1px solid hsl(var(--border))',
+                              borderRadius: '0.75rem',
+                              fontSize: '12px',
+                            }}
+                          />
+                          <Legend />
+                          <Area type="monotone" dataKey="level" stroke="hsl(var(--success))" fill="url(#gradLevel)" strokeWidth={2.5} name={t('profile.level')} dot={{ r: 4, fill: 'hsl(var(--success))' }} />
+                          <Area type="monotone" dataKey="potential" stroke="hsl(var(--primary))" fill="url(#gradPotential)" strokeWidth={2.5} name={t('profile.potential')} dot={{ r: 4, fill: 'hsl(var(--primary))' }} />
+                          <Line type="monotone" dataKey="opinion" stroke="hsl(var(--warning, 45 93% 47%))" strokeWidth={2} strokeDasharray="5 5" name={t('profile.perf_opinion_score')} dot={{ r: 3 }} />
+                        </AreaChart>
+                      </ResponsiveContainer>
+                      <div className="flex items-center gap-4 mt-3 text-[10px] text-muted-foreground">
+                        <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-green-500" /> {t('profile.level')}</span>
+                        <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-primary" /> {t('profile.potential')}</span>
+                        <span className="flex items-center gap-1"><span className="w-3 h-0.5 border-t-2 border-dashed border-amber-500" /> {t('profile.perf_opinion_score')}</span>
+                      </div>
+                    </CardContent>
+                  </Card>
+                )}
+
+                {/* Opinion distribution */}
+                <Card className="card-warm lg:col-span-2">
+                  <CardContent className="p-5">
+                    <h3 className="text-xs font-bold uppercase tracking-wider text-muted-foreground mb-4">{t('profile.perf_opinion_dist')}</h3>
+                    {reports.length === 0 ? (
+                      <div className="text-center py-8">
+                        <Activity className="w-8 h-8 text-muted-foreground/20 mx-auto mb-2" />
+                        <p className="text-sm text-muted-foreground">{t('profile.perf_no_reports')}</p>
+                        <p className="text-xs text-muted-foreground/60 mt-1">{t('profile.perf_no_reports_desc')}</p>
+                      </div>
+                    ) : (
+                      <div className="grid grid-cols-3 gap-4">
+                        {(['À suivre', 'À revoir', 'Défavorable'] as const).map(opinion => {
+                          const count = reports.filter(r => r.opinion === opinion).length;
+                          const pct = reports.length > 0 ? Math.round(count / reports.length * 100) : 0;
+                          const colors = {
+                            'À suivre': { bg: 'bg-green-500', text: 'text-green-600', light: 'bg-green-500/10' },
+                            'À revoir': { bg: 'bg-amber-500', text: 'text-amber-600', light: 'bg-amber-500/10' },
+                            'Défavorable': { bg: 'bg-red-500', text: 'text-red-600', light: 'bg-red-500/10' },
+                          };
+                          const c = colors[opinion];
+                          return (
+                            <div key={opinion} className={`rounded-xl p-4 ${c.light} text-center`}>
+                              <div className={`text-3xl font-black ${c.text}`}>{count}</div>
+                              <p className="text-xs font-medium mt-1">{opinion}</p>
+                              <div className="mt-2 h-2 rounded-full bg-muted/50 overflow-hidden">
+                                <div className={`h-full rounded-full ${c.bg}`} style={{ width: `${pct}%` }} />
+                              </div>
+                              <p className="text-[10px] text-muted-foreground mt-1">{pct}%</p>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    )}
+                  </CardContent>
+                </Card>
+              </div>
+            );
+          })()}
+        </TabsContent>
+
+        {/* ── Tab: History (timeline of reports + events) ── */}
+        <TabsContent value="history" className="mt-4">
+          <Card>
+            <CardHeader>
+              <CardTitle className="text-base flex items-center gap-2">
+                <Clock className="w-4 h-4 text-primary" />
+                {t('profile.history_title')}
+              </CardTitle>
+            </CardHeader>
+            <CardContent>
+              {reports.length === 0 ? (
+                <div className="text-center py-8">
+                  <Clock className="w-8 h-8 text-muted-foreground/20 mx-auto mb-2" />
+                  <p className="text-sm text-muted-foreground">{t('profile.history_empty')}</p>
+                </div>
+              ) : (
+                <div className="relative">
+                  {/* Timeline line */}
+                  <div className="absolute left-4 top-0 bottom-0 w-px bg-border" />
+
+                  <div className="space-y-6">
+                    {reports.map((report, i) => (
+                      <div key={report.id} className="relative flex gap-4 pl-10">
+                        {/* Dot */}
+                        <div className={`absolute left-2.5 top-1 w-3 h-3 rounded-full border-2 border-background ${
+                          report.opinion === 'À suivre' ? 'bg-green-500' : report.opinion === 'À revoir' ? 'bg-amber-500' : 'bg-red-500'
+                        }`} />
+
+                        <div className="flex-1 p-4 rounded-xl bg-muted/30 hover:bg-muted/50 transition-colors space-y-2">
+                          <div className="flex items-center justify-between gap-3">
+                            <div className="flex items-center gap-2">
+                              <span className="text-xs font-mono text-muted-foreground">{formatDate(report.report_date)}</span>
+                              <OpinionBadge opinion={report.opinion} size="sm" />
+                            </div>
+                            <div className="flex items-center gap-1">
+                              {report.drive_link && (
+                                <a href={report.drive_link} target="_blank" rel="noopener noreferrer" className="p-1 rounded hover:bg-muted">
+                                  <ExternalLink className="w-3.5 h-3.5 text-primary" />
+                                </a>
+                              )}
+                              {report.file_url && (
+                                <a href={report.file_url} target="_blank" rel="noopener noreferrer" className="p-1 rounded hover:bg-muted">
+                                  <FileText className="w-3.5 h-3.5 text-primary" />
+                                </a>
+                              )}
+                              <button onClick={() => openEditReport(report)} className="p-1 rounded hover:bg-muted">
+                                <Pencil className="w-3.5 h-3.5 text-muted-foreground" />
+                              </button>
+                            </div>
+                          </div>
+                          {report.title && <p className="text-sm font-semibold">{report.title}</p>}
+                          {i === 0 && <p className="text-[10px] text-primary font-medium">{t('profile.last_report')}</p>}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              <div className="mt-6 text-center">
+                <Button size="sm" variant="outline" onClick={() => setAddReportOpen(true)}>
+                  <PlusCircle className="w-3.5 h-3.5 mr-1.5" /> {t('profile.add_report')}
+                </Button>
+              </div>
+            </CardContent>
+          </Card>
+        </TabsContent>
+
+        {/* ── Tab: Research (personal notes, youtube, articles) ── */}
+        <TabsContent value="research" className="mt-4 space-y-4">
+          {/* Add research form */}
+          <Card>
+            <CardHeader className="flex flex-row items-center justify-between pb-2">
+              <CardTitle className="text-base flex items-center gap-2">
+                <Newspaper className="w-4 h-4 text-primary" />
+                {t('profile.research_title')}
+              </CardTitle>
+              <Button size="sm" variant="outline" onClick={() => setShowResearchForm(!showResearchForm)}>
+                <Plus className="w-3.5 h-3.5 mr-1.5" /> {t('profile.research_add')}
+              </Button>
+            </CardHeader>
+            <CardContent>
+              {showResearchForm && (
+                <form
+                  className="space-y-3 mb-6 p-4 rounded-xl bg-muted/30 border border-border"
+                  onSubmit={e => {
+                    e.preventDefault();
+                    if (!researchForm.title.trim() || !id) return;
+                    addResearch.mutate({
+                      player_id: id,
+                      type: researchForm.type,
+                      title: researchForm.title,
+                      url: researchForm.url || undefined,
+                      content: researchForm.content || undefined,
+                    }, {
+                      onSuccess: () => {
+                        setResearchForm({ type: 'note', title: '', url: '', content: '' });
+                        setShowResearchForm(false);
+                      },
+                    });
+                  }}
+                >
+                  <div className="grid grid-cols-2 gap-3">
+                    <div className="space-y-1">
+                      <label className="text-xs font-medium text-muted-foreground">{t('profile.research_type')}</label>
+                      <Select value={researchForm.type} onValueChange={v => setResearchForm(f => ({ ...f, type: v }))}>
+                        <SelectTrigger className="h-8 text-xs">
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="note"><span className="flex items-center gap-2"><StickyNote className="w-3 h-3" /> {t('profile.research_type_note')}</span></SelectItem>
+                          <SelectItem value="youtube"><span className="flex items-center gap-2"><Youtube className="w-3 h-3" /> YouTube</span></SelectItem>
+                          <SelectItem value="article"><span className="flex items-center gap-2"><Newspaper className="w-3 h-3" /> {t('profile.research_type_article')}</span></SelectItem>
+                          <SelectItem value="link"><span className="flex items-center gap-2"><Link2 className="w-3 h-3" /> {t('profile.research_type_link')}</span></SelectItem>
+                        </SelectContent>
+                      </Select>
+                    </div>
+                    <div className="space-y-1">
+                      <label className="text-xs font-medium text-muted-foreground">{t('profile.research_title_label')}</label>
+                      <Input
+                        value={researchForm.title}
+                        onChange={e => setResearchForm(f => ({ ...f, title: e.target.value }))}
+                        placeholder={t('profile.research_title_placeholder')}
+                        className="h-8 text-xs"
+                        required
+                      />
+                    </div>
+                  </div>
+                  {researchForm.type !== 'note' && (
+                    <div className="space-y-1">
+                      <label className="text-xs font-medium text-muted-foreground">URL</label>
+                      <Input
+                        value={researchForm.url}
+                        onChange={e => setResearchForm(f => ({ ...f, url: e.target.value }))}
+                        placeholder={researchForm.type === 'youtube' ? 'https://youtube.com/watch?v=...' : 'https://...'}
+                        className="h-8 text-xs"
+                        type="url"
+                      />
+                    </div>
+                  )}
+                  <div className="space-y-1">
+                    <label className="text-xs font-medium text-muted-foreground">{t('profile.research_notes')}</label>
+                    <Textarea
+                      value={researchForm.content}
+                      onChange={e => setResearchForm(f => ({ ...f, content: e.target.value }))}
+                      placeholder={t('profile.research_notes_placeholder')}
+                      rows={3}
+                      className="text-xs resize-none"
+                    />
+                  </div>
+                  <div className="flex gap-2">
+                    <Button type="submit" size="sm" disabled={addResearch.isPending || !researchForm.title.trim()}>
+                      {t('common.save')}
+                    </Button>
+                    <Button type="button" size="sm" variant="ghost" onClick={() => setShowResearchForm(false)}>
+                      {t('common.cancel')}
+                    </Button>
+                  </div>
+                </form>
+              )}
+
+              {/* Research items list */}
+              {research.length === 0 && !showResearchForm ? (
+                <div className="text-center py-8">
+                  <Newspaper className="w-8 h-8 text-muted-foreground/20 mx-auto mb-2" />
+                  <p className="text-sm text-muted-foreground">{t('profile.research_empty')}</p>
+                  <p className="text-xs text-muted-foreground/60 mt-1">{t('profile.research_empty_desc')}</p>
+                </div>
+              ) : (
+                <div className="space-y-3">
+                  {research.map(item => {
+                    const typeIcons: Record<string, React.ReactNode> = {
+                      note: <StickyNote className="w-4 h-4" />,
+                      youtube: <Youtube className="w-4 h-4 text-red-500" />,
+                      article: <Newspaper className="w-4 h-4 text-blue-500" />,
+                      link: <Link2 className="w-4 h-4 text-primary" />,
+                    };
+                    const isYoutube = item.type === 'youtube' && item.url;
+                    const ytId = isYoutube ? item.url!.match(/(?:v=|youtu\.be\/|embed\/)([a-zA-Z0-9_-]{11})/)?.[1] : null;
+
+                    return (
+                      <div key={item.id} className="p-4 rounded-xl bg-muted/30 hover:bg-muted/50 transition-colors space-y-2 group">
+                        <div className="flex items-start gap-3">
+                          <div className="w-8 h-8 rounded-lg bg-muted flex items-center justify-center shrink-0">
+                            {typeIcons[item.type] || typeIcons.note}
+                          </div>
+                          <div className="flex-1 min-w-0">
+                            <div className="flex items-center gap-2">
+                              <h4 className="text-sm font-semibold truncate">{item.title}</h4>
+                              <Badge variant="secondary" className="text-[9px] shrink-0">{item.type}</Badge>
+                            </div>
+                            {item.content && (
+                              <p className="text-xs text-muted-foreground mt-1 whitespace-pre-line line-clamp-3">{item.content}</p>
+                            )}
+                            <p className="text-[10px] text-muted-foreground/50 mt-1">
+                              {new Date(item.created_at).toLocaleDateString(undefined, { day: 'numeric', month: 'short', year: 'numeric' })}
+                            </p>
+                          </div>
+                          <div className="flex items-center gap-1 shrink-0">
+                            {item.url && (
+                              <a href={item.url} target="_blank" rel="noopener noreferrer" className="p-1 rounded hover:bg-muted">
+                                <ExternalLink className="w-3.5 h-3.5 text-primary" />
+                              </a>
+                            )}
+                            <button
+                              onClick={() => deleteResearch.mutate({ id: item.id, playerId: item.player_id })}
+                              className="p-1 rounded opacity-0 group-hover:opacity-100 hover:bg-destructive/10 hover:text-destructive transition-all"
+                            >
+                              <Trash2 className="w-3.5 h-3.5" />
+                            </button>
+                          </div>
+                        </div>
+
+                        {/* YouTube embed */}
+                        {ytId && (
+                          <div className="rounded-lg overflow-hidden aspect-video">
+                            <iframe
+                              src={`https://www.youtube.com/embed/${ytId}`}
+                              title={item.title}
+                              className="w-full h-full"
+                              allowFullScreen
+                              allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
+                            />
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </CardContent>
+          </Card>
+        </TabsContent>
+      </Tabs>
 
       {/* Edit Report Dialog */}
       <Dialog open={!!editingReport} onOpenChange={(o) => { if (!o) setEditingReport(null); }}>
@@ -872,21 +1419,6 @@ export default function PlayerProfile() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
-
-      {/* Delete zone — bottom of page */}
-      <Card className="border border-destructive/20 bg-destructive/5">
-        <CardContent className="p-6">
-          <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
-            <div>
-              <h3 className="text-sm font-bold text-destructive">{t('profile.danger_zone')}</h3>
-              <p className="text-xs text-muted-foreground mt-1">{t('profile.delete_confirm_desc')}</p>
-            </div>
-            <Button size="sm" variant="destructive" className="rounded-xl shrink-0" onClick={() => setDeleteOpen(true)}>
-              <Trash2 className="w-3.5 h-3.5 mr-1.5" />{t('profile.delete')}
-            </Button>
-          </div>
-        </CardContent>
-      </Card>
 
       {/* Delete dialog */}
       <Dialog open={deleteOpen} onOpenChange={(o) => { setDeleteOpen(o); if (!o) setDeleteConfirm(''); }}>
