@@ -31,7 +31,7 @@ import { toast } from 'sonner';
 
 type SortOption = 'name' | 'age-asc' | 'age-desc' | 'level' | 'potential' | 'recent' | 'contract';
 
-const PAGE_SIZE = 60;
+const PAGE_SIZE = 24;
 
 const FILTER_KEY = 'players_filters';
 function loadFilters() {
@@ -1043,11 +1043,16 @@ export default function Players() {
             })}
           </div>
 
-          {visibleCount < filtered.length && (
-            <div className="flex justify-center mt-6">
-              <Button variant="outline" className="rounded-xl" onClick={() => setVisibleCount(prev => prev + PAGE_SIZE)}>
-                {t('common.show_more')} ({filtered.length - visibleCount} {t('players.remaining')})
-              </Button>
+          {filtered.length > 0 && (
+            <div className="flex flex-col items-center gap-3 mt-6">
+              <p className="text-xs text-muted-foreground">
+                {Math.min(visibleCount, filtered.length)} / {filtered.length} {t('players.displayed')}
+              </p>
+              {visibleCount < filtered.length && (
+                <Button variant="outline" className="rounded-xl" onClick={() => setVisibleCount(prev => prev + PAGE_SIZE)}>
+                  {t('common.show_more')} (+{Math.min(PAGE_SIZE, filtered.length - visibleCount)})
+                </Button>
+              )}
             </div>
           )}
 

@@ -4752,9 +4752,32 @@ app.post("/api/functions/:name", authMiddleware, async (req, res) => {
   }
 
   // ── Livescore API: all soccer events for a given day ────────────────────────
+  // Paginate livescore events: keep competition structure but slice events
+  function paginateEvents(data, offset, limit) {
+    if (!offset && limit >= 9999) return data;
+    const comps = [];
+    let skipped = 0, taken = 0;
+    for (const comp of (data.competitions || [])) {
+      if (taken >= limit) break;
+      const slicedEvents = [];
+      for (const ev of comp.events) {
+        if (taken >= limit) break;
+        if (skipped < offset) { skipped++; continue; }
+        slicedEvents.push(ev);
+        taken++;
+      }
+      if (slicedEvents.length > 0) {
+        comps.push({ ...comp, events: slicedEvents });
+      }
+    }
+    return { competitions: comps, date: data.date, count: data.count, offset, limit, returned: taken };
+  }
+
   if (name === "livescore-events-day") {
-    const { date } = req.body || {};
+    const { date, offset, limit: pageLimit } = req.body || {};
     if (!date) return res.status(400).json({ error: "Missing date (YYYY-MM-DD)" });
+    const pOffset = parseInt(offset) || 0;
+    const pLimit = Math.min(parseInt(pageLimit) || 9999, 9999);
 
     try {
       const cacheKey = `livescore-events:${date}`;
@@ -4768,7 +4791,7 @@ app.post("/api/functions/:name", authMiddleware, async (req, res) => {
         if (cached.length > 0) {
           const json = cached[0].response_json;
           const parsed = typeof json === "string" ? JSON.parse(json) : json;
-          return res.json(parsed);
+          return res.json(paginateEvents(parsed, pOffset, pLimit));
         }
       } catch { /* table may not exist */ }
 
@@ -4892,20 +4915,22 @@ app.post("/api/functions/:name", authMiddleware, async (req, res) => {
         console.warn("[livescore] Team data save error:", e.message);
       }
 
-      const result = { competitions, date, count: totalEvents };
+      const fullResult = { competitions, date, count: totalEvents };
 
-      // Cache for 30 minutes (scores update frequently)
+      // Cache the full result for 30 minutes
       try {
         await pool.query(
           `INSERT INTO api_football_cache (cache_key, response_json, fetched_at, expires_at)
            VALUES (?, ?, NOW(), DATE_ADD(NOW(), INTERVAL 30 MINUTE))
            ON DUPLICATE KEY UPDATE response_json = VALUES(response_json), fetched_at = NOW(), expires_at = DATE_ADD(NOW(), INTERVAL 30 MINUTE)`,
-          [cacheKey, JSON.stringify(result)]
+          [cacheKey, JSON.stringify(fullResult)]
         );
       } catch { /* table may not exist */ }
 
       console.log(`[livescore] ${date}: ${totalEvents} events across ${competitions.length} competitions`);
-      return res.json(result);
+
+      // Paginate: return only the requested slice of events
+      return res.json(paginateEvents(fullResult, pOffset, pLimit));
     } catch (err) {
       console.error("[livescore] ERROR:", err.message, err.stack);
       return res.status(500).json({ error: err.message });

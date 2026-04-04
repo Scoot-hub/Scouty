@@ -27,7 +27,7 @@ interface ParsedPlayer {
   club: string;
   league: string;
   zone: string;
-  position: Position;
+  position?: Position;
   role?: string;
   current_level: number;
   potential: number;
@@ -269,8 +269,8 @@ function parseDate(val: string | number | undefined): string | undefined {
   const raw = String(val).trim();
   if (!raw) return undefined;
 
-  // Plain year (ex: 2027)
-  if (/^\d{4}$/.test(raw)) return raw;
+  // Plain year (ex: 2027) → convert to full date (June 30 = end of season)
+  if (/^\d{4}$/.test(raw)) return `${raw}-06-30`;
 
   // Excel serial date (can be integer or decimal)
   const numericRaw = Number(raw.replace(',', '.'));
@@ -284,13 +284,13 @@ function parseDate(val: string | number | undefined): string | undefined {
   if (monthYear) {
     const month = monthYear[1].padStart(2, '0');
     const year = monthYear[2].length === 2 ? `20${monthYear[2]}` : monthYear[2];
-    return `${year}-${month}`;
+    return `${year}-${month}-01`;
   }
 
   // Localized month + year (juin 2027 / june 2027)
   if (/\b\d{4}\b/.test(raw) && /[a-zA-Zéèêàâîïôûùç]/.test(raw)) {
     const year = raw.match(/\b(19|20)\d{2}\b/)?.[0];
-    if (year) return year;
+    if (year) return `${year}-06-30`;
   }
 
   const d = new Date(raw);
@@ -303,8 +303,8 @@ function parseDate(val: string | number | undefined): string | undefined {
     if (!Number.isNaN(d2.getTime())) return d2.toISOString().split('T')[0];
   }
 
-  // Keep original info when unparsed rather than dropping it
-  return raw;
+  // Unparseable value — skip rather than send garbage to the DB
+  return undefined;
 }
 
 function parseRow(row: Record<string, string | number | undefined>, customValues?: Record<string, string>): ParsedPlayer {
@@ -312,7 +312,6 @@ function parseRow(row: Record<string, string | number | undefined>, customValues
   const name = String(row.name ?? '').trim();
   if (!name) errors.push('Nom manquant');
   const position = parsePosition(row.position);
-  if (!position) errors.push('Poste invalide');
   const generalOpinion = parseOpinion(row.general_opinion) ?? parseOpinion(row.opinion_1) ?? 'À revoir';
 
   const reports: { opinion: Opinion; drive_link?: string; title?: string }[] = [];
@@ -339,7 +338,7 @@ function parseRow(row: Record<string, string | number | undefined>, customValues
     club: String(row.club ?? '').trim(),
     league: String(row.league ?? '').trim(),
     zone: String(row.zone ?? '').trim(),
-    position: position ?? 'MC',
+    position: position || undefined,
     role: row.role ? String(row.role).trim() : undefined,
     current_level: parseNumber(row.current_level),
     potential: parseNumber(row.potential),
@@ -405,10 +404,17 @@ export function ImportPlayersDialog() {
   // Count how many columns are mapped
   const mappedCount = useMemo(() => Object.values(columnMapping).filter(v => v && v !== '_ignore').length, [columnMapping]);
 
-  // Detect unmapped columns and guess their type from sample values
+  // Detect unmapped columns that have actual content (skip empty columns)
   const unmappedHeaders = useMemo(() => {
-    return rawData.headers.filter(h => !columnMapping[h] || columnMapping[h] === '_ignore');
-  }, [rawData.headers, columnMapping]);
+    return rawData.headers.filter(h => {
+      if (columnMapping[h] && columnMapping[h] !== '_ignore') return false;
+      // Only propose columns that have at least one non-empty value
+      return rawData.rows.some(r => {
+        const v = r[h];
+        return v !== undefined && v !== null && String(v).trim() !== '';
+      });
+    });
+  }, [rawData.headers, rawData.rows, columnMapping]);
 
   function guessFieldType(header: string, rows: RawRow[]): string {
     const samples = rows.slice(0, 20).map(r => String(r[header] ?? '').trim()).filter(Boolean);
@@ -704,12 +710,12 @@ export function ImportPlayersDialog() {
         }))
       );
 
-      // Save custom field values for imported players
-      if (result.enrichQueue?.length) {
+      // Save custom field values using resultMap (index → playerId)
+      if (result.resultMap) {
         const cfEntries: { customFieldId: string; playerId: string; value: string | null }[] = [];
         for (let i = 0; i < validPlayers.length; i++) {
           const p = validPlayers[i];
-          const playerId = result.enrichQueue[i]?.id;
+          const playerId = result.resultMap[i];
           if (playerId && Object.keys(p.customValues).length > 0) {
             for (const [cfId, val] of Object.entries(p.customValues)) {
               cfEntries.push({ customFieldId: cfId, playerId, value: val });
@@ -722,20 +728,35 @@ export function ImportPlayersDialog() {
       }
 
       const parts: string[] = [];
-      if (result.importedCount > 0) parts.push(`${result.importedCount} ${t('import.created')}`);
-      if (result.updatedCount > 0) parts.push(`${result.updatedCount} ${t('import.updated')}`);
-      if (parsed.length - validPlayers.length > 0) parts.push(`${parsed.length - validPlayers.length} ${t('import.errors_count')}`);
+      if (result.importedCount > 0) parts.push(`${result.importedCount} cree${result.importedCount > 1 ? 's' : ''}`);
+      if (result.updatedCount > 0) parts.push(`${result.updatedCount} mis a jour`);
+      const previewErrors = parsed.length - validPlayers.length;
+      if (previewErrors > 0) parts.push(`${previewErrors} invalide${previewErrors > 1 ? 's' : ''}`);
+      if (result.skippedCount > 0) parts.push(`${result.skippedCount} echoue${result.skippedCount > 1 ? 's' : ''}`);
 
       const total = result.importedCount + result.updatedCount;
       toast({
-        title: `${total} ${t('import.player')}${total > 1 ? 's' : ''} ${t('import.processed')}${total > 1 ? 's' : ''}`,
+        title: `${total} joueur${total > 1 ? 's' : ''} traite${total > 1 ? 's' : ''}`,
         description: parts.join(', ') + '.',
       });
+
+      // Show detailed errors if any players were skipped during import
+      if (result.skippedErrors?.length) {
+        const errorLines = result.skippedErrors.map(e => `• ${e.name} : ${e.error}`).join('\n');
+        setTimeout(() => {
+          toast({
+            title: `${result.skippedErrors.length} joueur${result.skippedErrors.length > 1 ? 's' : ''} non importe${result.skippedErrors.length > 1 ? 's' : ''}`,
+            description: errorLines,
+            variant: 'destructive',
+            duration: 15000,
+          });
+        }, 500);
+      }
 
       setStep('done');
     } catch (err) {
       console.error('Import error:', err);
-      toast({ title: t('common.error'), description: t('import.import_failed'), variant: 'destructive' });
+      toast({ title: t('common.error'), description: (err as Error)?.message || t('import.import_failed'), variant: 'destructive' });
       setStep('preview');
     }
   };

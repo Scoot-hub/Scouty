@@ -329,6 +329,7 @@ export default {
     select_all: 'Tout sélectionner',
     no_results: 'Aucun joueur trouvé',
     remaining: 'restants',
+    displayed: 'joueurs affiches',
     level: 'Niveau',
     contract_expired: 'Expiré',
     contract_6m: '< 6 mois',

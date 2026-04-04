@@ -321,6 +321,7 @@ export default {
     select_all: 'Select all',
     no_results: 'No players found',
     remaining: 'remaining',
+    displayed: 'players displayed',
     level: 'Level',
     contract_expired: 'Expired',
     contract_6m: '< 6 months',

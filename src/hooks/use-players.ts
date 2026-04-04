@@ -309,33 +309,30 @@ export function isSamePlayer(
 
   const sameClub = !!(importClub && dbClub && normalizeName(importClub) === normalizeName(dbClub));
   const genClose = Math.abs(importGen - dbGen) <= 1;
-  const genDefault = importGen === 2000 || dbGen === 2000; // default value = unknown
+  const bothGenKnown = importGen !== 2000 && dbGen !== 2000;
 
-  // Exact name match + same club → always duplicate regardless of generation
+  // Exact name match + same club → duplicate
   if (nA === nB && sameClub) return true;
 
-  // Exact name match + close/unknown generation → duplicate
-  if (nA === nB && (genClose || genDefault)) return true;
+  // Exact name match + close generation (both known) → duplicate
+  if (nA === nB && bothGenKnown && genClose) return true;
 
-  // For partial name matching, require generation to be close (unless default)
-  if (!genClose && !genDefault) return false;
+  // Exact name match + same generation (even default 2000 = both unknown) → duplicate
+  if (nA === nB && importGen === dbGen) return true;
+
+  // Exact name match + one gen unknown + same club → duplicate
+  if (nA === nB && !bothGenKnown && sameClub) return true;
+
+  // Partial name matching only when club AND generation both confirm
+  if (!sameClub || !genClose) return false;
 
   const partsA = nA.split(' ').filter(Boolean);
   const partsB = nB.split(' ').filter(Boolean);
 
-  // Last name match (last word in each)
+  // Last name match + first initial match + same club + close gen
   const lastA = partsA[partsA.length - 1];
   const lastB = partsB[partsB.length - 1];
-  if (lastA === lastB && lastA.length >= 3) {
-    if (partsA[0]?.[0] === partsB[0]?.[0]) return true;
-    if (sameClub) return true;
-  }
-
-  // Check if all parts of the shorter name appear in the longer name
-  const shorter = partsA.length <= partsB.length ? partsA : partsB;
-  const longer = partsA.length <= partsB.length ? partsB : partsA;
-  const allMatch = shorter.every(p => longer.some(lp => lp === p || (p.length >= 3 && lp.startsWith(p))));
-  if (allMatch && shorter.length >= 1 && shorter[shorter.length - 1].length >= 3) return true;
+  if (lastA === lastB && lastA.length >= 3 && partsA[0]?.[0] === partsB[0]?.[0]) return true;
 
   return false;
 }
@@ -359,46 +356,51 @@ export function useImportPlayers() {
         .select('id, name, generation, club');
       const existingPlayers = allExisting ?? [];
 
-      for (const { player, reports } of players) {
-        // Smart duplicate detection
-        const match = existingPlayers.find(ep =>
-          isSamePlayer(player.name, player.generation, ep.name, ep.generation, player.club, ep.club)
-        );
+      let skippedCount = 0;
+      const skippedErrors: { name: string; error: string }[] = [];
+      // resultMap: index in input array → playerId (for custom field mapping)
+      const resultMap: Record<number, string> = {};
 
-        let playerId: string;
+      for (let idx = 0; idx < players.length; idx++) {
+        const { player, reports } = players[idx];
+        try {
+          // Smart duplicate detection
+          const match = existingPlayers.find(ep =>
+            isSamePlayer(player.name, player.generation, ep.name, ep.generation, player.club, ep.club)
+          );
 
-        if (match) {
-          // Update existing player — only overwrite fields that have meaningful values
-          const updateData: Record<string, any> = {};
-          if (player.nationality && player.nationality !== 'Inconnu') updateData.nationality = player.nationality;
-          if (player.foot) updateData.foot = player.foot;
-          if (player.club) updateData.club = player.club;
-          if (player.league) updateData.league = player.league;
-          if (player.zone) updateData.zone = player.zone;
-          if (player.position && player.position !== 'MC') updateData.position = player.position;
-          if (player.role) updateData.role = player.role;
-          if (player.current_level > 0) updateData.current_level = player.current_level;
-          if (player.potential > 0) updateData.potential = player.potential;
-          if (player.general_opinion && player.general_opinion !== 'À revoir') updateData.general_opinion = player.general_opinion;
-          if (player.contract_end) updateData.contract_end = player.contract_end;
-          if (player.notes) updateData.notes = player.notes;
-          if (player.ts_report_published) updateData.ts_report_published = player.ts_report_published;
-          if ((player as any).position_secondaire) updateData.position_secondaire = (player as any).position_secondaire;
+          let playerId: string;
 
-          if (Object.keys(updateData).length > 0) {
-            const { error } = await supabase
-              .from('players')
-              .update(updateData)
-              .eq('id', match.id);
-            if (error) throw error;
-          }
-          playerId = match.id;
-          updatedCount++;
-        } else {
-          // Insert new player with user_id
-          const { data: newPlayer, error } = await supabase
-            .from('players')
-            .insert({
+          if (match) {
+            // Update existing player — only overwrite fields that have meaningful values
+            const updateData: Record<string, any> = {};
+            if (player.nationality && player.nationality !== 'Inconnu') updateData.nationality = player.nationality;
+            if (player.foot) updateData.foot = player.foot;
+            if (player.club) updateData.club = player.club;
+            if (player.league) updateData.league = player.league;
+            if (player.zone) updateData.zone = player.zone;
+            if (player.position && player.position !== 'MC') updateData.position = player.position;
+            if (player.role) updateData.role = player.role;
+            if (player.current_level > 0) updateData.current_level = player.current_level;
+            if (player.potential > 0) updateData.potential = player.potential;
+            if (player.general_opinion && player.general_opinion !== 'À revoir') updateData.general_opinion = player.general_opinion;
+            if (player.contract_end) updateData.contract_end = player.contract_end;
+            if (player.notes) updateData.notes = player.notes;
+            if (player.ts_report_published) updateData.ts_report_published = player.ts_report_published;
+            if ((player as any).position_secondaire) updateData.position_secondaire = (player as any).position_secondaire;
+
+            if (Object.keys(updateData).length > 0) {
+              const { error } = await supabase
+                .from('players')
+                .update(updateData)
+                .eq('id', match.id);
+              if (error) throw error;
+            }
+            playerId = match.id;
+            updatedCount++;
+          } else {
+            // Insert new player — strip undefined/null values to avoid DB type errors
+            const insertData: Record<string, any> = {
               name: player.name,
               photo_url: player.photo_url,
               generation: player.generation,
@@ -417,49 +419,76 @@ export function useImportPlayers() {
               ts_report_published: player.ts_report_published,
               position_secondaire: (player as any).position_secondaire,
               user_id: userId,
-            } as any)
-            .select('id')
-            .single();
-          if (error) throw error;
-          playerId = newPlayer.id;
-          existingPlayers.push({ id: playerId, name: player.name, generation: player.generation, club: player.club });
-          importedCount++;
-        }
+            };
+            for (const k of Object.keys(insertData)) {
+              if (insertData[k] === undefined || insertData[k] === null || insertData[k] === '') delete insertData[k];
+            }
+            if (!insertData.name) { skippedCount++; continue; }
+            insertData.user_id = userId;
 
-        enrichQueue.push({ id: playerId, name: player.name, club: player.club, nationality: player.nationality, generation: player.generation, position: player.position });
-
-        // Add reports (avoid duplicates by drive_link or title)
-        for (const report of reports) {
-          if (report.drive_link) {
-            const { data: existingReport } = await supabase
-              .from('reports')
+            const { data: newPlayer, error } = await supabase
+              .from('players')
+              .insert(insertData as any)
               .select('id')
-              .eq('player_id', playerId)
-              .eq('drive_link', report.drive_link)
-              .maybeSingle();
-            if (existingReport) continue;
-          } else if (report.title) {
-            const { data: existingReport } = await supabase
-              .from('reports')
-              .select('id')
-              .eq('player_id', playerId)
-              .eq('title', report.title)
-              .maybeSingle();
-            if (existingReport) continue;
+              .single();
+            if (error) throw error;
+            playerId = newPlayer.id;
+            existingPlayers.push({ id: playerId, name: player.name, generation: player.generation, club: player.club });
+            importedCount++;
           }
 
-          await supabase.from('reports').insert({
-            player_id: playerId,
-            report_date: report.report_date,
-            title: report.title,
-            opinion: report.opinion,
-            drive_link: report.drive_link,
-            user_id: userId,
-          } as any);
+          resultMap[idx] = playerId;
+          enrichQueue.push({ id: playerId, name: player.name, club: player.club, nationality: player.nationality, generation: player.generation, position: player.position });
+
+          // Add reports (avoid duplicates by drive_link or title)
+          for (const report of reports) {
+            try {
+              if (report.drive_link) {
+                const { data: existingReport } = await supabase
+                  .from('reports')
+                  .select('id')
+                  .eq('player_id', playerId)
+                  .eq('drive_link', report.drive_link)
+                  .maybeSingle();
+                if (existingReport) continue;
+              } else if (report.title) {
+                const { data: existingReport } = await supabase
+                  .from('reports')
+                  .select('id')
+                  .eq('player_id', playerId)
+                  .eq('title', report.title)
+                  .maybeSingle();
+                if (existingReport) continue;
+              }
+
+              const reportData: Record<string, any> = {
+                player_id: playerId,
+                report_date: report.report_date,
+                title: report.title,
+                opinion: report.opinion,
+                drive_link: report.drive_link,
+                user_id: userId,
+              };
+              for (const k of Object.keys(reportData)) {
+                if (reportData[k] === undefined || reportData[k] === null || reportData[k] === '') delete reportData[k];
+              }
+              reportData.player_id = playerId;
+              reportData.user_id = userId;
+
+              await supabase.from('reports').insert(reportData as any);
+            } catch (reportErr) {
+              console.warn(`[import] Skipped report for "${player.name}":`, (reportErr as Error)?.message);
+            }
+          }
+        } catch (err) {
+          const msg = (err as Error)?.message || 'Erreur inconnue';
+          console.warn(`[import] Skipped player "${player.name}":`, msg);
+          skippedErrors.push({ name: player.name, error: msg });
+          skippedCount++;
         }
       }
 
-      return { importedCount, updatedCount, enrichQueue };
+      return { importedCount, updatedCount, skippedCount, skippedErrors, enrichQueue, resultMap };
     },
     onSuccess: (result) => {
       queryClient.invalidateQueries({ queryKey: ['players'] });

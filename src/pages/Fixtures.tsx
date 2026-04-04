@@ -168,9 +168,43 @@ export default function Fixtures() {
   const selectedDate = useMemo(() => getDateString(dayOffset), [dayOffset]);
   const { toast } = useToast();
 
-  const { data, isLoading, isFetching } = useEventsForDay(selectedDate);
-  const competitions = data?.competitions ?? [];
-  const totalCount = data?.count ?? 0;
+  const PAGE_SIZE = 20;
+  const [eventsOffset, setEventsOffset] = useState(0);
+  const [allCompetitions, setAllCompetitions] = useState<LivescoreCompetition[]>([]);
+  const [totalCount, setTotalCount] = useState(0);
+  const [hasMore, setHasMore] = useState(false);
+
+  const { data, isLoading, isFetching } = useEventsForDay(selectedDate, PAGE_SIZE, eventsOffset);
+
+  // Reset when date changes
+  useMemo(() => { setEventsOffset(0); setAllCompetitions([]); setTotalCount(0); setHasMore(false); }, [selectedDate]);
+
+  // Merge new page into accumulated competitions
+  useMemo(() => {
+    if (!data?.competitions) return;
+    setTotalCount(data.count ?? 0);
+    setHasMore((data.returned ?? data.competitions.reduce((s, c) => s + c.events.length, 0)) >= PAGE_SIZE);
+    if (eventsOffset === 0) {
+      setAllCompetitions(data.competitions);
+    } else {
+      setAllCompetitions(prev => {
+        const merged = [...prev];
+        for (const newComp of data.competitions) {
+          const existing = merged.find(c => c.name === newComp.name && c.country_code === newComp.country_code);
+          if (existing) {
+            const existingIds = new Set(existing.events.map(e => e.id));
+            existing.events.push(...newComp.events.filter(e => !existingIds.has(e.id)));
+          } else {
+            merged.push(newComp);
+          }
+        }
+        return merged;
+      });
+    }
+  }, [data]);
+
+  const competitions = allCompetitions;
+  const loadMore = () => setEventsOffset(prev => prev + PAGE_SIZE);
 
   // My saved matches (to show "already saved" state)
   const { data: myMatches } = useMyMatches();
@@ -310,24 +344,7 @@ export default function Fixtures() {
 
   const filteredCount = sortedFiltered.reduce((sum, c) => sum + c.events.length, 0);
 
-  // Limit displayed matches (show 20 initially, expand on demand)
-  const [visibleLimit, setVisibleLimit] = useState(20);
-  // Reset limit when date or search changes
-  useMemo(() => setVisibleLimit(20), [selectedDate, search]);
-
-  const { truncatedComps, visibleCount } = useMemo(() => {
-    let remaining = visibleLimit;
-    const result: typeof sortedFiltered = [];
-    let total = 0;
-    for (const comp of sortedFiltered) {
-      if (remaining <= 0) break;
-      const eventsToShow = comp.events.slice(0, remaining);
-      result.push({ ...comp, events: eventsToShow });
-      remaining -= eventsToShow.length;
-      total += eventsToShow.length;
-    }
-    return { truncatedComps: result, visibleCount: total };
-  }, [sortedFiltered, visibleLimit]);
+  const displayedCount = sortedFiltered.reduce((sum, c) => sum + c.events.length, 0);
   const hasSearch = !!search.trim();
   const todayStr = new Date().toISOString().slice(0, 10);
   const isToday = selectedDate === todayStr;
@@ -489,20 +506,23 @@ export default function Fixtures() {
       )}
 
       {/* Competitions & events */}
-      {!isLoading && truncatedComps.length > 0 && (
+      {!isLoading && sortedFiltered.length > 0 && (
         <div className="space-y-5">
-          {truncatedComps.map(comp => (
+          {sortedFiltered.map(comp => (
             <CompetitionGroup key={`${comp.country_code}-${comp.name}`} competition={comp} t={t} onSave={handleSaveMatch} onSaveToOrg={handleSaveToOrg} orgs={myOrgs ?? []} savedMatchKeys={savedMatchKeys} selectedDate={selectedDate} utcOffset={utcOffset} />
           ))}
 
-          {visibleCount < filteredCount && (
+          {hasMore && (
             <div className="text-center pt-2">
               <Button
                 variant="outline"
-                onClick={() => setVisibleLimit(prev => prev + 30)}
+                onClick={loadMore}
+                disabled={isFetching}
                 className="rounded-xl"
               >
-                {t('fixtures.show_more', { shown: visibleCount, total: filteredCount })}
+                {isFetching
+                  ? t('common.loading')
+                  : t('fixtures.show_more', { shown: displayedCount, total: totalCount })}
               </Button>
             </div>
           )}

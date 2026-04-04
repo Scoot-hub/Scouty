@@ -221,14 +221,17 @@ export interface LivescoreDayResponse {
   competitions: LivescoreCompetition[];
   date: string;
   count: number;
+  offset?: number;
+  limit?: number;
+  returned?: number;
 }
 
-export function useEventsForDay(date: string) {
+export function useEventsForDay(date: string, limit = 20, offset = 0) {
   return useQuery({
-    queryKey: ['livescore-events-day', date],
+    queryKey: ['livescore-events-day', date, offset, limit],
     queryFn: async (): Promise<LivescoreDayResponse> => {
       const { data, error } = await supabase.functions.invoke('livescore-events-day', {
-        body: { date },
+        body: { date, offset, limit },
       });
       if (error) throw error;
       return data as LivescoreDayResponse;
