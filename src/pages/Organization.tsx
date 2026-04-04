@@ -360,7 +360,7 @@ function OrganizationDashboard({ org, userId }: { org: any; userId: string | und
             <div className="flex items-center justify-center py-8">
               <Loader2 className="w-5 h-5 animate-spin text-muted-foreground" />
             </div>
-          ) : (
+          ) : (<>
             <div className="space-y-2">
               {members.map((member: any) => {
                 const isMe = member.user_id === userId;
@@ -526,7 +526,7 @@ function OrganizationDashboard({ org, userId }: { org: any; userId: string | und
                 })()}
               </DialogContent>
             </Dialog>
-          )}
+          </>)}
         </CardContent>
       </Card>
 
