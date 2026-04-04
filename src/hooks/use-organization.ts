@@ -79,7 +79,7 @@ export function useOrganizationMembers(organizationId: string | undefined) {
         members.map(async (m: any) => {
           const { data: profile } = await supabase
             .from('profiles')
-            .select('full_name, club, role')
+            .select('full_name, club, role, social_x, social_instagram, social_linkedin, social_public, created_at')
             .eq('user_id', m.user_id)
             .maybeSingle();
           return { ...m, profile };

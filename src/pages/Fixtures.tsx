@@ -309,6 +309,25 @@ export default function Fixtures() {
   }, [filtered]);
 
   const filteredCount = sortedFiltered.reduce((sum, c) => sum + c.events.length, 0);
+
+  // Limit displayed matches (show 20 initially, expand on demand)
+  const [visibleLimit, setVisibleLimit] = useState(20);
+  // Reset limit when date or search changes
+  useMemo(() => setVisibleLimit(20), [selectedDate, search]);
+
+  const { truncatedComps, visibleCount } = useMemo(() => {
+    let remaining = visibleLimit;
+    const result: typeof sortedFiltered = [];
+    let total = 0;
+    for (const comp of sortedFiltered) {
+      if (remaining <= 0) break;
+      const eventsToShow = comp.events.slice(0, remaining);
+      result.push({ ...comp, events: eventsToShow });
+      remaining -= eventsToShow.length;
+      total += eventsToShow.length;
+    }
+    return { truncatedComps: result, visibleCount: total };
+  }, [sortedFiltered, visibleLimit]);
   const hasSearch = !!search.trim();
   const todayStr = new Date().toISOString().slice(0, 10);
   const isToday = selectedDate === todayStr;
@@ -470,11 +489,23 @@ export default function Fixtures() {
       )}
 
       {/* Competitions & events */}
-      {!isLoading && sortedFiltered.length > 0 && (
+      {!isLoading && truncatedComps.length > 0 && (
         <div className="space-y-5">
-          {sortedFiltered.map(comp => (
+          {truncatedComps.map(comp => (
             <CompetitionGroup key={`${comp.country_code}-${comp.name}`} competition={comp} t={t} onSave={handleSaveMatch} onSaveToOrg={handleSaveToOrg} orgs={myOrgs ?? []} savedMatchKeys={savedMatchKeys} selectedDate={selectedDate} utcOffset={utcOffset} />
           ))}
+
+          {visibleCount < filteredCount && (
+            <div className="text-center pt-2">
+              <Button
+                variant="outline"
+                onClick={() => setVisibleLimit(prev => prev + 30)}
+                className="rounded-xl"
+              >
+                {t('fixtures.show_more', { shown: visibleCount, total: filteredCount })}
+              </Button>
+            </div>
+          )}
         </div>
       )}
 

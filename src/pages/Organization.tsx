@@ -6,10 +6,13 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Separator } from '@/components/ui/separator';
+import { Badge } from '@/components/ui/badge';
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { toast } from 'sonner';
 import {
   Building2, Users, Copy, LogOut, UserMinus, Share2,
   Shield, UserCircle, Loader2, Plus, KeyRound, ChevronRight,
+  Calendar, Briefcase, ExternalLink,
 } from 'lucide-react';
 import {
   useMyOrganizations,
@@ -253,6 +256,7 @@ function OrganizationDashboard({ org, userId }: { org: any; userId: string | und
 
   const isOwner = org.myRole === 'owner';
   const isAdmin = org.myRole === 'owner' || org.myRole === 'admin';
+  const [selectedMember, setSelectedMember] = useState<any>(null);
 
   const inviteLink = `${window.location.origin}/auth?invite=${org.invite_code}`;
 
@@ -361,12 +365,21 @@ function OrganizationDashboard({ org, userId }: { org: any; userId: string | und
               {members.map((member: any) => {
                 const isMe = member.user_id === userId;
                 const memberIsOwner = member.role === 'owner';
+                const initials = (member.profile?.full_name || '?')
+                  .split(' ')
+                  .map((w: string) => w[0])
+                  .join('')
+                  .slice(0, 2)
+                  .toUpperCase();
                 return (
                   <div
                     key={member.id}
-                    className="flex items-center gap-3 px-4 py-3 rounded-xl bg-muted/30 border border-border/40"
+                    className="flex items-center gap-3 px-4 py-3 rounded-xl bg-muted/30 border border-border/40 hover:bg-muted/50 hover:border-primary/20 transition-colors cursor-pointer"
+                    onClick={() => setSelectedMember(member)}
                   >
-                    <UserCircle className="w-8 h-8 text-muted-foreground shrink-0" />
+                    <div className="w-9 h-9 rounded-full bg-primary/10 flex items-center justify-center shrink-0 text-xs font-bold text-primary">
+                      {initials}
+                    </div>
                     <div className="flex-1 min-w-0">
                       <p className="text-sm font-medium truncate">
                         {member.profile?.full_name || t('org.unknown_user')}
@@ -376,6 +389,8 @@ function OrganizationDashboard({ org, userId }: { org: any; userId: string | und
                       </p>
                       <p className="text-xs text-muted-foreground truncate">
                         {member.profile?.club || ''}
+                        {member.profile?.role && member.profile.club ? ' · ' : ''}
+                        {member.profile?.role || ''}
                       </p>
                     </div>
                     <span className={`text-xs font-medium px-2 py-0.5 rounded-full ${
@@ -389,7 +404,7 @@ function OrganizationDashboard({ org, userId }: { org: any; userId: string | und
                     </span>
                     {/* Actions for admins on non-owners */}
                     {isAdmin && !isMe && !memberIsOwner && (
-                      <div className="flex gap-1">
+                      <div className="flex gap-1" onClick={e => e.stopPropagation()}>
                         {isOwner && (
                           <Button
                             variant="ghost"
@@ -416,6 +431,101 @@ function OrganizationDashboard({ org, userId }: { org: any; userId: string | und
                 );
               })}
             </div>
+
+            {/* Member profile dialog */}
+            <Dialog open={!!selectedMember} onOpenChange={o => { if (!o) setSelectedMember(null); }}>
+              <DialogContent className="sm:max-w-md">
+                {selectedMember && (() => {
+                  const p = selectedMember.profile;
+                  const memberInitials = (p?.full_name || '?').split(' ').map((w: string) => w[0]).join('').slice(0, 2).toUpperCase();
+                  const joinDate = selectedMember.joined_at
+                    ? new Date(selectedMember.joined_at).toLocaleDateString(undefined, { day: 'numeric', month: 'long', year: 'numeric' })
+                    : null;
+                  const showSocials = p?.social_public && (p?.social_x || p?.social_instagram || p?.social_linkedin);
+                  return (
+                    <>
+                      <DialogHeader>
+                        <DialogTitle className="sr-only">{p?.full_name || t('org.unknown_user')}</DialogTitle>
+                      </DialogHeader>
+                      <div className="flex flex-col items-center gap-4 py-2">
+                        {/* Avatar */}
+                        <div className="w-20 h-20 rounded-full bg-primary/10 flex items-center justify-center text-2xl font-bold text-primary">
+                          {memberInitials}
+                        </div>
+
+                        {/* Name + role badge */}
+                        <div className="text-center">
+                          <h2 className="text-lg font-bold">{p?.full_name || t('org.unknown_user')}</h2>
+                          <div className="flex items-center justify-center gap-2 mt-1">
+                            <Badge variant="outline" className={
+                              selectedMember.role === 'owner'
+                                ? 'border-primary/30 text-primary'
+                                : selectedMember.role === 'admin'
+                                  ? 'border-amber-500/30 text-amber-600'
+                                  : ''
+                            }>
+                              {selectedMember.role === 'owner' ? t('org.role_owner') : selectedMember.role === 'admin' ? t('org.role_admin') : t('org.role_member')}
+                            </Badge>
+                          </div>
+                        </div>
+
+                        {/* Info grid */}
+                        <div className="w-full space-y-3 pt-2">
+                          {p?.club && (
+                            <div className="flex items-center gap-3 text-sm">
+                              <Building2 className="w-4 h-4 text-muted-foreground shrink-0" />
+                              <span className="text-muted-foreground">{t('org.profile_club')}</span>
+                              <span className="ml-auto font-medium">{p.club}</span>
+                            </div>
+                          )}
+                          {p?.role && (
+                            <div className="flex items-center gap-3 text-sm">
+                              <Briefcase className="w-4 h-4 text-muted-foreground shrink-0" />
+                              <span className="text-muted-foreground">{t('org.profile_role')}</span>
+                              <span className="ml-auto font-medium">{p.role}</span>
+                            </div>
+                          )}
+                          {joinDate && (
+                            <div className="flex items-center gap-3 text-sm">
+                              <Calendar className="w-4 h-4 text-muted-foreground shrink-0" />
+                              <span className="text-muted-foreground">{t('org.profile_joined')}</span>
+                              <span className="ml-auto font-medium">{joinDate}</span>
+                            </div>
+                          )}
+
+                          {/* Social links (only if public) */}
+                          {showSocials && (
+                            <>
+                              <Separator />
+                              <div className="flex items-center justify-center gap-3">
+                                {p.social_x && (
+                                  <a href={`https://x.com/${p.social_x.replace('@', '')}`} target="_blank" rel="noopener noreferrer"
+                                    className="flex items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground transition-colors px-3 py-1.5 rounded-lg hover:bg-muted">
+                                    <ExternalLink className="w-3 h-3" />𝕏 {p.social_x}
+                                  </a>
+                                )}
+                                {p.social_instagram && (
+                                  <a href={`https://instagram.com/${p.social_instagram.replace('@', '')}`} target="_blank" rel="noopener noreferrer"
+                                    className="flex items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground transition-colors px-3 py-1.5 rounded-lg hover:bg-muted">
+                                    <ExternalLink className="w-3 h-3" />IG {p.social_instagram}
+                                  </a>
+                                )}
+                                {p.social_linkedin && (
+                                  <a href={p.social_linkedin.startsWith('http') ? p.social_linkedin : `https://linkedin.com/in/${p.social_linkedin}`} target="_blank" rel="noopener noreferrer"
+                                    className="flex items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground transition-colors px-3 py-1.5 rounded-lg hover:bg-muted">
+                                    <ExternalLink className="w-3 h-3" />LinkedIn
+                                  </a>
+                                )}
+                              </div>
+                            </>
+                          )}
+                        </div>
+                      </div>
+                    </>
+                  );
+                })()}
+              </DialogContent>
+            </Dialog>
           )}
         </CardContent>
       </Card>
