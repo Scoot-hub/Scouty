@@ -41,9 +41,12 @@ const CGV = lazy(() => import("@/pages/CGV"));
 const CGU = lazy(() => import("@/pages/CGU"));
 const Booking = lazy(() => import("@/pages/Booking"));
 const Discover = lazy(() => import("@/pages/Discover"));
+const ClubProfile = lazy(() => import("@/pages/ClubProfile"));
+const MyClubs = lazy(() => import("@/pages/MyClubs"));
 const AdminRoles = lazy(() => import("@/pages/AdminRoles"));
 const Privacy = lazy(() => import("@/pages/Privacy"));
 const AdminAnalytics = lazy(() => import("@/pages/AdminAnalytics"));
+const MapView = lazy(() => import("@/pages/MapView"));
 const NotFound = lazy(() => import("@/pages/NotFound"));
 const queryClient = new QueryClient();
 
@@ -95,6 +98,9 @@ const App = () => (
                 <Route path="/organization/:orgSlug/roadmap" element={<OrgRoadmap />} />
                 <Route path="/booking" element={<Booking />} />
                 <Route path="/discover" element={<Discover />} />
+                <Route path="/club" element={<ClubProfile />} />
+                <Route path="/my-clubs" element={<MyClubs />} />
+                <Route path="/map" element={<MapView />} />
                 <Route path="/checkout" element={<Checkout />} />
                 <Route path="/affiliate" element={<Affiliate />} />
               </Route>

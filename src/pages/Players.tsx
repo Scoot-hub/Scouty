@@ -13,6 +13,7 @@ import { FlagIcon } from '@/components/ui/flag-icon';
 import { useCustomFields } from '@/hooks/use-custom-fields';
 import { PlayerAvatar } from '@/components/ui/player-avatar';
 import { ClubBadge } from '@/components/ui/club-badge';
+import { ClubLink } from '@/components/ui/club-link';
 import { LeagueLogo } from '@/components/ui/league-logo';
 import { Card, CardContent } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
@@ -873,7 +874,7 @@ export default function Players() {
                             <div className="flex items-center gap-2 mt-0.5">
                               <ClubBadge club={player.club} size="sm" />
                               <div className="min-w-0">
-                                <p className="text-sm text-muted-foreground truncate">{player.club}</p>
+                                <ClubLink club={player.club} className="text-sm text-muted-foreground truncate">{player.club}</ClubLink>
                                 {ext.on_loan && ext.parent_club && (
                                   <div className="flex items-center gap-1 mt-0.5">
                                     <span className="text-[10px] text-amber-600 dark:text-amber-400 font-medium">{t('profile.on_loan')}</span>

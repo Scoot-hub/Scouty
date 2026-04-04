@@ -1,6 +1,7 @@
 import { useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Link } from 'react-router-dom';
+import { ClubLink } from '@/components/ui/club-link';
 import { useMyMatches, useRemoveMatch, useUpdateMatchStatus, type MatchAssignment } from '@/hooks/use-match-assignments';
 import { Card, CardContent } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
@@ -227,7 +228,7 @@ function MatchCard({ match, onCycleStatus, onRemove, t, utcOffset }: {
         {/* Teams */}
         <div className="flex items-center gap-2.5">
           <div className="flex-1 flex items-center justify-end gap-2 min-w-0">
-            <p className="font-semibold text-sm truncate text-right">{match.home_team}</p>
+            <ClubLink club={match.home_team} className="font-semibold text-sm truncate text-right block">{match.home_team}</ClubLink>
             {match.home_badge && (
               <img src={match.home_badge} alt="" className="w-6 h-6 object-contain shrink-0" loading="lazy" />
             )}
@@ -237,7 +238,7 @@ function MatchCard({ match, onCycleStatus, onRemove, t, utcOffset }: {
             {match.away_badge && (
               <img src={match.away_badge} alt="" className="w-6 h-6 object-contain shrink-0" loading="lazy" />
             )}
-            <p className="font-semibold text-sm truncate">{match.away_team}</p>
+            <ClubLink club={match.away_team} className="font-semibold text-sm truncate block">{match.away_team}</ClubLink>
           </div>
         </div>
 

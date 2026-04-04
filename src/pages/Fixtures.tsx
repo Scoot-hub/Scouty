@@ -21,6 +21,7 @@ import {
   Clock, Globe, Loader2, Search, Star, Plus, Check, UserCircle,
 } from 'lucide-react';
 import { useUtcOffset, formatTimeWithOffset } from '@/hooks/use-utc-offset';
+import { ClubLink } from '@/components/ui/club-link';
 import { cn } from '@/lib/utils';
 
 function getDateString(offset: number) {
@@ -582,7 +583,7 @@ function MyPlayerEventCard({ match, t, onSave, onSaveToOrg, orgs, isSaved, utcOf
         {/* Teams */}
         <div className="flex items-center gap-2.5">
           <div className="flex-1 flex items-center justify-end gap-2 min-w-0">
-            <p className="font-semibold text-sm truncate text-right">{event.home_team}</p>
+            <ClubLink club={event.home_team} className="font-semibold text-sm truncate text-right block">{event.home_team}</ClubLink>
             {event.home_badge && (
               <img src={event.home_badge} alt="" className="w-6 h-6 object-contain shrink-0" loading="lazy" />
             )}
@@ -605,7 +606,7 @@ function MyPlayerEventCard({ match, t, onSave, onSaveToOrg, orgs, isSaved, utcOf
             {event.away_badge && (
               <img src={event.away_badge} alt="" className="w-6 h-6 object-contain shrink-0" loading="lazy" />
             )}
-            <p className="font-semibold text-sm truncate">{event.away_team}</p>
+            <ClubLink club={event.away_team} className="font-semibold text-sm truncate block">{event.away_team}</ClubLink>
           </div>
         </div>
 
@@ -802,7 +803,7 @@ function EventCard({ event, onSave, onSaveToOrg, orgs, isSaved, utcOffset }: { e
         {/* Teams */}
         <div className="flex items-center gap-2.5">
           <div className="flex-1 flex items-center justify-end gap-2 min-w-0">
-            <p className="font-semibold text-sm truncate text-right">{event.home_team}</p>
+            <ClubLink club={event.home_team} className="font-semibold text-sm truncate text-right block">{event.home_team}</ClubLink>
             {event.home_badge && (
               <img src={event.home_badge} alt="" className="w-6 h-6 object-contain shrink-0" loading="lazy" />
             )}
@@ -825,7 +826,7 @@ function EventCard({ event, onSave, onSaveToOrg, orgs, isSaved, utcOffset }: { e
             {event.away_badge && (
               <img src={event.away_badge} alt="" className="w-6 h-6 object-contain shrink-0" loading="lazy" />
             )}
-            <p className="font-semibold text-sm truncate">{event.away_team}</p>
+            <ClubLink club={event.away_team} className="font-semibold text-sm truncate block">{event.away_team}</ClubLink>
           </div>
         </div>
       </CardContent>

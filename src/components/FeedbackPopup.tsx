@@ -70,7 +70,10 @@ export default function FeedbackPopup() {
         }),
       });
 
-      if (!res.ok) throw new Error('Server error');
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        throw new Error(data.error || 'Server error');
+      }
 
       setSent(true);
       toast.success(t('feedback.success'));

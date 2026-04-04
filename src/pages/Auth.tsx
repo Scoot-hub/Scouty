@@ -8,7 +8,7 @@ import { Label } from '@/components/ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { useToast } from '@/hooks/use-toast';
 import { useAuth } from '@/contexts/AuthContext';
-import { Eye, EyeOff } from 'lucide-react';
+import { Eye, EyeOff, Wand2 } from 'lucide-react';
 import LanguageSwitcher from '@/components/LanguageSwitcher';
 import PasswordStrengthIndicator, { validatePassword } from '@/components/PasswordStrengthIndicator';
 import logo from '@/assets/logo.png';
@@ -217,7 +217,26 @@ export default function Auth() {
             </div>
 
             <div className="space-y-2">
-              <Label htmlFor="password">{t('auth.password')}</Label>
+              <div className="flex items-center justify-between">
+                <Label htmlFor="password">{t('auth.password')}</Label>
+                {mode === 'signup' && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const chars = 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789!@#$%&*?';
+                      const arr = new Uint32Array(16);
+                      crypto.getRandomValues(arr);
+                      const pwd = Array.from(arr, v => chars[v % chars.length]).join('');
+                      setPassword(pwd);
+                      setShowPassword(true);
+                    }}
+                    className="inline-flex items-center gap-1 text-[11px] text-primary hover:underline font-medium"
+                  >
+                    <Wand2 className="w-3 h-3" />
+                    {t('auth.generate_password')}
+                  </button>
+                )}
+              </div>
               <div className="relative">
                 <Input
                   id="password"

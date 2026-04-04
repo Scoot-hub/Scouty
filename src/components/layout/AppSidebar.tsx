@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { Link, useLocation, useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import {
-  Users, Menu, X, PlusCircle, LogOut, Settings, Shield, ShieldCheck, UserCircle, Eye, Sparkles, Building2, Bug, CalendarDays, CalendarCheck, Shirt, Contact, ClipboardList, ChevronLeft, ChevronRight, Route, MapPinned, Gift, Search
+  Users, Menu, X, PlusCircle, LogOut, Settings, Shield, ShieldCheck, UserCircle, Eye, Sparkles, Building2, Bug, CalendarDays, CalendarCheck, Shirt, Contact, ClipboardList, ChevronLeft, ChevronRight, Route, MapPinned, Gift, Search, Globe, Heart
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { useAuth } from '@/contexts/AuthContext';
@@ -253,12 +253,44 @@ export default function AppSidebar({ collapsed, onToggle }: AppSidebarProps) {
           </div>
         )}
 
+        <SidebarTooltip label={t('sidebar.map')} collapsed={collapsed}>
+          <Link to="/map" className={linkClass('/map')} onClick={() => setMobileOpen(false)}>
+            <Globe className="w-4 h-4 shrink-0" />
+            {!collapsed && t('sidebar.map')}
+          </Link>
+        </SidebarTooltip>
+
         <SidebarTooltip label={t('sidebar.contacts')} collapsed={collapsed}>
           <Link to="/contacts" className={linkClass('/contacts')} onClick={() => setMobileOpen(false)}>
             <Contact className="w-4 h-4 shrink-0" />
             {!collapsed && t('sidebar.contacts')}
           </Link>
         </SidebarTooltip>
+
+        <SidebarTooltip label={t('sidebar.club_profile')} collapsed={collapsed}>
+          <Link to="/club" className={linkClass('/club', ['/my-clubs'])} onClick={() => setMobileOpen(false)}>
+            <Building2 className="w-4 h-4 shrink-0" />
+            {!collapsed && t('sidebar.club_profile')}
+          </Link>
+        </SidebarTooltip>
+
+        {!collapsed && (
+          <div className="pl-7 space-y-0.5">
+            <Link
+              to="/my-clubs"
+              className={cn(
+                'flex items-center gap-2.5 px-3 py-1.5 rounded-lg text-[13px] transition-all',
+                isActive('/my-clubs')
+                  ? 'bg-sidebar-accent text-sidebar-accent-foreground'
+                  : 'text-sidebar-foreground/60 hover:text-sidebar-foreground hover:bg-sidebar-accent/50'
+              )}
+              onClick={() => setMobileOpen(false)}
+            >
+              <Heart className="w-3.5 h-3.5" />
+              {t('sidebar.my_clubs')}
+            </Link>
+          </div>
+        )}
 
         <SidebarTooltip label={t('sidebar.discover')} collapsed={collapsed}>
           <Link to="/discover" className={linkClass('/discover')} onClick={() => setMobileOpen(false)}>

@@ -15,6 +15,7 @@ import { FlagIcon } from '@/components/ui/flag-icon';
 import { OpinionBadge } from '@/components/ui/opinion-badge';
 import { PlayerAvatar } from '@/components/ui/player-avatar';
 import { ClubBadge } from '@/components/ui/club-badge';
+import { ClubLink } from '@/components/ui/club-link';
 import { CircularGauge } from '@/components/ui/circular-gauge';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
@@ -494,7 +495,7 @@ export default function PlayerProfile() {
                   {career.map((entry, i) => (
                     <div key={i} className="flex items-center gap-3 p-2.5 rounded-lg bg-muted/30 text-sm">
                       <ClubBadge club={entry.club} size="sm" />
-                      <span className="font-semibold flex-1 truncate">{entry.club}</span>
+                      <ClubLink club={entry.club} className="font-semibold flex-1 truncate">{entry.club}</ClubLink>
                       <span className="text-xs text-muted-foreground shrink-0">
                         {fmtCareerDate(entry.from) || '—'} – {entry.to ? fmtCareerDate(entry.to) : t('common.present')}
                       </span>
@@ -670,7 +671,7 @@ export default function PlayerProfile() {
                   <div className="flex items-center gap-2">
                     <ClubBadge club={player.club} size="sm" />
                     <div>
-                      <p className="text-sm font-semibold">{player.club}</p>
+                      <ClubLink club={player.club} className="text-sm font-semibold">{player.club}</ClubLink>
                       {ext.on_loan && ext.parent_club ? (
                         <div className="flex items-center gap-1.5 mt-0.5">
                           <span className="text-xs text-amber-600 dark:text-amber-400 font-medium">{t('profile.on_loan')}</span>

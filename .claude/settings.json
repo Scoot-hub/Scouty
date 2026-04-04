@@ -14,7 +14,14 @@
       "Bash(npm run:*)",
       "Bash(ls -1 /c/Users/infor/scouting-hub/src/pages/*.tsx)",
       "Bash(ls -1 /c/Users/infor/scouting-hub/src/components/*.tsx)",
-      "Bash(find /c/Users/infor/scouting-hub/src -type f \\\\\\( -name \"*.tsx\" -o -name \"*.ts\" \\\\\\) -exec grep -l \"consent\\\\|banner\\\\|modal.*cookie\" {} \\\\;)"
+      "Bash(find /c/Users/infor/scouting-hub/src -type f \\\\\\( -name \"*.tsx\" -o -name \"*.ts\" \\\\\\) -exec grep -l \"consent\\\\|banner\\\\|modal.*cookie\" {} \\\\;)",
+      "Bash(curl -s -X POST http://localhost:3001/api/feedback -H \"Content-Type: application/json\" -d '{\"rating\":5,\"message\":\"test\"}')",
+      "Bash(npx kill-port:*)",
+      "Bash(taskkill //F //IM node.exe)",
+      "Bash(node server/index.js)",
+      "Bash(disown)",
+      "Bash(curl -s http://localhost:3001/api/health)",
+      "Bash(grep -E \"\\\\.\\(ts|sql|js\\)$\")"
     ],
     "additionalDirectories": [
       "\\tmp"

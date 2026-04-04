@@ -396,6 +396,18 @@ CREATE TABLE IF NOT EXISTS notifications (
   FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
 );
 
+-- Followed clubs
+CREATE TABLE IF NOT EXISTS followed_clubs (
+  id CHAR(36) PRIMARY KEY,
+  user_id CHAR(36) NOT NULL,
+  club_name VARCHAR(255) NOT NULL,
+  notes TEXT NULL,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  UNIQUE KEY uniq_user_club (user_id, club_name(191)),
+  INDEX idx_followed_clubs_user (user_id),
+  FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+);
+
 -- Page permissions per role
 CREATE TABLE IF NOT EXISTS page_permissions (
   id CHAR(36) PRIMARY KEY,

@@ -843,6 +843,24 @@ async function runMigrations() {
     if (!err?.message?.includes("already exists")) console.warn("[warn] notifications table migration:", err?.message);
   }
 
+  // Ensure followed_clubs table exists
+  try {
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS followed_clubs (
+        id CHAR(36) PRIMARY KEY,
+        user_id CHAR(36) NOT NULL,
+        club_name VARCHAR(255) NOT NULL,
+        notes TEXT NULL,
+        created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE KEY uniq_user_club (user_id, club_name(191)),
+        INDEX idx_followed_clubs_user (user_id),
+        FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+      )
+    `);
+  } catch (err) {
+    if (!err?.message?.includes("already exists")) console.warn("[warn] followed_clubs migration:", err?.message);
+  }
+
   // Migrate user_roles.role from ENUM to VARCHAR to support custom roles
   try {
     await pool.query("ALTER TABLE user_roles MODIFY COLUMN role VARCHAR(50) NOT NULL DEFAULT 'user'");
@@ -1296,6 +1314,46 @@ app.post("/api/account/delete", authMiddleware, async (req, res) => {
   } catch (err) {
     console.error("[delete-account] Error:", err);
     return res.status(500).json({ error: "Erreur lors de la suppression du compte." });
+  }
+});
+
+// ── Followed Clubs CRUD ───────────────────────────────────────────────────
+app.get("/api/followed-clubs", authMiddleware, async (req, res) => {
+  try {
+    const [rows] = await pool.query(
+      "SELECT * FROM followed_clubs WHERE user_id = ? ORDER BY created_at DESC",
+      [req.user.id]
+    );
+    return res.json(rows);
+  } catch (err) {
+    console.error("[followed-clubs] GET error:", err);
+    return res.status(500).json({ error: "Erreur serveur" });
+  }
+});
+
+app.post("/api/followed-clubs", authMiddleware, async (req, res) => {
+  const { club_name, notes } = req.body || {};
+  if (!club_name) return res.status(400).json({ error: "Nom du club requis." });
+  try {
+    const id = uuidv4();
+    await pool.query(
+      "INSERT INTO followed_clubs (id, user_id, club_name, notes) VALUES (?, ?, ?, ?) ON DUPLICATE KEY UPDATE notes = VALUES(notes)",
+      [id, req.user.id, club_name.trim(), notes || null]
+    );
+    return res.json({ ok: true, id });
+  } catch (err) {
+    console.error("[followed-clubs] POST error:", err);
+    return res.status(500).json({ error: "Erreur serveur" });
+  }
+});
+
+app.delete("/api/followed-clubs/:id", authMiddleware, async (req, res) => {
+  try {
+    await pool.query("DELETE FROM followed_clubs WHERE id = ? AND user_id = ?", [req.params.id, req.user.id]);
+    return res.json({ ok: true });
+  } catch (err) {
+    console.error("[followed-clubs] DELETE error:", err);
+    return res.status(500).json({ error: "Erreur serveur" });
   }
 });
 
@@ -4454,72 +4512,89 @@ app.post("/api/functions/:name", authMiddleware, async (req, res) => {
       let results = [];
 
       if (query) {
-        // Name-based search
         const searchUrl = `https://www.transfermarkt.fr/schnellsuche/ergebnis/schnellsuche?query=${encodeURIComponent(query)}&Spieler_page=${page || 1}`;
         const resp = await fetch(searchUrl, opts);
         if (!resp.ok) throw new Error(`TM search returned ${resp.status}`);
         const html = await resp.text();
 
-        // Parse player rows from search results
-        const tableMatch = html.match(/<table class="items"[^>]*>[\s\S]*?<\/table>/);
-        if (tableMatch) {
-          const tbody = tableMatch[0];
-          const rowRegex = /<tr[^>]*class="[^"]*(?:odd|even)[^"]*"[^>]*>([\s\S]*?)<\/tr>/g;
-          let match;
-          while ((match = rowRegex.exec(tbody)) !== null) {
-            const row = match[1];
-            // Name + link
-            const nameMatch = row.match(/class="hauptlink"[^>]*>\s*<a[^>]*href="([^"]*)"[^>]*title="([^"]*)"/);
-            if (!nameMatch) continue;
-            const path = nameMatch[1];
-            const name = nameMatch[2];
-            // Photo
-            const photoMatch = row.match(/data-src="([^"]*?)"/);
-            const photo = photoMatch ? photoMatch[1] : null;
-            // Position
-            const posMatch = row.match(/<td[^>]*class="[^"]*zentriert[^"]*"[^>]*>([^<]*)<\/td>/g);
-            let posText = '';
-            let ageText = '';
-            let natFlags = [];
-            if (posMatch) {
-              posMatch.forEach(td => {
-                const val = td.replace(/<[^>]*>/g, '').trim();
-                if (/\d{2}/.test(val) && !posText) { /* skip */ }
-                else if (val && !posText) posText = val;
-              });
-            }
-            // Age
-            const ageMatch = row.match(/<td[^>]*class="[^"]*zentriert[^"]*"[^>]*>\s*(\d{1,2})\s*<\/td>/);
-            if (ageMatch) ageText = ageMatch[1];
-            // Nationality flags
-            const flagRegex = /title="([^"]*)"[^>]*class="flaggenrahmen"/g;
-            let flagMatch;
-            while ((flagMatch = flagRegex.exec(row)) !== null) {
-              natFlags.push(flagMatch[1]);
-            }
-            // Club
-            const clubMatch = row.match(/<td[^>]*class="[^"]*zentriert[^"]*"[^>]*>[\s\S]*?<a[^>]*title="([^"]*)"[\s\S]*?<img[^>]*src="([^"]*)"[\s\S]*?<\/td>/);
-            const club = clubMatch ? clubMatch[1] : '';
-            const clubLogo = clubMatch ? clubMatch[2] : '';
-            // Market value
-            const valueMatch = row.match(/<td[^>]*class="[^"]*rechts[^"]*hauptlink[^"]*"[^>]*>([^<]*)<\/td>/);
-            const marketValue = valueMatch ? valueMatch[1].trim() : '';
+        // Find the first <table class="items"> with proper nested table handling
+        const tableStart = html.indexOf('<table class="items">');
+        let tableEnd = -1;
+        if (tableStart !== -1) {
+          let d = 0;
+          for (let k = tableStart; k < html.length; k++) {
+            if (html.slice(k, k + 6) === '<table') d++;
+            if (html.slice(k, k + 8) === '</table>') { d--; if (d === 0) { tableEnd = k + 8; break; } }
+          }
+        }
+        if (tableStart !== -1 && tableEnd !== -1) {
+          const table = html.slice(tableStart, tableEnd);
 
-            const age = parseInt(ageText) || null;
+          // Split rows by finding each <tr class="odd/even"> boundary
+          const rowStarts = [];
+          const rowPattern = /<tr class="(?:odd|even)">/g;
+          let rm;
+          while ((rm = rowPattern.exec(table)) !== null) rowStarts.push(rm.index);
+
+          const rows = [];
+          for (let ri = 0; ri < rowStarts.length; ri++) {
+            const start = rowStarts[ri];
+            const end = ri + 1 < rowStarts.length ? rowStarts[ri + 1] : table.length;
+            rows.push(table.slice(start, end));
+          }
+
+          for (const row of rows) {
+            // Photo (src= not data-src on TM)
+            const photoMatch = row.match(/img[^>]*src="(https:\/\/img[^"]*portrait[^"]*)"/);
+            const photo = photoMatch ? photoMatch[1].replace('/small/', '/big/') : null;
+            // Name + link
+            const nameMatch = row.match(/class="hauptlink"[^>]*>\s*<a[^>]*title="([^"]*)"[^>]*href="([^"]*)"/);
+            if (!nameMatch) continue;
+            const name = nameMatch[1].replace(/&#0?39;/g, "'").replace(/&amp;/g, '&').replace(/&quot;/g, '"');
+            const tmPath = nameMatch[2];
+            // Position: first <td class="zentriert"> with plain text (not containing <a> or <img>)
+            const tdZentriert = row.match(/<td class="zentriert">([^<]{1,30})<\/td>/g) || [];
+            let posText = '';
+            let ageVal = null;
+            for (const td of tdZentriert) {
+              const val = td.replace(/<[^>]*>/g, '').trim();
+              if (/^\d{1,2}$/.test(val)) { ageVal = parseInt(val); }
+              else if (val && !posText && !/^\d+$/.test(val)) { posText = val; }
+            }
+            // Nationality flags
+            const natFlags = [];
+            const flagRegex = /title="([^"]*)"[^>]*class="flaggenrahmen"/g;
+            let fm;
+            while ((fm = flagRegex.exec(row)) !== null) natFlags.push(fm[1]);
+            // Club: from the <a> wrapping the tiny_wappen img, or from inline-table
+            const clubCellMatch = row.match(/<a[^>]*title="([^"]*)"[^>]*>[^<]*<img[^>]*class="tiny_wappen"/);
+            const club = clubCellMatch ? clubCellMatch[1] : '';
+            const clubLogoMatch = row.match(/<img[^>]*class="tiny_wappen"[^>]*src="([^"]*)"/);
+            const clubLogo = clubLogoMatch ? clubLogoMatch[1] : '';
+            // Market value
+            const valueMatch = row.match(/<td[^>]*class="rechts hauptlink"[^>]*>([\s\S]*?)<\/td>/);
+            const marketValue = valueMatch ? valueMatch[1].replace(/<[^>]*>/g, '').trim() : '';
 
             // Apply filters
-            if (ageMin && age && age < parseInt(ageMin)) continue;
-            if (ageMax && age && age > parseInt(ageMax)) continue;
-            if (position && posText && !posText.toLowerCase().includes(position.toLowerCase())) continue;
-            if (nationality && natFlags.length > 0 && !natFlags.some(f => f.toLowerCase().includes(nationality.toLowerCase()))) continue;
+            if (ageMin && ageVal && ageVal < parseInt(ageMin)) continue;
+            if (ageMax && ageVal && ageVal > parseInt(ageMax)) continue;
+            if (position && position !== '_all' && posText) {
+              const posLower = posText.toLowerCase();
+              const filterLower = position.toLowerCase();
+              if (!posLower.includes(filterLower)) continue;
+            }
+            if (nationality && natFlags.length > 0) {
+              const natLower = nationality.toLowerCase();
+              if (!natFlags.some(f => f.toLowerCase().includes(natLower))) continue;
+            }
 
             results.push({
               name,
-              tmPath: path,
-              tmId: path.match(/\/spieler\/(\d+)/)?.[1] || null,
-              photo: photo?.replace(/small|medium/, 'big') || photo,
+              tmPath,
+              tmId: tmPath.match(/\/spieler\/(\d+)/)?.[1] || null,
+              photo,
               position: posText,
-              age,
+              age: ageVal,
               nationality: natFlags.join(', '),
               club,
               clubLogo,
@@ -4529,15 +4604,14 @@ app.post("/api/functions/:name", authMiddleware, async (req, res) => {
         }
       }
 
-      // Value filter (parse market value string)
+      // Value filter
       if (valueMin || valueMax) {
         const parseValue = (v) => {
           if (!v) return 0;
-          const s = v.replace(/[^0-9.,mMkK]/g, '');
-          const num = parseFloat(s.replace(',', '.'));
+          const num = parseFloat(v.replace(/[^0-9,]/g, '').replace(',', '.'));
           if (isNaN(num)) return 0;
-          if (/m/i.test(v)) return num * 1000000;
-          if (/k/i.test(v) || /mille/i.test(v)) return num * 1000;
+          if (/mio/i.test(v) || /m\b/i.test(v)) return num * 1000000;
+          if (/mille|k\b/i.test(v)) return num * 1000;
           return num;
         };
         const minVal = valueMin ? parseFloat(valueMin) * 1000000 : 0;

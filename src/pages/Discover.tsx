@@ -39,7 +39,8 @@ export default function Discover() {
   const navigate = useNavigate();
   const { data: isPremium } = useIsPremium();
 
-  const [query, setQuery] = useState('');
+  const [firstName, setFirstName] = useState('');
+  const [lastName, setLastName] = useState('');
   const [position, setPosition] = useState('');
   const [ageMin, setAgeMin] = useState('');
   const [ageMax, setAgeMax] = useState('');
@@ -47,8 +48,10 @@ export default function Discover() {
   const [valueMax, setValueMax] = useState('');
   const [nationality, setNationality] = useState('');
   const [results, setResults] = useState<DiscoveredPlayer[]>([]);
-  const [filtersOpen, setFiltersOpen] = useState(false);
+  const [filtersOpen, setFiltersOpen] = useState(true);
   const [addingPlayer, setAddingPlayer] = useState<string | null>(null);
+
+  const query = [firstName.trim(), lastName.trim()].filter(Boolean).join(' ');
 
   const searchMutation = useMutation({
     mutationFn: async () => {
@@ -135,14 +138,20 @@ export default function Discover() {
       <Card>
         <CardContent className="p-4">
           <form onSubmit={handleSearch} className="space-y-4">
+            {/* Name fields + search button */}
             <div className="flex gap-2">
-              <div className="flex-1 relative">
-                <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
+              <div className="flex-1">
                 <Input
-                  value={query}
-                  onChange={e => setQuery(e.target.value)}
-                  placeholder={t('discover.search_placeholder')}
-                  className="pl-10"
+                  value={firstName}
+                  onChange={e => setFirstName(e.target.value)}
+                  placeholder={t('discover.first_name')}
+                />
+              </div>
+              <div className="flex-1">
+                <Input
+                  value={lastName}
+                  onChange={e => setLastName(e.target.value)}
+                  placeholder={t('discover.last_name')}
                 />
               </div>
               <Button type="submit" disabled={searchMutation.isPending || !query.trim()}>
@@ -156,18 +165,18 @@ export default function Discover() {
 
             {/* Filters */}
             {filtersOpen && (
-              <div className="grid grid-cols-2 md:grid-cols-5 gap-3 pt-2 border-t border-border">
+              <div className="grid grid-cols-2 md:grid-cols-5 gap-3 pt-3 border-t border-border">
                 <div className="space-y-1">
                   <label className="text-[10px] font-medium text-muted-foreground flex items-center gap-1">
                     <Crosshair className="w-3 h-3" /> {t('discover.filter_position')}
                   </label>
-                  <Select value={position} onValueChange={setPosition}>
+                  <Select value={position} onValueChange={v => setPosition(v === '_all' ? '' : v)}>
                     <SelectTrigger className="h-8 text-xs">
                       <SelectValue placeholder={t('discover.all_positions')} />
                     </SelectTrigger>
                     <SelectContent>
                       {POSITIONS_FILTER.map(p => (
-                        <SelectItem key={p.value} value={p.value || '_all'}>{t(p.label)}</SelectItem>
+                        <SelectItem key={p.value || '_all'} value={p.value || '_all'}>{t(p.label)}</SelectItem>
                       ))}
                     </SelectContent>
                   </Select>
