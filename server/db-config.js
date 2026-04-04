@@ -1,6 +1,24 @@
 const TIDB_DEFAULT_PORT = 4000;
 const MYSQL_DEFAULT_PORT = 3306;
 
+function normalizeEnvValue(value) {
+  if (typeof value !== "string") {
+    return value;
+  }
+
+  const trimmed = value.trim();
+  const wrappedInSingleQuotes =
+    trimmed.startsWith("'") && trimmed.endsWith("'") && trimmed.length >= 2;
+  const wrappedInDoubleQuotes =
+    trimmed.startsWith('"') && trimmed.endsWith('"') && trimmed.length >= 2;
+
+  if (wrappedInSingleQuotes || wrappedInDoubleQuotes) {
+    return trimmed.slice(1, -1).trim();
+  }
+
+  return trimmed;
+}
+
 function shouldUseStrictSsl(url) {
   const sslAccept = url.searchParams.get("sslaccept");
   return sslAccept === "strict" || url.hostname.includes("tidbcloud.com");
@@ -18,7 +36,7 @@ function buildSslConfig(url) {
 }
 
 function buildPoolConfigFromDatabaseUrl(databaseUrl) {
-  const url = new URL(databaseUrl);
+  const url = new URL(normalizeEnvValue(databaseUrl));
   const ssl = buildSslConfig(url);
 
   return {
@@ -32,16 +50,22 @@ function buildPoolConfigFromDatabaseUrl(databaseUrl) {
 }
 
 function buildPoolConfigFromTiDbEnv(env) {
-  if (!env.TIDB_HOST || !env.TIDB_USER || !env.TIDB_PASSWORD || !env.TIDB_DATABASE) {
+  const host = normalizeEnvValue(env.TIDB_HOST);
+  const user = normalizeEnvValue(env.TIDB_USER);
+  const password = normalizeEnvValue(env.TIDB_PASSWORD);
+  const database = normalizeEnvValue(env.TIDB_DATABASE);
+  const port = normalizeEnvValue(env.TIDB_PORT);
+
+  if (!host || !user || !password || !database) {
     return null;
   }
 
   return {
-    host: env.TIDB_HOST,
-    port: Number(env.TIDB_PORT || TIDB_DEFAULT_PORT),
-    user: env.TIDB_USER,
-    password: env.TIDB_PASSWORD,
-    database: env.TIDB_DATABASE,
+    host,
+    port: Number(port || TIDB_DEFAULT_PORT),
+    user,
+    password,
+    database,
     ssl: {
       minVersion: "TLSv1.2",
       rejectUnauthorized: true,
@@ -50,12 +74,18 @@ function buildPoolConfigFromTiDbEnv(env) {
 }
 
 function buildPoolConfigFromLegacyEnv(env) {
+  const host = normalizeEnvValue(env.DB_HOST);
+  const port = normalizeEnvValue(env.DB_PORT);
+  const user = normalizeEnvValue(env.DB_USER);
+  const password = normalizeEnvValue(env.DB_PASSWORD);
+  const database = normalizeEnvValue(env.DB_NAME);
+
   return {
-    host: env.DB_HOST || "localhost",
-    port: Number(env.DB_PORT || MYSQL_DEFAULT_PORT),
-    user: env.DB_USER || "root",
-    password: env.DB_PASSWORD || "",
-    database: env.DB_NAME || "scoutinghub",
+    host: host || "localhost",
+    port: Number(port || MYSQL_DEFAULT_PORT),
+    user: user || "root",
+    password: password || "",
+    database: database || "scoutinghub",
   };
 }
 
@@ -66,10 +96,12 @@ export function createDbPoolConfig(env = process.env) {
     queueLimit: 0,
   };
 
-  if (env.DATABASE_URL) {
+  const databaseUrl = normalizeEnvValue(env.DATABASE_URL);
+
+  if (databaseUrl) {
     return {
       ...basePoolConfig,
-      ...buildPoolConfigFromDatabaseUrl(env.DATABASE_URL),
+      ...buildPoolConfigFromDatabaseUrl(databaseUrl),
     };
   }
 
