@@ -24,7 +24,7 @@ interface AdminUser {
 }
 
 export default function Admin() {
-  const API_BASE = import.meta.env.VITE_API_URL || '/api';
+  const API_BASE = import.meta.env.API_URL || '/api';
   const { t } = useTranslation();
   const { data: isAdmin, isLoading: adminLoading } = useIsAdmin();
   const { user: currentUser, startImpersonation } = useAuth();

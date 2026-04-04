@@ -2,7 +2,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { supabase } from '@/integrations/supabase/client';
 import { CLUB_TO_LEAGUE } from '@/data/league-clubs';
 
-const API_BASE = (import.meta.env.VITE_API_URL || '/api').replace(/\/$/, '');
+const API_BASE = (import.meta.env.API_URL || '/api').replace(/\/$/, '');
 
 export interface ClubDirectoryEntry {
   club_name: string;

@@ -18,7 +18,7 @@ interface ReportIssueDialogProps {
   onOpenChange: (open: boolean) => void;
 }
 
-const API_BASE = (import.meta.env.VITE_API_URL || '/api').replace(/\/$/, '');
+const API_BASE = (import.meta.env.API_URL || '/api').replace(/\/$/, '');
 
 export default function ReportIssueDialog({ open, onOpenChange }: ReportIssueDialogProps) {
   const { t } = useTranslation();

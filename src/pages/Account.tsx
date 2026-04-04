@@ -63,7 +63,7 @@ export default function Account() {
   const { data: twoFAStatus, refetch: refetch2FA } = useQuery({
     queryKey: ['2fa-status', user?.id],
     queryFn: async () => {
-      const res = await fetch(`${(import.meta as any).env.VITE_API_URL || '/api'}/auth/2fa/status`, {
+      const res = await fetch(`${(import.meta as any).env.API_URL || '/api'}/auth/2fa/status`, {
         headers: { Authorization: `Bearer ${JSON.parse(localStorage.getItem('scouthub_session') || '{}').access_token}` },
       });
       return res.json() as Promise<{ enabled: boolean; method: 'totp' | 'email' | null }>;
@@ -177,7 +177,7 @@ export default function Account() {
     }
   };
 
-  const apiBase = (import.meta as any).env.VITE_API_URL || '/api';
+  const apiBase = (import.meta as any).env.API_URL || '/api';
   const authHeader = { Authorization: `Bearer ${JSON.parse(localStorage.getItem('scouthub_session') || '{}').access_token}` };
 
   const handleSetup2FA = async () => {

@@ -5,7 +5,7 @@ import { useAuth } from '@/contexts/AuthContext';
 import { Loader2, AlertTriangle } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 
-const API_BASE = (import.meta.env.VITE_API_URL || '/api').replace(/\/$/, '');
+const API_BASE = (import.meta.env.API_URL || '/api').replace(/\/$/, '');
 
 const VALID_PLANS = ['scout', 'pro'] as const;
 type Plan = typeof VALID_PLANS[number];

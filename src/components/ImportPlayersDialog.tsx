@@ -10,9 +10,10 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
 import { useToast } from '@/hooks/use-toast';
 import { useImportPlayers, usePlayers } from '@/hooks/use-players';
-import { useCustomFields, useBulkUpsertCustomFieldValues } from '@/hooks/use-custom-fields';
+import { useCustomFields, useCreateCustomField, useBulkUpsertCustomFieldValues } from '@/hooks/use-custom-fields';
 import { type Opinion, type Position, type Foot, POSITIONS } from '@/types/player';
-import { Upload, FileSpreadsheet, Check, AlertTriangle, X, ArrowRight, Columns, Search, Filter, Eye, EyeOff, ChevronDown, ChevronUp } from 'lucide-react';
+import { Upload, FileSpreadsheet, Check, AlertTriangle, X, ArrowRight, Columns, Search, Filter, Eye, EyeOff, ChevronDown, ChevronUp, Plus, Link as LinkIcon, Type, Hash, ToggleLeft } from 'lucide-react';
+import { Checkbox } from '@/components/ui/checkbox';
 
 interface RawRow {
   [key: string]: string | number | undefined;
@@ -86,18 +87,18 @@ const FIELD_KEYWORDS: Record<string, string[]> = {
   general_opinion: ['avis', 'opinion', 'verdict', 'conclusion', 'sentiment', 'avis general', 'avis général'],
   contract_end: ['fdc', 'fin de contrat', 'fin contrat', 'contract', 'contrat', 'expiration', 'echeance', 'échéance', 'contract end', 'contract_end', 'date fin contrat', 'date contrat'],
   notes: ['notes', 'commentaire', 'commentaires', 'remarque', 'remarques', 'observation', 'observations'],
-  ts_report_published: ['ts report', 'ts', 'rapport ts', 'publié', 'published'],
+  ts_report_published: ['ts report', 'ts report ?', 'ts report?', 'ts', 'rapport ts', 'publié', 'published'],
   position_secondaire: ['poste secondaire', 'position secondaire', 'second poste', 'pos2', 'poste 2'],
   opinion_1: ['avis 1', 'opinion 1', 'avis1'],
   opinion_2: ['avis 2', 'opinion 2', 'avis2'],
   opinion_3: ['avis 3', 'opinion 3', 'avis3'],
   opinion_4: ['avis 4', 'opinion 4', 'avis4'],
   opinion_5: ['avis 5', 'opinion 5', 'avis5'],
-  report_1: ['rapport 1', 'report 1', 'rapport1', 'lien 1', 'lien1'],
+  report_1: ['rapport 1', 'report 1', 'rapport1', 'lien 1', 'lien1', 'last rapport', 'dernier rapport'],
   report_2: ['rapport 2', 'report 2', 'rapport2', 'lien 2', 'lien2'],
   report_3: ['rapport 3', 'report 3', 'rapport3', 'lien 3', 'lien3'],
   report_4: ['rapport 4', 'report 4', 'rapport4', 'lien 4', 'lien4'],
-  report_5: ['rapport 5', 'report 5', 'rapport5', 'lien 5', 'lien5'],
+  report_5: ['rapport 5', 'report 5', 'rapport5', 'lien 5', 'lien5', 'rapport 4 2', 'avis 4 2'],
 };
 
 const POSITION_MAP: Record<string, Position> = {
@@ -365,8 +366,13 @@ export function ImportPlayersDialog() {
   const { t } = useTranslation();
   const importPlayers = useImportPlayers();
   const { data: existingPlayers = [] } = usePlayers();
-  const { data: customFields = [] } = useCustomFields();
+  const { data: customFields = [], refetch: refetchCustomFields } = useCustomFields();
+  const createCustomField = useCreateCustomField();
   const bulkUpsertCF = useBulkUpsertCustomFieldValues();
+
+  // Unmapped columns → propose as custom fields
+  const [fieldsToCreate, setFieldsToCreate] = useState<Record<string, { checked: boolean; type: string }>>({});
+  const [creatingFields, setCreatingFields] = useState(false);
 
   // Preview state
   const [previewSearch, setPreviewSearch] = useState('');
@@ -393,10 +399,65 @@ export function ImportPlayersDialog() {
     setPreviewFilter('all');
     setPreviewSort(null);
     setExpandedRow(null);
+    setFieldsToCreate({});
   };
 
   // Count how many columns are mapped
   const mappedCount = useMemo(() => Object.values(columnMapping).filter(v => v && v !== '_ignore').length, [columnMapping]);
+
+  // Detect unmapped columns and guess their type from sample values
+  const unmappedHeaders = useMemo(() => {
+    return rawData.headers.filter(h => !columnMapping[h] || columnMapping[h] === '_ignore');
+  }, [rawData.headers, columnMapping]);
+
+  function guessFieldType(header: string, rows: RawRow[]): string {
+    const samples = rows.slice(0, 20).map(r => String(r[header] ?? '').trim()).filter(Boolean);
+    if (samples.length === 0) return 'text';
+    const urlCount = samples.filter(s => /^https?:\/\//.test(s)).length;
+    if (urlCount / samples.length > 0.3) return 'link';
+    const numCount = samples.filter(s => !isNaN(Number(s.replace(',', '.')))).length;
+    if (numCount / samples.length > 0.6) return 'number';
+    const boolCount = samples.filter(s => ['oui', 'non', 'yes', 'no', '1', '0', 'true', 'false', 'x', '✓', '✅'].includes(s.toLowerCase())).length;
+    if (boolCount / samples.length > 0.5) return 'boolean';
+    return 'text';
+  }
+
+  // Update fieldsToCreate when unmapped columns change
+  const sampleValues = useMemo(() => {
+    const map: Record<string, string[]> = {};
+    for (const h of rawData.headers) {
+      map[h] = rawData.rows.slice(0, 3).map(r => String(r[h] ?? '').trim()).filter(Boolean);
+    }
+    return map;
+  }, [rawData]);
+
+  const handleCreateCustomFields = async () => {
+    const toCreate = Object.entries(fieldsToCreate).filter(([, v]) => v.checked);
+    if (toCreate.length === 0) return;
+    setCreatingFields(true);
+    try {
+      const createdMap: Record<string, string> = {}; // header -> custom field id
+      for (const [header, { type }] of toCreate) {
+        const result = await createCustomField.mutateAsync({ field_name: header, field_type: type });
+        if (result?.id) createdMap[header] = result.id;
+      }
+      await refetchCustomFields();
+      // Auto-map newly created custom fields
+      setColumnMapping(prev => {
+        const next = { ...prev };
+        for (const [header, cfId] of Object.entries(createdMap)) {
+          next[header] = `custom_${cfId}`;
+        }
+        return next;
+      });
+      toast({ title: `${toCreate.length} champ${toCreate.length > 1 ? 's' : ''} personnalise${toCreate.length > 1 ? 's' : ''} cree${toCreate.length > 1 ? 's' : ''}` });
+      setFieldsToCreate({});
+    } catch (err: any) {
+      toast({ title: 'Erreur', description: err?.message, variant: 'destructive' });
+    } finally {
+      setCreatingFields(false);
+    }
+  };
 
   const handleFile = useCallback((file: File) => {
     setFileName(file.name);
@@ -553,6 +614,20 @@ export function ImportPlayersDialog() {
           if (targetField?.startsWith('report_')) {
             normalized[`${targetField}_url`] = link.url;
             normalized[targetField] = link.text || link.url;
+          }
+          // For custom link fields, use hyperlink URL
+          if (targetField?.startsWith('custom_')) {
+            const cfId = targetField.replace('custom_', '');
+            cfVals[cfId] = link.url;
+          }
+        }
+      }
+      // Also detect URLs in custom field text values
+      for (const [cfId, val] of Object.entries(cfVals)) {
+        if (val && !val.startsWith('http') && rowLinks) {
+          const rawHeader = Object.entries(cfMapping).find(([, id]) => id === cfId)?.[0];
+          if (rawHeader && rowLinks[rawHeader]?.url) {
+            cfVals[cfId] = rowLinks[rawHeader].url;
           }
         }
       }
@@ -832,6 +907,69 @@ export function ImportPlayersDialog() {
                   </div>
                 ))}
               </div>
+
+              {/* Unmapped columns → propose custom fields */}
+              {unmappedHeaders.length > 0 && (
+                <div className="mt-4 p-4 rounded-xl border border-dashed border-amber-500/40 bg-amber-500/5">
+                  <div className="flex items-center gap-2 mb-3">
+                    <Plus className="w-4 h-4 text-amber-600" />
+                    <p className="text-sm font-medium text-amber-700">
+                      {unmappedHeaders.length} colonne{unmappedHeaders.length > 1 ? 's' : ''} non reconnue{unmappedHeaders.length > 1 ? 's' : ''} — Creer comme champs personnalises ?
+                    </p>
+                  </div>
+                  <div className="space-y-1.5">
+                    {unmappedHeaders.map(header => {
+                      const guessed = guessFieldType(header, rawData.rows);
+                      const current = fieldsToCreate[header] ?? { checked: false, type: guessed };
+                      const TypeIcon = current.type === 'link' ? LinkIcon : current.type === 'number' ? Hash : current.type === 'boolean' ? ToggleLeft : Type;
+                      return (
+                        <div key={header} className="flex items-center gap-3 p-2 rounded-lg bg-background/80">
+                          <Checkbox
+                            checked={current.checked}
+                            onCheckedChange={(checked) => setFieldsToCreate(prev => ({
+                              ...prev, [header]: { ...current, checked: !!checked },
+                            }))}
+                          />
+                          <div className="flex-1 min-w-0">
+                            <p className="text-sm font-medium truncate">{header}</p>
+                            <p className="text-[11px] text-muted-foreground truncate">
+                              {sampleValues[header]?.join(' · ') || '—'}
+                            </p>
+                          </div>
+                          <Select
+                            value={current.type}
+                            onValueChange={(val) => setFieldsToCreate(prev => ({
+                              ...prev, [header]: { ...current, type: val },
+                            }))}
+                          >
+                            <SelectTrigger className="w-[120px] h-8 text-xs">
+                              <TypeIcon className="w-3 h-3 mr-1" />
+                              <SelectValue />
+                            </SelectTrigger>
+                            <SelectContent>
+                              <SelectItem value="text">Texte</SelectItem>
+                              <SelectItem value="number">Nombre</SelectItem>
+                              <SelectItem value="link">Lien</SelectItem>
+                              <SelectItem value="boolean">Oui / Non</SelectItem>
+                            </SelectContent>
+                          </Select>
+                        </div>
+                      );
+                    })}
+                  </div>
+                  {Object.values(fieldsToCreate).some(v => v.checked) && (
+                    <Button
+                      size="sm"
+                      className="mt-3"
+                      onClick={handleCreateCustomFields}
+                      disabled={creatingFields}
+                    >
+                      <Plus className="w-3.5 h-3.5 mr-1.5" />
+                      {creatingFields ? 'Creation...' : `Creer ${Object.values(fieldsToCreate).filter(v => v.checked).length} champ${Object.values(fieldsToCreate).filter(v => v.checked).length > 1 ? 's' : ''}`}
+                    </Button>
+                  )}
+                </div>
+              )}
             </div>
 
             <div className="flex justify-between gap-3 pt-4 border-t mt-2">

@@ -52,8 +52,8 @@ Priorite de connexion : `DATABASE_URL` > `TIDB_*` > `DB_*`
 ```env
 API_PORT=3001                    # Port du serveur Express (defaut: 3001)
 API_JWT_SECRET=votre-secret-jwt  # Secret JWT (CHANGER en production)
-VITE_API_URL=/api                # URL de l'API cote client
-VITE_API_PUBLIC_URL=             # URL publique (si differente)
+API_URL=/api                # URL de l'API cote client
+API_PUBLIC_URL=             # URL publique (si differente)
 ```
 
 ### SMTP / Brevo (emails)
@@ -76,7 +76,7 @@ REPORT_ISSUE_TO=support@scouty.app
 
 ```env
 STRIPE_SECRET_KEY=sk_test_...         # Cle secrete (backend)
-VITE_STRIPE_PUBLIC_KEY=pk_test_...    # Cle publique (frontend)
+STRIPE_PUBLIC_KEY=pk_test_...    # Cle publique (frontend)
 STRIPE_WEBHOOK_SECRET=whsec_...       # Secret webhook
 
 # Price IDs Stripe (creer dans Dashboard > Products)
@@ -86,10 +86,10 @@ STRIPE_PRICE_PRO_MONTHLY=price_xxx
 STRIPE_PRICE_PRO_ANNUAL=price_xxx
 
 # Payment Links (optionnel, alternative)
-VITE_STRIPE_LINK_SCOUT_MONTHLY=https://buy.stripe.com/...
-VITE_STRIPE_LINK_SCOUT_ANNUAL=https://buy.stripe.com/...
-VITE_STRIPE_LINK_PRO_MONTHLY=https://buy.stripe.com/...
-VITE_STRIPE_LINK_PRO_ANNUAL=https://buy.stripe.com/...
+STRIPE_LINK_SCOUT_MONTHLY=https://buy.stripe.com/...
+STRIPE_LINK_SCOUT_ANNUAL=https://buy.stripe.com/...
+STRIPE_LINK_PRO_MONTHLY=https://buy.stripe.com/...
+STRIPE_LINK_PRO_ANNUAL=https://buy.stripe.com/...
 ```
 
 > Configuration webhook : Developers > Webhooks > Ajouter endpoint `https://votre-domaine/api/stripe/webhook`
@@ -98,9 +98,9 @@ VITE_STRIPE_LINK_PRO_ANNUAL=https://buy.stripe.com/...
 ### Cal.com (reservation)
 
 ```env
-VITE_CAL_USERNAME=votre-username
-VITE_CAL_EVENT_SLUG=              # Optionnel (slug d'event specifique)
-VITE_CAL_URL=https://www.cal.eu   # ou https://cal.com
+CAL_USERNAME=votre-username
+CAL_EVENT_SLUG=              # Optionnel (slug d'event specifique)
+CAL_URL=https://www.cal.eu   # ou https://cal.com
 ```
 
 ### APIs externes (optionnel)

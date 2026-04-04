@@ -13,7 +13,7 @@ import { toast } from 'sonner';
 import { Navigate } from 'react-router-dom';
 import { useAuth } from '@/contexts/AuthContext';
 
-const API_BASE = (import.meta.env.VITE_API_URL || '/api').replace(/\/$/, '');
+const API_BASE = (import.meta.env.API_URL || '/api').replace(/\/$/, '');
 
 // All protected pages in the app
 const ALL_PAGES = [

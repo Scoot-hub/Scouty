@@ -13,7 +13,7 @@ import {
 } from '@/components/ui/dialog';
 import { Button } from '@/components/ui/button';
 
-const API_BASE = (import.meta.env.VITE_API_URL || '/api').replace(/\/$/, '');
+const API_BASE = (import.meta.env.API_URL || '/api').replace(/\/$/, '');
 const FEEDBACK_DELAY_MS = 5 * 60 * 1000; // 5 minutes
 const FEEDBACK_STORAGE_KEY = 'scouthub_feedback_dismissed';
 

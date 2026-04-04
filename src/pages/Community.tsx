@@ -60,7 +60,7 @@ const CATEGORY_COLORS: Record<PostCategory, string> = {
 
 // ---------------------------------------------------------------------------
 // Mention link with profile popover
-const API_BASE = (import.meta.env.VITE_API_URL || '/api').replace(/\/$/, '');
+const API_BASE = (import.meta.env.API_URL || '/api').replace(/\/$/, '');
 
 function MentionLink({ name }: { name: string }) {
   const { t } = useTranslation();

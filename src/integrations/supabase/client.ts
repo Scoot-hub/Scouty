@@ -22,8 +22,8 @@ type SupabaseLikeResult<T = any> = {
 
 type QueryFilter = { col: string; op?: string; value: any };
 
-const API_BASE = (import.meta.env.VITE_API_URL || '/api').replace(/\/$/, '');
-const PUBLIC_BASE = (import.meta.env.VITE_API_PUBLIC_URL || '').replace(/\/$/, '');
+const API_BASE = (import.meta.env.API_URL || '/api').replace(/\/$/, '');
+const PUBLIC_BASE = (import.meta.env.API_PUBLIC_URL || '').replace(/\/$/, '');
 const STORAGE_KEY = 'scouthub_session';
 
 type AuthChangeCallback = (event: 'SIGNED_IN' | 'SIGNED_OUT' | 'TOKEN_REFRESHED' | 'USER_UPDATED', session: AuthSession | null) => void;

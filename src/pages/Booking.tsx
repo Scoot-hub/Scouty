@@ -3,9 +3,9 @@ import { useTranslation } from 'react-i18next';
 import { CalendarCheck, ExternalLink, Loader2 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 
-const CAL_USERNAME = import.meta.env.VITE_CAL_USERNAME || '';
-const CAL_EVENT_SLUG = import.meta.env.VITE_CAL_EVENT_SLUG || '';
-const CAL_URL = import.meta.env.VITE_CAL_URL || 'https://cal.com';
+const CAL_USERNAME = import.meta.env.CAL_USERNAME || '';
+const CAL_EVENT_SLUG = import.meta.env.CAL_EVENT_SLUG || '';
+const CAL_URL = import.meta.env.CAL_URL || 'https://cal.com';
 
 export default function Booking() {
   const { t } = useTranslation();
@@ -20,50 +20,52 @@ export default function Booking() {
     if (!CAL_USERNAME || initDone.current) return;
     initDone.current = true;
 
-    const script = document.createElement('script');
-    script.type = 'text/javascript';
-    script.innerHTML = `
-      (function (C, A, L) {
-        let p = function (a, ar) { a.q.push(ar); };
-        let d = C.document;
-        C.Cal = C.Cal || function () {
-          let cal = C.Cal;
-          let ar = arguments;
-          if (!cal.loaded) {
-            cal.ns = {};
-            cal.q = cal.q || [];
-            d.head.appendChild(d.createElement("script")).src = A;
-            cal.loaded = true;
-          }
-          if (ar[0] === L) {
-            const api = function () { p(api, arguments); };
-            const namespace = ar[1];
-            api.q = api.q || [];
-            if (typeof namespace === "string") {
-              cal.ns[namespace] = cal.ns[namespace] || api;
-              p(cal.ns[namespace], ar);
-              p(cal, ["initNamespace", namespace]);
-            } else p(cal, ar);
-            return;
-          }
-          p(cal, ar);
-        };
-      })(window, "${CAL_URL}/embed/embed.js", "init");
+    const w = window as any;
 
-      Cal("init", "booking", { origin: "${CAL_URL}" });
-      Cal.ns.booking("inline", {
-        elementOrSelector: "#cal-booking-inline",
-        calLink: "${calPath}",
-        layout: "month_view",
-      });
-      Cal.ns.booking("ui", {
-        styles: { branding: { brandColor: "#6366f1" } },
-        hideEventTypeDetails: false,
-      });
-    `;
-    document.body.appendChild(script);
+    // Step 1: Bootstrap the Cal queue (same logic as the official snippet, but executed directly)
+    w.Cal = w.Cal || function (...args: any[]) {
+      const cal = w.Cal;
+      if (!cal.loaded) {
+        cal.ns = {};
+        cal.q = cal.q || [];
+        const s = document.createElement('script');
+        s.src = `${CAL_URL}/embed/embed.js`;
+        s.async = true;
+        document.head.appendChild(s);
+        cal.loaded = true;
+      }
+      if (args[0] === 'init') {
+        const api = function (...a: any[]) { api.q.push(a); } as any;
+        const namespace = args[1];
+        api.q = api.q || [];
+        if (typeof namespace === 'string') {
+          cal.ns[namespace] = cal.ns[namespace] || api;
+          (cal.ns[namespace] as any).q.push(args);
+          cal.q.push(['initNamespace', namespace]);
+        } else {
+          cal.q.push(args);
+        }
+        return;
+      }
+      cal.q.push(args);
+    };
+    w.Cal.q = w.Cal.q || [];
+    w.Cal.ns = w.Cal.ns || {};
+    w.Cal.loaded = w.Cal.loaded || false;
 
-    // Observe the container for content being injected by Cal
+    // Step 2: Initialize namespace + inline embed
+    w.Cal('init', 'booking', { origin: CAL_URL });
+    w.Cal.ns.booking('inline', {
+      elementOrSelector: '#cal-booking-inline',
+      calLink: calPath,
+      layout: 'month_view',
+    });
+    w.Cal.ns.booking('ui', {
+      styles: { branding: { brandColor: '#6366f1' } },
+      hideEventTypeDetails: false,
+    });
+
+    // Observe for Cal content injection
     const observer = new MutationObserver(() => {
       if (containerRef.current && containerRef.current.children.length > 0) {
         setLoading(false);
@@ -73,9 +75,7 @@ export default function Booking() {
     if (containerRef.current) {
       observer.observe(containerRef.current, { childList: true, subtree: true });
     }
-
-    // Fallback timeout
-    const timer = setTimeout(() => setLoading(false), 5000);
+    const timer = setTimeout(() => setLoading(false), 6000);
 
     return () => {
       observer.disconnect();
@@ -92,9 +92,9 @@ export default function Booking() {
           <p className="text-muted-foreground">{t('booking.not_configured')}</p>
           <pre className="mt-6 text-left bg-muted rounded-lg p-4 text-xs overflow-x-auto">
 {`# .env (local) ou Vercel > Settings > Environment Variables
-VITE_CAL_USERNAME=votre-username-cal
-VITE_CAL_EVENT_SLUG=consultation    # optionnel
-VITE_CAL_URL=https://www.cal.eu     # ou https://cal.com`}
+CAL_USERNAME=votre-username-cal
+CAL_EVENT_SLUG=consultation    # optionnel
+CAL_URL=https://www.cal.eu     # ou https://cal.com`}
           </pre>
         </div>
       </div>

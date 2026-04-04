@@ -1,5 +1,5 @@
 // Proxy TheSportsDB calls through our server to avoid CORS issues
-const API_BASE = (import.meta.env.VITE_API_URL || '/api').replace(/\/$/, '');
+const API_BASE = (import.meta.env.API_URL || '/api').replace(/\/$/, '');
 const STORAGE_KEY = 'scouthub_session';
 
 // Rate-limit circuit breaker: stop all requests until cooldown expires

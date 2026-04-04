@@ -154,7 +154,7 @@ const sizeMap = {
   lg: 'w-8 h-8',
 };
 
-const API_BASE = (import.meta.env.VITE_API_URL || '/api').replace(/\/$/, '');
+const API_BASE = (import.meta.env.API_URL || '/api').replace(/\/$/, '');
 
 function getAuthToken(): string | null {
   try {

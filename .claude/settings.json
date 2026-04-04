@@ -28,7 +28,8 @@
       "Bash(curl -s -o /dev/null -w \"%{http_code}\" \"https://www.cal.eu/embed/embed.js\")",
       "Bash(curl -s -L \"https://www.cal.eu/Scouty\")",
       "WebFetch(domain:www.cal.eu)",
-      "Bash(curl -s \"http://localhost:8080/api/stripe/session-status?session_id=cs_test_a183ClIHXCJW4uvjAOzWjxSt6ZDdm3Y5DvnNXdwsUraw67rOfzmRoZf4ME\")"
+      "Bash(curl -s \"http://localhost:8080/api/stripe/session-status?session_id=cs_test_a183ClIHXCJW4uvjAOzWjxSt6ZDdm3Y5DvnNXdwsUraw67rOfzmRoZf4ME\")",
+      "Bash(grep -n \"ImportPlayersDialog\" /c/Users/infor/scouting-hub/src/pages/*.tsx)"
     ],
     "additionalDirectories": [
       "\\tmp"
