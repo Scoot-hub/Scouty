@@ -869,7 +869,7 @@ export default {
     subtitle: 'Enter your payment details to activate your plan.',
     back_to_pricing: 'Back to pricing',
     plan_label: '{{plan}} Plan',
-    not_configured: 'Payment system is not yet configured. Add your Stripe keys in the .env file.',
+    not_configured: 'Payment system is not yet configured. Add your Stripe keys in the .env file or in Vercel environment variables.',
     loading: 'Loading payment form...',
   },
   premium_success: {
@@ -1319,7 +1319,7 @@ export default {
   booking: {
     title: 'Booking',
     subtitle: 'Schedule a meeting directly from Scouty.',
-    not_configured: 'Online booking is not yet configured. Add your Cal.com credentials in the .env file.',
+    not_configured: 'Online booking is not yet configured. Add your Cal.com credentials in the .env file or in Vercel environment variables.',
     open_external: 'Open Cal.com',
   },
   chatbot: {

@@ -869,7 +869,7 @@ export default {
     subtitle: 'Introduce tus datos de pago para activar tu plan.',
     back_to_pricing: 'Volver a precios',
     plan_label: 'Plan {{plan}}',
-    not_configured: 'El sistema de pago aún no está configurado. Agrega tus claves de Stripe en el archivo .env.',
+    not_configured: 'El sistema de pago aún no está configurado. Agrega tus claves de Stripe en el archivo .env o en las variables de entorno de Vercel.',
     loading: 'Cargando formulario de pago...',
   },
   premium_success: {
@@ -1319,7 +1319,7 @@ export default {
   booking: {
     title: 'Reserva',
     subtitle: 'Programa una cita directamente desde Scouty.',
-    not_configured: 'La reserva en línea aún no está configurada. Agrega tus credenciales de Cal.com en el archivo .env.',
+    not_configured: 'La reserva en línea aún no está configurada. Agrega tus credenciales de Cal.com en el archivo .env o en las variables de entorno de Vercel.',
     open_external: 'Abrir Cal.com',
   },
   chatbot: {

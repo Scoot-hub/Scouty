@@ -91,10 +91,10 @@ export default function Booking() {
           <h1 className="text-2xl font-bold">{t('booking.title')}</h1>
           <p className="text-muted-foreground">{t('booking.not_configured')}</p>
           <pre className="mt-6 text-left bg-muted rounded-lg p-4 text-xs overflow-x-auto">
-{`# .env
+{`# .env (local) ou Vercel > Settings > Environment Variables
 VITE_CAL_USERNAME=votre-username-cal
 VITE_CAL_EVENT_SLUG=consultation    # optionnel
-VITE_CAL_URL=https://cal.com        # ou https://www.cal.eu`}
+VITE_CAL_URL=https://www.cal.eu     # ou https://cal.com`}
           </pre>
         </div>
       </div>
