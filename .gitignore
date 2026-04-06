@@ -15,7 +15,8 @@ pids
 
 # Dependencies / build outputs
 node_modules
-dist
+dist/*
+!dist/.gitkeep
 dist-ssr
 .vite
 coverage
@@ -28,7 +29,8 @@ coverage
 !.env.example
 
 # Uploads / generated files
-public/uploads/
+public/uploads/*
+!public/uploads/.gitkeep
 tmp/
 temp/
 *.tmp

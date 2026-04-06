@@ -971,7 +971,7 @@ async function runMigrations() {
   // Purge numeric/invalid league values (API IDs stored by mistake)
   try {
     const [result] = await pool.query(
-      "UPDATE players SET league = NULL WHERE league REGEXP '^[0-9]+$'"
+      "UPDATE players SET league = '' WHERE league REGEXP '^[0-9]+$'"
     );
     if (result.affectedRows > 0) {
       console.log(`[migration] Purged ${result.affectedRows} numeric league values (API IDs)`);
@@ -6557,12 +6557,9 @@ export default app;
 
 // Start local server only when run directly (not imported by Vercel)
 if (!isVercel) {
-  // Start listening immediately, run migrations in the background
   app.listen(port, () => {
     console.log(`API listening on http://localhost:${port}`);
-    Promise.all([runMigrations(), ensureFixtureTables()])
-      .then(() => console.log("[startup] All migrations done"))
-      .catch((err) => console.error("[startup] Migration error:", err));
+    ensureMigrations();
   });
 }
 
