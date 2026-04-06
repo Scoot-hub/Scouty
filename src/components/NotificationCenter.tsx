@@ -1,34 +1,32 @@
 import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
-import { Bell, Check, CheckCheck, Crown, FileSearch, Inbox, Sparkles, Trash2, Users, Zap, X } from 'lucide-react';
+import { Bell, Check, CheckCheck, Crown, FileSearch, Inbox, Sparkles, Trash2, Users, Zap, X, Heart, MessageCircle, AtSign } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { useNotifications, useUnreadCount, useMarkAsRead, useMarkAllAsRead, useDeleteNotification, type Notification } from '@/hooks/use-notifications';
 import { cn } from '@/lib/utils';
 
-const ICON_MAP: Record<string, React.ElementType> = {
-  Zap, Crown, Users, FileSearch, Sparkles,
-};
-
 function getIcon(notification: Notification) {
-  if (notification.icon && ICON_MAP[notification.icon]) {
-    const Icon = ICON_MAP[notification.icon];
-    return <Icon className="w-4 h-4" />;
-  }
   switch (notification.type) {
-    case 'enrichment': return <Zap className="w-4 h-4" />;
+    case 'like':         return <Heart className="w-4 h-4" />;
+    case 'comment':      return <MessageCircle className="w-4 h-4" />;
+    case 'mention':      return <AtSign className="w-4 h-4" />;
+    case 'enrichment':   return <Zap className="w-4 h-4" />;
     case 'subscription': return <Crown className="w-4 h-4" />;
-    case 'player_news': return <Sparkles className="w-4 h-4" />;
-    default: return <Bell className="w-4 h-4" />;
+    case 'player_news':  return <Sparkles className="w-4 h-4" />;
+    default:             return <Bell className="w-4 h-4" />;
   }
 }
 
 function getTypeColor(type: string) {
   switch (type) {
-    case 'enrichment': return 'text-amber-500 bg-amber-500/10';
+    case 'like':         return 'text-rose-500 bg-rose-500/10';
+    case 'comment':      return 'text-blue-500 bg-blue-500/10';
+    case 'mention':      return 'text-purple-500 bg-purple-500/10';
+    case 'enrichment':   return 'text-amber-500 bg-amber-500/10';
     case 'subscription': return 'text-primary bg-primary/10';
-    case 'player_news': return 'text-green-500 bg-green-500/10';
-    default: return 'text-muted-foreground bg-muted';
+    case 'player_news':  return 'text-green-500 bg-green-500/10';
+    default:             return 'text-muted-foreground bg-muted';
   }
 }
 

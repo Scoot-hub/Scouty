@@ -24,9 +24,11 @@ CREATE TABLE IF NOT EXISTS profiles (
   social_instagram VARCHAR(100) NULL,
   social_linkedin VARCHAR(255) NULL,
   social_public TINYINT(1) NOT NULL DEFAULT 0,
+  referred_by CHAR(36) NULL,
   created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-  FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+  FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+  FOREIGN KEY (referred_by) REFERENCES users(id) ON DELETE SET NULL
 );
 
 CREATE TABLE IF NOT EXISTS user_roles (
@@ -165,6 +167,7 @@ CREATE TABLE IF NOT EXISTS organizations (
   name VARCHAR(255) NOT NULL,
   type VARCHAR(50) NOT NULL DEFAULT 'club',
   invite_code VARCHAR(32) NOT NULL,
+  logo_url TEXT NULL,
   created_by CHAR(36) NOT NULL,
   created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
@@ -489,6 +492,19 @@ CREATE TABLE IF NOT EXISTS community_likes (
   UNIQUE KEY uniq_post_user (post_id, user_id),
   FOREIGN KEY (post_id) REFERENCES community_posts(id) ON DELETE CASCADE,
   FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+);
+
+-- Referrals / affiliations
+CREATE TABLE IF NOT EXISTS referrals (
+  id CHAR(36) PRIMARY KEY,
+  referrer_id CHAR(36) NOT NULL,
+  referred_id CHAR(36) NOT NULL,
+  referral_code VARCHAR(50) NOT NULL,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  UNIQUE KEY uniq_referred (referred_id),
+  INDEX idx_referrals_referrer (referrer_id),
+  FOREIGN KEY (referrer_id) REFERENCES users(id) ON DELETE CASCADE,
+  FOREIGN KEY (referred_id) REFERENCES users(id) ON DELETE CASCADE
 );
 
 -- Migration: add 2FA TOTP columns to users table

@@ -24,7 +24,7 @@ const API_BASE = (import.meta.env.API_URL || '/api').replace(/\/$/, '');
 
 export function useMyPermissions() {
   const { user } = useAuth();
-  return useQuery<{ role: string; permissions: Record<string, boolean> }>({
+  return useQuery<{ roles: string[]; role: string; permissions: Record<string, boolean> }>({
     queryKey: ['my-permissions', user?.id],
     queryFn: async () => {
       const session = (await supabase.auth.getSession()).data.session;

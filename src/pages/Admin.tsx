@@ -32,6 +32,16 @@ const ALL_PAGES = [
   { key: 'checkout', icon: 'CreditCard' },
   { key: 'admin', icon: 'Shield' },
 ] as const;
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from '@/components/ui/alert-dialog';
 
 interface AdminUser {
   id: string;
@@ -170,6 +180,32 @@ export default function Admin() {
       toast.error(t('admin.reset_email_error'));
     } finally {
       setResettingId(null);
+    }
+  };
+
+  const deleteUser = async () => {
+    if (!deletingUser) return;
+    setDeletingId(deletingUser.id);
+    try {
+      const token = (await supabase.auth.getSession()).data.session?.access_token;
+      const response = await fetch(`${API_BASE}/admin/users/${deletingUser.id}`, {
+        method: 'DELETE',
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (!response.ok) {
+        const err = await response.json().catch(() => ({}));
+        throw new Error(err.error || 'Failed');
+      }
+      toast.success(t('admin.delete_user_success', { email: deletingUser.email }));
+      queryClient.invalidateQueries({ queryKey: ['admin-users'] });
+    } catch (err: any) {
+      const msg = err?.message?.includes('administrateur')
+        ? t('admin.delete_user_admin_error')
+        : t('admin.delete_user_error');
+      toast.error(msg);
+    } finally {
+      setDeletingId(null);
+      setDeletingUser(null);
     }
   };
 
@@ -448,7 +484,19 @@ export default function Admin() {
                                 <UserCheck className="w-3.5 h-3.5" />
                               </Button>
                             )}
-                          </div>
+                            {u.id !== currentUser?.id && !u.roles.includes('admin') && (
+                          <Button
+                            variant="ghost"
+                            size="icon"
+                            className="rounded-lg h-7 w-7 text-destructive hover:text-destructive hover:bg-destructive/10"
+                            onClick={() => setDeletingUser(u)}
+                            disabled={deletingId === u.id}
+                            title={t('admin.delete_user')}
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                          </Button>
+                        )}
+                      </div>
                         </TableCell>
                       </TableRow>
                     ))}
@@ -704,6 +752,25 @@ export default function Admin() {
           </Tabs>
         </TabsContent>
       </Tabs>
+      <AlertDialog open={!!deletingUser} onOpenChange={open => { if (!open) setDeletingUser(null); }}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>{t('admin.delete_user_title')}</AlertDialogTitle>
+            <AlertDialogDescription asChild>
+              <span dangerouslySetInnerHTML={{ __html: t('admin.delete_user_desc', { email: deletingUser?.email ?? '' }) }} />
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>{t('admin.delete_user_cancel')}</AlertDialogCancel>
+            <AlertDialogAction
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+              onClick={deleteUser}
+            >
+              {t('admin.delete_user_confirm')}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
 }

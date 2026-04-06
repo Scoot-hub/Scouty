@@ -20,6 +20,7 @@ export default function Auth() {
   const [searchParams] = useSearchParams();
   const isSignup = searchParams.get('signup') === 'true';
   const [mode, setMode] = useState<'login' | 'signup'>(isSignup ? 'signup' : 'login');
+  const [referralCode, setReferralCode] = useState(searchParams.get('ref') || '');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [fullName, setFullName] = useState('');
@@ -47,6 +48,10 @@ export default function Auth() {
       toast({ title: t('auth.toast_error'), description: t('auth.pwd_too_weak'), variant: 'destructive' });
       return;
     }
+    if (mode === 'signup' && referralCode && !/^SCOUTY-[0-9A-F]{8}$/.test(referralCode)) {
+      toast({ title: t('auth.toast_error'), description: t('auth.referral_code_invalid'), variant: 'destructive' });
+      return;
+    }
     setLoading(true);
     try {
       if (mode === 'signup') {
@@ -58,6 +63,7 @@ export default function Auth() {
               full_name: fullName.trim(),
               club: club.trim(),
               role,
+              referral_code: referralCode,
             },
           },
         });
@@ -203,6 +209,22 @@ export default function Auth() {
                       </SelectContent>
                     </Select>
                   </div>
+                </div>
+
+                <div className="space-y-2">
+                  <Label htmlFor="referralCode" className="flex items-center gap-1.5">
+                    {t('auth.referral_code')}
+                    <span className="text-xs text-muted-foreground font-normal">({t('auth.optional')})</span>
+                  </Label>
+                  <Input
+                    id="referralCode"
+                    type="text"
+                    placeholder={t('auth.referral_code_placeholder')}
+                    value={referralCode}
+                    onChange={e => setReferralCode(e.target.value.toUpperCase())}
+                    autoComplete="off"
+                    spellCheck={false}
+                  />
                 </div>
               </>
             )}

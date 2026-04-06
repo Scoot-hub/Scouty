@@ -20,6 +20,13 @@ const ROUTE_TO_PAGE_KEY: Record<string, string> = {
   '/organization': 'organization',
   '/booking': 'booking',
   '/checkout': 'checkout',
+  '/community': 'community',
+  '/discover': 'discover',
+  '/map': 'map',
+  '/affiliate': 'affiliate',
+  '/my-clubs': 'my_clubs',
+  '/club': 'club_profile',
+  '/profile': 'user_profile',
   '/admin': 'admin',
   '/admin/roles': 'admin',
 };

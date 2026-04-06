@@ -226,6 +226,109 @@ export interface LivescoreDayResponse {
   returned?: number;
 }
 
+// Lineup types
+export interface LineupPlayer {
+  name: string;
+  number: number | null;
+  position: string;
+  grid: string | null; // e.g. "1:1", "2:3"
+  captain?: boolean;
+  substituted?: boolean;
+  yellow?: boolean;
+  red?: boolean;
+}
+
+export interface TeamLineup {
+  formation: string | null;
+  players: LineupPlayer[];
+  subs: { name: string; number: number | null; position: string }[];
+}
+
+export interface MatchLineups {
+  matchId: string;
+  home: TeamLineup;
+  away: TeamLineup;
+  available: boolean;
+}
+
+export function useMatchLineups(matchId: string | null) {
+  return useQuery({
+    queryKey: ['match-lineups', matchId],
+    queryFn: async (): Promise<MatchLineups> => {
+      const { data, error } = await supabase.functions.invoke('livescore-match-lineups', {
+        body: { matchId },
+      });
+      if (error) throw error;
+      return data as MatchLineups;
+    },
+    enabled: !!matchId,
+    staleTime: 30 * 60 * 1000, // 30 min — lineups don't change often
+  });
+}
+
+// ── Match Detail types ────────────────────────────────────────────────────────
+
+export interface MatchEvent {
+  type: 'goal' | 'own_goal' | 'yellow_card' | 'red_card' | 'second_yellow' | 'substitution' | 'penalty_missed' | 'var';
+  minute: number;
+  extra_time: number;
+  player: string;
+  player_in: string | null;
+  team: 'home' | 'away';
+}
+
+export interface MatchStat {
+  type: string;
+  home: string | number | null;
+  away: string | number | null;
+}
+
+export interface MatchDetail {
+  matchId: string;
+  home_team: string;
+  away_team: string;
+  home_badge: string | null;
+  away_badge: string | null;
+  score_home: number | null;
+  score_away: number | null;
+  ht_score_home: number | null;
+  ht_score_away: number | null;
+  status: string;
+  match_time: string | null;
+  match_date: string | null;
+  competition: string;
+  country: string;
+  country_code: string;
+  venue: string | null;
+  referee: string | null;
+  events: MatchEvent[];
+  stats: MatchStat[];
+  lineups: Omit<MatchLineups, 'matchId'>;
+}
+
+export function useMatchDetail(matchId: string | null) {
+  return useQuery({
+    queryKey: ['match-detail', matchId],
+    queryFn: async (): Promise<MatchDetail> => {
+      const { data, error } = await supabase.functions.invoke('livescore-match-detail', {
+        body: { matchId },
+      });
+      if (error) throw error;
+      return data as MatchDetail;
+    },
+    enabled: !!matchId,
+    staleTime: 2 * 60 * 1000, // 2 min
+    refetchInterval: (query) => {
+      const d = query.state.data as MatchDetail | undefined;
+      if (!d) return false;
+      const s = d.status.toUpperCase();
+      const finished = s === 'FT' || s === 'AET' || s === 'AP' || s === 'PEN';
+      const notStarted = s === 'NS';
+      return finished || notStarted ? false : 60_000; // refresh every 60s when live
+    },
+  });
+}
+
 export function useEventsForDay(date: string, limit = 20, offset = 0) {
   return useQuery({
     queryKey: ['livescore-events-day', date, offset, limit],

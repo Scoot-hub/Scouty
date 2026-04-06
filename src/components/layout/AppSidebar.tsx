@@ -180,7 +180,13 @@ export default function AppSidebar({ collapsed, onToggle }: AppSidebarProps) {
                     )}
                     onClick={() => setMobileOpen(false)}
                   >
-                    <Building2 className="w-3.5 h-3.5" />
+                    <div className="w-3.5 h-3.5 rounded overflow-hidden flex items-center justify-center shrink-0">
+                      {org.logo_url ? (
+                        <img src={org.logo_url} alt={org.name} className="w-full h-full object-cover" />
+                      ) : (
+                        <Building2 className="w-3.5 h-3.5" />
+                      )}
+                    </div>
                     <span className="truncate">{org.name}</span>
                   </Link>
                   {isOrgActive && (

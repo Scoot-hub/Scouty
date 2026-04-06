@@ -1,4 +1,5 @@
 import { useMemo, useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import {
   useEventsForDay,
@@ -22,7 +23,6 @@ import {
   Clock, Globe, Loader2, Search, Star, Plus, Check, UserCircle,
 } from 'lucide-react';
 import { useUtcOffset, formatTimeWithOffset } from '@/hooks/use-utc-offset';
-import { ClubLink } from '@/components/ui/club-link';
 import { cn } from '@/lib/utils';
 
 function getDateString(offset: number) {
@@ -503,7 +503,7 @@ export default function Fixtures() {
           </div>
           <div className="grid gap-2.5 grid-cols-1 md:grid-cols-2 xl:grid-cols-3">
             {filteredMyPlayerMatches.map(m => (
-              <MyPlayerEventCard key={m.event.id} match={m} t={t} onSave={handleSaveMatch} onSaveToOrg={handleSaveToOrg} orgs={myOrgs ?? []} isSaved={savedMatchKeys.has(`${selectedDate}|${m.event.home_team}|${m.event.away_team}`)} utcOffset={utcOffset} />
+              <MyPlayerEventCard key={m.event.id} match={m} t={t} onSave={handleSaveMatch} onSaveToOrg={handleSaveToOrg} orgs={myOrgs ?? []} isSaved={savedMatchKeys.has(`${selectedDate}|${m.event.home_team}|${m.event.away_team}`)} utcOffset={utcOffset} selectedDate={selectedDate} />
             ))}
           </div>
         </div>
@@ -547,7 +547,7 @@ export default function Fixtures() {
           </div>
           <div className="grid gap-2.5 grid-cols-1 md:grid-cols-2 xl:grid-cols-3">
             {filteredMyPlayerMatches.map(m => (
-              <MyPlayerEventCard key={m.event.id} match={m} t={t} onSave={handleSaveMatch} onSaveToOrg={handleSaveToOrg} orgs={myOrgs ?? []} isSaved={savedMatchKeys.has(`${selectedDate}|${m.event.home_team}|${m.event.away_team}`)} utcOffset={utcOffset} />
+              <MyPlayerEventCard key={m.event.id} match={m} t={t} onSave={handleSaveMatch} onSaveToOrg={handleSaveToOrg} orgs={myOrgs ?? []} isSaved={savedMatchKeys.has(`${selectedDate}|${m.event.home_team}|${m.event.away_team}`)} utcOffset={utcOffset} selectedDate={selectedDate} />
             ))}
           </div>
         </div>
@@ -575,7 +575,7 @@ function CompetitionGroup({ competition, t, onSave, onSaveToOrg, orgs, savedMatc
       </div>
       <div className="grid gap-2.5 grid-cols-1 md:grid-cols-2 xl:grid-cols-3">
         {competition.events.map(ev => (
-          <EventCard key={ev.id} event={ev} onSave={() => onSave(ev, competition.name)} onSaveToOrg={(orgId: string, userId?: string) => onSaveToOrg(ev, competition.name, orgId, userId)} orgs={orgs} isSaved={savedMatchKeys.has(`${selectedDate}|${ev.home_team}|${ev.away_team}`)} utcOffset={utcOffset} />
+          <EventCard key={ev.id} event={ev} onSave={() => onSave(ev, competition.name)} onSaveToOrg={(orgId: string, userId?: string) => onSaveToOrg(ev, competition.name, orgId, userId)} orgs={orgs} isSaved={savedMatchKeys.has(`${selectedDate}|${ev.home_team}|${ev.away_team}`)} utcOffset={utcOffset} selectedDate={selectedDate} competition={competition.name} />
         ))}
       </div>
     </div>
@@ -583,18 +583,33 @@ function CompetitionGroup({ competition, t, onSave, onSaveToOrg, orgs, savedMatc
 }
 
 /* ── My Player Event Card (highlighted) ── */
-function MyPlayerEventCard({ match, t, onSave, onSaveToOrg, orgs, isSaved, utcOffset }: { match: MyPlayerMatch; t: (key: string) => string; onSave: (ev: LivescoreEvent, competition: string) => void; onSaveToOrg: (ev: LivescoreEvent, competition: string, orgId: string, userId?: string) => void; orgs: any[]; isSaved: boolean; utcOffset: number }) {
+function MyPlayerEventCard({ match, t, onSave, onSaveToOrg, orgs, isSaved, utcOffset, selectedDate }: { match: MyPlayerMatch; t: (key: string) => string; onSave: (ev: LivescoreEvent, competition: string) => void; onSaveToOrg: (ev: LivescoreEvent, competition: string, orgId: string, userId?: string) => void; orgs: any[]; isSaved: boolean; utcOffset: number; selectedDate: string }) {
+  const navigate = useNavigate();
   const { event, competition, players } = match;
   const hasScore = event.score_home !== null && event.score_away !== null;
   const live = isLive(event.status);
   const finished = isFinished(event.status);
   const flag = countryFlag(competition.country_code);
 
+  const goToDetail = () => {
+    if (!event.id) return;
+    const params = new URLSearchParams({
+      home: event.home_team,
+      away: event.away_team,
+      competition: competition.name,
+      date: selectedDate,
+    });
+    navigate(`/match/${event.id}?${params}`);
+  };
+
   return (
-    <Card className={cn(
-      'overflow-hidden transition-all duration-200 hover:scale-[1.01] ring-2 ring-amber-500/40 bg-amber-500/[0.04]',
-      live && 'ring-green-500/50 bg-green-500/[0.03]',
-    )}>
+    <Card
+      className={cn(
+        'overflow-hidden transition-all duration-200 hover:scale-[1.01] ring-2 ring-amber-500/40 bg-amber-500/[0.04] cursor-pointer',
+        live && 'ring-green-500/50 bg-green-500/[0.03]',
+      )}
+      onClick={goToDetail}
+    >
       <div className={cn(
         'absolute top-0 left-0 right-0 h-0.5 bg-gradient-to-r',
         live ? 'from-green-500 to-green-400' : 'from-amber-500 to-amber-400',
@@ -608,7 +623,7 @@ function MyPlayerEventCard({ match, t, onSave, onSaveToOrg, orgs, isSaved, utcOf
               {competition.name}
             </span>
           </div>
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-2" onClick={e => e.stopPropagation()}>
             {event.match_time && !live && !finished && (
               <span className="flex items-center gap-1 text-[11px] font-medium text-muted-foreground">
                 <Clock className="w-3 h-3" />
@@ -638,7 +653,7 @@ function MyPlayerEventCard({ match, t, onSave, onSaveToOrg, orgs, isSaved, utcOf
         {/* Teams */}
         <div className="flex items-center gap-2.5">
           <div className="flex-1 flex items-center justify-end gap-2 min-w-0">
-            <ClubLink club={event.home_team} className="font-semibold text-sm truncate text-right block">{event.home_team}</ClubLink>
+            <span className="font-semibold text-sm truncate text-right">{event.home_team}</span>
             {event.home_badge && (
               <img src={event.home_badge} alt="" className="w-6 h-6 object-contain shrink-0" loading="lazy" />
             )}
@@ -661,7 +676,7 @@ function MyPlayerEventCard({ match, t, onSave, onSaveToOrg, orgs, isSaved, utcOf
             {event.away_badge && (
               <img src={event.away_badge} alt="" className="w-6 h-6 object-contain shrink-0" loading="lazy" />
             )}
-            <ClubLink club={event.away_team} className="font-semibold text-sm truncate block">{event.away_team}</ClubLink>
+            <span className="font-semibold text-sm truncate">{event.away_team}</span>
           </div>
         </div>
 
@@ -803,17 +818,32 @@ function SaveMatchButton({ isSaved, onSave, onSaveToOrg, orgs, t }: {
 }
 
 /* ── Event Card ── */
-function EventCard({ event, onSave, onSaveToOrg, orgs, isSaved, utcOffset }: { event: LivescoreEvent; onSave: () => void; onSaveToOrg: (orgId: string, userId?: string) => void; orgs: any[]; isSaved: boolean; utcOffset: number }) {
+function EventCard({ event, onSave, onSaveToOrg, orgs, isSaved, utcOffset, selectedDate, competition }: { event: LivescoreEvent; onSave: () => void; onSaveToOrg: (orgId: string, userId?: string) => void; orgs: any[]; isSaved: boolean; utcOffset: number; selectedDate: string; competition: string }) {
   const { t } = useTranslation();
+  const navigate = useNavigate();
   const hasScore = event.score_home !== null && event.score_away !== null;
   const live = isLive(event.status);
   const finished = isFinished(event.status);
 
+  const goToDetail = () => {
+    if (!event.id) return;
+    const params = new URLSearchParams({
+      home: event.home_team,
+      away: event.away_team,
+      competition,
+      date: selectedDate,
+    });
+    navigate(`/match/${event.id}?${params}`);
+  };
+
   return (
-    <Card className={cn(
-      'overflow-hidden transition-all duration-200 hover:scale-[1.01]',
-      live && 'ring-2 ring-green-500/50 bg-green-500/[0.03]',
-    )}>
+    <Card
+      className={cn(
+        'overflow-hidden transition-all duration-200 hover:scale-[1.01] cursor-pointer',
+        live && 'ring-2 ring-green-500/50 bg-green-500/[0.03]',
+      )}
+      onClick={goToDetail}
+    >
       {live && (
         <div className="absolute top-0 left-0 right-0 h-0.5 bg-gradient-to-r from-green-500 to-green-400" />
       )}
@@ -838,7 +868,7 @@ function EventCard({ event, onSave, onSaveToOrg, orgs, isSaved, utcOffset }: { e
               </span>
             )}
           </div>
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-2" onClick={e => e.stopPropagation()}>
             {/* HT score if available and finished */}
             {finished && event.ht_score_home !== null && event.ht_score_away !== null && (
               <span className="text-[10px] text-muted-foreground">
@@ -858,7 +888,7 @@ function EventCard({ event, onSave, onSaveToOrg, orgs, isSaved, utcOffset }: { e
         {/* Teams */}
         <div className="flex items-center gap-2.5">
           <div className="flex-1 flex items-center justify-end gap-2 min-w-0">
-            <ClubLink club={event.home_team} className="font-semibold text-sm truncate text-right block">{event.home_team}</ClubLink>
+            <span className="font-semibold text-sm truncate text-right">{event.home_team}</span>
             {event.home_badge && (
               <img src={event.home_badge} alt="" className="w-6 h-6 object-contain shrink-0" loading="lazy" />
             )}
@@ -881,7 +911,7 @@ function EventCard({ event, onSave, onSaveToOrg, orgs, isSaved, utcOffset }: { e
             {event.away_badge && (
               <img src={event.away_badge} alt="" className="w-6 h-6 object-contain shrink-0" loading="lazy" />
             )}
-            <ClubLink club={event.away_team} className="font-semibold text-sm truncate block">{event.away_team}</ClubLink>
+            <span className="font-semibold text-sm truncate">{event.away_team}</span>
           </div>
         </div>
       </CardContent>

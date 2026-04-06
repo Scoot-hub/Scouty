@@ -68,24 +68,9 @@ export function useOrganizationMembers(organizationId: string | undefined) {
     queryKey: ['organization-members', organizationId],
     queryFn: async () => {
       if (!organizationId) return [];
-      const { data: members, error } = await supabase
-        .from('organization_members')
-        .select('*')
-        .eq('organization_id', organizationId);
-      if (error || !members) return [];
-
-      // Fetch profiles for each member
-      const enriched = await Promise.all(
-        members.map(async (m: any) => {
-          const { data: profile } = await supabase
-            .from('profiles')
-            .select('full_name, club, role, social_x, social_instagram, social_linkedin, social_public, created_at')
-            .eq('user_id', m.user_id)
-            .maybeSingle();
-          return { ...m, profile };
-        })
-      );
-      return enriched;
+      const { data, error } = await supabase.rpc('get_org_members' as any, { organization_id: organizationId });
+      if (error) throw error;
+      return (data || []) as any[];
     },
     enabled: !!organizationId,
     staleTime: 30 * 1000,
@@ -98,7 +83,7 @@ export function useCreateOrganization() {
   const queryClient = useQueryClient();
 
   return useMutation({
-    mutationFn: async ({ name, type }: { name: string; type: string }) => {
+    mutationFn: async ({ name, type, logoFile }: { name: string; type: string; logoFile?: File }) => {
       if (!user) throw new Error('Not authenticated');
 
       // Generate invite code (16 chars)
@@ -116,6 +101,18 @@ export function useCreateOrganization() {
         .from('organization_members')
         .insert({ organization_id: org.id, user_id: user.id, role: 'owner' });
       if (memErr) throw memErr;
+
+      // Upload logo if provided
+      if (logoFile) {
+        const session = (await supabase.auth.getSession()).data.session;
+        const form = new FormData();
+        form.append('file', logoFile);
+        await fetch(`${API_BASE}/organizations/${org.id}/logo`, {
+          method: 'PATCH',
+          headers: { Authorization: `Bearer ${session?.access_token}` },
+          body: form,
+        });
+      }
 
       return org;
     },
@@ -228,6 +225,52 @@ export function useLeaveOrganization() {
       queryClient.invalidateQueries({ queryKey: ['organization-members'] });
     },
   });
+}
+
+// Upload or remove the organization logo (owner/admin only)
+const API_BASE = (import.meta.env.API_URL || '/api').replace(/\/$/, '');
+
+export function useUpdateOrgLogo(orgId: string | undefined) {
+  const queryClient = useQueryClient();
+
+  const upload = useMutation({
+    mutationFn: async (file: File) => {
+      if (!orgId) throw new Error('No org id');
+      const session = (await supabase.auth.getSession()).data.session;
+      const form = new FormData();
+      form.append('file', file);
+      const res = await fetch(`${API_BASE}/organizations/${orgId}/logo`, {
+        method: 'PATCH',
+        headers: { Authorization: `Bearer ${session?.access_token}` },
+        body: form,
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.error || 'Upload failed');
+      }
+      return res.json() as Promise<{ logo_url: string }>;
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['my-organizations'] });
+    },
+  });
+
+  const remove = useMutation({
+    mutationFn: async () => {
+      if (!orgId) throw new Error('No org id');
+      const session = (await supabase.auth.getSession()).data.session;
+      const res = await fetch(`${API_BASE}/organizations/${orgId}/logo`, {
+        method: 'DELETE',
+        headers: { Authorization: `Bearer ${session?.access_token}` },
+      });
+      if (!res.ok) throw new Error('Delete failed');
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['my-organizations'] });
+    },
+  });
+
+  return { upload, remove };
 }
 
 // Fetch all shared players for a specific organization

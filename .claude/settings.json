@@ -30,6 +30,7 @@
       "WebFetch(domain:www.cal.eu)",
       "Bash(curl -s \"http://localhost:8080/api/stripe/session-status?session_id=cs_test_a183ClIHXCJW4uvjAOzWjxSt6ZDdm3Y5DvnNXdwsUraw67rOfzmRoZf4ME\")",
       "Bash(grep -n \"ImportPlayersDialog\" /c/Users/infor/scouting-hub/src/pages/*.tsx)",
+      "Bash(grep -l \"onClick\\\\|handleClick\" c:/Users/infor/scouting-hub/src/pages/*.tsx)",
       "Bash(wc -l c:/Users/commu/Scouty/src/i18n/locales/*.ts)",
       "Bash(grep -n \"^\\\\s*countries:\" c:/Users/commu/Scouty/src/i18n/locales/*.ts)"
     ],

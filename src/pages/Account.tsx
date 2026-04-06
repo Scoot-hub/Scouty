@@ -8,8 +8,9 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Separator } from '@/components/ui/separator';
 import { toast } from 'sonner';
-import { Crown, Mail, Lock, Building2, User, CalendarDays, ExternalLink, Loader2, Shield, ShieldCheck, ShieldOff, Download, Trash2, AlertTriangle, CreditCard } from 'lucide-react';
+import { Crown, Mail, Lock, Building2, User, CalendarDays, ExternalLink, Loader2, Shield, ShieldCheck, ShieldOff, Download, Trash2, AlertTriangle, CreditCard, Camera, Phone, MapPin, Briefcase } from 'lucide-react';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from '@/components/ui/dialog';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import PasswordStrengthIndicator, { validatePassword } from '@/components/PasswordStrengthIndicator';
 import { InputOTP, InputOTPGroup, InputOTPSlot } from '@/components/ui/input-otp';
 
@@ -73,6 +74,17 @@ export default function Account() {
 
   const [fullName, setFullName] = useState('');
   const [club, setClub] = useState('');
+  const [firstName, setFirstName] = useState('');
+  const [lastName, setLastName] = useState('');
+  const [company, setCompany] = useState('');
+  const [siret, setSiret] = useState('');
+  const [phone, setPhone] = useState('');
+  const [civility, setCivility] = useState('');
+  const [address, setAddress] = useState('');
+  const [dob, setDob] = useState('');
+  const [referenceClub, setReferenceClub] = useState('');
+  const [photoUrl, setPhotoUrl] = useState('');
+  const [photoUploading, setPhotoUploading] = useState(false);
   const [socialX, setSocialX] = useState('');
   const [socialInstagram, setSocialInstagram] = useState('');
   const [socialLinkedin, setSocialLinkedin] = useState('');
@@ -101,6 +113,16 @@ export default function Account() {
     if (profile) {
       setFullName(profile.full_name || '');
       setClub(profile.club || '');
+      setFirstName((profile as any).first_name || '');
+      setLastName((profile as any).last_name || '');
+      setCompany((profile as any).company || '');
+      setSiret((profile as any).siret || '');
+      setPhone((profile as any).phone || '');
+      setCivility((profile as any).civility || '');
+      setAddress((profile as any).address || '');
+      setDob((profile as any).date_of_birth ? (profile as any).date_of_birth.slice(0, 10) : '');
+      setReferenceClub((profile as any).reference_club || '');
+      setPhotoUrl((profile as any).photo_url || '');
       setSocialX(profile.social_x || '');
       setSocialInstagram(profile.social_instagram || '');
       setSocialLinkedin(profile.social_linkedin || '');
@@ -115,6 +137,15 @@ export default function Account() {
       const { error } = await supabase.from('profiles').update({
         full_name: fullName.trim(),
         club: club.trim(),
+        first_name: firstName.trim() || null,
+        last_name: lastName.trim() || null,
+        company: company.trim() || null,
+        siret: siret.trim() || null,
+        phone: phone.trim() || null,
+        civility: civility || null,
+        address: address.trim() || null,
+        date_of_birth: dob || null,
+        reference_club: referenceClub.trim() || null,
         social_x: socialX.trim() || null,
         social_instagram: socialInstagram.trim() || null,
         social_linkedin: socialLinkedin.trim() || null,
@@ -127,6 +158,32 @@ export default function Account() {
       toast.error(t('common.error'));
     } finally {
       setSaving(false);
+    }
+  };
+
+  const handleUploadPhoto = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setPhotoUploading(true);
+    try {
+      const formData = new FormData();
+      formData.append('photo', file);
+      const token = JSON.parse(localStorage.getItem('scouthub_session') || '{}').access_token;
+      const res = await fetch(`${apiBase}/account/upload-photo`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${token}` },
+        body: formData,
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error);
+      setPhotoUrl(data.photo_url);
+      queryClient.invalidateQueries({ queryKey: ['profile', user!.id] });
+      toast.success(t('account.photo_updated'));
+    } catch (err: any) {
+      toast.error(err.message || t('common.error'));
+    } finally {
+      setPhotoUploading(false);
+      e.target.value = '';
     }
   };
 
@@ -366,14 +423,123 @@ export default function Account() {
           <CardDescription>{t('account.personal_info_desc')}</CardDescription>
         </CardHeader>
         <CardContent className="space-y-4">
+          {/* Photo upload */}
+          <div className="flex items-center gap-5">
+            <div className="relative group w-20 h-20 shrink-0">
+              <div className="w-20 h-20 rounded-full border-2 border-border overflow-hidden bg-muted flex items-center justify-center">
+                {photoUrl ? (
+                  <img
+                    src={photoUrl.startsWith('http') ? photoUrl : `${(import.meta as any).env.API_URL?.replace('/api','') || ''}/uploads/${photoUrl.replace(/^\/uploads\//,'')}`}
+                    alt="Photo de profil"
+                    className="w-full h-full object-cover"
+                  />
+                ) : (
+                  <User className="w-8 h-8 text-muted-foreground" />
+                )}
+              </div>
+              <label className="absolute inset-0 rounded-full flex items-center justify-center bg-black/50 opacity-0 group-hover:opacity-100 transition-opacity cursor-pointer">
+                {photoUploading ? (
+                  <Loader2 className="w-5 h-5 text-white animate-spin" />
+                ) : (
+                  <Camera className="w-5 h-5 text-white" />
+                )}
+                <input type="file" accept="image/*" className="sr-only" onChange={handleUploadPhoto} disabled={photoUploading} />
+              </label>
+            </div>
+            <div>
+              <p className="text-sm font-medium">{t('account.photo_title')}</p>
+              <p className="text-xs text-muted-foreground mt-0.5">{t('account.photo_desc')}</p>
+            </div>
+          </div>
+
+          <Separator />
+
+          {/* Civility + first/last name */}
+          <div className="grid grid-cols-3 gap-3">
+            <div>
+              <label className="text-xs font-medium text-muted-foreground">{t('account.civility')}</label>
+              <Select value={civility} onValueChange={setCivility}>
+                <SelectTrigger className="mt-1">
+                  <SelectValue placeholder={t('account.civility_placeholder')} />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="M.">{t('account.civility_m')}</SelectItem>
+                  <SelectItem value="Mme">{t('account.civility_mme')}</SelectItem>
+                  <SelectItem value="Non précisé">{t('account.civility_none')}</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+            <div>
+              <label className="text-xs font-medium text-muted-foreground">{t('account.first_name')}</label>
+              <Input className="mt-1" value={firstName} onChange={e => setFirstName(e.target.value)} placeholder={t('account.first_name_placeholder')} />
+            </div>
+            <div>
+              <label className="text-xs font-medium text-muted-foreground">{t('account.last_name')}</label>
+              <Input className="mt-1" value={lastName} onChange={e => setLastName(e.target.value)} placeholder={t('account.last_name_placeholder')} />
+            </div>
+          </div>
+
+          {/* Display name (full_name) */}
           <div>
-            <label className="text-sm font-medium text-muted-foreground">{t('auth.full_name')}</label>
+            <label className="text-sm font-medium text-muted-foreground">{t('account.display_name')}</label>
             <Input className="mt-1" value={fullName} onChange={e => setFullName(e.target.value)} placeholder={t('auth.full_name_placeholder')} />
+            <p className="text-xs text-muted-foreground mt-1">{t('account.display_name_desc')}</p>
           </div>
+
+          {/* Phone + DOB */}
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label className="text-xs font-medium text-muted-foreground flex items-center gap-1.5">
+                <Phone className="w-3 h-3" />{t('account.phone')}
+              </label>
+              <Input className="mt-1" type="tel" value={phone} onChange={e => setPhone(e.target.value)} placeholder="+33 6 00 00 00 00" />
+            </div>
+            <div>
+              <label className="text-xs font-medium text-muted-foreground flex items-center gap-1.5">
+                <CalendarDays className="w-3 h-3" />{t('account.dob')}
+              </label>
+              <Input className="mt-1" type="date" value={dob} onChange={e => setDob(e.target.value)} />
+            </div>
+          </div>
+
+          {/* Address */}
           <div>
-            <label className="text-sm font-medium text-muted-foreground">{t('auth.club')}</label>
-            <Input className="mt-1" value={club} onChange={e => setClub(e.target.value)} placeholder={t('auth.club_placeholder')} />
+            <label className="text-xs font-medium text-muted-foreground flex items-center gap-1.5">
+              <MapPin className="w-3 h-3" />{t('account.address')}
+            </label>
+            <Input className="mt-1" value={address} onChange={e => setAddress(e.target.value)} placeholder={t('account.address_placeholder')} />
           </div>
+
+          <Separator />
+
+          {/* Professional info */}
+          <h3 className="text-sm font-semibold flex items-center gap-2">
+            <Briefcase className="w-4 h-4 text-muted-foreground" />
+            {t('account.pro_info')}
+          </h3>
+
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label className="text-xs font-medium text-muted-foreground">{t('account.company')}</label>
+              <Input className="mt-1" value={company} onChange={e => setCompany(e.target.value)} placeholder={t('account.company_placeholder')} />
+            </div>
+            <div>
+              <label className="text-xs font-medium text-muted-foreground">{t('account.siret')}</label>
+              <Input className="mt-1" value={siret} onChange={e => setSiret(e.target.value)} placeholder="000 000 000 00000" maxLength={20} />
+            </div>
+          </div>
+
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label className="text-xs font-medium text-muted-foreground">{t('auth.club')}</label>
+              <Input className="mt-1" value={club} onChange={e => setClub(e.target.value)} placeholder={t('auth.club_placeholder')} />
+            </div>
+            <div>
+              <label className="text-xs font-medium text-muted-foreground">{t('account.reference_club')}</label>
+              <Input className="mt-1" value={referenceClub} onChange={e => setReferenceClub(e.target.value)} placeholder={t('account.reference_club_placeholder')} />
+            </div>
+          </div>
+
           <div>
             <label className="text-sm font-medium text-muted-foreground">{t('account.role')}</label>
             <p className="text-sm mt-1 p-3 rounded-xl bg-muted/40 border border-border/50 capitalize">
@@ -386,7 +552,10 @@ export default function Account() {
               {user?.created_at ? new Date(user.created_at).toLocaleDateString(undefined, { day: 'numeric', month: 'long', year: 'numeric' }) : '—'}
             </p>
           </div>
+
           <Separator />
+
+          {/* Social networks */}
           <div>
             <h3 className="text-sm font-semibold mb-3 flex items-center gap-2">{t('account.social_title')}</h3>
             <div className="space-y-3">

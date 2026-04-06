@@ -42,11 +42,13 @@ const CGU = lazy(() => import("@/pages/CGU"));
 const Booking = lazy(() => import("@/pages/Booking"));
 const Discover = lazy(() => import("@/pages/Discover"));
 const Community = lazy(() => import("@/pages/Community"));
+const UserProfile = lazy(() => import("@/pages/UserProfile"));
 const ClubProfile = lazy(() => import("@/pages/ClubProfile"));
 const MyClubs = lazy(() => import("@/pages/MyClubs"));
 const Privacy = lazy(() => import("@/pages/Privacy"));
 const AdminAnalytics = lazy(() => import("@/pages/AdminAnalytics"));
 const MapView = lazy(() => import("@/pages/MapView"));
+const MatchDetail = lazy(() => import("@/pages/MatchDetail"));
 const NotFound = lazy(() => import("@/pages/NotFound"));
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -92,6 +94,7 @@ const App = () => (
                 <Route path="/watchlist" element={<Watchlist />} />
                 <Route path="/shadow-team" element={<ShadowTeamPage />} />
                 <Route path="/fixtures" element={<Fixtures />} />
+                <Route path="/match/:matchId" element={<MatchDetail />} />
                 <Route path="/my-matches" element={<MyMatches />} />
                 <Route path="/contacts" element={<Contacts />} />
                 <Route path="/settings" element={<Settings />} />
@@ -108,6 +111,7 @@ const App = () => (
                 <Route path="/booking" element={<Booking />} />
                 <Route path="/discover" element={<Discover />} />
                 <Route path="/community" element={<Community />} />
+                <Route path="/profile/:userId" element={<UserProfile />} />
                 <Route path="/club" element={<ClubProfile />} />
                 <Route path="/my-clubs" element={<MyClubs />} />
                 <Route path="/map" element={<MapView />} />

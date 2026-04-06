@@ -312,7 +312,8 @@ app.get("/api/stripe/session-status", async (req, res) => {
 });
 
 const ALLOWED_TABLES = {
-  profiles: ["id", "user_id", "full_name", "club", "role", "social_x", "social_instagram", "social_linkedin", "social_public", "created_at", "updated_at"],
+  users: ["id", "email", "created_at", "last_sign_in_at"],
+  profiles: ["id", "user_id", "full_name", "club", "role", "social_x", "social_instagram", "social_linkedin", "social_public", "photo_url", "first_name", "last_name", "company", "siret", "phone", "civility", "address", "date_of_birth", "reference_club", "referred_by", "created_at", "updated_at"],
   players: [
     "id", "name", "photo_url", "generation", "nationality", "foot", "club", "league", "zone", "position", "position_secondaire", "role",
     "current_level", "potential", "general_opinion", "contract_end", "notes", "ts_report_published", "date_of_birth", "market_value",
@@ -846,13 +847,13 @@ async function runMigrations() {
     ];
     const placeholders = INVALID_LEAGUES.map(() => '?').join(', ');
     const [result] = await pool.query(
-      `UPDATE players SET league = NULL WHERE league IN (${placeholders})`,
+      `UPDATE players SET league = '' WHERE league IN (${placeholders})`,
       INVALID_LEAGUES
     );
     const CLUB_TO_LEAGUE_MAP = require('../src/data/club-to-league.json');
     for (const clubName of Object.keys(CLUB_TO_LEAGUE_MAP)) {
       await pool.query(
-        "UPDATE players SET league = NULL WHERE league = ? AND club != ?",
+        "UPDATE players SET league = '' WHERE league = ? AND club != ?",
         [clubName, clubName]
       );
     }
@@ -991,6 +992,26 @@ async function runMigrations() {
   for (const col of ['social_x VARCHAR(100) NULL', 'social_instagram VARCHAR(100) NULL', 'social_linkedin VARCHAR(255) NULL', 'social_public TINYINT(1) NOT NULL DEFAULT 0']) {
     try { await pool.query(`ALTER TABLE profiles ADD COLUMN ${col}`); } catch (err) { if (err?.errno !== 1060) console.warn("[warn] profile social migration:", err?.message); }
   }
+  // Add extended personal info columns to profiles
+  for (const col of [
+    'photo_url TEXT NULL',
+    'first_name VARCHAR(100) NULL',
+    'last_name VARCHAR(100) NULL',
+    'company VARCHAR(200) NULL',
+    'siret VARCHAR(20) NULL',
+    'phone VARCHAR(30) NULL',
+    "civility ENUM('M.','Mme','Non précisé') NULL DEFAULT NULL",
+    'address TEXT NULL',
+    'date_of_birth DATE NULL',
+    'reference_club VARCHAR(200) NULL',
+  ]) {
+    try { await pool.query(`ALTER TABLE profiles ADD COLUMN ${col}`); } catch (err) { if (err?.errno !== 1060) console.warn("[warn] profile extended migration:", err?.message); }
+  }
+  // referred_by – separate migration so failures in the loop above don't skip it
+  try { await pool.query("ALTER TABLE profiles ADD COLUMN referred_by CHAR(36) NULL"); } catch (err) { if (err?.errno !== 1060) console.warn("[warn] referred_by migration:", err?.message); }
+
+  // org logo_url
+  try { await pool.query("ALTER TABLE organizations ADD COLUMN logo_url TEXT NULL"); } catch (err) { if (err?.errno !== 1060) console.warn("[warn] org logo_url migration:", err?.message); }
 
   // Ensure player_research table exists
   try {
@@ -1054,6 +1075,21 @@ async function runMigrations() {
   } catch (err) {
     if (!err?.message?.includes("already exists")) console.warn("[warn] page_permissions table migration:", err?.message);
   }
+
+  // Migrate user_roles.role from ENUM to VARCHAR (supports custom role names)
+  try {
+    await pool.query(`ALTER TABLE user_roles MODIFY COLUMN role VARCHAR(50) NOT NULL DEFAULT 'user'`);
+  } catch (err) { if (err?.errno !== 1060) console.warn("[warn] user_roles role varchar migration:", err?.message); }
+
+  // Add action column to page_permissions for sub-permission support
+  try {
+    await pool.query(`ALTER TABLE page_permissions ADD COLUMN action VARCHAR(50) NOT NULL DEFAULT 'view' AFTER page_key`);
+  } catch (err) { if (err?.errno !== 1060) console.warn("[warn] page_permissions action migration:", err?.message); }
+  // Update unique key to (role, page_key, action)
+  try { await pool.query(`ALTER TABLE page_permissions DROP INDEX uniq_role_page`); } catch (_) {}
+  try {
+    await pool.query(`ALTER TABLE page_permissions ADD UNIQUE KEY uniq_role_page_action (role, page_key, action)`);
+  } catch (err) { if (err?.errno !== 1061) console.warn("[warn] page_permissions unique key migration:", err?.message); }
 
   // Ensure feedback table exists
   try {
@@ -1127,7 +1163,7 @@ app.get("/api/health", async (_req, res) => {
 });
 
 app.post("/api/auth/signup", rateLimitAuth, async (req, res) => {
-  const { email, password, fullName = "", club = "", role = "scout" } = req.body || {};
+  const { email, password, fullName = "", club = "", role = "scout", referralCode = "" } = req.body || {};
   const normalizedEmail = String(email || "").trim().toLowerCase();
   const normalizedFullName = String(fullName || "").trim();
   const normalizedClub = String(club || "").trim();
@@ -1158,6 +1194,22 @@ app.post("/api/auth/signup", rateLimitAuth, async (req, res) => {
     const userId = uuidv4();
     const hash = await bcrypt.hash(password, 10);
 
+    // Resolve referrer from referral code (format: SCOUTY-XXXXXXXX)
+    let referrerId = null;
+    if (referralCode) {
+      const codeUpper = String(referralCode).trim().toUpperCase();
+      const prefix = codeUpper.startsWith('SCOUTY-') ? codeUpper.slice(7) : codeUpper;
+      if (prefix.length === 8) {
+        const [refRows] = await conn.query(
+          "SELECT id FROM users WHERE UPPER(SUBSTRING(id, 1, 8)) = ? LIMIT 1",
+          [prefix]
+        );
+        if (refRows.length && refRows[0].id !== userId) {
+          referrerId = refRows[0].id;
+        }
+      }
+    }
+
     await conn.query(
       `INSERT INTO users (id, email, password_hash, created_at, updated_at, last_sign_in_at)
        VALUES (?, ?, ?, NOW(), NOW(), NOW())`,
@@ -1165,9 +1217,9 @@ app.post("/api/auth/signup", rateLimitAuth, async (req, res) => {
     );
 
     await conn.query(
-      `INSERT INTO profiles (id, user_id, full_name, club, role, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, NOW(), NOW())`,
-      [uuidv4(), userId, normalizedFullName, normalizedClub, normalizedRole],
+      `INSERT INTO profiles (id, user_id, full_name, club, role, referred_by, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, NOW(), NOW())`,
+      [uuidv4(), userId, normalizedFullName, normalizedClub, normalizedRole, referrerId],
     );
 
     await conn.query(
@@ -1382,6 +1434,30 @@ app.post("/api/auth/forgot-password", rateLimitAuth, async (req, res) => {
   }
 });
 
+// ── Upload profile photo ──────────────────────────────────────────────────
+app.post("/api/account/upload-photo", authMiddleware, upload.single("photo"), async (req, res) => {
+  if (!req.file) return res.status(400).json({ error: "No file" });
+  try {
+    const ext = path.extname(req.file.originalname).toLowerCase() || ".jpg";
+    const allowed = [".jpg", ".jpeg", ".png", ".webp", ".gif"];
+    if (!allowed.includes(ext)) {
+      fs.unlinkSync(req.file.path);
+      return res.status(400).json({ error: "Format non supporté. Utilisez JPG, PNG, WEBP ou GIF." });
+    }
+    const finalName = `profile_${req.user.id}${ext}`;
+    const finalPath = path.join(UPLOAD_DIR, finalName);
+    if (fs.existsSync(finalPath)) fs.unlinkSync(finalPath);
+    fs.renameSync(req.file.path, finalPath);
+    const photoUrl = `/uploads/${finalName}`;
+    await pool.query("UPDATE profiles SET photo_url = ?, updated_at = NOW() WHERE user_id = ?", [photoUrl, req.user.id]);
+    return res.json({ photo_url: photoUrl });
+  } catch (err) {
+    console.error("upload-photo error:", err);
+    if (req.file?.path && fs.existsSync(req.file.path)) fs.unlinkSync(req.file.path);
+    return res.status(500).json({ error: "Erreur serveur" });
+  }
+});
+
 // ── RGPD: Export all user data ────────────────────────────────────────────
 app.post("/api/account/export-data", authMiddleware, async (req, res) => {
   const userId = req.user.id;
@@ -1528,6 +1604,76 @@ app.get("/api/profile/:name", async (req, res) => {
     });
   } catch (err) {
     console.error("[public-profile] Error:", err);
+    return res.status(500).json({ error: "Erreur serveur." });
+  }
+});
+
+// ── Public profile by user_id ─────────────────────────────────────────────
+app.get("/api/profile/user/:userId", async (req, res) => {
+  try {
+    const userId = req.params.userId;
+    const [rows] = await pool.query(
+      `SELECT p.user_id, p.full_name, p.first_name, p.last_name, p.civility,
+              p.club, p.role, p.photo_url, p.company, p.reference_club, p.created_at,
+              p.social_x, p.social_instagram, p.social_linkedin, p.social_public
+       FROM profiles p WHERE p.user_id = ? LIMIT 1`,
+      [userId]
+    );
+    if (!rows.length) return res.status(404).json({ error: "Profil introuvable." });
+    const profile = rows[0];
+    return res.json({
+      user_id: profile.user_id,
+      full_name: profile.full_name,
+      first_name: profile.first_name,
+      last_name: profile.last_name,
+      civility: profile.civility,
+      club: profile.club,
+      role: profile.role,
+      photo_url: profile.photo_url,
+      company: profile.company,
+      reference_club: profile.reference_club,
+      created_at: profile.created_at,
+      social_public: !!profile.social_public,
+      social_x: profile.social_public ? profile.social_x : null,
+      social_instagram: profile.social_public ? profile.social_instagram : null,
+      social_linkedin: profile.social_public ? profile.social_linkedin : null,
+    });
+  } catch (err) {
+    console.error("[public-profile-by-id] Error:", err);
+    return res.status(500).json({ error: "Erreur serveur." });
+  }
+});
+
+// ── Community notifications (generic + mention) ──────────────────────────
+app.post("/api/community/notify", authMiddleware, async (req, res) => {
+  try {
+    const { target_user_id, type, title, message, link } = req.body;
+    if (!target_user_id || target_user_id === req.user.id) return res.json({ ok: true });
+    await createNotification(target_user_id, { type, title, message, icon: type, link: link || "/community" });
+    return res.json({ ok: true });
+  } catch (err) {
+    console.error("[community/notify] Error:", err);
+    return res.status(500).json({ error: "Erreur serveur." });
+  }
+});
+
+app.post("/api/community/notify-mention", authMiddleware, async (req, res) => {
+  try {
+    const { mentioned_user_ids, author_name, context_type } = req.body;
+    if (!Array.isArray(mentioned_user_ids) || !mentioned_user_ids.length) return res.json({ ok: true });
+    const targets = mentioned_user_ids.filter(id => id !== req.user.id);
+    for (const uid of targets) {
+      await createNotification(uid, {
+        type: "mention",
+        title: "Vous avez été mentionné",
+        message: `${author_name} vous a mentionné dans ${context_type === "reply" ? "une réponse" : "un post"}`,
+        icon: "mention",
+        link: "/community",
+      });
+    }
+    return res.json({ ok: true });
+  } catch (err) {
+    console.error("[notify-mention] Error:", err);
     return res.status(500).json({ error: "Erreur serveur." });
   }
 });
@@ -2416,6 +2562,54 @@ app.post("/api/rpc/has_role", authMiddleware, async (req, res) => {
 });
 
 // Fetch all shared players for a specific organization (via junction table)
+// Get organization members with full profiles (for org members only)
+app.post("/api/rpc/get_org_members", authMiddleware, async (req, res) => {
+  const { organization_id } = req.body || {};
+  if (!organization_id) return res.status(400).json({ error: "organization_id required" });
+  try {
+    // Verify the requesting user is a member of this org
+    const [myMembership] = await pool.query(
+      "SELECT id FROM organization_members WHERE organization_id = ? AND user_id = ? LIMIT 1",
+      [organization_id, req.user.id]
+    );
+    if (!myMembership.length) return res.status(403).json({ error: "Not a member of this organization" });
+
+    const [rows] = await pool.query(
+      `SELECT om.id, om.user_id, om.role, om.joined_at,
+              p.full_name, p.club, p.role AS profile_role, p.social_x, p.social_instagram, p.social_linkedin, p.social_public,
+              u.email
+       FROM organization_members om
+       LEFT JOIN profiles p ON p.user_id = om.user_id
+       LEFT JOIN users u ON u.id = om.user_id
+       WHERE om.organization_id = ?
+       ORDER BY FIELD(om.role, 'owner', 'admin', 'member'), p.full_name`,
+      [organization_id]
+    );
+
+    const members = rows.map((r) => ({
+      id: r.id,
+      user_id: r.user_id,
+      role: r.role,
+      joined_at: r.joined_at,
+      email: r.email,
+      profile: {
+        full_name: r.full_name,
+        club: r.club,
+        role: r.profile_role,
+        social_x: r.social_x,
+        social_instagram: r.social_instagram,
+        social_linkedin: r.social_linkedin,
+        social_public: r.social_public,
+      },
+    }));
+
+    return res.json({ data: members });
+  } catch (err) {
+    console.error("get_org_members error:", err);
+    return res.status(500).json({ error: err?.message || "Server error" });
+  }
+});
+
 app.post("/api/rpc/get_org_players", authMiddleware, async (req, res) => {
   try {
     const { org_id } = req.body || {};
@@ -2781,6 +2975,61 @@ app.post("/api/rpc/community_mentionable_users", authMiddleware, async (req, res
   }
 });
 
+// ── Community: delete post (author or admin) ─────────────────────────────
+app.delete("/api/community/posts/:id", authMiddleware, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const [rows] = await pool.query("SELECT user_id FROM community_posts WHERE id = ? LIMIT 1", [id]);
+    if (!rows.length) return res.status(404).json({ error: "Post introuvable" });
+    const isAuthor = rows[0].user_id === req.user.id;
+    const [adminRows] = await pool.query("SELECT id FROM user_roles WHERE user_id = ? AND role = 'admin' LIMIT 1", [req.user.id]);
+    const isAdmin = adminRows.length > 0;
+    if (!isAuthor && !isAdmin) return res.status(403).json({ error: "Non autorisé" });
+    await pool.query("DELETE FROM community_likes WHERE post_id = ?", [id]);
+    await pool.query("DELETE FROM community_replies WHERE post_id = ?", [id]);
+    await pool.query("DELETE FROM community_posts WHERE id = ?", [id]);
+    return res.json({ success: true });
+  } catch (err) {
+    console.error("[community/posts DELETE]", err);
+    return res.status(500).json({ error: "Erreur serveur" });
+  }
+});
+
+// ── Community: delete reply (author or admin) ────────────────────────────
+app.delete("/api/community/replies/:id", authMiddleware, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const [rows] = await pool.query("SELECT user_id, post_id FROM community_replies WHERE id = ? LIMIT 1", [id]);
+    if (!rows.length) return res.status(404).json({ error: "Réponse introuvable" });
+    const isAuthor = rows[0].user_id === req.user.id;
+    const [adminRows] = await pool.query("SELECT id FROM user_roles WHERE user_id = ? AND role = 'admin' LIMIT 1", [req.user.id]);
+    const isAdmin = adminRows.length > 0;
+    if (!isAuthor && !isAdmin) return res.status(403).json({ error: "Non autorisé" });
+    const postId = rows[0].post_id;
+    await pool.query("DELETE FROM community_replies WHERE id = ?", [id]);
+    await pool.query("UPDATE community_posts SET replies_count = GREATEST(replies_count - 1, 0) WHERE id = ?", [postId]);
+    return res.json({ success: true });
+  } catch (err) {
+    console.error("[community/replies DELETE]", err);
+    return res.status(500).json({ error: "Erreur serveur" });
+  }
+});
+
+// ── Community: admin clear all ───────────────────────────────────────────
+app.post("/api/admin/community/clear-all", authMiddleware, async (req, res) => {
+  const [adminRows] = await pool.query("SELECT id FROM user_roles WHERE user_id = ? AND role = 'admin' LIMIT 1", [req.user.id]);
+  if (!adminRows.length) return res.status(403).json({ error: "Forbidden" });
+  try {
+    await pool.query("DELETE FROM community_likes");
+    await pool.query("DELETE FROM community_replies");
+    await pool.query("DELETE FROM community_posts");
+    return res.json({ success: true });
+  } catch (err) {
+    console.error("[admin/community/clear-all]", err);
+    return res.status(500).json({ error: "Erreur serveur" });
+  }
+});
+
 async function ensureAdmin(req, res, next) {
   const [rows] = await pool.query("SELECT id FROM user_roles WHERE user_id = ? AND role = 'admin' LIMIT 1", [req.user.id]);
   if (!rows.length) return res.status(403).json({ error: "Forbidden" });
@@ -2839,6 +3088,72 @@ app.post("/api/admin/users/reset-password", authMiddleware, ensureAdmin, async (
   res.json({ ok: true, message: "Password reset email flow not configured in MySQL mode." });
 });
 
+// DELETE /api/admin/users/:userId — hard-delete a user and all their data
+app.delete("/api/admin/users/:userId", authMiddleware, ensureAdmin, async (req, res) => {
+  const targetId = req.params.userId;
+  const adminId = req.user.id;
+
+  if (targetId === adminId) {
+    return res.status(400).json({ error: "Vous ne pouvez pas supprimer votre propre compte depuis l'administration." });
+  }
+
+  try {
+    // Refuse to delete another admin
+    const [targetRoles] = await pool.query(
+      "SELECT role FROM user_roles WHERE user_id = ? AND role = 'admin' LIMIT 1",
+      [targetId],
+    );
+    if (targetRoles.length) {
+      return res.status(403).json({ error: "Impossible de supprimer un compte administrateur." });
+    }
+
+    // Fetch target user email for logging
+    const [targetRows] = await pool.query("SELECT email FROM users WHERE id = ? LIMIT 1", [targetId]);
+    if (!targetRows.length) {
+      return res.status(404).json({ error: "Utilisateur introuvable." });
+    }
+    const targetEmail = targetRows[0].email;
+
+    // Cancel Stripe subscription if any
+    if (stripe) {
+      const [subRows] = await pool.query(
+        "SELECT stripe_customer_id, stripe_subscription_id FROM user_subscriptions WHERE user_id = ?",
+        [targetId],
+      );
+      const sub = subRows[0];
+      if (sub?.stripe_subscription_id) {
+        try {
+          await stripe.subscriptions.cancel(sub.stripe_subscription_id);
+        } catch (e) {
+          console.warn("[admin/delete-user] Could not cancel Stripe subscription:", e?.message);
+        }
+      }
+      if (sub?.stripe_customer_id) {
+        try {
+          await stripe.customers.del(sub.stripe_customer_id);
+        } catch (e) {
+          console.warn("[admin/delete-user] Could not delete Stripe customer:", e?.message);
+        }
+      }
+    }
+
+    // Delete user — all related rows cascade automatically:
+    //   profiles (ON DELETE CASCADE) → referred_by SET NULL for referred users
+    //   players, reports, watchlists, watchlist_players, shadow_teams, shadow_team_players
+    //   organization_members (user leaves their orgs)
+    //   organizations created_by CASCADE → org deleted, all members removed
+    //   referrals (both referrer_id and referred_id CASCADE)
+    //   user_roles, user_subscriptions, notifications, followed_clubs, fixtures, contacts, etc.
+    await pool.query("DELETE FROM users WHERE id = ?", [targetId]);
+
+    console.log(`[admin/delete-user] Admin ${adminId} deleted user ${targetId} (${targetEmail})`);
+    return res.json({ ok: true });
+  } catch (err) {
+    console.error("[admin/delete-user] Error:", err);
+    return res.status(500).json({ error: "Erreur lors de la suppression de l'utilisateur." });
+  }
+});
+
 // Impersonate a user (admin only) — returns a session token for the target user
 app.post("/api/admin/impersonate", authMiddleware, ensureAdmin, async (req, res) => {
   const { userId } = req.body || {};
@@ -2858,32 +3173,34 @@ app.post("/api/admin/impersonate", authMiddleware, ensureAdmin, async (req, res)
 
 // ── Admin: Role management ──────────────────────────────────────────────────
 
-// GET /api/admin/roles — list all distinct roles
+// GET /api/admin/roles — list all distinct roles (from user_roles + page_permissions)
 app.get("/api/admin/roles", authMiddleware, ensureAdmin, async (_req, res) => {
   try {
-    const [rows] = await pool.query("SELECT DISTINCT role FROM user_roles ORDER BY role");
-    const roles = rows.map(r => r.role);
-    // Always include default roles
-    const allRoles = [...new Set(["admin", "user", ...roles])];
-    return res.json(allRoles);
+    const [userRoleRows] = await pool.query("SELECT DISTINCT role FROM user_roles");
+    const [permRoleRows] = await pool.query("SELECT DISTINCT role FROM page_permissions");
+    const allRolesSet = new Set(["admin", "user"]);
+    for (const r of userRoleRows) allRolesSet.add(r.role);
+    for (const r of permRoleRows) allRolesSet.add(r.role);
+    return res.json([...allRolesSet].sort((a, b) => {
+      if (a === 'admin') return -1;
+      if (b === 'admin') return 1;
+      if (a === 'user') return -1;
+      if (b === 'user') return 1;
+      return a.localeCompare(b);
+    }));
   } catch (err) {
     console.error("[admin/roles] Error:", err);
     return res.status(500).json({ error: "Erreur serveur." });
   }
 });
 
-// POST /api/admin/roles/set — set a user's role
+// POST /api/admin/roles/set — replace all user roles with a single one (legacy)
 app.post("/api/admin/roles/set", authMiddleware, ensureAdmin, async (req, res) => {
   const { userId, role } = req.body || {};
   if (!userId || !role) return res.status(400).json({ error: "userId and role required." });
-
   try {
-    // Remove existing roles and set the new one
     await pool.query("DELETE FROM user_roles WHERE user_id = ?", [userId]);
-    await pool.query(
-      "INSERT INTO user_roles (id, user_id, role, created_at) VALUES (?, ?, ?, NOW())",
-      [uuidv4(), userId, role]
-    );
+    await pool.query("INSERT INTO user_roles (id, user_id, role, created_at) VALUES (?, ?, ?, NOW())", [uuidv4(), userId, role]);
     return res.json({ ok: true });
   } catch (err) {
     console.error("[admin/roles/set] Error:", err);
@@ -2891,10 +3208,62 @@ app.post("/api/admin/roles/set", authMiddleware, ensureAdmin, async (req, res) =
   }
 });
 
-// GET /api/admin/page-permissions — list all page permissions per role
+// POST /api/admin/roles/add — add one role to a user without removing others
+app.post("/api/admin/roles/add", authMiddleware, ensureAdmin, async (req, res) => {
+  const { userId, role } = req.body || {};
+  if (!userId || !role) return res.status(400).json({ error: "userId and role required." });
+  try {
+    await pool.query(
+      "INSERT IGNORE INTO user_roles (id, user_id, role, created_at) VALUES (?, ?, ?, NOW())",
+      [uuidv4(), userId, role]
+    );
+    return res.json({ ok: true });
+  } catch (err) {
+    console.error("[admin/roles/add] Error:", err);
+    return res.status(500).json({ error: "Erreur serveur." });
+  }
+});
+
+// POST /api/admin/roles/remove — remove one specific role from a user
+app.post("/api/admin/roles/remove", authMiddleware, ensureAdmin, async (req, res) => {
+  const { userId, role } = req.body || {};
+  if (!userId || !role) return res.status(400).json({ error: "userId and role required." });
+  if (userId === req.user.id && role === 'admin') return res.status(400).json({ error: "Cannot remove your own admin role." });
+  try {
+    await pool.query("DELETE FROM user_roles WHERE user_id = ? AND role = ?", [userId, role]);
+    return res.json({ ok: true });
+  } catch (err) {
+    console.error("[admin/roles/remove] Error:", err);
+    return res.status(500).json({ error: "Erreur serveur." });
+  }
+});
+
+// DELETE /api/admin/roles/delete — remove a custom role and its permissions
+app.post("/api/admin/roles/delete", authMiddleware, ensureAdmin, async (req, res) => {
+  const { role } = req.body || {};
+  if (!role || role === 'admin' || role === 'user') {
+    return res.status(400).json({ error: "Cannot delete built-in roles." });
+  }
+  try {
+    // Move users with this role back to 'user'
+    const [usersWithRole] = await pool.query("SELECT user_id FROM user_roles WHERE role = ?", [role]);
+    for (const u of usersWithRole) {
+      await pool.query("DELETE FROM user_roles WHERE user_id = ?", [u.user_id]);
+      await pool.query("INSERT INTO user_roles (id, user_id, role) VALUES (?, ?, 'user')", [uuidv4(), u.user_id]);
+    }
+    // Delete all permissions for this role
+    await pool.query("DELETE FROM page_permissions WHERE role = ?", [role]);
+    return res.json({ ok: true });
+  } catch (err) {
+    console.error("[admin/roles/delete] Error:", err);
+    return res.status(500).json({ error: "Erreur serveur." });
+  }
+});
+
+// GET /api/admin/page-permissions — list all page permissions per role (includes action)
 app.get("/api/admin/page-permissions", authMiddleware, ensureAdmin, async (_req, res) => {
   try {
-    const [rows] = await pool.query("SELECT role, page_key, allowed FROM page_permissions ORDER BY role, page_key");
+    const [rows] = await pool.query("SELECT role, page_key, action, allowed FROM page_permissions ORDER BY role, page_key, action");
     return res.json(rows);
   } catch (err) {
     console.error("[admin/page-permissions] Error:", err);
@@ -2902,19 +3271,18 @@ app.get("/api/admin/page-permissions", authMiddleware, ensureAdmin, async (_req,
   }
 });
 
-// POST /api/admin/page-permissions — upsert a page permission for a role
+// POST /api/admin/page-permissions — upsert a page permission for a role+action
 app.post("/api/admin/page-permissions", authMiddleware, ensureAdmin, async (req, res) => {
-  const { role, page_key, allowed } = req.body || {};
+  const { role, page_key, action = 'view', allowed } = req.body || {};
   if (!role || !page_key || typeof allowed !== "boolean") {
     return res.status(400).json({ error: "role, page_key, and allowed required." });
   }
-
   try {
     await pool.query(
-      `INSERT INTO page_permissions (id, role, page_key, allowed)
-       VALUES (?, ?, ?, ?)
+      `INSERT INTO page_permissions (id, role, page_key, action, allowed)
+       VALUES (?, ?, ?, ?, ?)
        ON DUPLICATE KEY UPDATE allowed = VALUES(allowed), updated_at = NOW()`,
-      [uuidv4(), role, page_key, allowed ? 1 : 0]
+      [uuidv4(), role, page_key, action, allowed ? 1 : 0]
     );
     return res.json({ ok: true });
   } catch (err) {
@@ -3027,25 +3395,158 @@ app.get("/api/admin/analytics", authMiddleware, ensureAdmin, async (req, res) =>
 });
 
 // GET /api/my-permissions — get current user's page permissions based on their role
-app.get("/api/my-permissions", authMiddleware, async (req, res) => {
+// ── Affiliate stats ──────────────────────────────────────────────────────
+app.get("/api/affiliate/stats", authMiddleware, async (req, res) => {
   try {
-    const [roleRows] = await pool.query(
-      "SELECT role FROM user_roles WHERE user_id = ? LIMIT 1",
+    const userId = req.user.id;
+    // All users referred by this user
+    const [referred] = await pool.query(
+      "SELECT p.user_id FROM profiles p WHERE p.referred_by = ?",
+      [userId]
+    );
+    const totalReferrals = referred.length;
+    if (totalReferrals === 0) {
+      return res.json({ totalReferrals: 0, activeReferrals: 0, conversion: 0 });
+    }
+    const referredIds = referred.map(r => r.user_id);
+    const placeholders = referredIds.map(() => '?').join(',');
+    const [active] = await pool.query(
+      `SELECT COUNT(*) AS cnt FROM user_subscriptions WHERE user_id IN (${placeholders}) AND is_premium = 1`,
+      referredIds
+    );
+    const activeReferrals = Number(active[0]?.cnt || 0);
+    const conversion = totalReferrals > 0 ? Math.round((activeReferrals / totalReferrals) * 100) : 0;
+    return res.json({ totalReferrals, activeReferrals, conversion });
+  } catch (err) {
+    console.error("affiliate/stats error:", err);
+    return res.status(500).json({ error: "Erreur serveur" });
+  }
+});
+
+// GET /api/affiliate/referrer — who referred the current user
+app.get("/api/affiliate/referrer", authMiddleware, async (req, res) => {
+  try {
+    const [rows] = await pool.query(
+      `SELECT r.user_id, r.full_name, r.club, r.role, r.photo_url
+       FROM profiles me
+       JOIN profiles r ON r.user_id = me.referred_by
+       WHERE me.user_id = ?
+       LIMIT 1`,
       [req.user.id]
     );
-    const userRole = roleRows.length > 0 ? roleRows[0].role : "user";
+    if (!rows.length) return res.json({ referrer: null });
+    return res.json({ referrer: rows[0] });
+  } catch (err) {
+    console.error("affiliate/referrer error:", err);
+    return res.status(500).json({ error: "Erreur serveur" });
+  }
+});
 
+// PATCH /api/organizations/:id/logo — upload org logo (owner/admin only)
+app.patch("/api/organizations/:id/logo", authMiddleware, upload.single("file"), async (req, res) => {
+  const { id } = req.params;
+  const userId = req.user.id;
+
+  if (!req.file) return res.status(400).json({ error: "Aucun fichier fourni." });
+
+  try {
+    // Check the user is owner or admin of this org
+    const [memberRows] = await pool.query(
+      "SELECT role FROM organization_members WHERE organization_id = ? AND user_id = ? LIMIT 1",
+      [id, userId],
+    );
+    if (!memberRows.length || !['owner', 'admin'].includes(memberRows[0].role)) {
+      fs.unlinkSync(req.file.path);
+      return res.status(403).json({ error: "Vous n'êtes pas autorisé à modifier cette organisation." });
+    }
+
+    const ext = path.extname(req.file.originalname || "") || ".png";
+    const finalName = `org-${id}${ext}`;
+    const finalPath = path.join(UPLOAD_DIR, finalName);
+
+    // Remove previous logo file if different name
+    const [orgRows] = await pool.query("SELECT logo_url FROM organizations WHERE id = ? LIMIT 1", [id]);
+    const prevUrl = orgRows[0]?.logo_url;
+    if (prevUrl) {
+      const prevFile = path.join(UPLOAD_DIR, path.basename(prevUrl));
+      if (prevFile !== finalPath && fs.existsSync(prevFile)) {
+        try { fs.unlinkSync(prevFile); } catch {}
+      }
+    }
+
+    fs.renameSync(req.file.path, finalPath);
+    const publicUrl = `${req.protocol}://${req.get("host")}/uploads/${finalName}`;
+
+    await pool.query("UPDATE organizations SET logo_url = ?, updated_at = NOW() WHERE id = ?", [publicUrl, id]);
+
+    return res.json({ logo_url: publicUrl });
+  } catch (err) {
+    console.error("[org/logo] Error:", err);
+    try { fs.unlinkSync(req.file.path); } catch {}
+    return res.status(500).json({ error: "Erreur serveur." });
+  }
+});
+
+// DELETE /api/organizations/:id/logo — remove org logo (owner/admin only)
+app.delete("/api/organizations/:id/logo", authMiddleware, async (req, res) => {
+  const { id } = req.params;
+  const userId = req.user.id;
+
+  try {
+    const [memberRows] = await pool.query(
+      "SELECT role FROM organization_members WHERE organization_id = ? AND user_id = ? LIMIT 1",
+      [id, userId],
+    );
+    if (!memberRows.length || !['owner', 'admin'].includes(memberRows[0].role)) {
+      return res.status(403).json({ error: "Non autorisé." });
+    }
+
+    const [orgRows] = await pool.query("SELECT logo_url FROM organizations WHERE id = ? LIMIT 1", [id]);
+    const prevUrl = orgRows[0]?.logo_url;
+    if (prevUrl) {
+      const prevFile = path.join(UPLOAD_DIR, path.basename(prevUrl));
+      if (fs.existsSync(prevFile)) {
+        try { fs.unlinkSync(prevFile); } catch {}
+      }
+    }
+
+    await pool.query("UPDATE organizations SET logo_url = NULL, updated_at = NOW() WHERE id = ?", [id]);
+    return res.json({ ok: true });
+  } catch (err) {
+    console.error("[org/logo/delete] Error:", err);
+    return res.status(500).json({ error: "Erreur serveur." });
+  }
+});
+
+app.get("/api/my-permissions", authMiddleware, async (req, res) => {
+  try {
+    const [roleRows] = await pool.query("SELECT role FROM user_roles WHERE user_id = ?", [req.user.id]);
+    const userRoles = roleRows.length > 0 ? roleRows.map(r => r.role) : ["user"];
+
+    // Admin = full access, skip permission lookup
+    if (userRoles.includes("admin")) {
+      return res.json({ roles: userRoles, role: "admin", permissions: {} });
+    }
+
+    // Merge permissions from all roles (any role granting an action wins)
+    const placeholders = userRoles.map(() => "?").join(",");
     const [perms] = await pool.query(
-      "SELECT page_key, allowed FROM page_permissions WHERE role = ?",
-      [userRole]
+      `SELECT page_key, action, allowed FROM page_permissions WHERE role IN (${placeholders})`,
+      userRoles
     );
 
     const permMap = {};
     for (const p of perms) {
-      permMap[p.page_key] = !!p.allowed;
+      const dotKey = `${p.page_key}.${p.action}`;
+      // Any role granting = allowed; only override false with true
+      if (permMap[dotKey] === undefined || p.allowed) permMap[dotKey] = !!p.allowed;
+      // Backward compat: page_key alone maps to the view action
+      if (p.action === "view") {
+        if (permMap[p.page_key] === undefined || p.allowed) permMap[p.page_key] = !!p.allowed;
+      }
     }
 
-    return res.json({ role: userRole, permissions: permMap });
+    return res.json({ roles: userRoles, role: userRoles[0], permissions: permMap });
   } catch (err) {
     console.error("[my-permissions] Error:", err);
     return res.status(500).json({ error: "Erreur serveur." });
@@ -5065,6 +5566,278 @@ app.post("/api/functions/:name", authMiddleware, async (req, res) => {
       return res.json(paginateEvents(fullResult, pOffset, pLimit));
     } catch (err) {
       console.error("[livescore] ERROR:", err.message, err.stack);
+      return res.status(500).json({ error: err.message });
+    }
+  }
+
+  // ── Livescore match lineups ─────────────────────────────────────────────────
+  if (name === "livescore-match-lineups") {
+    const { matchId } = req.body || {};
+    if (!matchId) return res.status(400).json({ error: "Missing matchId" });
+
+    try {
+      // Check cache (1h TTL)
+      const cacheKey = `lineup:${matchId}`;
+      try {
+        const [cached] = await pool.query(
+          "SELECT response_json FROM api_football_cache WHERE cache_key = ? AND expires_at > NOW() LIMIT 1",
+          [cacheKey]
+        );
+        if (cached.length > 0) {
+          const json = cached[0].response_json;
+          return res.json(typeof json === "string" ? JSON.parse(json) : json);
+        }
+      } catch { /* table may not exist */ }
+
+      const url = `https://prod-public-api.livescore.com/v1/api/app/scoreboard/soccer/${matchId}?MD=1`;
+      console.log(`[livescore-lineup] Fetching: ${url}`);
+
+      const resp = await fetch(url, {
+        headers: {
+          "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+          "Accept": "application/json",
+        },
+      });
+      if (!resp.ok) {
+        return res.status(502).json({ error: `Livescore returned ${resp.status}` });
+      }
+
+      const raw = await resp.json();
+
+      // Parse lineup data from the response
+      const parseTeamLineup = (team, teamData) => {
+        if (!teamData || !Array.isArray(teamData)) return [];
+        return teamData.map((p) => ({
+          name: p.Nm || "",
+          number: p.Snu ? parseInt(p.Snu, 10) : null,
+          position: p.Pos || "",
+          grid: p.Gd || null, // Grid position e.g. "1:1", "2:3"
+          captain: !!p.Cpt,
+          substituted: !!p.Sub,
+          yellow: !!p.Yc,
+          red: !!p.Rc,
+        }));
+      };
+
+      const homeLineup = parseTeamLineup("home", raw.Lu?.home?.Ps);
+      const awayLineup = parseTeamLineup("away", raw.Lu?.away?.Ps);
+
+      // Also try alternate structure
+      const altHome = parseTeamLineup("home", raw.T1?.Lu);
+      const altAway = parseTeamLineup("away", raw.T2?.Lu);
+
+      const result = {
+        matchId,
+        home: {
+          formation: raw.Lu?.home?.Fo || raw.T1?.Fo || null,
+          players: homeLineup.length > 0 ? homeLineup : altHome,
+          subs: (raw.Lu?.home?.Sb || raw.T1?.Sub || []).map(p => ({
+            name: p.Nm || "",
+            number: p.Snu ? parseInt(p.Snu, 10) : null,
+            position: p.Pos || "",
+          })),
+        },
+        away: {
+          formation: raw.Lu?.away?.Fo || raw.T2?.Fo || null,
+          players: awayLineup.length > 0 ? awayLineup : altAway,
+          subs: (raw.Lu?.away?.Sb || raw.T2?.Sub || []).map(p => ({
+            name: p.Nm || "",
+            number: p.Snu ? parseInt(p.Snu, 10) : null,
+            position: p.Pos || "",
+          })),
+        },
+        available: (homeLineup.length + altHome.length + awayLineup.length + altAway.length) > 0,
+      };
+
+      // Cache for 1 hour
+      try {
+        await pool.query(
+          `INSERT INTO api_football_cache (cache_key, response_json, fetched_at, expires_at)
+           VALUES (?, ?, NOW(), DATE_ADD(NOW(), INTERVAL 60 MINUTE))
+           ON DUPLICATE KEY UPDATE response_json = VALUES(response_json), fetched_at = NOW(), expires_at = DATE_ADD(NOW(), INTERVAL 60 MINUTE)`,
+          [cacheKey, JSON.stringify(result)]
+        );
+      } catch { /* table may not exist */ }
+
+      return res.json(result);
+    } catch (err) {
+      console.error("[livescore-lineup] ERROR:", err.message);
+      return res.status(500).json({ error: err.message });
+    }
+  }
+
+  // ── Livescore match detail (events, stats, lineups, venue, referee) ──────────
+  if (name === "livescore-match-detail") {
+    const { matchId } = req.body || {};
+    if (!matchId) return res.status(400).json({ error: "Missing matchId" });
+
+    try {
+      const cacheKey = `match-detail:${matchId}`;
+      try {
+        const [cached] = await pool.query(
+          "SELECT response_json FROM api_football_cache WHERE cache_key = ? AND expires_at > NOW() LIMIT 1",
+          [cacheKey]
+        );
+        if (cached.length > 0) {
+          const json = cached[0].response_json;
+          return res.json(typeof json === "string" ? JSON.parse(json) : json);
+        }
+      } catch { /* table may not exist */ }
+
+      const url = `https://prod-public-api.livescore.com/v1/api/app/scoreboard/soccer/${matchId}?MD=1`;
+      console.log(`[livescore-detail] Fetching: ${url}`);
+
+      const resp = await fetch(url, {
+        headers: {
+          "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+          "Accept": "application/json",
+        },
+      });
+      if (!resp.ok) {
+        return res.status(502).json({ error: `Livescore returned ${resp.status}` });
+      }
+
+      const raw = await resp.json();
+
+      // Team info
+      const homeName = (raw.T1 && raw.T1[0] && raw.T1[0].Nm) || "";
+      const awayName = (raw.T2 && raw.T2[0] && raw.T2[0].Nm) || "";
+      const homeImg = raw.T1 && raw.T1[0] && raw.T1[0].Img
+        ? `https://lsm-static-prod.livescore.com/medium/${raw.T1[0].Img}` : null;
+      const awayImg = raw.T2 && raw.T2[0] && raw.T2[0].Img
+        ? `https://lsm-static-prod.livescore.com/medium/${raw.T2[0].Img}` : null;
+
+      // Scores
+      const scoreHome = raw.Tr1 != null && raw.Tr1 !== "" ? parseInt(raw.Tr1, 10) : null;
+      const scoreAway = raw.Tr2 != null && raw.Tr2 !== "" ? parseInt(raw.Tr2, 10) : null;
+      const htScoreHome = raw.Trh1 != null && raw.Trh1 !== "" ? parseInt(raw.Trh1, 10) : null;
+      const htScoreAway = raw.Trh2 != null && raw.Trh2 !== "" ? parseInt(raw.Trh2, 10) : null;
+
+      const status = raw.Eps || raw.Epr || "NS";
+
+      // Start time
+      const esd = raw.Esd ? String(raw.Esd) : "";
+      const matchTime = esd.length >= 12 ? `${esd.slice(8, 10)}:${esd.slice(10, 12)}` : null;
+      const matchDate = esd.length >= 8 ? `${esd.slice(0, 4)}-${esd.slice(4, 6)}-${esd.slice(6, 8)}` : null;
+
+      // Competition / venue / referee
+      const competition = raw.Snm || raw.Sn || "";
+      const country = raw.Cnm || raw.Cn || "";
+      const countryCode = raw.Ccd || "";
+      const venue = raw.Vn || raw.Stad || (raw.Venue && raw.Venue.Nm) || null;
+      const referee = raw.Ref || raw.Rfn
+        || (Array.isArray(raw.Refs) && raw.Refs[0] && raw.Refs[0].Nm)
+        || (Array.isArray(raw.Ref) && raw.Ref[0] && raw.Ref[0].Nm)
+        || null;
+
+      // Match events/incidents
+      const rawIncidents = raw.Incid || raw.Ev || raw.Inc || [];
+      const events = [];
+      for (const inc of (Array.isArray(rawIncidents) ? rawIncidents : [])) {
+        const typRaw = (inc.ITyp || inc.Typ || inc.IT || "").toUpperCase();
+        let type = null;
+        if (typRaw === "G" || typRaw === "GOAL" || typRaw === "PG") type = "goal";
+        else if (typRaw === "OG" || typRaw === "OWN_GOAL") type = "own_goal";
+        else if (typRaw === "YC" || typRaw === "YELLOW_CARD" || typRaw === "YELLOW") type = "yellow_card";
+        else if (typRaw === "RC" || typRaw === "RED_CARD" || typRaw === "RED") type = "red_card";
+        else if (typRaw === "Y2C" || typRaw === "SECOND_YELLOW") type = "second_yellow";
+        else if (typRaw === "SB" || typRaw === "SUB" || typRaw === "SUBSTITUT" || typRaw === "SUBST") type = "substitution";
+        else if (typRaw === "PM" || typRaw === "PENALTY_MISSED") type = "penalty_missed";
+        else if (typRaw === "VAR" || typRaw.includes("VAR")) type = "var";
+        if (!type) continue;
+        events.push({
+          type,
+          minute: parseInt(inc.Min || inc.Mn || 0, 10) || 0,
+          extra_time: parseInt(inc.Ax || 0, 10) || 0,
+          player: inc.Nm || inc.Pl || "",
+          player_in: type === "substitution" ? (inc.Nm2 || inc.Pl2 || null) : null,
+          team: (inc.Tm || "").toUpperCase() === "H" ? "home" : "away",
+        });
+      }
+
+      // Match statistics
+      const rawStats = raw.Stat || raw.Stats || raw.Statistic || [];
+      const stats = (Array.isArray(rawStats) ? rawStats : []).map(s => ({
+        type: s.Nm || s.Ty || "",
+        home: s.H != null ? s.H : null,
+        away: s.A != null ? s.A : null,
+      })).filter(s => s.type && (s.home != null || s.away != null));
+
+      // Lineups
+      const parseTeamLineup = (teamData) => {
+        if (!teamData || !Array.isArray(teamData)) return [];
+        return teamData.map((p) => ({
+          name: p.Nm || "",
+          number: p.Snu ? parseInt(p.Snu, 10) : null,
+          position: p.Pos || "",
+          grid: p.Gd || null,
+          captain: !!p.Cpt,
+          substituted: !!p.Sub,
+          yellow: !!p.Yc,
+          red: !!p.Rc,
+        }));
+      };
+      const homeLineup = parseTeamLineup(raw.Lu?.home?.Ps || raw.T1?.Lu);
+      const awayLineup = parseTeamLineup(raw.Lu?.away?.Ps || raw.T2?.Lu);
+
+      const result = {
+        matchId,
+        home_team: homeName,
+        away_team: awayName,
+        home_badge: homeImg,
+        away_badge: awayImg,
+        score_home: isNaN(scoreHome) ? null : scoreHome,
+        score_away: isNaN(scoreAway) ? null : scoreAway,
+        ht_score_home: isNaN(htScoreHome) ? null : htScoreHome,
+        ht_score_away: isNaN(htScoreAway) ? null : htScoreAway,
+        status,
+        match_time: matchTime,
+        match_date: matchDate,
+        competition,
+        country,
+        country_code: countryCode,
+        venue,
+        referee,
+        events,
+        stats,
+        lineups: {
+          home: {
+            formation: raw.Lu?.home?.Fo || raw.T1?.Fo || null,
+            players: homeLineup,
+            subs: (raw.Lu?.home?.Sb || raw.T1?.Sub || []).map(p => ({
+              name: p.Nm || "",
+              number: p.Snu ? parseInt(p.Snu, 10) : null,
+              position: p.Pos || "",
+            })),
+          },
+          away: {
+            formation: raw.Lu?.away?.Fo || raw.T2?.Fo || null,
+            players: awayLineup,
+            subs: (raw.Lu?.away?.Sb || raw.T2?.Sub || []).map(p => ({
+              name: p.Nm || "",
+              number: p.Snu ? parseInt(p.Snu, 10) : null,
+              position: p.Pos || "",
+            })),
+          },
+          available: (homeLineup.length + awayLineup.length) > 0,
+        },
+      };
+
+      const isFinishedStatus = ["FT", "AET", "AP", "PEN"].includes(status.toUpperCase());
+      const ttl = isFinishedStatus ? 60 : 5;
+      try {
+        await pool.query(
+          `INSERT INTO api_football_cache (cache_key, response_json, fetched_at, expires_at)
+           VALUES (?, ?, NOW(), DATE_ADD(NOW(), INTERVAL ${ttl} MINUTE))
+           ON DUPLICATE KEY UPDATE response_json = VALUES(response_json), fetched_at = NOW(), expires_at = DATE_ADD(NOW(), INTERVAL ${ttl} MINUTE)`,
+          [cacheKey, JSON.stringify(result)]
+        );
+      } catch { /* table may not exist */ }
+
+      console.log(`[livescore-detail] ${matchId}: ${events.length} events, ${stats.length} stats, lineups=${result.lineups.available}`);
+      return res.json(result);
+    } catch (err) {
+      console.error("[livescore-detail] ERROR:", err.message);
       return res.status(500).json({ error: err.message });
     }
   }

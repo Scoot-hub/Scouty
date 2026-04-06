@@ -214,6 +214,7 @@ export const supabase = {
           fullName: meta.full_name || '',
           club: meta.club || '',
           role: meta.role || 'scout',
+          referralCode: meta.referral_code || '',
         }),
       }, false);
 

@@ -1,22 +1,25 @@
 import { useState, useRef, useCallback, useEffect } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Link } from 'react-router-dom';
+import { Link, useNavigate } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { supabase } from '@/integrations/supabase/client';
 import { useAuth } from '@/contexts/AuthContext';
-import { useIsPremium } from '@/hooks/use-admin';
+import { useIsPremium, useIsAdmin } from '@/hooks/use-admin';
 import { Card, CardContent } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Textarea } from '@/components/ui/textarea';
 import { Badge } from '@/components/ui/badge';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
+import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import { toast } from 'sonner';
 import { cn } from '@/lib/utils';
 import {
   MessageSquare, Crown, Sparkles, Send, User, Calendar, Filter,
-  ThumbsUp, MessageCircle, HelpCircle, Lightbulb, Trophy, Users as UsersIcon, Heart, ExternalLink,
+  MessageCircle, HelpCircle, Lightbulb, Trophy, Users as UsersIcon, Heart, ExternalLink, Trash2, AlertTriangle,
+  Link2, ImageIcon,
 } from 'lucide-react';
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from '@/components/ui/dialog';
 import { moderateFields } from '@/lib/content-moderation';
 
 // ---------------------------------------------------------------------------
@@ -59,96 +62,195 @@ const CATEGORY_COLORS: Record<PostCategory, string> = {
 };
 
 // ---------------------------------------------------------------------------
-// Mention link with profile popover
-const API_BASE = (import.meta.env.API_URL || '/api').replace(/\/$/, '');
+// Mention link with tooltip on hover + navigate to profile on click
+const API_BASE = (import.meta.env.VITE_API_URL || '/api').replace(/\/$/, '');
 
-function MentionLink({ name }: { name: string }) {
-  const { t } = useTranslation();
-  const [open, setOpen] = useState(false);
-  const [profile, setProfile] = useState<any>(null);
-  const [loaded, setLoaded] = useState(false);
-  const wrapperRef = useRef<HTMLSpanElement>(null);
+function getSessionHeader(): Record<string, string> {
+  try {
+    const session = JSON.parse(localStorage.getItem('scouthub_session') || '{}');
+    return session.access_token ? { Authorization: `Bearer ${session.access_token}` } : {};
+  } catch { return {}; }
+}
 
-  const loadProfile = () => {
-    if (loaded) return;
-    setLoaded(true);
-    fetch(`${API_BASE}/profile/${encodeURIComponent(name)}`)
-      .then(r => r.ok ? r.json() : null)
-      .then(d => setProfile(d))
-      .catch(() => {});
-  };
+// Extracts unique mentioned user IDs from rich-format text
+function extractMentionedUserIds(text: string): string[] {
+  const re = /@\[([^\]]+)\]\(([^)]+)\)/g;
+  const ids: string[] = [];
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(text)) !== null) {
+    if (m[2] && !ids.includes(m[2])) ids.push(m[2]);
+  }
+  return ids;
+}
+
+async function sendCommunityNotification(targetUserId: string, type: string, title: string, message: string, link = '/community') {
+  try {
+    await fetch(`${API_BASE}/community/notify`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...getSessionHeader() },
+      body: JSON.stringify({ target_user_id: targetUserId, type, title, message, link }),
+    });
+  } catch { /* non-blocking */ }
+}
+
+async function sendMentionNotifications(mentionedIds: string[], authorName: string, contextType: 'post' | 'reply') {
+  if (!mentionedIds.length) return;
+  try {
+    await fetch(`${API_BASE}/community/notify-mention`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...getSessionHeader() },
+      body: JSON.stringify({ mentioned_user_ids: mentionedIds, author_name: authorName, context_type: contextType }),
+    });
+  } catch { /* non-blocking */ }
+}
+
+// ---------------------------------------------------------------------------
+// Author avatar — lazy-loads photo per userId with a shared module-level cache
+const _photoCache = new Map<string, string | null>();
+
+function AuthorAvatar({ userId, name }: { userId: string | null; name: string }) {
+  const cached = userId ? _photoCache.get(userId) : undefined;
+  const [photoUrl, setPhotoUrl] = useState<string | null>(cached ?? null);
 
   useEffect(() => {
-    if (!open) return;
-    const handler = (e: MouseEvent) => {
-      if (wrapperRef.current && !wrapperRef.current.contains(e.target as Node)) setOpen(false);
-    };
-    document.addEventListener('mousedown', handler);
-    return () => document.removeEventListener('mousedown', handler);
-  }, [open]);
+    if (!userId || _photoCache.has(userId)) return;
+    fetch(`${API_BASE}/profile/user/${encodeURIComponent(userId)}`)
+      .then(r => r.ok ? r.json() : null)
+      .then(d => {
+        const url = d?.photo_url || null;
+        _photoCache.set(userId, url);
+        setPhotoUrl(url);
+      })
+      .catch(() => _photoCache.set(userId, null));
+  }, [userId]);
 
+  if (photoUrl) {
+    return <img src={photoUrl} alt={name} className="w-9 h-9 rounded-full object-cover shrink-0 mt-0.5" />;
+  }
   return (
-    <span ref={wrapperRef} className="relative inline">
-      <button
-        onClick={(e) => { e.stopPropagation(); setOpen(!open); loadProfile(); }}
-        className="text-primary font-medium hover:underline"
-      >
-        @{name}
-      </button>
-      {open && (
-        <span
-          className="absolute left-0 top-full mt-1 z-50 w-64 rounded-xl border border-border bg-popover shadow-xl p-4 block text-left"
-          style={{ whiteSpace: 'normal' }}
-          onClick={e => e.stopPropagation()}
-        >
-          {!profile ? (
-            <span className="text-xs text-muted-foreground">{t('community.profile_loading')}</span>
-          ) : (
-            <span className="block space-y-3">
-              <span className="flex items-center gap-3">
-                <span className="w-10 h-10 rounded-full bg-primary/10 flex items-center justify-center text-primary font-bold text-lg shrink-0">
-                  {profile.full_name?.[0] || '?'}
-                </span>
-                <span className="block">
-                  <span className="text-sm font-bold block">{profile.full_name}</span>
-                  <span className="text-xs text-muted-foreground capitalize block">{profile.role || 'scout'}{profile.club ? ` · ${profile.club}` : ''}</span>
-                </span>
-              </span>
-              {profile.social_public && (profile.social_x || profile.social_instagram || profile.social_linkedin) && (
-                <span className="block space-y-1.5 pt-2 border-t border-border">
-                  {profile.social_x && (
-                    <a href={`https://x.com/${profile.social_x.replace('@', '')}`} target="_blank" rel="noopener noreferrer"
-                      className="flex items-center gap-2 text-xs text-muted-foreground hover:text-foreground transition-colors">
-                      <ExternalLink className="w-3 h-3" /> X: {profile.social_x}
-                    </a>
-                  )}
-                  {profile.social_instagram && (
-                    <a href={`https://instagram.com/${profile.social_instagram.replace('@', '')}`} target="_blank" rel="noopener noreferrer"
-                      className="flex items-center gap-2 text-xs text-muted-foreground hover:text-foreground transition-colors">
-                      <ExternalLink className="w-3 h-3" /> Instagram: {profile.social_instagram}
-                    </a>
-                  )}
-                  {profile.social_linkedin && (
-                    <a href={profile.social_linkedin.startsWith('http') ? profile.social_linkedin : `https://${profile.social_linkedin}`} target="_blank" rel="noopener noreferrer"
-                      className="flex items-center gap-2 text-xs text-muted-foreground hover:text-foreground transition-colors">
-                      <ExternalLink className="w-3 h-3" /> LinkedIn
-                    </a>
-                  )}
-                </span>
-              )}
-            </span>
-          )}
-        </span>
-      )}
-    </span>
+    <div className="w-9 h-9 rounded-full bg-primary/10 flex items-center justify-center shrink-0 mt-0.5">
+      <User className="w-4 h-4 text-primary" />
+    </div>
   );
 }
 
-function renderWithMentions(text: string) {
-  return text.split(/(@[A-Za-z\u00C0-\u024F0-9_ -]+)/g).map((part, i) =>
-    part.startsWith('@')
-      ? <MentionLink key={i} name={part.slice(1).trim()} />
-      : <span key={i}>{part}</span>
+// ---------------------------------------------------------------------------
+// Content renderer — handles @[Name](userId) mentions, ![alt](url) images, [text](url) links
+function renderContent(text: string): React.ReactNode[] {
+  const result: React.ReactNode[] = [];
+  // Order matters: images before links, mentions last (different prefix @)
+  const re = /!\[([^\]]*)\]\(([^)]+)\)|\[([^\]]+)\]\(([^)]+)\)|@\[([^\]]+)\]\(([^)]+)\)/g;
+  let last = 0;
+  let match: RegExpExecArray | null;
+  let key = 0;
+  while ((match = re.exec(text)) !== null) {
+    if (match.index > last) result.push(<span key={key++}>{text.slice(last, match.index)}</span>);
+    if (match[1] !== undefined) {
+      // Image: ![alt](url)
+      result.push(
+        <img
+          key={key++}
+          src={match[2]}
+          alt={match[1] || 'image'}
+          className="max-w-full rounded-lg border border-border my-2 max-h-80 object-contain"
+          onError={e => { (e.currentTarget as HTMLImageElement).style.display = 'none'; }}
+        />
+      );
+    } else if (match[3] !== undefined) {
+      // Link: [text](url)
+      result.push(
+        <a
+          key={key++}
+          href={match[4]}
+          target="_blank"
+          rel="noopener noreferrer"
+          className="text-primary underline underline-offset-2 hover:opacity-80 transition-opacity inline-flex items-center gap-0.5"
+        >
+          {match[3]}
+          <ExternalLink className="w-3 h-3 inline shrink-0" />
+        </a>
+      );
+    } else {
+      // Mention: @[Name](userId)
+      result.push(<MentionLink key={key++} name={match[5]} userId={match[6]} />);
+    }
+    last = match.index + match[0].length;
+  }
+  if (last < text.length) result.push(<span key={key++}>{text.slice(last)}</span>);
+  return result;
+}
+
+// @[Name](userId) — rich format only (plain @Name is rendered as-is)
+function MentionLink({ name, userId }: { name: string; userId: string }) {
+  const navigate = useNavigate();
+  const [profile, setProfile] = useState<any>(null);
+  const loadingRef = useRef(false);
+
+  const fetchProfile = useCallback(async () => {
+    if (profile || loadingRef.current) return;
+    loadingRef.current = true;
+    try {
+      const r = await fetch(`${API_BASE}/profile/user/${encodeURIComponent(userId)}`);
+      const d = r.ok ? await r.json() : null;
+      setProfile(d);
+    } catch { /* silent */ }
+  }, [userId, profile]);
+
+  return (
+    <Tooltip delayDuration={200}>
+      <TooltipTrigger asChild>
+        <button
+          type="button"
+          onMouseEnter={fetchProfile}
+          onClick={e => { e.preventDefault(); navigate(`/profile/${userId}`); }}
+          className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-md bg-primary/10 text-primary text-[13px] font-semibold no-underline hover:bg-primary/20 transition-colors cursor-pointer align-baseline"
+        >
+          <User className="w-3 h-3 shrink-0" />
+          {name}
+        </button>
+      </TooltipTrigger>
+      <TooltipContent side="top" align="start" className="p-0 overflow-hidden w-64 shadow-lg">
+        {!profile ? (
+          <div className="px-3 py-2 text-xs text-muted-foreground">Chargement…</div>
+        ) : (
+          <div>
+            <div className="flex items-center gap-3 px-3 py-3">
+              <div className="w-10 h-10 rounded-full bg-primary/10 flex items-center justify-center text-primary font-bold text-base shrink-0">
+                {profile.photo_url
+                  ? <img src={profile.photo_url} alt="" className="w-10 h-10 rounded-full object-cover" />
+                  : (profile.full_name?.[0]?.toUpperCase() || '?')}
+              </div>
+              <div className="min-w-0 flex-1">
+                <p className="text-sm font-semibold truncate leading-tight">
+                  {[profile.civility, profile.first_name, profile.last_name].filter(Boolean).join(' ') || profile.full_name}
+                </p>
+                {profile.role && (
+                  <p className="text-[11px] text-muted-foreground capitalize leading-tight">{profile.role}</p>
+                )}
+              </div>
+            </div>
+            {(profile.company || profile.club || profile.reference_club) && (
+              <div className="border-t border-border px-3 py-2 space-y-0.5">
+                {profile.company && (
+                  <p className="text-[11px] text-muted-foreground truncate">🏢 {profile.company}</p>
+                )}
+                {profile.club && (
+                  <p className="text-[11px] text-muted-foreground truncate">⚽ {profile.club}</p>
+                )}
+                {profile.reference_club && (
+                  <p className="text-[11px] text-muted-foreground truncate">🏟️ {profile.reference_club}</p>
+                )}
+              </div>
+            )}
+            <div className="border-t border-border px-3 py-2">
+              <span className="text-[10px] text-muted-foreground flex items-center gap-1">
+                <ExternalLink className="w-3 h-3" /> Cliquer pour voir le profil complet
+              </span>
+            </div>
+          </div>
+        )}
+      </TooltipContent>
+    </Tooltip>
   );
 }
 
@@ -159,6 +261,7 @@ export default function Community() {
   const { t } = useTranslation();
   const { user } = useAuth();
   const { data: isPremium } = useIsPremium();
+  const { data: isAdmin } = useIsAdmin();
   const queryClient = useQueryClient();
 
   const [filter, setFilter] = useState<PostCategory | 'all'>('all');
@@ -177,7 +280,39 @@ export default function Community() {
   const [postCooldown, setPostCooldown] = useState(0);
   const [replyCooldown, setReplyCooldown] = useState(0);
   const [justReplied, setJustReplied] = useState<string | null>(null);
+  const [deletePostId, setDeletePostId] = useState<string | null>(null);
+  const [deleteReplyId, setDeleteReplyId] = useState<string | null>(null);
+  const [showDeleteAllDialog, setShowDeleteAllDialog] = useState(false);
+  const [linkForm, setLinkForm] = useState({ open: false, text: '', url: '' });
+  const [imageForm, setImageForm] = useState({ open: false, url: '' });
+  const contentRef = useRef<HTMLTextAreaElement>(null);
   const replyInputRef = useRef<HTMLInputElement>(null);
+  // Maps mention display-name → userId, populated at insert time, consumed at submit
+  const mentionMapRef = useRef<Map<string, string>>(new Map());
+
+  // Serialize display content (@Name) → rich format (@[Name](userId)) before saving
+  const serializeContent = useCallback((text: string) => {
+    let result = text;
+    for (const [name, uid] of mentionMapRef.current.entries()) {
+      result = result.split(`@${name}`).join(`@[${name}](${uid})`);
+    }
+    return result;
+  }, []);
+
+  const insertAtCursor = useCallback((insertText: string) => {
+    const el = contentRef.current;
+    setContent(prev => {
+      const start = el?.selectionStart ?? prev.length;
+      const end = el?.selectionEnd ?? prev.length;
+      return prev.slice(0, start) + insertText + prev.slice(end);
+    });
+    setTimeout(() => {
+      if (!el) return;
+      const pos = (el.selectionStart ?? 0) + insertText.length;
+      el.focus();
+      el.setSelectionRange(pos, pos);
+    }, 0);
+  }, []);
 
   // Cooldown timers
   useEffect(() => {
@@ -202,7 +337,10 @@ export default function Community() {
   });
 
   const mentionSuggestions = mentionQuery !== null
-    ? mentionableUsers.filter(u => u.author_name.toLowerCase().includes(mentionQuery.toLowerCase())).slice(0, 5)
+    ? mentionableUsers
+        .filter(u => u.user_id !== user?.id)
+        .filter(u => u.author_name.toLowerCase().includes(mentionQuery.toLowerCase()))
+        .slice(0, 5)
     : [];
 
   const handleReplyChange = useCallback((value: string) => {
@@ -219,7 +357,9 @@ export default function Community() {
     setMentionQuery(null);
   }, []);
 
-  const insertMention = useCallback((name: string) => {
+  const insertMention = useCallback((name: string, userId?: string | null) => {
+    // Always display @Name (no id visible), store id in map for serialization at submit
+    if (userId) mentionMapRef.current.set(name, userId);
     const atIdx = replyContent.lastIndexOf('@');
     if (atIdx >= 0) {
       setReplyContent(replyContent.slice(0, atIdx) + `@${name} `);
@@ -248,21 +388,25 @@ export default function Community() {
   });
 
   // --- Fetch user's likes ---
-  useQuery({
+  const { data: likedPostIds = [] } = useQuery({
     queryKey: ['community-my-likes', user?.id],
     queryFn: async () => {
-      if (!user) return [];
+      if (!user) return [] as string[];
       const { data, error } = await supabase
         .from('community_likes' as any)
         .select('post_id')
         .eq('user_id', user.id);
       if (error) throw error;
-      const ids = (data || []).map((r: any) => r.post_id);
-      setLikedPosts(new Set(ids));
-      return ids;
+      return (data || []).map((r: any) => r.post_id as string);
     },
     enabled: !!user && !!isPremium,
+    staleTime: 30 * 1000,
   });
+
+  // Sync liked posts state from server data (without side effects inside queryFn)
+  useEffect(() => {
+    setLikedPosts(new Set(likedPostIds));
+  }, [likedPostIds]);
 
   // --- Fetch replies for ALL posts ---
   const postIds = posts.map(p => p.id);
@@ -276,7 +420,7 @@ export default function Community() {
         .in('post_id', postIds)
         .order('created_at', { ascending: true });
       if (error) throw error;
-      return (data || []) as unknown as { id: string; post_id: string; author_name: string; content: string; created_at: string }[];
+      return (data || []) as unknown as { id: string; post_id: string; user_id: string | null; author_name: string; content: string; created_at: string }[];
     },
     enabled: postIds.length > 0,
   });
@@ -288,7 +432,6 @@ export default function Community() {
   // --- Create post ---
   const createPost = useMutation({
     mutationFn: async () => {
-      // Content moderation check
       const modResult = moderateFields(title, content);
       if (!modResult.clean) throw new Error(t('moderation.blocked'));
 
@@ -298,26 +441,29 @@ export default function Community() {
         .eq('user_id', user!.id)
         .single();
       const authorName = profile?.full_name || user!.email?.split('@')[0] || 'Scout';
+      const serialized = serializeContent(content.trim());
       const { error } = await supabase.from('community_posts' as any).insert({
         user_id: user!.id,
         author_name: authorName,
         category,
         title: title.trim(),
-        content: content.trim(),
+        content: serialized,
         likes: 0,
         replies_count: 0,
       });
       if (error) throw error;
+      return { authorName, mentionedIds: extractMentionedUserIds(serialized) };
     },
-    onSuccess: () => {
+    onSuccess: ({ authorName, mentionedIds }) => {
       toast.success(t('community.post_created'));
+      sendMentionNotifications(mentionedIds, authorName, 'post');
+      mentionMapRef.current.clear();
       setTitle('');
       setContent('');
       setComposing(false);
-      setPostCooldown(300); // 5 min cooldown
+      setPostCooldown(300);
       queryClient.invalidateQueries({ queryKey: ['community-posts'] });
       queryClient.invalidateQueries({ queryKey: ['community-mentionable-users'] });
-      // Trigger animation on newest post
       setTimeout(() => {
         const allPosts = queryClient.getQueryData<CommunityPost[]>(['community-posts', filter]);
         if (allPosts?.[0]) setJustPosted(allPosts[0].id);
@@ -329,23 +475,31 @@ export default function Community() {
 
   // --- Like post ---
   const likePost = useMutation({
-    mutationFn: async (postId: string) => {
-      // Animate
-      setAnimatingLike(postId);
+    mutationFn: async (post: CommunityPost) => {
+      setAnimatingLike(post.id);
       setTimeout(() => setAnimatingLike(null), 600);
 
-      // Optimistic update
-      const wasLiked = likedPosts.has(postId);
+      const wasLiked = likedPosts.has(post.id);
       setLikedPosts(prev => {
         const next = new Set(prev);
-        if (wasLiked) next.delete(postId); else next.add(postId);
+        if (wasLiked) next.delete(post.id); else next.add(post.id);
         return next;
       });
 
-      const { error } = await supabase.rpc('like_community_post' as any, { post_id: postId, liker_id: user!.id });
+      const { error } = await supabase.rpc('like_community_post' as any, { post_id: post.id, liker_id: user!.id });
       if (error) throw error;
+      return { wasLiked, post };
     },
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['community-posts'] }),
+    onSuccess: ({ wasLiked, post }) => {
+      queryClient.invalidateQueries({ queryKey: ['community-posts'] });
+      if (!wasLiked && post.user_id && post.user_id !== user!.id) {
+        sendCommunityNotification(
+          post.user_id, 'like',
+          'Votre post a été aimé',
+          `Quelqu'un a aimé votre post "${post.title}"`,
+        );
+      }
+    },
     onError: (err: any) => {
       toast.error(err.message || t('common.error'));
       queryClient.invalidateQueries({ queryKey: ['community-my-likes'] });
@@ -365,27 +519,116 @@ export default function Community() {
         .eq('user_id', user!.id)
         .single();
       const authorName = profile?.full_name || user!.email?.split('@')[0] || 'Scout';
+      const serialized = serializeContent(replyContent.trim());
       const { error } = await supabase.from('community_replies' as any).insert({
         post_id: postId,
         user_id: user!.id,
         author_name: authorName,
-        content: replyContent.trim(),
+        content: serialized,
       });
       if (error) throw error;
       await supabase.rpc('increment_reply_count' as any, { post_id: postId });
-      return postId;
+      return { postId, authorName, mentionedIds: extractMentionedUserIds(serialized) };
     },
-    onSuccess: (postId) => {
+    onSuccess: ({ postId, authorName, mentionedIds }) => {
       toast.success(t('community.reply_sent'));
+      sendMentionNotifications(mentionedIds, authorName, 'reply');
+      // Notify post author of the new reply
+      const parentPost = queryClient.getQueryData<CommunityPost[]>(['community-posts', filter])?.find(p => p.id === postId);
+      if (parentPost?.user_id && parentPost.user_id !== user!.id) {
+        sendCommunityNotification(
+          parentPost.user_id, 'comment',
+          'Nouvelle réponse sur votre post',
+          `${authorName} a répondu à votre post "${parentPost.title}"`,
+        );
+      }
       setReplyContent('');
       setReplyingTo(null);
-      setReplyCooldown(60); // 1 min cooldown
+      mentionMapRef.current.clear();
+      setReplyCooldown(60);
       queryClient.invalidateQueries({ queryKey: ['community-posts'] });
       queryClient.invalidateQueries({ queryKey: ['community-replies'] });
       queryClient.invalidateQueries({ queryKey: ['community-mentionable-users'] });
-      // Trigger animation
       setJustReplied(postId);
       setTimeout(() => setJustReplied(null), 1200);
+    },
+    onError: (err: any) => toast.error(err.message || t('common.error')),
+  });
+
+  // --- Delete post (admin or own post) ---
+  const deletePost = useMutation({
+    mutationFn: async (postId: string) => {
+      const { error: repliesError } = await supabase
+        .from('community_replies' as any)
+        .delete()
+        .eq('post_id', postId);
+      if (repliesError) throw repliesError;
+      const { error } = await supabase
+        .from('community_posts' as any)
+        .delete()
+        .eq('id', postId);
+      if (error) throw error;
+    },
+    onSuccess: () => {
+      toast.success(t('community.delete_post_success'));
+      setDeletePostId(null);
+      queryClient.invalidateQueries({ queryKey: ['community-posts'] });
+      queryClient.invalidateQueries({ queryKey: ['community-replies'] });
+    },
+    onError: (err: any) => toast.error(err.message || t('common.error')),
+  });
+
+  // --- Delete reply (admin only) ---
+  const deleteReply = useMutation({
+    mutationFn: async ({ replyId, postId }: { replyId: string; postId: string }) => {
+      const { error } = await supabase
+        .from('community_replies' as any)
+        .delete()
+        .eq('id', replyId);
+      if (error) throw error;
+      await supabase.rpc('decrement_reply_count' as any, { post_id: postId });
+    },
+    onSuccess: () => {
+      toast.success(t('community.delete_reply_success'));
+      setDeleteReplyId(null);
+      queryClient.invalidateQueries({ queryKey: ['community-posts'] });
+      queryClient.invalidateQueries({ queryKey: ['community-replies'] });
+    },
+    onError: (err: any) => toast.error(err.message || t('common.error')),
+  });
+
+  // --- Delete all content (admin only) ---
+  const deleteAllContent = useMutation({
+    mutationFn: async () => {
+      const { data: replyRows } = await supabase
+        .from('community_replies' as any)
+        .select('id');
+      const replyIds = (replyRows || []).map((r: any) => r.id);
+      if (replyIds.length) {
+        const { error: repliesError } = await supabase
+          .from('community_replies' as any)
+          .delete()
+          .in('id', replyIds);
+        if (repliesError) throw repliesError;
+      }
+
+      const { data: postRows } = await supabase
+        .from('community_posts' as any)
+        .select('id');
+      const postIds = (postRows || []).map((p: any) => p.id);
+      if (postIds.length) {
+        const { error } = await supabase
+          .from('community_posts' as any)
+          .delete()
+          .in('id', postIds);
+        if (error) throw error;
+      }
+    },
+    onSuccess: () => {
+      toast.success(t('community.delete_all_success'));
+      setShowDeleteAllDialog(false);
+      queryClient.invalidateQueries({ queryKey: ['community-posts'] });
+      queryClient.invalidateQueries({ queryKey: ['community-replies'] });
     },
     onError: (err: any) => toast.error(err.message || t('common.error')),
   });
@@ -438,10 +681,18 @@ export default function Community() {
           </h1>
           <p className="text-muted-foreground text-sm mt-1">{t('community.subtitle')}</p>
         </div>
-        <Button onClick={() => setComposing(true)} disabled={composing}>
-          <Send className="w-4 h-4 mr-2" />
-          {t('community.new_post')}
-        </Button>
+        <div className="flex items-center gap-2">
+          {isAdmin && (
+            <Button variant="destructive" size="sm" onClick={() => setShowDeleteAllDialog(true)}>
+              <Trash2 className="w-4 h-4 mr-2" />
+              {t('community.delete_all')}
+            </Button>
+          )}
+          <Button onClick={() => setComposing(true)} disabled={composing}>
+            <Send className="w-4 h-4 mr-2" />
+            {t('community.new_post')}
+          </Button>
+        </div>
       </div>
 
       {/* Compose form */}
@@ -471,15 +722,90 @@ export default function Community() {
                 </SelectContent>
               </Select>
             </div>
-            <Textarea
-              value={content}
-              onChange={e => setContent(e.target.value)}
-              placeholder={t('community.content_placeholder')}
-              rows={4}
-              maxLength={2000}
-            />
+            <div className="space-y-2">
+              <Textarea
+                ref={contentRef}
+                value={content}
+                onChange={e => setContent(e.target.value)}
+                placeholder={t('community.content_placeholder')}
+                rows={4}
+                maxLength={2000}
+              />
+              {/* Toolbar */}
+              <div className="flex items-center gap-1">
+                <button
+                  type="button"
+                  onClick={() => { setImageForm({ open: false, url: '' }); setLinkForm(f => ({ ...f, open: !f.open })); }}
+                  className={cn('flex items-center gap-1.5 px-2 py-1 rounded text-xs font-medium border transition-colors', linkForm.open ? 'bg-primary/10 border-primary/30 text-primary' : 'border-border text-muted-foreground hover:text-foreground hover:border-primary/30')}
+                  title={t('community.insert_link')}
+                >
+                  <Link2 className="w-3.5 h-3.5" />
+                  {t('community.insert_link')}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => { setLinkForm({ open: false, text: '', url: '' }); setImageForm(f => ({ ...f, open: !f.open })); }}
+                  className={cn('flex items-center gap-1.5 px-2 py-1 rounded text-xs font-medium border transition-colors', imageForm.open ? 'bg-primary/10 border-primary/30 text-primary' : 'border-border text-muted-foreground hover:text-foreground hover:border-primary/30')}
+                  title={t('community.insert_image')}
+                >
+                  <ImageIcon className="w-3.5 h-3.5" />
+                  {t('community.insert_image')}
+                </button>
+              </div>
+              {/* Link insert panel */}
+              {linkForm.open && (
+                <div className="flex gap-2 p-3 rounded-lg border border-border bg-muted/40 animate-in fade-in duration-150">
+                  <Input
+                    placeholder={t('community.link_text_placeholder')}
+                    value={linkForm.text}
+                    onChange={e => setLinkForm(f => ({ ...f, text: e.target.value }))}
+                    className="h-8 text-xs flex-1"
+                  />
+                  <Input
+                    placeholder="https://..."
+                    value={linkForm.url}
+                    onChange={e => setLinkForm(f => ({ ...f, url: e.target.value }))}
+                    className="h-8 text-xs flex-1"
+                  />
+                  <Button
+                    size="sm"
+                    className="h-8 text-xs"
+                    disabled={!linkForm.url.trim()}
+                    onClick={() => {
+                      const label = linkForm.text.trim() || linkForm.url.trim();
+                      insertAtCursor(`[${label}](${linkForm.url.trim()})`);
+                      setLinkForm({ open: false, text: '', url: '' });
+                    }}
+                  >
+                    {t('common.add')}
+                  </Button>
+                </div>
+              )}
+              {/* Image insert panel */}
+              {imageForm.open && (
+                <div className="flex gap-2 p-3 rounded-lg border border-border bg-muted/40 animate-in fade-in duration-150">
+                  <Input
+                    placeholder="https://... (.jpg, .png, .gif…)"
+                    value={imageForm.url}
+                    onChange={e => setImageForm(f => ({ ...f, url: e.target.value }))}
+                    className="h-8 text-xs flex-1"
+                  />
+                  <Button
+                    size="sm"
+                    className="h-8 text-xs"
+                    disabled={!imageForm.url.trim()}
+                    onClick={() => {
+                      insertAtCursor(`![image](${imageForm.url.trim()})`);
+                      setImageForm({ open: false, url: '' });
+                    }}
+                  >
+                    {t('common.add')}
+                  </Button>
+                </div>
+              )}
+            </div>
             <div className="flex items-center gap-2 justify-end">
-              <Button variant="ghost" size="sm" onClick={() => { setComposing(false); setTitle(''); setContent(''); }}>
+              <Button variant="ghost" size="sm" onClick={() => { setComposing(false); setTitle(''); setContent(''); setLinkForm({ open: false, text: '', url: '' }); setImageForm({ open: false, url: '' }); }}>
                 {t('common.cancel')}
               </Button>
               <Button
@@ -547,14 +873,12 @@ export default function Community() {
                 <CardContent className="p-4">
                   {/* Post header */}
                   <div className="flex items-start gap-3">
-                    <div className="w-9 h-9 rounded-full bg-primary/10 flex items-center justify-center shrink-0 mt-0.5">
-                      <User className="w-4 h-4 text-primary" />
-                    </div>
+                    <AuthorAvatar userId={post.user_id} name={post.author_name} />
                     <div className="flex-1 min-w-0">
                       <div className="flex items-center gap-2 flex-wrap">
                         <span className="text-sm font-semibold">{post.author_name}</span>
                         <button
-                          onClick={() => { setReplyingTo(post.id); setExpandedPost(post.id); setReplyContent(prev => `@${post.author_name} ${prev}`); }}
+                          onClick={() => { setReplyingTo(post.id); setExpandedPost(post.id); if (post.user_id) mentionMapRef.current.set(post.author_name, post.user_id); setReplyContent(prev => `@${post.author_name} ${prev}`); }}
                           className="text-[10px] text-muted-foreground hover:text-primary transition-colors"
                           title={t('community.mention')}
                         >@</button>
@@ -565,16 +889,25 @@ export default function Community() {
                           <Calendar className="w-3 h-3" />
                           {formatDate(post.created_at)}
                         </span>
+                        {(isAdmin || post.user_id === user?.id) && (
+                          <button
+                            onClick={() => setDeletePostId(post.id)}
+                            className="ml-auto text-muted-foreground hover:text-destructive transition-colors"
+                            title={t('community.delete_post')}
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                          </button>
+                        )}
                       </div>
                       <h3 className="text-sm font-bold mt-1">{post.title}</h3>
                       <p className="text-sm text-muted-foreground mt-1 whitespace-pre-line leading-relaxed">
-                        {renderWithMentions(post.content)}
+                        {renderContent(post.content)}
                       </p>
 
                       {/* Actions */}
                       <div className="flex items-center gap-4 mt-3">
                         <button
-                          onClick={() => likePost.mutate(post.id)}
+                          onClick={() => likePost.mutate(post)}
                           className={cn(
                             'flex items-center gap-1.5 text-xs transition-all duration-200',
                             isLiked ? 'text-rose-500 font-medium' : 'text-muted-foreground hover:text-rose-500',
@@ -614,15 +947,26 @@ export default function Community() {
                               <div className="flex items-center gap-2">
                                 <span className="text-xs font-semibold">{reply.author_name}</span>
                                 <span className="text-[10px] text-muted-foreground">{formatDate(reply.created_at)}</span>
-                                <button
-                                  onClick={() => { setReplyingTo(post.id); setReplyContent(prev => `@${reply.author_name} ${prev}`); }}
-                                  className="text-[10px] text-primary hover:underline"
-                                >
-                                  {t('community.mention')}
-                                </button>
+                                {reply.user_id !== user?.id && (
+                                  <button
+                                    onClick={() => { setReplyingTo(post.id); if (reply.user_id) mentionMapRef.current.set(reply.author_name, reply.user_id); setReplyContent(prev => `@${reply.author_name} ${prev}`); }}
+                                    className="text-[10px] text-primary hover:underline"
+                                  >
+                                    {t('community.mention')}
+                                  </button>
+                                )}
+                                {(isAdmin || reply.user_id === user?.id) && (
+                                  <button
+                                    onClick={() => setDeleteReplyId(`${reply.id}::${post.id}`)}
+                                    className="ml-auto text-muted-foreground hover:text-destructive transition-colors"
+                                    title={t('community.delete_reply')}
+                                  >
+                                    <Trash2 className="w-3 h-3" />
+                                  </button>
+                                )}
                               </div>
                               <p className="text-sm text-muted-foreground">
-                                {renderWithMentions(reply.content)}
+                                {renderContent(reply.content)}
                               </p>
                             </div>
                           ))}
@@ -643,7 +987,7 @@ export default function Community() {
                                 if (mentionQuery !== null && mentionSuggestions.length > 0) {
                                   if (e.key === 'ArrowDown') { e.preventDefault(); setMentionIndex(i => Math.min(i + 1, mentionSuggestions.length - 1)); return; }
                                   if (e.key === 'ArrowUp') { e.preventDefault(); setMentionIndex(i => Math.max(i - 1, 0)); return; }
-                                  if (e.key === 'Enter' || e.key === 'Tab') { e.preventDefault(); insertMention(mentionSuggestions[mentionIndex].author_name); return; }
+                                  if (e.key === 'Enter' || e.key === 'Tab') { e.preventDefault(); insertMention(mentionSuggestions[mentionIndex].author_name, mentionSuggestions[mentionIndex].user_id); return; }
                                   if (e.key === 'Escape') { e.preventDefault(); setMentionQuery(null); return; }
                                 }
                                 if (e.key === 'Enter' && !e.shiftKey && replyContent.trim()) {
@@ -662,7 +1006,7 @@ export default function Community() {
                                       'w-full text-left px-3 py-2 text-sm flex items-center gap-2 hover:bg-accent transition-colors',
                                       i === mentionIndex && 'bg-accent',
                                     )}
-                                    onMouseDown={e => { e.preventDefault(); insertMention(u.author_name); }}
+                                    onMouseDown={e => { e.preventDefault(); insertMention(u.author_name, u.user_id); }}
                                   >
                                     <div className="w-6 h-6 rounded-full bg-primary/10 flex items-center justify-center shrink-0">
                                       <User className="w-3 h-3 text-primary" />
@@ -699,6 +1043,82 @@ export default function Community() {
           })}
         </div>
       )}
+
+      {/* Confirm delete post */}
+      <Dialog open={!!deletePostId} onOpenChange={open => !open && setDeletePostId(null)}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <AlertTriangle className="w-4 h-4 text-destructive" />
+              {t('community.delete_post')}
+            </DialogTitle>
+            <DialogDescription>{t('community.delete_post_confirm')}</DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button variant="ghost" onClick={() => setDeletePostId(null)}>{t('common.cancel')}</Button>
+            <Button
+              variant="destructive"
+              onClick={() => deletePostId && deletePost.mutate(deletePostId)}
+              disabled={deletePost.isPending}
+            >
+              <Trash2 className="w-4 h-4 mr-2" />
+              {t('common.delete')}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Confirm delete reply */}
+      <Dialog open={!!deleteReplyId} onOpenChange={open => !open && setDeleteReplyId(null)}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <AlertTriangle className="w-4 h-4 text-destructive" />
+              {t('community.delete_reply')}
+            </DialogTitle>
+            <DialogDescription>{t('community.delete_reply_confirm')}</DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button variant="ghost" onClick={() => setDeleteReplyId(null)}>{t('common.cancel')}</Button>
+            <Button
+              variant="destructive"
+              onClick={() => {
+                if (!deleteReplyId) return;
+                const [replyId, postId] = deleteReplyId.split('::');
+                deleteReply.mutate({ replyId, postId });
+              }}
+              disabled={deleteReply.isPending}
+            >
+              <Trash2 className="w-4 h-4 mr-2" />
+              {t('common.delete')}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Confirm delete all */}
+      <Dialog open={showDeleteAllDialog} onOpenChange={setShowDeleteAllDialog}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <AlertTriangle className="w-4 h-4 text-destructive" />
+              {t('community.delete_all')}
+            </DialogTitle>
+            <DialogDescription>{t('community.delete_all_confirm')}</DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button variant="ghost" onClick={() => setShowDeleteAllDialog(false)}>{t('common.cancel')}</Button>
+            <Button
+              variant="destructive"
+              onClick={() => deleteAllContent.mutate()}
+              disabled={deleteAllContent.isPending}
+            >
+              <Trash2 className="w-4 h-4 mr-2" />
+              {t('community.delete_all')}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
