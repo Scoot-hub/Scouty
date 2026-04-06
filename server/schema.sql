@@ -435,10 +435,11 @@ CREATE TABLE IF NOT EXISTS page_permissions (
   id CHAR(36) PRIMARY KEY,
   role VARCHAR(50) NOT NULL,
   page_key VARCHAR(100) NOT NULL,
+  action VARCHAR(50) NOT NULL DEFAULT 'view',
   allowed TINYINT(1) NOT NULL DEFAULT 1,
   created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-  UNIQUE KEY uniq_role_page (role, page_key)
+  UNIQUE KEY uniq_role_page_action (role, page_key, action)
 );
 
 -- Feedback table

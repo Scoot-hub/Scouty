@@ -384,6 +384,10 @@ export const supabase = {
         },
 
         getPublicUrl(fileName: string) {
+          // If fileName is already an absolute URL (e.g. Vercel Blob CDN URL), return as-is
+          if (fileName.startsWith('http://') || fileName.startsWith('https://')) {
+            return { data: { publicUrl: fileName } };
+          }
           return {
             data: {
               publicUrl: PUBLIC_BASE ? `${PUBLIC_BASE}/uploads/${fileName}` : `/uploads/${fileName}`,

@@ -1,4 +1,4 @@
-import { useState, useMemo } from 'react';
+import { useState, useMemo, Fragment } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useIsAdmin } from '@/hooks/use-admin';
 import { supabase } from '@/integrations/supabase/client';
@@ -332,94 +332,96 @@ export default function AdminRoles() {
                     const isAdminRole = selectedRole === 'admin';
                     const viewAllowed = isActionAllowed(selectedRole, pageKey, 'view');
 
-                    return [
-                      // Main page row
-                      <TableRow key={pageKey} className={cn(isExpanded && 'border-b-0')}>
-                        <TableCell className="font-medium">
-                          <div className="flex items-center gap-2">
-                            {hasSubActions ? (
-                              <button
-                                onClick={() => setExpandedPages(prev => {
-                                  const next = new Set(prev);
-                                  next.has(pageKey) ? next.delete(pageKey) : next.add(pageKey);
-                                  return next;
-                                })}
-                                className="text-muted-foreground hover:text-foreground transition-colors"
-                              >
-                                {isExpanded ? <ChevronDown className="w-3.5 h-3.5" /> : <ChevronRight className="w-3.5 h-3.5" />}
-                              </button>
-                            ) : (
-                              <Lock className="w-3.5 h-3.5 text-muted-foreground" />
-                            )}
-                            {t(`roles.page_${pageKey}`)}
-                          </div>
-                        </TableCell>
-                        <TableCell className="text-center">
-                          {isAdminRole ? (
-                            <Badge className="bg-emerald-500/10 text-emerald-600 border-emerald-500/20 text-[10px]">
-                              <Check className="w-3 h-3 mr-1" />{t('roles.allowed')}
-                            </Badge>
-                          ) : (
-                            <Button variant="ghost" size="sm"
-                              disabled={updatingPerm === `${selectedRole}-${pageKey}-view`}
-                              onClick={() => togglePermission(selectedRole, pageKey, 'view', viewAllowed)}
-                              className={cn('text-xs', viewAllowed
-                                ? 'text-emerald-600 hover:text-emerald-700 hover:bg-emerald-50'
-                                : 'text-red-500 hover:text-red-600 hover:bg-red-50')}>
-                              {viewAllowed
-                                ? <><Check className="w-3 h-3 mr-1" />{t('roles.allowed')}</>
-                                : <><X className="w-3 h-3 mr-1" />{t('roles.blocked')}</>}
-                            </Button>
-                          )}
-                        </TableCell>
-                        <TableCell>
-                          {hasSubActions && !isExpanded && (
-                            <button
-                              onClick={() => setExpandedPages(prev => { const n = new Set(prev); n.add(pageKey); return n; })}
-                              className="text-xs text-muted-foreground hover:text-primary transition-colors flex items-center gap-1"
-                            >
-                              <ChevronRight className="w-3 h-3" />
-                              {actions.length - 1} {t('roles.more_actions')}
-                            </button>
-                          )}
-                        </TableCell>
-                      </TableRow>,
-
-                      // Expanded sub-actions rows
-                      ...(isExpanded && hasSubActions ? actions.filter(a => a !== 'view').map(action => {
-                        const actionAllowed = isActionAllowed(selectedRole, pageKey, action);
-                        const updKey = `${selectedRole}-${pageKey}-${action}`;
-                        return (
-                          <TableRow key={`${pageKey}-${action}`} className="bg-muted/20">
-                            <TableCell className="pl-10 py-2">
-                              <span className="text-xs text-muted-foreground flex items-center gap-2">
-                                <span className="w-3.5 h-3.5 rounded-sm bg-border inline-block shrink-0" />
-                                {t(`roles.action_${action}`, { defaultValue: action.replace(/_/g, ' ') })}
-                              </span>
-                            </TableCell>
-                            <TableCell className="text-center py-2">
-                              {isAdminRole ? (
-                                <Badge className="bg-emerald-500/10 text-emerald-600 border-emerald-500/20 text-[10px]">
-                                  <Check className="w-3 h-3 mr-1" />{t('roles.allowed')}
-                                </Badge>
+                    return (
+                      <Fragment key={pageKey}>
+                        {/* Main page row */}
+                        <TableRow className={cn(isExpanded && 'border-b-0')}>
+                          <TableCell className="font-medium">
+                            <div className="flex items-center gap-2">
+                              {hasSubActions ? (
+                                <button
+                                  onClick={() => setExpandedPages(prev => {
+                                    const next = new Set(prev);
+                                    next.has(pageKey) ? next.delete(pageKey) : next.add(pageKey);
+                                    return next;
+                                  })}
+                                  className="text-muted-foreground hover:text-foreground transition-colors"
+                                >
+                                  {isExpanded ? <ChevronDown className="w-3.5 h-3.5" /> : <ChevronRight className="w-3.5 h-3.5" />}
+                                </button>
                               ) : (
-                                <Button variant="ghost" size="sm"
-                                  disabled={updatingPerm === updKey}
-                                  onClick={() => togglePermission(selectedRole, pageKey, action, actionAllowed)}
-                                  className={cn('text-xs h-7', actionAllowed
-                                    ? 'text-emerald-600 hover:text-emerald-700 hover:bg-emerald-50'
-                                    : 'text-red-500 hover:text-red-600 hover:bg-red-50')}>
-                                  {actionAllowed
-                                    ? <><Check className="w-3 h-3 mr-1" />{t('roles.allowed')}</>
-                                    : <><X className="w-3 h-3 mr-1" />{t('roles.blocked')}</>}
-                                </Button>
+                                <Lock className="w-3.5 h-3.5 text-muted-foreground" />
                               )}
-                            </TableCell>
-                            <TableCell />
-                          </TableRow>
-                        );
-                      }) : []),
-                    ];
+                              {t(`roles.page_${pageKey}`)}
+                            </div>
+                          </TableCell>
+                          <TableCell className="text-center">
+                            {isAdminRole ? (
+                              <Badge className="bg-emerald-500/10 text-emerald-600 border-emerald-500/20 text-[10px]">
+                                <Check className="w-3 h-3 mr-1" />{t('roles.allowed')}
+                              </Badge>
+                            ) : (
+                              <Button variant="ghost" size="sm"
+                                disabled={updatingPerm === `${selectedRole}-${pageKey}-view`}
+                                onClick={() => togglePermission(selectedRole, pageKey, 'view', viewAllowed)}
+                                className={cn('text-xs', viewAllowed
+                                  ? 'text-emerald-600 hover:text-emerald-700 hover:bg-emerald-50'
+                                  : 'text-red-500 hover:text-red-600 hover:bg-red-50')}>
+                                {viewAllowed
+                                  ? <><Check className="w-3 h-3 mr-1" />{t('roles.allowed')}</>
+                                  : <><X className="w-3 h-3 mr-1" />{t('roles.blocked')}</>}
+                              </Button>
+                            )}
+                          </TableCell>
+                          <TableCell>
+                            {hasSubActions && !isExpanded && (
+                              <button
+                                onClick={() => setExpandedPages(prev => { const n = new Set(prev); n.add(pageKey); return n; })}
+                                className="text-xs text-muted-foreground hover:text-primary transition-colors flex items-center gap-1"
+                              >
+                                <ChevronRight className="w-3 h-3" />
+                                {actions.length - 1} {t('roles.more_actions')}
+                              </button>
+                            )}
+                          </TableCell>
+                        </TableRow>
+
+                        {/* Expanded sub-actions rows */}
+                        {isExpanded && hasSubActions && actions.filter(a => a !== 'view').map(action => {
+                          const actionAllowed = isActionAllowed(selectedRole, pageKey, action);
+                          const updKey = `${selectedRole}-${pageKey}-${action}`;
+                          return (
+                            <TableRow key={`${pageKey}-${action}`} className="bg-muted/20">
+                              <TableCell className="pl-10 py-2">
+                                <span className="text-xs text-muted-foreground flex items-center gap-2">
+                                  <span className="w-3.5 h-3.5 rounded-sm bg-border inline-block shrink-0" />
+                                  {t(`roles.action_${action}`, action.replace(/_/g, ' '))}
+                                </span>
+                              </TableCell>
+                              <TableCell className="text-center py-2">
+                                {isAdminRole ? (
+                                  <Badge className="bg-emerald-500/10 text-emerald-600 border-emerald-500/20 text-[10px]">
+                                    <Check className="w-3 h-3 mr-1" />{t('roles.allowed')}
+                                  </Badge>
+                                ) : (
+                                  <Button variant="ghost" size="sm"
+                                    disabled={updatingPerm === updKey}
+                                    onClick={() => togglePermission(selectedRole, pageKey, action, actionAllowed)}
+                                    className={cn('text-xs h-7', actionAllowed
+                                      ? 'text-emerald-600 hover:text-emerald-700 hover:bg-emerald-50'
+                                      : 'text-red-500 hover:text-red-600 hover:bg-red-50')}>
+                                    {actionAllowed
+                                      ? <><Check className="w-3 h-3 mr-1" />{t('roles.allowed')}</>
+                                      : <><X className="w-3 h-3 mr-1" />{t('roles.blocked')}</>}
+                                  </Button>
+                                )}
+                              </TableCell>
+                              <TableCell />
+                            </TableRow>
+                          );
+                        })}
+                      </Fragment>
+                    );
                   })}
                 </TableBody>
               </Table>

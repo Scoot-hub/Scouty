@@ -52,6 +52,7 @@
     "@supabase/supabase-js": "^2.95.3",
     "@tanstack/react-query": "^5.83.0",
     "@vercel/analytics": "^2.0.1",
+    "@vercel/blob": "^2.3.3",
     "@vercel/edge-config": "^1.4.3",
     "bcryptjs": "^3.0.3",
     "class-variance-authority": "^0.7.1",

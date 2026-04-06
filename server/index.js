@@ -46,6 +46,63 @@ if (!fs.existsSync(UPLOAD_DIR)) {
   fs.mkdirSync(UPLOAD_DIR, { recursive: true });
 }
 
+// ── Vercel Blob Storage (persistent uploads on Vercel) ────────────────────────
+// On Vercel, /tmp is ephemeral — we stream files to Vercel Blob and store the
+// returned CDN URL instead of a relative /uploads/ path.
+let _blobPut = null;
+let _blobDel = null;
+if (isVercel) {
+  try {
+    const blobMod = await import("@vercel/blob");
+    _blobPut = blobMod.put;
+    _blobDel = blobMod.del;
+    console.log("[info] Vercel Blob storage ready");
+  } catch {
+    console.warn("[warn] @vercel/blob not found — uploads will not persist across cold starts");
+  }
+}
+
+/**
+ * Save an uploaded multer temp file.
+ * - On Vercel: upload to Vercel Blob → return permanent CDN URL.
+ * - Locally:   move to UPLOAD_DIR → return relative /uploads/ URL.
+ * Always cleans up the temp file.
+ */
+async function saveUploadedFile(tmpPath, fileName, mimeType) {
+  if (isVercel && _blobPut) {
+    const buffer = fs.readFileSync(tmpPath);
+    try { fs.unlinkSync(tmpPath); } catch {}
+    const blob = await _blobPut(fileName, buffer, {
+      access: "public",
+      contentType: mimeType || "application/octet-stream",
+      token: process.env.BLOB_READ_WRITE_TOKEN,
+    });
+    return blob.url; // absolute CDN URL, permanent
+  } else {
+    const finalPath = path.join(UPLOAD_DIR, fileName);
+    if (fs.existsSync(finalPath)) { try { fs.unlinkSync(finalPath); } catch {} }
+    fs.renameSync(tmpPath, finalPath);
+    return `/uploads/${fileName}`; // relative URL for local dev
+  }
+}
+
+/**
+ * Delete a previously saved file URL.
+ * Ignores errors — best-effort cleanup.
+ */
+async function deleteStoredFile(url) {
+  if (!url) return;
+  if (isVercel && _blobDel) {
+    try { await _blobDel(url, { token: process.env.BLOB_READ_WRITE_TOKEN }); } catch {}
+  } else {
+    // Local: derive filename from relative path
+    if (url.startsWith("/uploads/")) {
+      const localPath = path.join(UPLOAD_DIR, path.basename(url));
+      try { if (fs.existsSync(localPath)) fs.unlinkSync(localPath); } catch {}
+    }
+  }
+}
+
 const app = express();
 const port = Number(process.env.API_PORT || 3001);
 const jwtSecret = process.env.API_JWT_SECRET || "change-this-secret";
@@ -1441,19 +1498,20 @@ app.post("/api/account/upload-photo", authMiddleware, upload.single("photo"), as
     const ext = path.extname(req.file.originalname).toLowerCase() || ".jpg";
     const allowed = [".jpg", ".jpeg", ".png", ".webp", ".gif"];
     if (!allowed.includes(ext)) {
-      fs.unlinkSync(req.file.path);
+      try { fs.unlinkSync(req.file.path); } catch {}
       return res.status(400).json({ error: "Format non supporté. Utilisez JPG, PNG, WEBP ou GIF." });
     }
+    // Delete old photo (best-effort) before replacing
+    const [prevRows] = await pool.query("SELECT photo_url FROM profiles WHERE user_id = ? LIMIT 1", [req.user.id]);
+    await deleteStoredFile(prevRows[0]?.photo_url);
+
     const finalName = `profile_${req.user.id}${ext}`;
-    const finalPath = path.join(UPLOAD_DIR, finalName);
-    if (fs.existsSync(finalPath)) fs.unlinkSync(finalPath);
-    fs.renameSync(req.file.path, finalPath);
-    const photoUrl = `/uploads/${finalName}`;
+    const photoUrl = await saveUploadedFile(req.file.path, finalName, req.file.mimetype);
     await pool.query("UPDATE profiles SET photo_url = ?, updated_at = NOW() WHERE user_id = ?", [photoUrl, req.user.id]);
     return res.json({ photo_url: photoUrl });
   } catch (err) {
     console.error("upload-photo error:", err);
-    if (req.file?.path && fs.existsSync(req.file.path)) fs.unlinkSync(req.file.path);
+    try { if (req.file?.path) fs.unlinkSync(req.file.path); } catch {}
     return res.status(500).json({ error: "Erreur serveur" });
   }
 });
@@ -3462,21 +3520,12 @@ app.patch("/api/organizations/:id/logo", authMiddleware, upload.single("file"), 
 
     const ext = path.extname(req.file.originalname || "") || ".png";
     const finalName = `org-${id}${ext}`;
-    const finalPath = path.join(UPLOAD_DIR, finalName);
 
-    // Remove previous logo file if different name
+    // Delete previous logo (best-effort)
     const [orgRows] = await pool.query("SELECT logo_url FROM organizations WHERE id = ? LIMIT 1", [id]);
-    const prevUrl = orgRows[0]?.logo_url;
-    if (prevUrl) {
-      const prevFile = path.join(UPLOAD_DIR, path.basename(prevUrl));
-      if (prevFile !== finalPath && fs.existsSync(prevFile)) {
-        try { fs.unlinkSync(prevFile); } catch {}
-      }
-    }
+    await deleteStoredFile(orgRows[0]?.logo_url);
 
-    fs.renameSync(req.file.path, finalPath);
-    const publicUrl = `${req.protocol}://${req.get("host")}/uploads/${finalName}`;
-
+    const publicUrl = await saveUploadedFile(req.file.path, finalName, req.file.mimetype);
     await pool.query("UPDATE organizations SET logo_url = ?, updated_at = NOW() WHERE id = ?", [publicUrl, id]);
 
     return res.json({ logo_url: publicUrl });
@@ -3502,13 +3551,7 @@ app.delete("/api/organizations/:id/logo", authMiddleware, async (req, res) => {
     }
 
     const [orgRows] = await pool.query("SELECT logo_url FROM organizations WHERE id = ? LIMIT 1", [id]);
-    const prevUrl = orgRows[0]?.logo_url;
-    if (prevUrl) {
-      const prevFile = path.join(UPLOAD_DIR, path.basename(prevUrl));
-      if (fs.existsSync(prevFile)) {
-        try { fs.unlinkSync(prevFile); } catch {}
-      }
-    }
+    await deleteStoredFile(orgRows[0]?.logo_url);
 
     await pool.query("UPDATE organizations SET logo_url = NULL, updated_at = NOW() WHERE id = ?", [id]);
     return res.json({ ok: true });
@@ -6444,12 +6487,15 @@ app.post("/api/storage/:bucket/upload", authMiddleware, upload.single("file"), a
   const requestedName = String(req.body?.fileName || "").replace(/[^a-zA-Z0-9._-]/g, "");
   const ext = path.extname(req.file.originalname || "") || ".bin";
   const finalName = requestedName || `${Date.now()}-${uuidv4()}${ext}`;
-  const finalPath = path.join(UPLOAD_DIR, finalName);
 
-  fs.renameSync(req.file.path, finalPath);
-  const publicUrl = `${req.protocol}://${req.get("host")}/uploads/${finalName}`;
-
-  return res.json({ path: finalName, publicUrl });
+  try {
+    const publicUrl = await saveUploadedFile(req.file.path, finalName, req.file.mimetype);
+    return res.json({ path: finalName, publicUrl });
+  } catch (err) {
+    console.error("[storage/upload] Error:", err.message);
+    try { fs.unlinkSync(req.file.path); } catch {}
+    return res.status(500).json({ error: "Erreur lors de l'upload" });
+  }
 });
 
 // ── Auto-create missing tables on startup ────────────────────────────
