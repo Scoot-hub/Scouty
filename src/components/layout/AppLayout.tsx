@@ -7,6 +7,8 @@ import AppSidebar from './AppSidebar';
 import NotificationCenter from '@/components/NotificationCenter';
 import ChatBot from '@/components/ChatBot';
 import FeedbackPopup from '@/components/FeedbackPopup';
+import { OperationBannerProvider } from '@/contexts/OperationBannerContext';
+import OperationBanner from '@/components/OperationBanner';
 
 function ImpersonationBanner() {
   const { t } = useTranslation();
@@ -43,19 +45,22 @@ export default function AppLayout() {
   };
 
   return (
-    <div className="min-h-screen w-full">
-      <AppSidebar collapsed={collapsed} onToggle={toggleCollapsed} />
-      <div className={`${collapsed ? 'lg:ml-[72px]' : 'lg:ml-64'} min-h-screen flex flex-col transition-[margin] duration-300`}>
-        {isImpersonating && <ImpersonationBanner />}
-        <div className="flex items-center justify-end px-4 lg:px-8 pt-3 pb-1">
-          <NotificationCenter />
+    <OperationBannerProvider>
+      <div className="min-h-screen w-full">
+        <AppSidebar collapsed={collapsed} onToggle={toggleCollapsed} />
+        <div className={`${collapsed ? 'lg:ml-[72px]' : 'lg:ml-64'} min-h-screen flex flex-col transition-[margin] duration-300`}>
+          {isImpersonating && <ImpersonationBanner />}
+          <div className="flex items-center justify-end px-4 lg:px-8 pt-3 pb-1">
+            <NotificationCenter />
+          </div>
+          <main className="flex-1 px-4 lg:px-8 pb-4 lg:pb-8">
+            <Outlet />
+          </main>
         </div>
-        <main className="flex-1 px-4 lg:px-8 pb-4 lg:pb-8">
-          <Outlet />
-        </main>
+        <OperationBanner />
+        <ChatBot />
+        <FeedbackPopup />
       </div>
-      <ChatBot />
-      <FeedbackPopup />
-    </div>
+    </OperationBannerProvider>
   );
 }

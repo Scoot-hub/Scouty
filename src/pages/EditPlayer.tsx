@@ -5,7 +5,7 @@ import { CustomFieldsForm } from '@/components/CustomFieldsDisplay';
 import { useCustomFields, useCustomFieldValues, useBulkUpsertCustomFieldValues } from '@/hooks/use-custom-fields';
 import { usePlayer, useUpsertPlayer } from '@/hooks/use-players';
 import { parseScoutingNotes, serializeScoutingNotes } from '@/lib/scouting-notes';
-import { LEAGUES, CLUBS, NATIONALITIES, ZONES, POTENTIAL_SCALE, PLAYER_TASKS, resolveLeagueName, type Position, type Foot, type PlayerTask } from '@/types/player';
+import { LEAGUES, CLUBS, NATIONALITIES, ZONES, POTENTIAL_SCALE, PLAYER_TASKS, resolveLeagueName, translateCountry, type Position, type Foot, type PlayerTask } from '@/types/player';
 import { useMergedClubsAndLeagues, useResolveClubLeague } from '@/hooks/use-club-directory';
 import { usePositions } from '@/hooks/use-positions';
 import { Card, CardContent } from '@/components/ui/card';
@@ -21,23 +21,31 @@ import { ArrowLeft, Save, Search } from 'lucide-react';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
 import { ScrollArea } from '@/components/ui/scroll-area';
 
+type SelectOption = string | { label: string; value: string };
+
 function SearchableSelect({ value, onValueChange, options, placeholder }: {
-  value: string; onValueChange: (v: string) => void; options: string[]; placeholder: string;
+  value: string; onValueChange: (v: string) => void; options: SelectOption[]; placeholder: string;
 }) {
   const { t } = useTranslation();
   const [open, setOpen] = useState(false);
   const [search, setSearch] = useState('');
+  const normalized = useMemo(() =>
+    options.map(o => typeof o === 'string' ? { label: o, value: o } : o),
+    [options]);
+  const displayValue = useMemo(() =>
+    normalized.find(o => o.value === value)?.label ?? value,
+    [normalized, value]);
   const filtered = useMemo(() => {
-    if (!search) return options.slice(0, 50);
+    if (!search) return normalized.slice(0, 50);
     const s = search.toLowerCase();
-    return options.filter(o => o.toLowerCase().includes(s)).slice(0, 50);
-  }, [options, search]);
+    return normalized.filter(o => o.label.toLowerCase().includes(s)).slice(0, 50);
+  }, [normalized, search]);
 
   return (
     <Popover open={open} onOpenChange={setOpen}>
       <PopoverTrigger asChild>
         <Button variant="outline" role="combobox" className="w-full justify-between mt-1 font-normal">
-          {value || placeholder}
+          {displayValue || placeholder}
           <Search className="ml-2 h-3.5 w-3.5 shrink-0 opacity-50" />
         </Button>
       </PopoverTrigger>
@@ -48,9 +56,9 @@ function SearchableSelect({ value, onValueChange, options, placeholder }: {
         <ScrollArea className="h-[200px]">
           <div className="p-1">
             {filtered.map(o => (
-              <button key={o} className={`w-full text-left px-3 py-1.5 text-sm rounded hover:bg-accent transition-colors ${value === o ? 'bg-accent font-medium' : ''}`}
-                onClick={() => { onValueChange(o); setOpen(false); setSearch(''); }}>
-                {o}
+              <button key={o.value} className={`w-full text-left px-3 py-1.5 text-sm rounded hover:bg-accent transition-colors ${value === o.value ? 'bg-accent font-medium' : ''}`}
+                onClick={() => { onValueChange(o.value); setOpen(false); setSearch(''); }}>
+                {o.label}
               </button>
             ))}
             {filtered.length === 0 && <p className="text-sm text-muted-foreground p-3 text-center">{t('player_form.no_results')}</p>}
@@ -65,7 +73,7 @@ export default function EditPlayer() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
   const { toast } = useToast();
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
   const { positions: posLabels } = usePositions();
   const { data: player, isLoading } = usePlayer(id);
   const upsertPlayer = useUpsertPlayer();
@@ -74,6 +82,10 @@ export default function EditPlayer() {
   const bulkUpsertCF = useBulkUpsertCustomFieldValues();
   const { clubs: mergedClubs, leagues: mergedLeagues, clubToLeague } = useMergedClubsAndLeagues(CLUBS, LEAGUES);
   const resolveClubLeague = useResolveClubLeague();
+  const nationalityOptions = useMemo(() =>
+    NATIONALITIES.map(n => ({ label: translateCountry(n, i18n.language), value: n }))
+      .sort((a, b) => a.label.localeCompare(b.label, i18n.language)),
+    [i18n.language]);
   const [customFieldValues, setCustomFieldValues] = useState<Record<string, string>>({});
   const [name, setName] = useState('');
   const [photoUrl, setPhotoUrl] = useState('');
@@ -192,7 +204,7 @@ export default function EditPlayer() {
               <div><Label>{t('player_form.name')}</Label><Input value={name} onChange={e => setName(e.target.value)} className="mt-1" /></div>
               <div><Label>{t('player_form.birth_year')}</Label><Input type="number" min={1990} max={2010} value={generation} onChange={e => setGeneration(e.target.value)} className="mt-1" /></div>
               <div><Label>{t('player_form.nationality')}</Label>
-                <SearchableSelect value={nationality} onValueChange={setNationality} options={NATIONALITIES} placeholder={t('player_form.select_placeholder')} />
+                <SearchableSelect value={nationality} onValueChange={setNationality} options={nationalityOptions} placeholder={t('player_form.select_placeholder')} />
               </div>
             </div>
           </CardContent>

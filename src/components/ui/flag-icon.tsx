@@ -1,4 +1,5 @@
-import { getFlagCode, getFlag } from '@/types/player';
+import { useTranslation } from 'react-i18next';
+import { getFlagCode, getFlag, translateCountry } from '@/types/player';
 
 interface FlagIconProps {
   nationality: string;
@@ -13,15 +14,17 @@ const SIZE_STYLES: Record<string, React.CSSProperties> = {
 };
 
 export function FlagIcon({ nationality, className = '', size = 'md' }: FlagIconProps) {
+  const { i18n } = useTranslation();
   const code = getFlagCode(nationality);
+  const title = translateCountry(nationality, i18n.language);
   if (code) {
     return (
       <span
         className={`fi fi-${code} rounded-sm ${className}`}
         style={SIZE_STYLES[size]}
-        title={nationality}
+        title={title}
       />
     );
   }
-  return <span className={className}>{getFlag(nationality)}</span>;
+  return <span className={className} title={title}>{getFlag(nationality)}</span>;
 }

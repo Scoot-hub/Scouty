@@ -24,7 +24,7 @@ export default {
     ],
   },
   cta: { title: '¿Listo para estructurar tu scouting?', subtitle: 'Crea tu cuenta gratis y empieza a construir tu base de jugadores.', btn: 'Crear mi cuenta' },
-  footer: { copy: '© 2025 · Football Scouting CRM', legal: 'Aviso legal y Cumplimiento', cgv: 'CGV', cgu: 'CGU', about: 'Acerca de', privacy: 'Privacidad' },
+  footer: { copy: '© 2025 · Football Scouting CRM', legal: 'Aviso legal y Cumplimiento', cgv: 'CGV', cgu: 'CGU', about: 'Acerca de', privacy: 'Privacidad', info: 'Legal & Info' },
 
   pricing: {
     badge: 'Precios',
@@ -382,6 +382,11 @@ export default {
     news_contract: 'contrato',
     news_agent: 'agente',
     news_multiples: 'múltiples',
+    bulk_report: 'Adjuntar informe ({{count}})',
+    bulk_report_title: 'Adjuntar un informe a {{count}} jugador(es)',
+    bulk_report_desc: 'Este informe se añadirá al perfil de cada jugador seleccionado.',
+    bulk_report_success: 'Informe añadido a {{count}} jugador(es)',
+    bulk_report_submit: 'Añadir a {{count}} jugador(es)',
   },
 
   profile: {
@@ -487,8 +492,8 @@ export default {
     report_title_placeholder: 'Título del informe...',
     report_link: 'Enlace (Google Drive, etc.)',
     report_link_placeholder: 'https://drive.google.com/...',
-    report_file: 'Archivo PDF',
-    report_file_placeholder: 'Haz clic para importar un PDF...',
+    report_file: 'Archivo',
+    report_file_placeholder: 'Haz clic para importar un archivo (PDF, PNG, JPG, DOCX...)',
     report_file_replace: 'Reemplazar',
     file_upload_error: 'Error al subir el archivo',
     saving_report: 'Guardando...',
@@ -683,6 +688,8 @@ export default {
     impersonating_banner: 'Estás viendo la cuenta de {{email}}',
     stop_impersonation: 'Volver a mi cuenta',
     analytics: 'Panel de control',
+    tab_users: 'Usuarios',
+    tab_roles: 'Roles & Acceso',
   },
 
   analytics: {
@@ -1579,5 +1586,14 @@ export default {
     empty_desc: 'Agrega un club arriba o sigue uno desde su ficha.',
     added: '{{club}} agregado a tus clubes seguidos.',
     players_scouted: 'jugadores observados',
+  },
+  banner: {
+    enrichment_label: 'Enriquecimiento de {{count}} jugador(es)',
+    import_label: 'Importación de {{count}} jugador(es)',
+    new_count: '{{count}} nuevo(s)',
+    updated_count: '{{count}} actualizado(s)',
+    error_count: '{{count}} error(es)',
+    done: 'Terminado',
+    dismiss_all: 'Cerrar todo',
   },
 };

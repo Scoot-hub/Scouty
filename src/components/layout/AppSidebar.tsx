@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { Link, useLocation, useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import {
-  Users, Menu, X, PlusCircle, LogOut, Settings, Shield, ShieldCheck, UserCircle, Eye, Sparkles, Building2, Bug, CalendarDays, CalendarCheck, Shirt, Contact, ClipboardList, ChevronLeft, ChevronRight, Route, MapPinned, Gift, Search, Globe, Heart, MessageSquare
+  Users, Menu, X, LogOut, Settings, Shield, UserCircle, Eye, Sparkles, Building2, Bug, CalendarDays, CalendarCheck, Shirt, ClipboardList, ChevronLeft, ChevronRight, ChevronDown, Route, MapPinned, Gift, Search, Globe, Heart, MessageSquare, Info
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { useAuth } from '@/contexts/AuthContext';
@@ -38,6 +38,7 @@ export default function AppSidebar({ collapsed, onToggle }: AppSidebarProps) {
   const { t } = useTranslation();
   const [mobileOpen, setMobileOpen] = useState(false);
   const [reportOpen, setReportOpen] = useState(false);
+  const [legalOpen, setLegalOpen] = useState(false);
 
   const handleSignOut = async () => {
     await signOut();
@@ -99,7 +100,7 @@ export default function AppSidebar({ collapsed, onToggle }: AppSidebarProps) {
       {/* Nav */}
       <nav className={cn('flex-1 space-y-1', collapsed ? 'px-2 overflow-hidden' : 'px-3 overflow-y-auto sidebar-scroll')}>
         <SidebarTooltip label={t('sidebar.players')} collapsed={collapsed}>
-          <Link to="/players" className={linkClass('/players', ['/player/new', '/watchlist', '/shadow-team'])} onClick={() => setMobileOpen(false)}>
+          <Link to="/players" className={linkClass('/players', ['/discover', '/watchlist', '/shadow-team'])} onClick={() => setMobileOpen(false)}>
             <Users className="w-4 h-4 shrink-0" />
             {!collapsed && t('sidebar.players')}
           </Link>
@@ -109,17 +110,20 @@ export default function AppSidebar({ collapsed, onToggle }: AppSidebarProps) {
         {!collapsed && (
           <div className="pl-7 space-y-0.5">
             <Link
-              to="/player/new"
+              to="/discover"
               className={cn(
                 'flex items-center gap-2.5 px-3 py-1.5 rounded-lg text-[13px] transition-all',
-                isActive('/player/new')
+                isActive('/discover')
                   ? 'bg-sidebar-accent text-sidebar-accent-foreground'
                   : 'text-sidebar-foreground/60 hover:text-sidebar-foreground hover:bg-sidebar-accent/50'
               )}
               onClick={() => setMobileOpen(false)}
             >
-              <PlusCircle className="w-3.5 h-3.5" />
-              {t('sidebar.add_player')}
+              <Search className="w-3.5 h-3.5" />
+              <span className="flex items-center gap-2">
+                {t('sidebar.discover')}
+                <span className="text-[9px] px-1.5 py-0.5 rounded-full bg-primary/15 text-primary font-bold">PRO</span>
+              </span>
             </Link>
             <Link
               to="/watchlist"
@@ -229,7 +233,7 @@ export default function AppSidebar({ collapsed, onToggle }: AppSidebarProps) {
         )}
 
         <SidebarTooltip label={t('sidebar.fixtures')} collapsed={collapsed}>
-          <Link to="/fixtures" className={linkClass('/fixtures', ['/my-matches'])} onClick={() => setMobileOpen(false)}>
+          <Link to="/fixtures" className={linkClass('/fixtures', ['/my-matches', '/map', '/club', '/my-clubs'])} onClick={() => setMobileOpen(false)}>
             <CalendarDays className="w-4 h-4 shrink-0" />
             {!collapsed && t('sidebar.fixtures')}
           </Link>
@@ -250,59 +254,51 @@ export default function AppSidebar({ collapsed, onToggle }: AppSidebarProps) {
               <MapPinned className="w-3.5 h-3.5" />
               {t('sidebar.my_matches')}
             </Link>
-          </div>
-        )}
-
-        <SidebarTooltip label={t('sidebar.map')} collapsed={collapsed}>
-          <Link to="/map" className={linkClass('/map')} onClick={() => setMobileOpen(false)}>
-            <Globe className="w-4 h-4 shrink-0" />
-            {!collapsed && t('sidebar.map')}
-          </Link>
-        </SidebarTooltip>
-
-        <SidebarTooltip label={t('sidebar.contacts')} collapsed={collapsed}>
-          <Link to="/contacts" className={linkClass('/contacts')} onClick={() => setMobileOpen(false)}>
-            <Contact className="w-4 h-4 shrink-0" />
-            {!collapsed && t('sidebar.contacts')}
-          </Link>
-        </SidebarTooltip>
-
-        <SidebarTooltip label={t('sidebar.club_profile')} collapsed={collapsed}>
-          <Link to="/club" className={linkClass('/club', ['/my-clubs'])} onClick={() => setMobileOpen(false)}>
-            <Building2 className="w-4 h-4 shrink-0" />
-            {!collapsed && t('sidebar.club_profile')}
-          </Link>
-        </SidebarTooltip>
-
-        {!collapsed && (
-          <div className="pl-7 space-y-0.5">
             <Link
-              to="/my-clubs"
+              to="/map"
               className={cn(
                 'flex items-center gap-2.5 px-3 py-1.5 rounded-lg text-[13px] transition-all',
-                isActive('/my-clubs')
+                isActive('/map')
                   ? 'bg-sidebar-accent text-sidebar-accent-foreground'
                   : 'text-sidebar-foreground/60 hover:text-sidebar-foreground hover:bg-sidebar-accent/50'
               )}
               onClick={() => setMobileOpen(false)}
             >
-              <Heart className="w-3.5 h-3.5" />
-              {t('sidebar.my_clubs')}
+              <Globe className="w-3.5 h-3.5" />
+              {t('sidebar.map')}
             </Link>
+            <Link
+              to="/club"
+              className={cn(
+                'flex items-center gap-2.5 px-3 py-1.5 rounded-lg text-[13px] transition-all',
+                isActive('/club') || isActive('/my-clubs')
+                  ? 'bg-sidebar-accent text-sidebar-accent-foreground'
+                  : 'text-sidebar-foreground/60 hover:text-sidebar-foreground hover:bg-sidebar-accent/50'
+              )}
+              onClick={() => setMobileOpen(false)}
+            >
+              <Building2 className="w-3.5 h-3.5" />
+              {t('sidebar.club_profile')}
+            </Link>
+            {(isActive('/club') || isActive('/my-clubs')) && (
+              <div className="pl-6 space-y-0.5">
+                <Link
+                  to="/my-clubs"
+                  className={cn(
+                    'flex items-center gap-2.5 px-3 py-1 rounded-lg text-[12px] transition-all',
+                    isActive('/my-clubs')
+                      ? 'bg-sidebar-accent text-sidebar-accent-foreground'
+                      : 'text-sidebar-foreground/50 hover:text-sidebar-foreground hover:bg-sidebar-accent/50'
+                  )}
+                  onClick={() => setMobileOpen(false)}
+                >
+                  <Heart className="w-3 h-3" />
+                  {t('sidebar.my_clubs')}
+                </Link>
+              </div>
+            )}
           </div>
         )}
-
-        <SidebarTooltip label={t('sidebar.discover')} collapsed={collapsed}>
-          <Link to="/discover" className={linkClass('/discover')} onClick={() => setMobileOpen(false)}>
-            <Search className="w-4 h-4 shrink-0" />
-            {!collapsed && (
-              <span className="flex items-center gap-2">
-                {t('sidebar.discover')}
-                <span className="text-[9px] px-1.5 py-0.5 rounded-full bg-primary/15 text-primary font-bold">PRO</span>
-              </span>
-            )}
-          </Link>
-        </SidebarTooltip>
 
         <SidebarTooltip label={t('sidebar.community')} collapsed={collapsed}>
           <Link to="/community" className={linkClass('/community')} onClick={() => setMobileOpen(false)}>
@@ -354,20 +350,12 @@ export default function AppSidebar({ collapsed, onToggle }: AppSidebarProps) {
       <div className={cn('py-3 border-t border-sidebar-border shrink-0', collapsed ? 'px-2' : 'px-3')}>
         <div className="space-y-0.5">
           {isAdmin && (
-            <>
-              <SidebarTooltip label={t('sidebar.administration')} collapsed={collapsed}>
-                <Link to="/admin" className={footerLinkClass('/admin')} onClick={() => setMobileOpen(false)}>
-                  <Shield className="w-3.5 h-3.5 shrink-0" />
-                  {!collapsed && t('sidebar.administration')}
-                </Link>
-              </SidebarTooltip>
-              <SidebarTooltip label={t('sidebar.roles')} collapsed={collapsed}>
-                <Link to="/admin/roles" className={footerLinkClass('/admin/roles')} onClick={() => setMobileOpen(false)}>
-                  <ShieldCheck className="w-3.5 h-3.5 shrink-0" />
-                  {!collapsed && t('sidebar.roles')}
-                </Link>
-              </SidebarTooltip>
-            </>
+            <SidebarTooltip label={t('sidebar.administration')} collapsed={collapsed}>
+              <Link to="/admin" className={footerLinkClass('/admin')} onClick={() => setMobileOpen(false)}>
+                <Shield className="w-3.5 h-3.5 shrink-0" />
+                {!collapsed && t('sidebar.administration')}
+              </Link>
+            </SidebarTooltip>
           )}
 
           <SidebarTooltip label={t('sidebar.my_account')} collapsed={collapsed}>
@@ -403,20 +391,28 @@ export default function AppSidebar({ collapsed, onToggle }: AppSidebarProps) {
         </div>
 
         {!collapsed && (
-          <div className="mt-3 px-3 space-y-0.5">
-            {user && (
-              <p className="text-[11px] text-sidebar-muted truncate">{user.email}</p>
+          <div className="mt-3 px-3">
+            <button
+              onClick={() => setLegalOpen(prev => !prev)}
+              className="flex items-center gap-1.5 text-[10px] text-sidebar-muted hover:text-sidebar-foreground transition-colors w-full"
+            >
+              <Info className="w-3 h-3 shrink-0" />
+              {t('footer.info')}
+              <ChevronDown className={cn('w-3 h-3 ml-auto transition-transform duration-200', legalOpen && 'rotate-180')} />
+            </button>
+            {legalOpen && (
+              <div className="mt-1 pl-4 space-y-0.5">
+                <Link to="/legal" className="block text-[10px] text-sidebar-muted hover:text-sidebar-foreground transition-colors" onClick={() => { setMobileOpen(false); setLegalOpen(false); }}>
+                  {t('footer.legal')}
+                </Link>
+                <Link to="/about" className="block text-[10px] text-sidebar-muted hover:text-sidebar-foreground transition-colors" onClick={() => { setMobileOpen(false); setLegalOpen(false); }}>
+                  {t('footer.about')}
+                </Link>
+                <Link to="/privacy" className="block text-[10px] text-sidebar-muted hover:text-sidebar-foreground transition-colors" onClick={() => { setMobileOpen(false); setLegalOpen(false); }}>
+                  {t('footer.privacy')}
+                </Link>
+              </div>
             )}
-            <p className="text-[10px] text-sidebar-muted">{t('sidebar.version')}</p>
-            <Link to="/legal" className="block text-[10px] text-sidebar-muted hover:text-sidebar-foreground transition-colors" onClick={() => setMobileOpen(false)}>
-              {t('footer.legal')}
-            </Link>
-            <Link to="/about" className="block text-[10px] text-sidebar-muted hover:text-sidebar-foreground transition-colors" onClick={() => setMobileOpen(false)}>
-              {t('footer.about')}
-            </Link>
-            <Link to="/privacy" className="block text-[10px] text-sidebar-muted hover:text-sidebar-foreground transition-colors" onClick={() => setMobileOpen(false)}>
-              {t('footer.privacy')}
-            </Link>
           </div>
         )}
 

@@ -16,7 +16,7 @@ import {
   type ShadowTeam as ShadowTeamType,
   type ShadowTeamPlayer,
 } from '@/hooks/use-shadow-teams';
-import { getPlayerAge, type Player, type Position } from '@/types/player';
+import { getPlayerAge, translateCountry, type Player, type Position } from '@/types/player';
 import { usePositions } from '@/hooks/use-positions';
 import { PlayerAvatar } from '@/components/ui/player-avatar';
 import { ClubBadge } from '@/components/ui/club-badge';
@@ -505,7 +505,7 @@ const PITCH_VIEW_KEYS: { key: PitchView; labelKey: string; icon: string }[] = [
   { key: 'club',        labelKey: 'shadow_team.view_club',        icon: '🏟' },
 ];
 
-function getViewBadge(player: Player, view: PitchView, t: (k: string, opts?: Record<string, unknown>) => string): { text: string; bg: string } | null {
+function getViewBadge(player: Player, view: PitchView, t: (k: string, opts?: Record<string, unknown>) => string, lang: string): { text: string; bg: string } | null {
   if (view === 'default') return null;
 
   switch (view) {
@@ -529,7 +529,7 @@ function getViewBadge(player: Player, view: PitchView, t: (k: string, opts?: Rec
       return { text: `${end.getFullYear()}`, bg };
     }
     case 'nationality':
-      return { text: player.nationality, bg: '#1e3a5f' };
+      return { text: translateCountry(player.nationality, lang), bg: '#1e3a5f' };
     case 'club':
       return { text: player.club, bg: '#1e3a5f' };
     default:
@@ -550,7 +550,7 @@ function ShadowTeamDetail({
   onTeamUpdated: (t: ShadowTeamType) => void;
   deleteDialog: React.ReactNode;
 }) {
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
   const { positionShort: posShort } = usePositions();
   const { data: assignments = [] } = useShadowTeamPlayers(team.id);
   const assignPlayer = useAssignPlayer();
@@ -910,7 +910,7 @@ function ShadowTeamDetail({
                           {mainPlayer.name}
                         </span>
                         {(() => {
-                          const badge = getViewBadge(mainPlayer, activeView, t);
+                          const badge = getViewBadge(mainPlayer, activeView, t, i18n.language);
                           if (!badge) return null;
                           return (
                             <span
@@ -941,7 +941,7 @@ function ShadowTeamDetail({
                             {player.name}
                           </span>
                           {(() => {
-                            const badge = getViewBadge(player, activeView, t);
+                            const badge = getViewBadge(player, activeView, t, i18n.language);
                             if (!badge) return null;
                             return (
                               <span

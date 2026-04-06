@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { useOrgPlayers, useCurrentOrg } from '@/hooks/use-organization';
-import { getPlayerAge, getOpinionBgClass, getOpinionEmoji, resolveLeagueName, type Opinion, type Position } from '@/types/player';
+import { getPlayerAge, getOpinionBgClass, getOpinionEmoji, resolveLeagueName, translateCountry, type Opinion, type Position } from '@/types/player';
 import { usePositions } from '@/hooks/use-positions';
 import { FlagIcon } from '@/components/ui/flag-icon';
 import { PlayerAvatar } from '@/components/ui/player-avatar';
@@ -27,7 +27,7 @@ function loadFilters() {
 }
 
 export default function OrgPlayers() {
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
   const { positions: posLabels, positionShort: posShort } = usePositions();
   const { data: org, isLoading: orgLoading, isFetching: orgFetching } = useCurrentOrg();
   const { data: players = [], isLoading } = useOrgPlayers();
@@ -169,7 +169,7 @@ export default function OrgPlayers() {
     try {
       const rows = playersToExport.map(p => ({
         [t('form.name')]: p.name,
-        [t('form.nationality')]: p.nationality,
+        [t('form.nationality')]: translateCountry(p.nationality, i18n.language),
         [t('players.age')]: getPlayerAge(p.generation, p.date_of_birth),
         [t('players.position')]: posShort[p.position],
         [t('form.club')]: p.club,

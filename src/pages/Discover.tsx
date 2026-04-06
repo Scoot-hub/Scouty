@@ -11,6 +11,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Badge } from '@/components/ui/badge';
 import { toast } from 'sonner';
 import { Search, Loader2, Crown, UserPlus, ExternalLink, Sparkles, Filter, Globe, Euro, Calendar, Crosshair } from 'lucide-react';
+import { translateCountry } from '@/types/player';
 
 interface DiscoveredPlayer {
   name: string;
@@ -35,7 +36,7 @@ const POSITIONS_FILTER = [
 ];
 
 export default function Discover() {
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
   const navigate = useNavigate();
   const { data: isPremium } = useIsPremium();
 
@@ -317,7 +318,7 @@ export default function Discover() {
                           {player.club}
                         </span>
                       )}
-                      {player.nationality && <span>{player.nationality}</span>}
+                      {player.nationality && <span>{translateCountry(player.nationality, i18n.language)}</span>}
                     </div>
                   </div>
 

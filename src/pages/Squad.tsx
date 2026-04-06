@@ -4,7 +4,7 @@ import { useSquadPlayers, useUpsertSquadPlayer, useDeleteSquadPlayer } from '@/h
 import { usePlayers } from '@/hooks/use-players';
 import { useCurrentOrg, useOrgPlayers } from '@/hooks/use-organization';
 import { usePositions } from '@/hooks/use-positions';
-import { getPlayerAge } from '@/types/player';
+import { getPlayerAge, translateCountry } from '@/types/player';
 import type { SquadPlayer, SquadPlayerStatus } from '@/types/squad';
 import { getSquadPlayerAge, getContractMonthsRemaining, SQUAD_STATUSES } from '@/types/squad';
 import type { Position } from '@/types/player';
@@ -69,7 +69,7 @@ const emptyForm = {
 type SortOption = 'name' | 'age' | 'position' | 'contract' | 'number';
 
 export default function Squad() {
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
   const { positions: posLabels, positionShort: posShort } = usePositions();
   const { data: org, isLoading: orgLoading, isFetching: orgFetching } = useCurrentOrg();
   const { data: players = [], isLoading } = useSquadPlayers();
@@ -351,7 +351,7 @@ export default function Squad() {
       [t('squad.name')]: p.name,
       [t('squad.position')]: posShort[p.position as Position] ?? p.position,
       '#': p.jersey_number ?? '',
-      [t('squad.nationality')]: p.nationality,
+      [t('squad.nationality')]: translateCountry(p.nationality, i18n.language),
       [t('players.club')]: p.club ?? '',
       [t('players.foot')]: p.foot ?? '',
       [t('players.value')]: p.market_value ?? '',
@@ -682,7 +682,7 @@ export default function Squad() {
                     <p className="text-muted-foreground text-xs">{t('squad.nationality')}</p>
                     <p className="font-medium flex items-center gap-1">
                       <FlagIcon nationality={detailPlayer.nationality} size="sm" />
-                      {detailPlayer.nationality}
+                      {translateCountry(detailPlayer.nationality, i18n.language)}
                     </p>
                   </div>
                   <div>

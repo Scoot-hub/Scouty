@@ -2,6 +2,7 @@ import { useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import {
   useEventsForDay,
+  useAllEventsForDay,
   type LivescoreEvent,
   type LivescoreCompetition,
 } from '@/hooks/use-api-football';
@@ -175,6 +176,8 @@ export default function Fixtures() {
   const [hasMore, setHasMore] = useState(false);
 
   const { data, isLoading, isFetching } = useEventsForDay(selectedDate, PAGE_SIZE, eventsOffset);
+  // Fetch all events in parallel (no pagination) to compute "my players" matches exhaustively
+  const { data: allEventsData } = useAllEventsForDay(selectedDate);
 
   // Reset when date changes
   useMemo(() => { setEventsOffset(0); setAllCompetitions([]); setTotalCount(0); setHasMore(false); }, [selectedDate]);
@@ -275,7 +278,8 @@ export default function Fixtures() {
   const { data: playersData } = usePlayers();
 
   const myPlayerMatches = useMemo(() => {
-    if (!playersData?.length || !competitions.length) return [];
+    const allCompetitionsForPlayers = allEventsData?.competitions ?? [];
+    if (!playersData?.length || !allCompetitionsForPlayers.length) return [];
     // Build a map of unique clubs → players
     const clubPlayersMap = new Map<string, Player[]>();
     for (const p of playersData) {
@@ -289,7 +293,7 @@ export default function Fixtures() {
     const matches: MyPlayerMatch[] = [];
     const seenEventIds = new Set<string>();
 
-    for (const comp of competitions) {
+    for (const comp of allCompetitionsForPlayers) {
       const compIsWomen = isWomen(comp.name);
       for (const ev of comp.events) {
         if (seenEventIds.has(ev.id)) continue;
@@ -318,7 +322,7 @@ export default function Fixtures() {
       }
     }
     return matches;
-  }, [playersData, competitions]);
+  }, [playersData, allEventsData]);
 
   // Filter myPlayerMatches by search too
   const filteredMyPlayerMatches = useMemo(() => {

@@ -240,3 +240,19 @@ export function useEventsForDay(date: string, limit = 20, offset = 0) {
     retry: 1,
   });
 }
+
+// Fetches all events for a day (no pagination) — used only for "my players" matching
+export function useAllEventsForDay(date: string) {
+  return useQuery({
+    queryKey: ['livescore-events-day-all', date],
+    queryFn: async (): Promise<LivescoreDayResponse> => {
+      const { data, error } = await supabase.functions.invoke('livescore-events-day', {
+        body: { date, offset: 0, limit: 9999 },
+      });
+      if (error) throw error;
+      return data as LivescoreDayResponse;
+    },
+    staleTime: 5 * 60 * 1000,
+    retry: 1,
+  });
+}

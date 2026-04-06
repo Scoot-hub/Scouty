@@ -14,6 +14,9 @@ import { useCustomFields, useCreateCustomField, useBulkUpsertCustomFieldValues }
 import { type Opinion, type Position, type Foot, POSITIONS } from '@/types/player';
 import { Upload, FileSpreadsheet, Check, AlertTriangle, X, ArrowRight, Columns, Search, Filter, Eye, EyeOff, ChevronDown, ChevronUp, Plus, Link as LinkIcon, Type, Hash, ToggleLeft } from 'lucide-react';
 import { Checkbox } from '@/components/ui/checkbox';
+import { useOperationBanner } from '@/contexts/OperationBannerContext';
+import { supabase } from '@/integrations/supabase/client';
+import { useQueryClient } from '@tanstack/react-query';
 
 interface RawRow {
   [key: string]: string | number | undefined;
@@ -365,6 +368,8 @@ export function ImportPlayersDialog() {
   const { t } = useTranslation();
   const importPlayers = useImportPlayers();
   const { data: existingPlayers = [] } = usePlayers();
+  const { addOperation, updateOperation, completeOperation } = useOperationBanner();
+  const queryClient = useQueryClient();
   const { data: customFields = [], refetch: refetchCustomFields } = useCustomFields();
   const createCustomField = useCreateCustomField();
   const bulkUpsertCF = useBulkUpsertCustomFieldValues();
@@ -681,6 +686,9 @@ export function ImportPlayersDialog() {
 
     setStep('importing');
 
+    const importOpId = `import-${Date.now()}`;
+    addOperation({ id: importOpId, type: 'import', label: t('banner.import_label', { count: validPlayers.length }), current: 0, total: validPlayers.length });
+
     try {
       const result = await importPlayers.mutateAsync(
         validPlayers.map(p => ({
@@ -727,35 +735,44 @@ export function ImportPlayersDialog() {
         }
       }
 
-      const parts: string[] = [];
-      if (result.importedCount > 0) parts.push(`${result.importedCount} cree${result.importedCount > 1 ? 's' : ''}`);
-      if (result.updatedCount > 0) parts.push(`${result.updatedCount} mis a jour`);
-      const previewErrors = parsed.length - validPlayers.length;
-      if (previewErrors > 0) parts.push(`${previewErrors} invalide${previewErrors > 1 ? 's' : ''}`);
-      if (result.skippedCount > 0) parts.push(`${result.skippedCount} echoue${result.skippedCount > 1 ? 's' : ''}`);
-
-      const total = result.importedCount + result.updatedCount;
-      toast({
-        title: `${total} joueur${total > 1 ? 's' : ''} traite${total > 1 ? 's' : ''}`,
-        description: parts.join(', ') + '.',
+      // Complete the import banner
+      completeOperation(importOpId, {
+        newCount: result.importedCount,
+        updatedCount: result.updatedCount,
+        errorCount: (result.skippedCount || 0) + (parsed.length - validPlayers.length) || undefined,
       });
 
-      // Show detailed errors if any players were skipped during import
-      if (result.skippedErrors?.length) {
-        const errorLines = result.skippedErrors.map(e => `• ${e.name} : ${e.error}`).join('\n');
-        setTimeout(() => {
-          toast({
-            title: `${result.skippedErrors.length} joueur${result.skippedErrors.length > 1 ? 's' : ''} non importe${result.skippedErrors.length > 1 ? 's' : ''}`,
-            description: errorLines,
-            variant: 'destructive',
-            duration: 15000,
-          });
-        }, 500);
+      // Start background enrichment with its own banner
+      if (result.enrichQueue?.length) {
+        const enrichOpId = `enrich-import-${Date.now()}`;
+        const queue = result.enrichQueue;
+        addOperation({ id: enrichOpId, type: 'enrichment', label: t('banner.enrichment_label', { count: queue.length }), current: 0, total: queue.length });
+
+        // Run enrichment in background (non-blocking)
+        (async () => {
+          let success = 0;
+          let errors = 0;
+          for (const p of queue) {
+            try {
+              await supabase.functions.invoke('enrich-player', {
+                body: { playerName: p.name, club: p.club, playerId: p.id, nationality: p.nationality, generation: p.generation, position: p.position },
+              });
+              success++;
+            } catch (e) {
+              console.error('Background enrich failed for', p.name, e);
+              errors++;
+            }
+            updateOperation(enrichOpId, { current: success + errors });
+          }
+          completeOperation(enrichOpId, { newCount: success, errorCount: errors > 0 ? errors : undefined });
+          queryClient.invalidateQueries({ queryKey: ['players'] });
+        })();
       }
 
       setStep('done');
     } catch (err) {
       console.error('Import error:', err);
+      completeOperation(importOpId, { errorCount: validPlayers.length });
       toast({ title: t('common.error'), description: (err as Error)?.message || t('import.import_failed'), variant: 'destructive' });
       setStep('preview');
     }

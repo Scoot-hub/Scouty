@@ -4219,6 +4219,138 @@ app.post("/api/functions/:name", authMiddleware, async (req, res) => {
     }
   }
 
+  if (name === "fetch-tm-profile") {
+    const { tmUrl } = req.body || {};
+    if (!tmUrl) return res.status(400).json({ error: 'Missing tmUrl' });
+
+    let tmPath = null;
+    try {
+      const u = new URL(tmUrl.startsWith('http') ? tmUrl : `https://${tmUrl}`);
+      if (u.hostname.includes('transfermarkt') && u.pathname.includes('/spieler/')) tmPath = u.pathname;
+    } catch {}
+    if (!tmPath) return res.status(400).json({ error: 'Invalid TM URL — must contain /spieler/' });
+
+    try {
+      const tmId = (tmPath.match(/\/spieler\/(\d+)/) || [])[1] || null;
+      const opts = { headers: TM_HEADERS, signal: AbortSignal.timeout(15000) };
+      const profileResp = await fetch(`https://www.transfermarkt.fr${tmPath}`, opts);
+      if (!profileResp.ok) return res.status(502).json({ error: `TM returned ${profileResp.status}` });
+      const html = await profileResp.text();
+
+      // ── Player name: og:title is most reliable ──
+      let playerName = null;
+      const ogTitleM = html.match(/<meta\s+property="og:title"\s+content="([^"]+)"/);
+      if (ogTitleM) playerName = ogTitleM[1].split(' - ')[0].split(' | ')[0].trim();
+      if (!playerName) {
+        const titleM = html.match(/<title>([^<]+)<\/title>/);
+        if (titleM) playerName = titleM[1].split(' - ')[0].split(' | ')[0].trim();
+      }
+      // Fallback: capitalise slug from URL path
+      if (!playerName) {
+        const slugM = tmPath.match(/^\/([^/]+)\//);
+        if (slugM) playerName = slugM[1].replace(/-/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
+      }
+
+      // ── Date of birth / generation year ──
+      const dobRaw = extractBetween(html, 'Date de naissance:</span>', '</span>');
+      let dateOfBirth = null, generation = null;
+      if (dobRaw) {
+        // "1 sept. 1999 (25 ans)" or "20 décembre 1998"
+        const dmyM = dobRaw.match(/(\d{1,2})\s+([^\s\d(]+)\.?\s+(\d{4})/);
+        if (dmyM) {
+          const key = dmyM[2].toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').slice(0, 4);
+          const frKey = Object.keys(FR_MONTHS).find(k => k.normalize('NFD').replace(/[\u0300-\u036f]/g, '').slice(0, 4) === key);
+          const month = frKey ? FR_MONTHS[frKey] : null;
+          if (month) {
+            dateOfBirth = `${dmyM[3]}-${String(month).padStart(2, '0')}-${dmyM[1].padStart(2, '0')}`;
+            generation = parseInt(dmyM[3]);
+          }
+        }
+        if (!generation) {
+          const yearM = dobRaw.match(/(\d{4})/);
+          if (yearM) generation = parseInt(yearM[1]);
+        }
+      }
+
+      // ── Nationality (first one listed) ──
+      // TM fr: "Nationalité:</span>...<span>...<a title="France">France</a>..."
+      const nationalityRaw = extractBetween(html, 'Nationalit\u00e9:</span>', '</span>');
+
+      // ── Position ──
+      const positionRaw = extractBetween(html, 'Poste\u00a0:</span>', '</span>')
+        || extractBetween(html, 'Poste :</span>', '</span>')
+        || extractBetween(html, 'Poste:</span>', '</span>');
+
+      // ── Foot ──
+      const footRaw = extractBetween(html, 'Pied fort\u00a0:</span>', '</span>')
+        || extractBetween(html, 'Pied fort :</span>', '</span>')
+        || extractBetween(html, 'Pied fort:</span>', '</span>');
+
+      // ── Contract end ──
+      const contractRaw = extractBetween(html, "Contrat jusqu\u2019\u00e0:</span>", "</span>")
+        || extractBetween(html, "Contrat jusqu'à:</span>", "</span>")
+        || extractBetween(html, "Contrat jusqu&#x27;à:", "</span>");
+      const contract = parseFrDate(contractRaw);
+
+      // ── Height ──
+      const heightRaw = extractBetween(html, 'Taille:</span>', '</span>');
+      let heightCm = null;
+      if (heightRaw) {
+        const hm = heightRaw.replace(',', '.').match(/([\d.]+)\s*m/);
+        if (hm) heightCm = Math.round(parseFloat(hm[1]) * 100);
+      }
+
+      // ── Agent ──
+      const agentRaw = extractBetween(html, 'Agent du joueur:</span>', '</span>');
+      const agent = (agentRaw && agentRaw.length < 80) ? agentRaw : null;
+
+      // ── Market value ──
+      const mvM = html.match(/data-header__market-value-wrapper[^>]*>\s*([\d\s,.]+)\s*<span class="waehrung">([^<]+)<\/span>/);
+      const marketValue = mvM ? `${mvM[1].trim()} ${mvM[2].trim()}` : null;
+
+      // ── Current club ──
+      const clubIdx = html.indexOf('Club actuel');
+      const clubBlock = clubIdx >= 0 ? html.slice(clubIdx, clubIdx + 1000) : '';
+      const clubTitleM = clubBlock.match(/title="([^"]+)"\s+href="\/[^"]+\/startseite\/verein\//);
+      const currentClub = clubTitleM ? clubTitleM[1] : null;
+
+      // ── Photo ──
+      let photoUrl = null;
+      const photoM = html.match(/data-header__profile-image[^>]*src="([^"]+)"/);
+      if (photoM && photoM[1] && !photoM[1].includes('default.jpg') && !photoM[1].includes('placeholder')) {
+        photoUrl = photoM[1];
+      }
+      if (!photoUrl) {
+        const ogM = html.match(/<meta\s+property="og:image"\s+content="([^"]+)"/);
+        if (ogM && ogM[1] && !ogM[1].includes('default') && !ogM[1].includes('placeholder') && ogM[1].includes('portrait')) {
+          photoUrl = ogM[1];
+        }
+      }
+
+      console.log(`[fetch-tm-profile] name:${playerName} dob:${dateOfBirth} nat:${nationalityRaw} pos:${positionRaw} foot:${footRaw} club:${currentClub} value:${marketValue}`);
+
+      return res.json({
+        success: true,
+        name: playerName,
+        dateOfBirth,
+        generation,
+        nationality: nationalityRaw,
+        position: positionRaw,
+        foot: footRaw,
+        club: currentClub,
+        contract,
+        marketValue,
+        heightCm,
+        agent,
+        photoUrl,
+        tmId,
+      });
+    } catch (err) {
+      console.error('[fetch-tm-profile] Error:', err);
+      return res.status(500).json({ error: err.message });
+    }
+  }
+
   if (name === "enrich-all-players") {
     const [players] = await pool.query(
       'SELECT id, name, club, nationality, generation FROM players WHERE user_id = ? ORDER BY name',

@@ -24,7 +24,7 @@ export default {
     ],
   },
   cta: { title: 'Ready to structure your scouting?', subtitle: 'Create your free account and start building your player database.', btn: 'Create my account' },
-  footer: { copy: '© 2025 · Football Scouting CRM', legal: 'Legal Notice & Compliance', cgv: 'Terms of Sale', cgu: 'Terms of Use', about: 'About', privacy: 'Privacy' },
+  footer: { copy: '© 2025 · Football Scouting CRM', legal: 'Legal Notice & Compliance', cgv: 'Terms of Sale', cgu: 'Terms of Use', about: 'About', privacy: 'Privacy', info: 'Legal & Info' },
 
   pricing: {
     badge: 'Pricing',
@@ -382,6 +382,11 @@ export default {
     news_contract: 'contract',
     news_agent: 'agent',
     news_multiples: 'multiple',
+    bulk_report: 'Attach report ({{count}})',
+    bulk_report_title: 'Attach a report to {{count}} player(s)',
+    bulk_report_desc: 'This report will be added to each selected player\'s profile.',
+    bulk_report_success: 'Report added to {{count}} player(s)',
+    bulk_report_submit: 'Add to {{count}} player(s)',
   },
 
   profile: {
@@ -487,8 +492,8 @@ export default {
     report_title_placeholder: 'Report title...',
     report_link: 'Link (Google Drive, etc.)',
     report_link_placeholder: 'https://drive.google.com/...',
-    report_file: 'PDF file',
-    report_file_placeholder: 'Click to import a PDF...',
+    report_file: 'File',
+    report_file_placeholder: 'Click to import a file (PDF, PNG, JPG, DOCX...)',
     report_file_replace: 'Replace',
     file_upload_error: 'Error uploading file',
     saving_report: 'Saving...',
@@ -683,6 +688,8 @@ export default {
     impersonating_banner: 'You are viewing the account of {{email}}',
     stop_impersonation: 'Back to my account',
     analytics: 'Dashboard',
+    tab_users: 'Users',
+    tab_roles: 'Roles & Access',
   },
 
   analytics: {
@@ -1579,5 +1586,14 @@ export default {
     empty_desc: 'Add a club above or follow one from its profile page.',
     added: '{{club}} added to your followed clubs.',
     players_scouted: 'scouted players',
+  },
+  banner: {
+    enrichment_label: 'Enriching {{count}} player(s)',
+    import_label: 'Importing {{count}} player(s)',
+    new_count: '{{count}} new',
+    updated_count: '{{count}} updated',
+    error_count: '{{count}} error(s)',
+    done: 'Done',
+    dismiss_all: 'Dismiss all',
   },
 };

@@ -9,7 +9,7 @@ import { CustomFieldsDisplay } from '@/components/CustomFieldsDisplay';
 import { CustomFieldsManager } from '@/components/CustomFieldsManager';
 import { MoreHorizontal } from 'lucide-react';
 import { supabase } from '@/integrations/supabase/client';
-import { getPlayerAge, getPotentialDescription, resolveLeagueName, type Opinion } from '@/types/player';
+import { getPlayerAge, getPotentialDescription, resolveLeagueName, translateCountry, type Opinion } from '@/types/player';
 import { usePositions } from '@/hooks/use-positions';
 import { FlagIcon } from '@/components/ui/flag-icon';
 import { OpinionBadge } from '@/components/ui/opinion-badge';
@@ -189,7 +189,8 @@ export default function PlayerProfile() {
   };
 
   const uploadReportFile = async (file: File): Promise<string | null> => {
-    const fileName = `report-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.pdf`;
+    const ext = file.name.split('.').pop() || 'bin';
+    const fileName = `report-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.${ext}`;
     const { data, error } = await supabase.storage.from('reports').upload(fileName, file);
     if (error) { console.error('Upload error:', error); toast.error(t('profile.file_upload_error')); return null; }
     // Use the publicUrl returned directly by the server (includes correct host)
@@ -396,7 +397,7 @@ export default function PlayerProfile() {
         items.push({ icon: <Calendar className="w-3.5 h-3.5" />, label: t('profile.birth_date'), value: `${dob.toLocaleDateString(locale, { day: 'numeric', month: 'long', year: 'numeric' })} (${ageVal} ${t('common.year')})` });
       }
       if (ext.height) items.push({ icon: <Ruler className="w-3.5 h-3.5" />, label: t('profile.height'), value: ext.height });
-      if (ext.nationality2) items.push({ icon: <Globe className="w-3.5 h-3.5" />, label: t('profile.nationality2'), value: ext.nationality2 });
+      if (ext.nationality2) items.push({ icon: <Globe className="w-3.5 h-3.5" />, label: t('profile.nationality2'), value: translateCountry(ext.nationality2, i18n.language) });
       {
         const contractLabel = ext.on_loan && ext.parent_club
           ? `${t('profile.contract_end')} (${ext.parent_club})`
@@ -556,7 +557,7 @@ export default function PlayerProfile() {
                     return (
                       <div key={i} className="flex items-center gap-3 p-2.5 rounded-lg bg-muted/30 text-sm">
                         <FlagIcon nationality={country} size="sm" className="shrink-0" />
-                        <span className="font-semibold flex-1 truncate">{country}</span>
+                        <span className="font-semibold flex-1 truncate">{translateCountry(country, i18n.language)}</span>
                         {category !== 'A' && (
                           <span className="text-xs bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-300 px-1.5 py-0.5 rounded font-bold shrink-0">{category}</span>
                         )}
@@ -703,7 +704,7 @@ export default function PlayerProfile() {
                 <h1 className="text-2xl md:text-3xl font-bold">{player.name}</h1>
                 <div className="flex flex-wrap items-center gap-x-3 gap-y-1 mt-2 text-sm text-muted-foreground">
                   <span className="flex items-center gap-1.5">
-                    <FlagIcon nationality={player.nationality} size="lg" />{player.nationality}
+                    <FlagIcon nationality={player.nationality} size="lg" />{translateCountry(player.nationality, i18n.language)}
                   </span>
                   <span>{age} {t('common.year')} ({player.generation})</span>
                   <span>{posShort[player.position]} · {posLabels[player.position]}{player.position_secondaire ? ` / ${player.position_secondaire}` : ''} · {player.foot}</span>
@@ -1340,17 +1341,17 @@ export default function PlayerProfile() {
               ) : editingReport?.file_url ? (
                 <div className="flex items-center gap-2 p-3 rounded-xl bg-muted/50 border">
                   <FileText className="w-4 h-4 text-red-500 shrink-0" />
-                  <a href={editingReport.file_url} target="_blank" rel="noopener noreferrer" className="text-sm text-primary truncate flex-1 hover:underline">PDF</a>
+                  <a href={editingReport.file_url} target="_blank" rel="noopener noreferrer" className="text-sm text-primary truncate flex-1 hover:underline">{editingReport.file_url.split('/').pop() || t('profile.report_file')}</a>
                   <label className="px-2 py-1 rounded-lg text-xs font-medium bg-muted hover:bg-muted/80 cursor-pointer transition-colors">
                     {t('profile.report_file_replace')}
-                    <input type="file" accept=".pdf" className="hidden" onChange={(e) => { if (e.target.files?.[0]) setEditReportFile(e.target.files[0]); }} />
+                    <input type="file" accept=".pdf,.png,.jpg,.jpeg,.webp,.docx,.doc" className="hidden" onChange={(e) => { if (e.target.files?.[0]) setEditReportFile(e.target.files[0]); }} />
                   </label>
                 </div>
               ) : (
                 <label className="flex items-center gap-2 px-4 py-3 rounded-xl border border-dashed cursor-pointer hover:bg-muted/30 transition-colors">
                   <Upload className="w-4 h-4 text-muted-foreground" />
                   <span className="text-sm text-muted-foreground">{t('profile.report_file_placeholder')}</span>
-                  <input type="file" accept=".pdf" className="hidden" onChange={(e) => { if (e.target.files?.[0]) setEditReportFile(e.target.files[0]); }} />
+                  <input type="file" accept=".pdf,.png,.jpg,.jpeg,.webp,.docx,.doc" className="hidden" onChange={(e) => { if (e.target.files?.[0]) setEditReportFile(e.target.files[0]); }} />
                 </label>
               )}
             </div>
@@ -1406,7 +1407,7 @@ export default function PlayerProfile() {
                 <label className="flex items-center gap-2 px-4 py-3 rounded-xl border border-dashed cursor-pointer hover:bg-muted/30 transition-colors">
                   <Upload className="w-4 h-4 text-muted-foreground" />
                   <span className="text-sm text-muted-foreground">{t('profile.report_file_placeholder')}</span>
-                  <input type="file" accept=".pdf" className="hidden" onChange={(e) => { if (e.target.files?.[0]) setNewReportFile(e.target.files[0]); }} />
+                  <input type="file" accept=".pdf,.png,.jpg,.jpeg,.webp,.docx,.doc" className="hidden" onChange={(e) => { if (e.target.files?.[0]) setNewReportFile(e.target.files[0]); }} />
                 </label>
               )}
             </div>

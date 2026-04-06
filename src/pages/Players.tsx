@@ -7,7 +7,7 @@ import { usePlayers, isSamePlayer } from '@/hooks/use-players';
 import { useMyOrganizations } from '@/hooks/use-organization';
 import { ShareWithOrgPopover, BulkShareDialog } from '@/components/ShareWithOrgPopover';
 import { useIsPremium } from '@/hooks/use-admin';
-import { getPlayerAge, getOpinionBgClass, getOpinionEmoji, getTaskBgClass, getTaskEmoji, PLAYER_TASKS, resolveLeagueName, type Opinion, type Position, type PlayerTask } from '@/types/player';
+import { getPlayerAge, getOpinionBgClass, getOpinionEmoji, getTaskBgClass, getTaskEmoji, PLAYER_TASKS, resolveLeagueName, translateCountry, type Opinion, type Position, type PlayerTask } from '@/types/player';
 import { usePositions } from '@/hooks/use-positions';
 import { FlagIcon } from '@/components/ui/flag-icon';
 import { useCustomFields } from '@/hooks/use-custom-fields';
@@ -26,8 +26,9 @@ import { ImportPlayersDialog } from '@/components/ImportPlayersDialog';
 import { AddToWatchlistDialog } from '@/components/AddToWatchlistDialog';
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from '@/components/ui/dropdown-menu';
 import { supabase } from '@/integrations/supabase/client';
-import { Search, RotateCcw, Users, RefreshCw, ChevronDown, ChevronUp, SlidersHorizontal, Download, X, LayoutGrid, List, Building2, Eye, Zap, Check, Sparkles, Copy, Trash2 } from 'lucide-react';
+import { Search, RotateCcw, Users, RefreshCw, ChevronDown, ChevronUp, SlidersHorizontal, Download, X, LayoutGrid, List, Building2, Eye, Zap, Check, Sparkles, Copy, Trash2, FileText, Upload, FilePlus } from 'lucide-react';
 import { toast } from 'sonner';
+import { useOperationBanner } from '@/contexts/OperationBannerContext';
 
 type SortOption = 'name' | 'age-asc' | 'age-desc' | 'level' | 'potential' | 'recent' | 'contract';
 
@@ -40,7 +41,7 @@ function loadFilters() {
 
 export default function Players() {
   const [searchParams] = useSearchParams();
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
   const { positions: posLabels, positionShort: posShort } = usePositions();
   const [search, setSearch] = useState<string>(() => loadFilters().search ?? '');
   const [opinions, setOpinions] = useState<Opinion[]>(() => loadFilters().opinions ?? []);
@@ -98,6 +99,7 @@ export default function Players() {
   const { data: players = [], isLoading, refetch } = usePlayers();
   const { data: customFields = [] } = useCustomFields();
   const { data: isPremium } = useIsPremium();
+  const { addOperation, updateOperation, completeOperation } = useOperationBanner();
   const { data: myOrgs = [] } = useMyOrganizations();
   const hasOrg = myOrgs.length > 0;
 
@@ -113,6 +115,13 @@ export default function Players() {
   const [exporting, setExporting] = useState(false);
   const [watchlistDialogOpen, setWatchlistDialogOpen] = useState(false);
   const [orgDialogOpen, setOrgDialogOpen] = useState(false);
+  const [bulkReportOpen, setBulkReportOpen] = useState(false);
+  const [bulkReportDate, setBulkReportDate] = useState(new Date().toISOString().slice(0, 10));
+  const [bulkReportOpinion, setBulkReportOpinion] = useState<Opinion>('À suivre');
+  const [bulkReportTitle, setBulkReportTitle] = useState('');
+  const [bulkReportLink, setBulkReportLink] = useState('');
+  const [bulkReportFile, setBulkReportFile] = useState<File | null>(null);
+  const [bulkReportSubmitting, setBulkReportSubmitting] = useState(false);
 
   const autoFetchedRef = useRef(!!sessionStorage.getItem('photos_fetched_session'));
   useEffect(() => {
@@ -213,11 +222,19 @@ export default function Players() {
       const { data, error } = await supabase.functions.invoke('enrich-all-players');
       if (error) { toast.error(t('common.error')); return; }
       const total = (data as any)?.total ?? players.length;
-      const secs = total * 1.5;
-      const dur = secs < 60 ? `~${Math.ceil(secs)}s` : `~${Math.ceil(secs / 60)} min`;
-      toast.success(t('players.enrichment_started', { total, duration: dur }));
-      // Refresh after estimated time
-      setTimeout(() => refetch(), Math.min(secs * 1000 + 5000, 120000));
+      const opId = `enrich-all-${Date.now()}`;
+      addOperation({ id: opId, type: 'enrichment', label: t('banner.enrichment_label', { count: total }), current: 0, total });
+      // Server-side: estimate progress based on ~1.5s per player
+      const interval = setInterval(() => {
+        updateOperation(opId, { current: Math.min(total, Math.round((Date.now() - startTime) / 1500)) });
+      }, 2000);
+      const startTime = Date.now();
+      const estimatedMs = Math.min(total * 1500 + 5000, 120000);
+      setTimeout(() => {
+        clearInterval(interval);
+        completeOperation(opId, { newCount: total });
+        refetch();
+      }, estimatedMs);
       return;
     }
 
@@ -232,24 +249,83 @@ export default function Players() {
     if (targets.length === 0) { toast(skipped > 0 ? t('players.enrichment_skipped') : t('common.error')); return; }
     setEnriching(true);
     setEnrichProgress({ current: 0, total: targets.length });
+    const opId = `enrich-selected-${Date.now()}`;
+    addOperation({ id: opId, type: 'enrichment', label: t('banner.enrichment_label', { count: targets.length }), current: 0, total: targets.length });
     let success = 0;
+    let errors = 0;
     for (const p of targets) {
       try {
         await supabase.functions.invoke('enrich-player', {
           body: { playerName: p.name, club: p.club, playerId: p.id, nationality: (p as any).nationality, generation: (p as any).generation, position: (p as any).position },
         });
         success++;
-      } catch (e) { console.error('Enrich failed for', p.name, e); }
+      } catch (e) { console.error('Enrich failed for', p.name, e); errors++; }
       setEnrichProgress(prev => ({ ...prev, current: prev.current + 1 }));
+      updateOperation(opId, { current: success + errors });
     }
+    completeOperation(opId, { newCount: success, errorCount: errors > 0 ? errors : undefined });
     setEnriching(false);
     setSelectedIds(new Set());
     refetch();
-    toast.success(t('players.enriched_count', { success, total: targets.length }));
   };
 
   const handleBulkAddDone = () => {
     setSelectedIds(new Set());
+  };
+
+  const handleBulkAttachReport = async () => {
+    const playerIds = Array.from(selectedIds);
+    if (playerIds.length === 0) return;
+    setBulkReportSubmitting(true);
+    try {
+      // Upload file once, reuse URL for all players
+      let fileUrl: string | undefined;
+      if (bulkReportFile) {
+        const ext = bulkReportFile.name.split('.').pop() || 'bin';
+        const fileName = `report-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.${ext}`;
+        const { error: uploadError } = await supabase.storage.from('reports').upload(fileName, bulkReportFile);
+        if (uploadError) { console.error('Bulk report upload error:', uploadError); toast.error(t('common.error')); setBulkReportSubmitting(false); return; }
+        const { data: urlData } = supabase.storage.from('reports').getPublicUrl(fileName);
+        fileUrl = urlData.publicUrl || undefined;
+      }
+
+      const { data: { user } } = await supabase.auth.getUser();
+      if (!user) { toast.error(t('common.error')); setBulkReportSubmitting(false); return; }
+
+      // Insert one by one (same as useAddReport) to respect RLS policies
+      let successCount = 0;
+      for (const pid of playerIds) {
+        const reportData: Record<string, any> = {
+          player_id: pid,
+          report_date: bulkReportDate,
+          opinion: bulkReportOpinion,
+          user_id: user.id,
+        };
+        if (bulkReportTitle) reportData.title = bulkReportTitle;
+        if (bulkReportLink) reportData.drive_link = bulkReportLink;
+        if (fileUrl) reportData.file_url = fileUrl;
+
+        const { error } = await supabase.from('reports').insert(reportData as any);
+        if (error) { console.error('Bulk report insert error for player', pid, error); }
+        else successCount++;
+      }
+
+      if (successCount === 0) throw new Error('All inserts failed');
+      toast.success(t('players.bulk_report_success', { count: successCount }));
+      setBulkReportOpen(false);
+      setBulkReportTitle('');
+      setBulkReportLink('');
+      setBulkReportFile(null);
+      setBulkReportOpinion('À suivre');
+      setBulkReportDate(new Date().toISOString().slice(0, 10));
+      setSelectedIds(new Set());
+      queryClient.invalidateQueries({ queryKey: ['reports'] });
+    } catch (err) {
+      console.error('Bulk attach report error:', err);
+      toast.error(t('common.error'));
+    } finally {
+      setBulkReportSubmitting(false);
+    }
   };
 
   const toggleSelect = (id: string) => {
@@ -370,7 +446,7 @@ export default function Players() {
         const row: Record<string, any> = {
           'Nom du joueur': p.name,
           'Génération / Année': p.generation,
-          'Nationalité': p.nationality,
+          'Nationalité': translateCountry(p.nationality, i18n.language),
           'Pied': p.foot,
           'Club': p.club,
           'Championnat': resolveLeague(p),
@@ -485,6 +561,10 @@ export default function Players() {
                       ? t('players.enriching_progress', { current: enrichProgress.current, total: enrichProgress.total })
                       : t('players.enrich_selected', { count: selectedIds.size })}
                   </DropdownMenuItem>
+                  <DropdownMenuItem onClick={() => setBulkReportOpen(true)}>
+                    <FilePlus className="w-4 h-4 mr-2" />
+                    {t('players.bulk_report', { count: selectedIds.size })}
+                  </DropdownMenuItem>
                   <DropdownMenuSeparator />
                 </>
               )}
@@ -567,6 +647,62 @@ export default function Players() {
                     {t('players.delete_duplicates', { count: duplicateGroups.reduce((a, g) => a + g.duplicates.length, 0) })}
                   </Button>
                 )}
+              </DialogFooter>
+            </DialogContent>
+          </Dialog>
+
+          {/* Bulk report dialog */}
+          <Dialog open={bulkReportOpen} onOpenChange={setBulkReportOpen}>
+            <DialogContent>
+              <DialogHeader>
+                <DialogTitle>{t('players.bulk_report_title', { count: selectedIds.size })}</DialogTitle>
+                <DialogDescription>{t('players.bulk_report_desc')}</DialogDescription>
+              </DialogHeader>
+              <div className="space-y-4">
+                <div className="space-y-2">
+                  <label className="text-sm font-medium">{t('profile.report_title')}</label>
+                  <Input value={bulkReportTitle} onChange={e => setBulkReportTitle(e.target.value)} placeholder={t('profile.report_title_placeholder')} className="rounded-xl" />
+                </div>
+                <div className="space-y-2">
+                  <label className="text-sm font-medium">{t('player_form.report_date')}</label>
+                  <Input type="date" value={bulkReportDate} onChange={e => setBulkReportDate(e.target.value)} className="rounded-xl" />
+                </div>
+                <div className="space-y-2">
+                  <label className="text-sm font-medium">{t('player_form.report_opinion')}</label>
+                  <div className="flex gap-2">
+                    {(['À suivre', 'À revoir', 'Défavorable'] as Opinion[]).map(o => (
+                      <Button key={o} type="button" size="sm" variant={bulkReportOpinion === o ? 'default' : 'outline'} className="rounded-xl" onClick={() => setBulkReportOpinion(o)}>{o}</Button>
+                    ))}
+                  </div>
+                </div>
+                <div className="space-y-2">
+                  <label className="text-sm font-medium">{t('profile.report_link')}</label>
+                  <Input value={bulkReportLink} onChange={e => setBulkReportLink(e.target.value)} placeholder={t('profile.report_link_placeholder')} className="rounded-xl" />
+                </div>
+                <div className="space-y-2">
+                  <label className="text-sm font-medium">{t('profile.report_file')}</label>
+                  {bulkReportFile ? (
+                    <div className="flex items-center gap-2 p-3 rounded-xl bg-muted/50 border">
+                      <FileText className="w-4 h-4 text-red-500 shrink-0" />
+                      <span className="text-sm truncate flex-1">{bulkReportFile.name}</span>
+                      <button type="button" onClick={() => setBulkReportFile(null)} className="p-1 rounded-lg hover:bg-muted transition-colors text-muted-foreground hover:text-foreground">
+                        <X className="w-3.5 h-3.5" />
+                      </button>
+                    </div>
+                  ) : (
+                    <label className="flex items-center gap-2 px-4 py-3 rounded-xl border border-dashed cursor-pointer hover:bg-muted/30 transition-colors">
+                      <Upload className="w-4 h-4 text-muted-foreground" />
+                      <span className="text-sm text-muted-foreground">{t('profile.report_file_placeholder')}</span>
+                      <input type="file" accept=".pdf,.png,.jpg,.jpeg,.webp,.docx,.doc" className="hidden" onChange={e => { if (e.target.files?.[0]) setBulkReportFile(e.target.files[0]); }} />
+                    </label>
+                  )}
+                </div>
+              </div>
+              <DialogFooter>
+                <Button variant="outline" className="rounded-xl" onClick={() => setBulkReportOpen(false)}>{t('common.cancel')}</Button>
+                <Button className="rounded-xl" onClick={handleBulkAttachReport} disabled={bulkReportSubmitting}>
+                  {bulkReportSubmitting ? t('profile.saving_report') : t('players.bulk_report_submit', { count: selectedIds.size })}
+                </Button>
               </DialogFooter>
             </DialogContent>
           </Dialog>

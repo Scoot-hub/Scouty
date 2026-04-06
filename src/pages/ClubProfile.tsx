@@ -12,6 +12,7 @@ import { Badge } from '@/components/ui/badge';
 import { Separator } from '@/components/ui/separator';
 import { ClubBadge } from '@/components/ui/club-badge';
 import { FlagIcon } from '@/components/ui/flag-icon';
+import { translateCountry } from '@/types/player';
 import { toast } from 'sonner';
 import {
   Search, Loader2, MapPin, Calendar, Users, Trophy, Building2, Globe, ArrowLeft,
@@ -279,7 +280,7 @@ export default function ClubProfile() {
                           </div>
                           <div className="flex-1 min-w-0">
                             <p className="text-sm font-medium truncate">{p.name}</p>
-                            <p className="text-[10px] text-muted-foreground">{p.position} · {p.nationality}</p>
+                            <p className="text-[10px] text-muted-foreground">{p.position} · {translateCountry(p.nationality, i18n.language)}</p>
                           </div>
                           <Badge variant="outline" className="text-[10px] shrink-0">{p.current_level}/10</Badge>
                         </Link>

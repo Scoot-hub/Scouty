@@ -1,3 +1,4 @@
+export { translateCountry } from '@/data/country-names';
 export type Opinion = 'À suivre' | 'À revoir' | 'Défavorable';
 export type PlayerTask = 'À voir' | 'À revoir' | 'À suivre';
 export type Foot = 'Gaucher' | 'Droitier' | 'Ambidextre';

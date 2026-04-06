@@ -3,7 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { CustomFieldsForm } from '@/components/CustomFieldsDisplay';
 import { useBulkUpsertCustomFieldValues } from '@/hooks/use-custom-fields';
-import { LEAGUES, CLUBS, NATIONALITIES, ZONES, POTENTIAL_SCALE, PLAYER_TASKS, type Position, type Foot, type Zone, type PlayerTask } from '@/types/player';
+import { LEAGUES, CLUBS, NATIONALITIES, ZONES, POTENTIAL_SCALE, PLAYER_TASKS, translateCountry, type Position, type Foot, type Zone, type PlayerTask } from '@/types/player';
 import { usePositions } from '@/hooks/use-positions';
 import { useMergedClubsAndLeagues, useResolveClubLeague } from '@/hooks/use-club-directory';
 import { useUpsertPlayer, useAddReport } from '@/hooks/use-players';
@@ -24,23 +24,69 @@ import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover
 import { ScrollArea } from '@/components/ui/scroll-area';
 import type { Opinion } from '@/types/player';
 
+// ── TM data helpers ──────────────────────────────────────────────────────────
+function resolveNationality(raw: string): string {
+  if (!raw) return '';
+  const trimmed = raw.split(/\s{2,}/)[0].trim();
+  if (NATIONALITIES.includes(trimmed)) return trimmed;
+  const norm = (s: string) => s.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').trim();
+  return NATIONALITIES.find(n => norm(n) === norm(trimmed)) || trimmed;
+}
+
+function mapTmPosition(raw: string): Position | '' {
+  const s = raw.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+  if (s.includes('gardien')) return 'GK';
+  if (s.includes('lateral droit') || s.includes('arriere droit')) return 'LD';
+  if (s.includes('lateral gauche') || s.includes('arriere gauche')) return 'LG';
+  if (s.includes('defenseur central') || s.includes('stopper')) return 'DC';
+  if (s.includes('milieu defensif') || s.includes('sentinelle')) return 'MDef';
+  if (s.includes('milieu offensif') || s.includes('meneur')) return 'MO';
+  if (s.includes('ailier droit') || s.includes('extremite droite')) return 'AD';
+  if (s.includes('ailier gauche') || s.includes('extremite gauche')) return 'AG';
+  if (s.includes('avant-centre') || s.includes('avant centre') || s.includes('attaquant') || s.includes('buteur') || s.includes('second attaquant')) return 'ATT';
+  if (s.includes('milieu central') || s.includes('milieu de terrain') || s.includes('milieu')) return 'MC';
+  return '';
+}
+
+const POSITION_TO_ZONE: Record<Position, Zone> = {
+  GK: 'Gardien',
+  DC: 'Défenseur', LD: 'Défenseur', LG: 'Défenseur',
+  MDef: 'Milieu', MC: 'Milieu', MO: 'Milieu',
+  AD: 'Attaquant', AG: 'Attaquant', ATT: 'Attaquant',
+};
+
+function mapTmFoot(raw: string): Foot {
+  const s = raw.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+  if (s.includes('gauche')) return 'Gaucher';
+  if (s.includes('deux') || s.includes('ambidextre')) return 'Ambidextre';
+  return 'Droitier';
+}
+
+type SelectOption = string | { label: string; value: string };
+
 function SearchableSelect({ value, onValueChange, options, placeholder }: {
-  value: string; onValueChange: (v: string) => void; options: string[]; placeholder: string;
+  value: string; onValueChange: (v: string) => void; options: SelectOption[]; placeholder: string;
 }) {
   const { t } = useTranslation();
   const [open, setOpen] = useState(false);
   const [search, setSearch] = useState('');
+  const normalized = useMemo(() =>
+    options.map(o => typeof o === 'string' ? { label: o, value: o } : o),
+    [options]);
+  const displayValue = useMemo(() =>
+    normalized.find(o => o.value === value)?.label ?? value,
+    [normalized, value]);
   const filtered = useMemo(() => {
-    if (!search) return options;
+    if (!search) return normalized;
     const s = search.toLowerCase();
-    return options.filter(o => o.toLowerCase().includes(s));
-  }, [options, search]);
+    return normalized.filter(o => o.label.toLowerCase().includes(s));
+  }, [normalized, search]);
 
   return (
     <Popover open={open} onOpenChange={setOpen}>
       <PopoverTrigger asChild>
         <Button variant="outline" role="combobox" className="w-full justify-between mt-1 font-normal">
-          {value || placeholder}
+          {displayValue || placeholder}
           <Search className="ml-2 h-3.5 w-3.5 shrink-0 opacity-50" />
         </Button>
       </PopoverTrigger>
@@ -51,9 +97,9 @@ function SearchableSelect({ value, onValueChange, options, placeholder }: {
         <ScrollArea className="h-[300px]">
           <div className="p-1">
             {filtered.map(o => (
-              <button key={o} className={`w-full text-left px-3 py-1.5 text-sm rounded hover:bg-accent transition-colors ${value === o ? 'bg-accent font-medium' : ''}`}
-                onClick={() => { onValueChange(o); setOpen(false); setSearch(''); }}>
-                {o}
+              <button key={o.value} className={`w-full text-left px-3 py-1.5 text-sm rounded hover:bg-accent transition-colors ${value === o.value ? 'bg-accent font-medium' : ''}`}
+                onClick={() => { onValueChange(o.value); setOpen(false); setSearch(''); }}>
+                {o.label}
               </button>
             ))}
             {filtered.length === 0 && <p className="text-sm text-muted-foreground p-3 text-center">{t('player_form.no_results')}</p>}
@@ -67,13 +113,17 @@ function SearchableSelect({ value, onValueChange, options, placeholder }: {
 export default function AddPlayer() {
   const navigate = useNavigate();
   const { toast } = useToast();
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
   const { positions: posLabels } = usePositions();
   const upsertPlayer = useUpsertPlayer();
   const addReport = useAddReport();
   const bulkUpsertCF = useBulkUpsertCustomFieldValues();
   const { clubs: mergedClubs, leagues: mergedLeagues, clubToLeague } = useMergedClubsAndLeagues(CLUBS, LEAGUES);
   const resolveClubLeague = useResolveClubLeague();
+  const nationalityOptions = useMemo(() =>
+    NATIONALITIES.map(n => ({ label: translateCountry(n, i18n.language), value: n }))
+      .sort((a, b) => a.label.localeCompare(b.label, i18n.language)),
+    [i18n.language]);
   const [customFieldValues, setCustomFieldValues] = useState<Record<string, string>>({});
   const [step, setStep] = useState(0);
 
@@ -104,76 +154,70 @@ export default function AddPlayer() {
   const [tmUrl, setTmUrl] = useState('');
   const [tmLoading, setTmLoading] = useState(false);
   const [tmImported, setTmImported] = useState(false);
+  const [tmEnrichmentUrl, setTmEnrichmentUrl] = useState('');
 
   const handleTmImport = async () => {
     const url = tmUrl.trim();
     if (!url) return;
-    // Basic validation: must look like a transfermarkt URL
-    if (!url.includes('transfermarkt') || !url.includes('/profil/')) {
+    if (!url.includes('transfermarkt') || !url.includes('/spieler/')) {
       toast({ title: t('common.error'), description: t('player_form.tm_url_invalid'), variant: 'destructive' });
       return;
     }
 
     setTmLoading(true);
     try {
-      // Create a temporary player to enrich, then read back the data
-      const tempName = 'TM Import';
-      const { data: tempPlayer, error: insertErr } = await supabase
-        .from('players')
-        .insert({ name: tempName, user_id: (await supabase.auth.getUser()).data.user!.id } as any)
-        .select('id')
-        .single();
-      if (insertErr) throw insertErr;
-
-      const { data, error } = await supabase.functions.invoke('enrich-player', {
-        body: { playerName: tempName, club: '', playerId: tempPlayer.id, tmUrl: url },
+      const { data, error } = await supabase.functions.invoke('fetch-tm-profile', {
+        body: { tmUrl: url },
       });
 
       if (error || !data?.success) {
-        // Clean up temp player
-        await supabase.from('players').delete().eq('id', tempPlayer.id);
         toast({ title: t('common.error'), description: t('player_form.tm_import_failed'), variant: 'destructive' });
-        setTmLoading(false);
         return;
       }
 
-      // Fetch the enriched player
-      const { data: enriched } = await supabase.from('players').select('*').eq('id', tempPlayer.id).single();
-      if (!enriched) {
-        await supabase.from('players').delete().eq('id', tempPlayer.id);
-        toast({ title: t('common.error'), description: t('player_form.tm_import_failed'), variant: 'destructive' });
-        setTmLoading(false);
-        return;
+      // Pre-fill basic info
+      if (data.name) setName(data.name);
+      if (data.photoUrl) setPhotoUrl(data.photoUrl);
+      if (data.generation) setGeneration(String(data.generation));
+
+      // Nationality
+      if (data.nationality) {
+        const nat = resolveNationality(data.nationality);
+        if (nat) setNationality(nat);
       }
 
-      // Delete the temp player — we'll create the real one via the form
-      await supabase.from('players').delete().eq('id', tempPlayer.id);
-
-      // Pre-fill the form with enriched data
-      if (enriched.name && enriched.name !== tempName) setName(enriched.name);
-      if (enriched.photo_url) setPhotoUrl(enriched.photo_url);
-      if (enriched.nationality) setNationality(enriched.nationality);
-      if (enriched.club) setClub(enriched.club);
-      if (enriched.league) setLeague(enriched.league);
-      if (enriched.position) setPosition(enriched.position as Position);
-      if (enriched.zone) setZone(enriched.zone);
-      if (enriched.generation) setGeneration(String(enriched.generation));
-      if (enriched.contract_end) setContractEnd(enriched.contract_end);
-      if (enriched.market_value) setNotes(enriched.market_value);
-      if (enriched.transfermarkt_id) {
-        // Store TM ID so we can link it later at save
-        setVideoUrl(''); // clear
-      }
-      if ((enriched as any).date_of_birth) {
-        const dob = new Date((enriched as any).date_of_birth);
-        if (!isNaN(dob.getTime())) setGeneration(String(dob.getFullYear()));
+      // Club + auto-resolve league
+      if (data.club) {
+        setClub(data.club);
+        const autoLeague = clubToLeague.get(data.club);
+        if (autoLeague) {
+          setLeague(autoLeague);
+        } else {
+          resolveClubLeague.mutate(data.club, {
+            onSuccess: (res) => { if (res.league) setLeague(res.league); },
+          });
+        }
       }
 
-      const ext = (enriched.external_data || {}) as Record<string, any>;
-      if (ext.height) setNotes(prev => prev ? `${prev}\n${t('player_form.tm_height')}: ${ext.height}` : `${t('player_form.tm_height')}: ${ext.height}`);
+      // Position + auto-set zone
+      if (data.position) {
+        const pos = mapTmPosition(data.position);
+        if (pos) {
+          setPosition(pos);
+          setZone(POSITION_TO_ZONE[pos] || '');
+        }
+      }
 
+      // Foot
+      if (data.foot) setFoot(mapTmFoot(data.foot));
+
+      // Contract end date
+      if (data.contract) setContractEnd(data.contract);
+
+      // Store TM URL so enrich-player can be called after save
+      setTmEnrichmentUrl(url);
       setTmImported(true);
-      toast({ title: t('player_form.tm_import_success'), description: enriched.name || '' });
+      toast({ title: t('player_form.tm_import_success'), description: data.name || '' });
     } catch (err: any) {
       toast({ title: t('common.error'), description: err.message || t('player_form.tm_import_failed'), variant: 'destructive' });
     } finally {
@@ -217,6 +261,12 @@ export default function AddPlayer() {
             .filter(([, v]) => v)
             .map(([cfId, v]) => ({ customFieldId: cfId, playerId: result.id, value: v }))
         );
+      }
+      // Fire TM enrichment in background (stores market_value, external_data, date_of_birth, agent, etc.)
+      if (tmEnrichmentUrl && result?.id) {
+        supabase.functions.invoke('enrich-player', {
+          body: { playerName: name, club, playerId: result.id, tmUrl: tmEnrichmentUrl },
+        }).catch((e: any) => console.warn('[enrich] background enrich failed:', e));
       }
       toast({ title: t('player_form.player_added'), description: `${name} ${t('player_form.player_added_desc')}` });
       navigate('/players');
@@ -292,7 +342,7 @@ export default function AddPlayer() {
             <PhotoUpload currentUrl={photoUrl} onPhotoChange={setPhotoUrl} label={t('player_form.photo')} />
             <div><Label>{t('player_form.birth_year')} *</Label><Input type="number" min={1990} max={2010} value={generation} onChange={e => setGeneration(e.target.value)} className="mt-1" /></div>
             <div><Label>{t('player_form.nationality')} *</Label>
-              <SearchableSelect value={nationality} onValueChange={setNationality} options={NATIONALITIES} placeholder={t('player_form.nationality_placeholder')} />
+              <SearchableSelect value={nationality} onValueChange={setNationality} options={nationalityOptions} placeholder={t('player_form.nationality_placeholder')} />
             </div>
           </>)}
           {step === 1 && (<>

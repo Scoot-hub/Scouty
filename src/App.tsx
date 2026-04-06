@@ -44,7 +44,6 @@ const Discover = lazy(() => import("@/pages/Discover"));
 const Community = lazy(() => import("@/pages/Community"));
 const ClubProfile = lazy(() => import("@/pages/ClubProfile"));
 const MyClubs = lazy(() => import("@/pages/MyClubs"));
-const AdminRoles = lazy(() => import("@/pages/AdminRoles"));
 const Privacy = lazy(() => import("@/pages/Privacy"));
 const AdminAnalytics = lazy(() => import("@/pages/AdminAnalytics"));
 const MapView = lazy(() => import("@/pages/MapView"));
@@ -97,7 +96,7 @@ const App = () => (
                 <Route path="/contacts" element={<Contacts />} />
                 <Route path="/settings" element={<Settings />} />
                 <Route path="/admin" element={<Admin />} />
-                <Route path="/admin/roles" element={<AdminRoles />} />
+                <Route path="/admin/roles" element={<Navigate to="/admin" replace />} />
                 <Route path="/admin/analytics" element={<AdminAnalytics />} />
                 <Route path="/premium-success" element={<PremiumSuccess />} />
                 <Route path="/account" element={<Account />} />

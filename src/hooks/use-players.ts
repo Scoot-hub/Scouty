@@ -490,25 +490,9 @@ export function useImportPlayers() {
 
       return { importedCount, updatedCount, skippedCount, skippedErrors, enrichQueue, resultMap };
     },
-    onSuccess: (result) => {
+    onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['players'] });
       queryClient.invalidateQueries({ queryKey: ['reports'] });
-      
-      // Enrich all imported players in background
-      if (result.enrichQueue?.length) {
-        (async () => {
-          for (const p of result.enrichQueue) {
-            try {
-              await supabase.functions.invoke('enrich-player', {
-                body: { playerName: p.name, club: p.club, playerId: p.id, nationality: p.nationality, generation: p.generation, position: p.position },
-              });
-            } catch (e) {
-              console.error('Background enrich failed for', p.name, e);
-            }
-          }
-          queryClient.invalidateQueries({ queryKey: ['players'] });
-        })();
-      }
     },
   });
 }

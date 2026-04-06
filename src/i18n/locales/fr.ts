@@ -25,7 +25,7 @@ export default {
     ],
   },
   cta: { title: 'Prêt à structurer votre scouting ?', subtitle: 'Créez votre compte gratuitement et commencez à construire votre base de joueurs.', btn: 'Créer mon compte' },
-  footer: { copy: '© 2025 · Football Scouting CRM', legal: 'Mentions légales & Conformité', cgv: 'CGV', cgu: 'CGU', about: 'À propos', privacy: 'Confidentialité' },
+  footer: { copy: '© 2025 · Football Scouting CRM', legal: 'Mentions légales & Conformité', cgv: 'CGV', cgu: 'CGU', about: 'À propos', privacy: 'Confidentialité', info: 'Informations' },
 
   pricing: {
     badge: 'Tarifs',
@@ -390,6 +390,11 @@ export default {
     news_contract: 'contrat',
     news_agent: 'agent',
     news_multiples: 'multiples',
+    bulk_report: 'Attacher un rapport ({{count}})',
+    bulk_report_title: 'Attacher un rapport à {{count}} joueur(s)',
+    bulk_report_desc: 'Ce rapport sera ajouté au profil de chaque joueur sélectionné.',
+    bulk_report_success: 'Rapport ajouté à {{count}} joueur(s)',
+    bulk_report_submit: 'Ajouter à {{count}} joueur(s)',
   },
 
   // Player profile
@@ -496,8 +501,8 @@ export default {
     report_title_placeholder: 'Titre du rapport...',
     report_link: 'Lien (Google Drive, etc.)',
     report_link_placeholder: 'https://drive.google.com/...',
-    report_file: 'Fichier PDF',
-    report_file_placeholder: 'Cliquez pour importer un PDF...',
+    report_file: 'Fichier',
+    report_file_placeholder: 'Cliquez pour importer un fichier (PDF, PNG, JPG, DOCX...)',
     report_file_replace: 'Remplacer',
     file_upload_error: "Erreur lors de l'envoi du fichier",
     saving_report: 'Enregistrement...',
@@ -696,6 +701,8 @@ export default {
     impersonating_banner: 'Vous visualisez le compte de {{email}}',
     stop_impersonation: 'Revenir à mon compte',
     analytics: 'Tableau de bord',
+    tab_users: 'Utilisateurs',
+    tab_roles: 'Rôles & Accès',
   },
 
   analytics: {
@@ -1600,5 +1607,14 @@ export default {
     empty_desc: 'Ajoutez un club ci-dessus ou suivez un club depuis sa fiche.',
     added: '{{club}} ajouté à vos clubs suivis.',
     players_scouted: 'joueurs scoutés',
+  },
+  banner: {
+    enrichment_label: 'Enrichissement de {{count}} joueur(s)',
+    import_label: 'Import de {{count}} joueur(s)',
+    new_count: '{{count}} nouveau(x)',
+    updated_count: '{{count}} mis à jour',
+    error_count: '{{count}} erreur(s)',
+    done: 'Terminé',
+    dismiss_all: 'Tout fermer',
   },
 };
