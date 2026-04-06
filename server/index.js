@@ -275,7 +275,19 @@ app.post("/api/stripe/webhook", express.raw({ type: "application/json" }), async
 app.use(express.json({ limit: "5mb" }));
 app.use("/uploads", express.static(UPLOAD_DIR));
 
-const upload = multer({ dest: UPLOAD_DIR });
+const upload = multer({
+  dest: UPLOAD_DIR,
+  storage: multer.diskStorage({
+    destination(_req, _file, cb) {
+      // Ensure upload dir exists before every write (Vercel can purge /tmp between warm invocations)
+      if (!fs.existsSync(UPLOAD_DIR)) fs.mkdirSync(UPLOAD_DIR, { recursive: true });
+      cb(null, UPLOAD_DIR);
+    },
+    filename(_req, file, cb) {
+      cb(null, `${Date.now()}-${file.originalname}`);
+    },
+  }),
+});
 
 // ── Stripe session status (after checkout return) ────────────────────────
 app.get("/api/stripe/session-status", async (req, res) => {
