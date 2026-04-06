@@ -78,6 +78,8 @@ export default function Admin() {
   const [togglingId, setTogglingId] = useState<string | null>(null);
   const [resettingId, setResettingId] = useState<string | null>(null);
   const [impersonatingId, setImpersonatingId] = useState<string | null>(null);
+  const [deletingUser, setDeletingUser] = useState<AdminUser | null>(null);
+  const [deletingId, setDeletingId] = useState<string | null>(null);
 
   // ── Roles section state ──
   const [selectedRole, setSelectedRole] = useState('user');
