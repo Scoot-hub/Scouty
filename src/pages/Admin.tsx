@@ -1,4 +1,4 @@
-import { useState, useMemo } from 'react';
+import { useState, useMemo, Fragment } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useIsAdmin } from '@/hooks/use-admin';
 import { supabase } from '@/integrations/supabase/client';
@@ -8,30 +8,11 @@ import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs';
-import { Shield, Crown, Users, Mail, UserCheck, BarChart3, Lock, Check, X, Search, Plus, Trash2, ShieldCheck } from 'lucide-react';
+import { Shield, Crown, Users, Mail, UserCheck, BarChart3, Lock, Check, X, Search, Plus, Trash2, ShieldCheck, ChevronDown, ChevronRight } from 'lucide-react';
 import { toast } from 'sonner';
 import { Navigate, Link } from 'react-router-dom';
 import { useAuth } from '@/contexts/AuthContext';
-
-const API_BASE = (import.meta.env.API_URL || '/api').replace(/\/$/, '');
-
-// All protected pages in the app
-const ALL_PAGES = [
-  { key: 'players', icon: 'Users' },
-  { key: 'player_profile', icon: 'User' },
-  { key: 'add_player', icon: 'UserPlus' },
-  { key: 'watchlist', icon: 'Eye' },
-  { key: 'shadow_team', icon: 'Shield' },
-  { key: 'fixtures', icon: 'Calendar' },
-  { key: 'my_matches', icon: 'Calendar' },
-  { key: 'contacts', icon: 'Contact' },
-  { key: 'settings', icon: 'Settings' },
-  { key: 'account', icon: 'User' },
-  { key: 'organization', icon: 'Building' },
-  { key: 'booking', icon: 'CalendarCheck' },
-  { key: 'checkout', icon: 'CreditCard' },
-  { key: 'admin', icon: 'Shield' },
-] as const;
+import { cn } from '@/lib/utils';
 import {
   AlertDialog,
   AlertDialogAction,
@@ -42,6 +23,35 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from '@/components/ui/alert-dialog';
+
+const API_BASE = (import.meta.env.API_URL || '/api').replace(/\/$/, '');
+
+// Sub-actions per page — defines granular permissions beyond just "view"
+const PAGE_ACTIONS: Record<string, string[]> = {
+  players:        ['view', 'create', 'edit', 'delete', 'export', 'import', 'enrich', 'find_duplicates', 'bulk_actions'],
+  player_profile: ['view', 'edit', 'delete', 'enrich', 'add_report', 'edit_report', 'delete_report', 'add_note', 'delete_note', 'manage_fields'],
+  add_player:     ['view', 'create', 'add_report'],
+  watchlist:      ['view', 'create', 'edit', 'delete', 'add_player', 'remove_player'],
+  shadow_team:    ['view', 'create', 'edit', 'delete', 'assign_player', 'remove_player', 'download_image'],
+  fixtures:       ['view', 'save_match', 'assign_match', 'assign_scout'],
+  my_matches:     ['view', 'edit_status', 'delete'],
+  contacts:       ['view', 'create', 'edit', 'delete', 'share'],
+  settings:       ['view', 'edit_profile', 'manage_fields', 'change_language', 'change_theme'],
+  account:        ['view', 'edit', 'manage_security'],
+  organization:   ['view', 'create', 'manage_members', 'change_member_role', 'remove_member', 'manage_settings', 'share'],
+  booking:        ['view', 'book'],
+  checkout:       ['view'],
+  community:      ['view', 'post', 'reply', 'like', 'mention', 'moderate', 'delete_content'],
+  discover:       ['view', 'search', 'add_player', 'filter'],
+  map:            ['view', 'view_nearby'],
+  affiliate:      ['view', 'share'],
+  my_clubs:       ['view', 'follow', 'unfollow'],
+  club_profile:   ['view', 'follow', 'unfollow', 'view_squad'],
+  user_profile:   ['view', 'edit'],
+  admin:          ['view', 'manage_users', 'manage_roles', 'impersonate', 'toggle_premium', 'reset_password', 'delete_user', 'view_analytics', 'manage_tickets'],
+};
+
+const ALL_PAGES = Object.keys(PAGE_ACTIONS);
 
 interface AdminUser {
   id: string;
@@ -57,6 +67,7 @@ interface AdminUser {
 interface PagePermission {
   role: string;
   page_key: string;
+  action: string;
   allowed: number;
 }
 
@@ -89,6 +100,9 @@ export default function Admin() {
   const [newRoleName, setNewRoleName] = useState('');
   const [showNewRole, setShowNewRole] = useState(false);
   const [rolesInnerTab, setRolesInnerTab] = useState('permissions');
+  const [expandedPages, setExpandedPages] = useState<Set<string>>(new Set());
+  const [addRoleForUser, setAddRoleForUser] = useState<string | null>(null);
+  const [addRoleValue, setAddRoleValue] = useState('');
 
   // ── Shared data: users ──
   const { data: users = [], isLoading: usersLoading } = useQuery<AdminUser[]>({
@@ -123,11 +137,13 @@ export default function Admin() {
   });
 
   // ── Derived data ──
+  // Build permissions map: { role: { page_key: { action: boolean } } }
   const permMap = useMemo(() => {
-    const map: Record<string, Record<string, boolean>> = {};
+    const map: Record<string, Record<string, Record<string, boolean>>> = {};
     for (const p of permissions) {
       if (!map[p.role]) map[p.role] = {};
-      map[p.role][p.page_key] = !!p.allowed;
+      if (!map[p.role][p.page_key]) map[p.role][p.page_key] = {};
+      map[p.role][p.page_key][p.action || 'view'] = !!p.allowed;
     }
     return map;
   }, [permissions]);
@@ -239,33 +255,41 @@ export default function Admin() {
   };
 
   // ── Roles handlers ──
-  const setUserRole = async (userId: string, role: string) => {
+  const addRoleToUser = async (userId: string, role: string) => {
     setUpdatingUser(userId);
     try {
-      const res = await fetch(`${API_BASE}/admin/roles/set`, {
-        method: 'POST',
-        headers: await getAuthHeaders(),
-        body: JSON.stringify({ userId, role }),
+      const res = await fetch(`${API_BASE}/admin/roles/add`, {
+        method: 'POST', headers: await getAuthHeaders(), body: JSON.stringify({ userId, role }),
+      });
+      if (!res.ok) throw new Error();
+      toast.success(t('roles.role_updated'));
+      setAddRoleForUser(null); setAddRoleValue('');
+      queryClient.invalidateQueries({ queryKey: ['admin-users'] });
+    } catch { toast.error(t('common.error')); }
+    finally { setUpdatingUser(null); }
+  };
+
+  const removeRoleFromUser = async (userId: string, role: string) => {
+    setUpdatingUser(userId);
+    try {
+      const res = await fetch(`${API_BASE}/admin/roles/remove`, {
+        method: 'POST', headers: await getAuthHeaders(), body: JSON.stringify({ userId, role }),
       });
       if (!res.ok) throw new Error();
       toast.success(t('roles.role_updated'));
       queryClient.invalidateQueries({ queryKey: ['admin-users'] });
-      queryClient.invalidateQueries({ queryKey: ['admin-roles'] });
-    } catch {
-      toast.error(t('common.error'));
-    } finally {
-      setUpdatingUser(null);
-    }
+    } catch { toast.error(t('common.error')); }
+    finally { setUpdatingUser(null); }
   };
 
-  const togglePermission = async (role: string, pageKey: string, currentlyAllowed: boolean) => {
-    const permId = `${role}-${pageKey}`;
+  const togglePermission = async (role: string, pageKey: string, action: string, currentlyAllowed: boolean) => {
+    const permId = `${role}-${pageKey}-${action}`;
     setUpdatingPerm(permId);
     try {
       const res = await fetch(`${API_BASE}/admin/page-permissions`, {
         method: 'POST',
         headers: await getAuthHeaders(),
-        body: JSON.stringify({ role, page_key: pageKey, allowed: !currentlyAllowed }),
+        body: JSON.stringify({ role, page_key: pageKey, action, allowed: !currentlyAllowed }),
       });
       if (!res.ok) throw new Error();
       queryClient.invalidateQueries({ queryKey: ['admin-page-permissions'] });
@@ -281,11 +305,14 @@ export default function Admin() {
     if (!name || name === 'admin' || name === 'user') return;
     try {
       for (const page of ALL_PAGES) {
-        await fetch(`${API_BASE}/admin/page-permissions`, {
-          method: 'POST',
-          headers: await getAuthHeaders(),
-          body: JSON.stringify({ role: name, page_key: page.key, allowed: true }),
-        });
+        for (const action of PAGE_ACTIONS[page]) {
+          const allowed = page === 'admin' && action !== 'view' ? false : true;
+          await fetch(`${API_BASE}/admin/page-permissions`, {
+            method: 'POST',
+            headers: await getAuthHeaders(),
+            body: JSON.stringify({ role: name, page_key: page, action, allowed }),
+          });
+        }
       }
       toast.success(t('roles.role_created'));
       setNewRoleName('');
@@ -301,21 +328,10 @@ export default function Admin() {
   const deleteRole = async (role: string) => {
     if (role === 'admin' || role === 'user') return;
     try {
-      const usersWithRole = users.filter(u => u.roles.includes(role));
-      for (const u of usersWithRole) {
-        await fetch(`${API_BASE}/admin/roles/set`, {
-          method: 'POST',
-          headers: await getAuthHeaders(),
-          body: JSON.stringify({ userId: u.id, role: 'user' }),
-        });
-      }
-      for (const page of ALL_PAGES) {
-        await fetch(`${API_BASE}/admin/page-permissions`, {
-          method: 'POST',
-          headers: await getAuthHeaders(),
-          body: JSON.stringify({ role, page_key: page.key, allowed: false }),
-        });
-      }
+      const res = await fetch(`${API_BASE}/admin/roles/delete`, {
+        method: 'POST', headers: await getAuthHeaders(), body: JSON.stringify({ role }),
+      });
+      if (!res.ok) throw new Error();
       toast.success(t('roles.role_deleted'));
       setSelectedRole('user');
       queryClient.invalidateQueries({ queryKey: ['admin-users'] });
@@ -326,10 +342,11 @@ export default function Admin() {
     }
   };
 
-  const isPageAllowed = (role: string, pageKey: string): boolean => {
+  const isActionAllowed = (role: string, pageKey: string, action: string): boolean => {
     if (role === 'admin') return true;
-    if (!permMap[role] || permMap[role][pageKey] === undefined) return pageKey !== 'admin';
-    return permMap[role][pageKey];
+    const val = permMap[role]?.[pageKey]?.[action];
+    if (val === undefined) return action === 'view' ? pageKey !== 'admin' : pageKey !== 'admin';
+    return val;
   };
 
   // ── Guard ──
@@ -591,7 +608,7 @@ export default function Admin() {
                 )}
               </div>
 
-              {/* Permissions matrix */}
+              {/* Permissions matrix with sub-actions */}
               <Card className="border-none card-warm overflow-hidden">
                 <CardHeader className="pb-2">
                   <div className="flex items-center justify-between">
@@ -623,50 +640,108 @@ export default function Admin() {
                   <Table>
                     <TableHeader>
                       <TableRow>
-                        <TableHead className="w-[250px]">{t('roles.page')}</TableHead>
+                        <TableHead className="w-[240px]">{t('roles.page')}</TableHead>
                         <TableHead className="w-[100px] text-center">{t('roles.access')}</TableHead>
+                        <TableHead>{t('roles.sub_actions')}</TableHead>
                       </TableRow>
                     </TableHeader>
                     <TableBody>
-                      {ALL_PAGES.map(page => {
-                        const allowed = isPageAllowed(selectedRole, page.key);
-                        const isUpdating = updatingPerm === `${selectedRole}-${page.key}`;
+                      {ALL_PAGES.map(pageKey => {
+                        const actions = PAGE_ACTIONS[pageKey];
+                        const hasSubActions = actions.length > 1;
+                        const isExpanded = expandedPages.has(pageKey);
                         const isAdminRole = selectedRole === 'admin';
+                        const viewAllowed = isActionAllowed(selectedRole, pageKey, 'view');
 
                         return (
-                          <TableRow key={page.key}>
-                            <TableCell className="font-medium">
-                              <div className="flex items-center gap-2">
-                                <Lock className="w-3.5 h-3.5 text-muted-foreground" />
-                                {t(`roles.page_${page.key}`)}
-                              </div>
-                            </TableCell>
-                            <TableCell className="text-center">
-                              {isAdminRole ? (
-                                <Badge className="bg-emerald-500/10 text-emerald-600 border-emerald-500/20">
-                                  <Check className="w-3 h-3 mr-1" />
-                                  {t('roles.allowed')}
-                                </Badge>
-                              ) : (
-                                <Button
-                                  variant="ghost"
-                                  size="sm"
-                                  disabled={isUpdating}
-                                  onClick={() => togglePermission(selectedRole, page.key, allowed)}
-                                  className={allowed
-                                    ? 'text-emerald-600 hover:text-emerald-700 hover:bg-emerald-50'
-                                    : 'text-red-500 hover:text-red-600 hover:bg-red-50'
-                                  }
-                                >
-                                  {allowed ? (
-                                    <><Check className="w-3.5 h-3.5 mr-1" /> {t('roles.allowed')}</>
+                          <Fragment key={pageKey}>
+                            {/* Main page row */}
+                            <TableRow className={cn(isExpanded && 'border-b-0')}>
+                              <TableCell className="font-medium">
+                                <div className="flex items-center gap-2">
+                                  {hasSubActions ? (
+                                    <button
+                                      onClick={() => setExpandedPages(prev => {
+                                        const next = new Set(prev);
+                                        next.has(pageKey) ? next.delete(pageKey) : next.add(pageKey);
+                                        return next;
+                                      })}
+                                      className="text-muted-foreground hover:text-foreground transition-colors"
+                                    >
+                                      {isExpanded ? <ChevronDown className="w-3.5 h-3.5" /> : <ChevronRight className="w-3.5 h-3.5" />}
+                                    </button>
                                   ) : (
-                                    <><X className="w-3.5 h-3.5 mr-1" /> {t('roles.blocked')}</>
+                                    <Lock className="w-3.5 h-3.5 text-muted-foreground" />
                                   )}
-                                </Button>
-                              )}
-                            </TableCell>
-                          </TableRow>
+                                  {t(`roles.page_${pageKey}`)}
+                                </div>
+                              </TableCell>
+                              <TableCell className="text-center">
+                                {isAdminRole ? (
+                                  <Badge className="bg-emerald-500/10 text-emerald-600 border-emerald-500/20 text-[10px]">
+                                    <Check className="w-3 h-3 mr-1" />{t('roles.allowed')}
+                                  </Badge>
+                                ) : (
+                                  <Button variant="ghost" size="sm"
+                                    disabled={updatingPerm === `${selectedRole}-${pageKey}-view`}
+                                    onClick={() => togglePermission(selectedRole, pageKey, 'view', viewAllowed)}
+                                    className={cn('text-xs', viewAllowed
+                                      ? 'text-emerald-600 hover:text-emerald-700 hover:bg-emerald-50'
+                                      : 'text-red-500 hover:text-red-600 hover:bg-red-50')}>
+                                    {viewAllowed
+                                      ? <><Check className="w-3 h-3 mr-1" />{t('roles.allowed')}</>
+                                      : <><X className="w-3 h-3 mr-1" />{t('roles.blocked')}</>}
+                                  </Button>
+                                )}
+                              </TableCell>
+                              <TableCell>
+                                {hasSubActions && !isExpanded && (
+                                  <button
+                                    onClick={() => setExpandedPages(prev => { const n = new Set(prev); n.add(pageKey); return n; })}
+                                    className="text-xs text-muted-foreground hover:text-primary transition-colors flex items-center gap-1"
+                                  >
+                                    <ChevronRight className="w-3 h-3" />
+                                    {actions.length - 1} {t('roles.more_actions')}
+                                  </button>
+                                )}
+                              </TableCell>
+                            </TableRow>
+
+                            {/* Expanded sub-actions rows */}
+                            {isExpanded && hasSubActions && actions.filter(a => a !== 'view').map(action => {
+                              const actionAllowed = isActionAllowed(selectedRole, pageKey, action);
+                              const updKey = `${selectedRole}-${pageKey}-${action}`;
+                              return (
+                                <TableRow key={`${pageKey}-${action}`} className="bg-muted/20">
+                                  <TableCell className="pl-10 py-2">
+                                    <span className="text-xs text-muted-foreground flex items-center gap-2">
+                                      <span className="w-3.5 h-3.5 rounded-sm bg-border inline-block shrink-0" />
+                                      {t(`roles.action_${action}`, { defaultValue: action.replace(/_/g, ' ') })}
+                                    </span>
+                                  </TableCell>
+                                  <TableCell className="text-center py-2">
+                                    {isAdminRole ? (
+                                      <Badge className="bg-emerald-500/10 text-emerald-600 border-emerald-500/20 text-[10px]">
+                                        <Check className="w-3 h-3 mr-1" />{t('roles.allowed')}
+                                      </Badge>
+                                    ) : (
+                                      <Button variant="ghost" size="sm"
+                                        disabled={updatingPerm === updKey}
+                                        onClick={() => togglePermission(selectedRole, pageKey, action, actionAllowed)}
+                                        className={cn('text-xs h-7', actionAllowed
+                                          ? 'text-emerald-600 hover:text-emerald-700 hover:bg-emerald-50'
+                                          : 'text-red-500 hover:text-red-600 hover:bg-red-50')}>
+                                        {actionAllowed
+                                          ? <><Check className="w-3 h-3 mr-1" />{t('roles.allowed')}</>
+                                          : <><X className="w-3 h-3 mr-1" />{t('roles.blocked')}</>}
+                                      </Button>
+                                    )}
+                                  </TableCell>
+                                  <TableCell />
+                                </TableRow>
+                              );
+                            })}
+                          </Fragment>
                         );
                       })}
                     </TableBody>
@@ -699,47 +774,74 @@ export default function Admin() {
                         <TableRow>
                           <TableHead>{t('roles.email')}</TableHead>
                           <TableHead>{t('roles.current_role')}</TableHead>
-                          <TableHead>{t('roles.change_role')}</TableHead>
+                          <TableHead>{t('roles.add_role_action')}</TableHead>
                         </TableRow>
                       </TableHeader>
                       <TableBody>
                         {filteredUsers.map(u => {
-                          const userRole = u.roles.includes('admin') ? 'admin' : (u.roles[0] || 'user');
                           const isCurrentUser = u.id === currentUser?.id;
                           const isUpdating = updatingUser === u.id;
+                          const userRoles = u.roles.length > 0 ? u.roles : ['user'];
+                          const availableToAdd = allRoles.filter(r => !userRoles.includes(r));
 
                           return (
                             <TableRow key={u.id}>
                               <TableCell className="font-medium">
                                 <div className="flex items-center gap-2">
-                                  <span className="truncate max-w-[250px]">{u.email}</span>
-                                  {isCurrentUser && (
-                                    <Badge variant="secondary" className="text-[10px]">{t('roles.you')}</Badge>
-                                  )}
+                                  <span className="truncate max-w-[220px]">{u.email}</span>
+                                  {isCurrentUser && <Badge variant="secondary" className="text-[10px]">{t('roles.you')}</Badge>}
                                 </div>
                               </TableCell>
                               <TableCell>
-                                <Badge
-                                  variant={userRole === 'admin' ? 'default' : 'secondary'}
-                                  className="capitalize"
-                                >
-                                  {userRole === 'admin' && <Shield className="w-3 h-3 mr-1" />}
-                                  {userRole}
-                                </Badge>
+                                <div className="flex items-center flex-wrap gap-1.5">
+                                  {userRoles.map(role => (
+                                    <Badge key={role}
+                                      variant={role === 'admin' ? 'default' : 'secondary'}
+                                      className="capitalize flex items-center gap-1 pr-1">
+                                      {role === 'admin' && <Shield className="w-2.5 h-2.5" />}
+                                      {role}
+                                      {!isCurrentUser && (
+                                        <button
+                                          onClick={() => removeRoleFromUser(u.id, role)}
+                                          disabled={isUpdating}
+                                          className="ml-0.5 rounded hover:bg-destructive/20 hover:text-destructive transition-colors p-0.5"
+                                        >
+                                          <X className="w-2.5 h-2.5" />
+                                        </button>
+                                      )}
+                                    </Badge>
+                                  ))}
+                                </div>
                               </TableCell>
                               <TableCell>
-                                <select
-                                  value={userRole}
-                                  onChange={(e) => setUserRole(u.id, e.target.value)}
-                                  disabled={isUpdating || isCurrentUser}
-                                  className="h-8 px-2 text-sm rounded-lg border border-input bg-background focus:outline-none focus:ring-2 focus:ring-ring disabled:opacity-50 capitalize"
-                                >
-                                  {allRoles.map(role => (
-                                    <option key={role} value={role} className="capitalize">{role}</option>
-                                  ))}
-                                </select>
-                                {isCurrentUser && (
-                                  <span className="ml-2 text-xs text-muted-foreground">{t('roles.cannot_change_self')}</span>
+                                {!isCurrentUser && availableToAdd.length > 0 && (
+                                  addRoleForUser === u.id ? (
+                                    <div className="flex items-center gap-1.5">
+                                      <select
+                                        value={addRoleValue}
+                                        onChange={e => setAddRoleValue(e.target.value)}
+                                        className="h-7 px-2 text-xs rounded-lg border border-input bg-background focus:outline-none focus:ring-1 focus:ring-ring capitalize"
+                                        autoFocus
+                                      >
+                                        <option value="">— {t('roles.select_role')} —</option>
+                                        {availableToAdd.map(r => <option key={r} value={r} className="capitalize">{r}</option>)}
+                                      </select>
+                                      <Button size="sm" className="h-7"
+                                        disabled={!addRoleValue || isUpdating}
+                                        onClick={() => addRoleToUser(u.id, addRoleValue)}>
+                                        <Check className="w-3 h-3" />
+                                      </Button>
+                                      <Button size="sm" variant="ghost" className="h-7"
+                                        onClick={() => { setAddRoleForUser(null); setAddRoleValue(''); }}>
+                                        <X className="w-3 h-3" />
+                                      </Button>
+                                    </div>
+                                  ) : (
+                                    <Button variant="outline" size="sm" className="h-7 text-xs"
+                                      onClick={() => { setAddRoleForUser(u.id); setAddRoleValue(''); }}>
+                                      <Plus className="w-3 h-3 mr-1" />{t('roles.add_role_action')}
+                                    </Button>
+                                  )
                                 )}
                               </TableCell>
                             </TableRow>

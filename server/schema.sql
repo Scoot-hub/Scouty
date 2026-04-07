@@ -508,6 +508,30 @@ CREATE TABLE IF NOT EXISTS referrals (
   FOREIGN KEY (referred_id) REFERENCES users(id) ON DELETE CASCADE
 );
 
+-- Custom championships added by admin (static leagues come from frontend code)
+CREATE TABLE IF NOT EXISTS custom_championships (
+  id CHAR(36) PRIMARY KEY,
+  name VARCHAR(255) NOT NULL,
+  country VARCHAR(255) NOT NULL DEFAULT 'Autre',
+  created_by CHAR(36) NOT NULL,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  UNIQUE KEY uniq_custom_champ_name (name(191)),
+  FOREIGN KEY (created_by) REFERENCES users(id) ON DELETE CASCADE
+);
+
+-- Many-to-many: players linked to championships (by name)
+CREATE TABLE IF NOT EXISTS championship_players (
+  id CHAR(36) PRIMARY KEY,
+  user_id CHAR(36) NOT NULL,
+  championship_name VARCHAR(255) NOT NULL,
+  player_id CHAR(36) NOT NULL,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  UNIQUE KEY uniq_champ_player (user_id, championship_name(150), player_id),
+  INDEX idx_champ_players_name (championship_name(191)),
+  FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+  FOREIGN KEY (player_id) REFERENCES players(id) ON DELETE CASCADE
+);
+
 -- Migration: add 2FA TOTP columns to users table
 -- (already included in CREATE TABLE above, run these only on existing databases)
 -- ALTER TABLE users ADD COLUMN totp_secret VARCHAR(255) NULL, ADD COLUMN totp_secret_temp VARCHAR(255) NULL, ADD COLUMN totp_enabled TINYINT(1) NOT NULL DEFAULT 0;

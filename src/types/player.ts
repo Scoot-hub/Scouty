@@ -32,6 +32,7 @@ export interface Player {
   shared_with_org?: boolean;
   task?: PlayerTask | null;
   has_news?: string | null;
+  is_archived?: boolean;
   created_at: string;
   updated_at: string;
 }

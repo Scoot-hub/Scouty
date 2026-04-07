@@ -3,7 +3,7 @@ import { Link, useSearchParams } from 'react-router-dom';
 import { useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import * as XLSX from 'xlsx';
-import { usePlayers, isSamePlayer } from '@/hooks/use-players';
+import { usePlayers, isSamePlayer, useToggleArchive } from '@/hooks/use-players';
 import { useMyOrganizations } from '@/hooks/use-organization';
 import { ShareWithOrgPopover, BulkShareDialog } from '@/components/ShareWithOrgPopover';
 import { useIsPremium } from '@/hooks/use-admin';
@@ -75,6 +75,7 @@ export default function Players() {
   const [viewMode, setViewMode] = useState<'compact' | 'detailed'>(() => loadFilters().viewMode ?? 'compact');
   const [visibleCount, setVisibleCount] = useState(PAGE_SIZE);
   const [debouncedSearch, setDebouncedSearch] = useState(search);
+  const [showArchived, setShowArchived] = useState(searchParams.get('view') === 'archived');
 
   // Debounce search to avoid filtering on every keystroke
   useEffect(() => {
@@ -97,6 +98,7 @@ export default function Players() {
 
   const queryClient = useQueryClient();
   const { data: players = [], isLoading, refetch } = usePlayers();
+  const toggleArchive = useToggleArchive();
   const { data: customFields = [] } = useCustomFields();
   const { data: isPremium } = useIsPremium();
   const { addOperation, updateOperation, completeOperation } = useOperationBanner();
@@ -351,8 +353,12 @@ export default function Players() {
     return '2y+';
   }
 
+  const archivedCount = useMemo(() => players.filter(p => p.is_archived).length, [players]);
+
   const filtered = useMemo(() => {
     let result = [...players];
+    // Filter by archive status
+    result = result.filter(p => showArchived ? !!p.is_archived : !p.is_archived);
     if (debouncedSearch) {
       const s = debouncedSearch.toLowerCase();
       result = result.filter(p => p.name.toLowerCase().includes(s) || p.club.toLowerCase().includes(s) || resolveLeague(p).toLowerCase().includes(s));
@@ -409,7 +415,7 @@ export default function Players() {
     // Players with news (non-null has_news) always on top
     result.sort((a, b) => (b.has_news ? 1 : 0) - (a.has_news ? 1 : 0));
     return result;
-  }, [players, debouncedSearch, opinions, positions, selectedLeagues, selectedRoles, ageMin, ageMax, levelMin, levelMax, potMin, potMax, selectedContractRanges, selectedTasks, sort, searchParams]);
+  }, [players, showArchived, debouncedSearch, opinions, positions, selectedLeagues, selectedRoles, ageMin, ageMax, levelMin, levelMax, potMin, potMax, selectedContractRanges, selectedTasks, sort, searchParams]);
 
   const playersToExport = selectedIds.size > 0 ? filtered.filter(p => selectedIds.has(p.id)) : filtered;
 
@@ -523,13 +529,34 @@ export default function Players() {
             <Users className="w-5 h-5 text-primary" />
           </div>
           <div>
-            <h1 className="text-2xl font-extrabold tracking-tight">{t('players.title')}</h1>
+            <h1 className="text-2xl font-extrabold tracking-tight">
+              {showArchived ? t('players.archived_title') : t('players.title')}
+            </h1>
             <p className="text-sm text-muted-foreground">
               {filtered.length > 1 ? t('players.found_plural', { count: filtered.length }) : t('players.found', { count: filtered.length })}
             </p>
           </div>
         </div>
         <div className="flex items-center gap-2">
+          <Button
+            variant={showArchived ? 'default' : 'outline'}
+            size="sm"
+            className="rounded-xl text-xs gap-1.5"
+            onClick={() => setShowArchived(!showArchived)}
+          >
+            {showArchived ? t('players.show_active') : t('players.show_archived')}
+            {archivedCount > 0 && (
+              <span className="bg-muted-foreground/20 text-[10px] rounded-full min-w-[18px] h-[18px] flex items-center justify-center font-bold px-1">
+                {archivedCount}
+              </span>
+            )}
+          </Button>
+          <Button size="sm" className="rounded-xl text-xs" asChild>
+            <Link to={showArchived ? '/player/new?archived=true' : '/player/new'}>
+              <FilePlus className="w-4 h-4 mr-1.5" />
+              {t('sidebar.add_player')}
+            </Link>
+          </Button>
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
               <Button variant="outline" size="sm" className="rounded-xl">
@@ -564,6 +591,19 @@ export default function Players() {
                   <DropdownMenuItem onClick={() => setBulkReportOpen(true)}>
                     <FilePlus className="w-4 h-4 mr-2" />
                     {t('players.bulk_report', { count: selectedIds.size })}
+                  </DropdownMenuItem>
+                  <DropdownMenuItem onClick={async () => {
+                    const archive = !showArchived;
+                    for (const id of selectedIds) {
+                      await toggleArchive.mutateAsync({ playerId: id, archived: archive });
+                    }
+                    setSelectedIds(new Set());
+                    toast.success(archive ? t('players.archived_success', { count: selectedIds.size }) : t('players.unarchived_success', { count: selectedIds.size }));
+                  }}>
+                    <X className="w-4 h-4 mr-2" />
+                    {showArchived
+                      ? t('players.unarchive_selected', { count: selectedIds.size })
+                      : t('players.archive_selected', { count: selectedIds.size })}
                   </DropdownMenuItem>
                   <DropdownMenuSeparator />
                 </>

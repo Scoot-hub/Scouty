@@ -1,5 +1,5 @@
 import { useState, useMemo } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { CustomFieldsForm } from '@/components/CustomFieldsDisplay';
 import { useBulkUpsertCustomFieldValues } from '@/hooks/use-custom-fields';
@@ -112,6 +112,8 @@ function SearchableSelect({ value, onValueChange, options, placeholder }: {
 
 export default function AddPlayer() {
   const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
+  const createAsArchived = searchParams.get('archived') === 'true';
   const { toast } = useToast();
   const { t, i18n } = useTranslation();
   const { positions: posLabels } = usePositions();
@@ -250,7 +252,8 @@ export default function AddPlayer() {
         general_opinion: 'À revoir', contract_end: contractEnd || undefined,
         task: task || null,
         notes: notes || undefined, ts_report_published: tsPublished,
-      });
+        ...(createAsArchived ? { is_archived: true } : {}),
+      } as any);
       if (addReportFlag && result?.id) {
         await addReport.mutateAsync({ player_id: result.id, report_date: reportDate, opinion: reportOpinion, drive_link: driveLink || undefined });
       }
@@ -269,7 +272,7 @@ export default function AddPlayer() {
         }).catch((e: any) => console.warn('[enrich] background enrich failed:', e));
       }
       toast({ title: t('player_form.player_added'), description: `${name} ${t('player_form.player_added_desc')}` });
-      navigate('/players');
+      navigate(createAsArchived ? '/players?view=archived' : '/players');
     } catch {
       toast({ title: t('common.error'), description: t('player_form.error_create'), variant: 'destructive' });
     }

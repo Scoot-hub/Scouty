@@ -3,9 +3,9 @@ import { useTranslation } from 'react-i18next';
 import { CalendarCheck, ExternalLink, Loader2 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 
-const CAL_USERNAME = import.meta.env.CAL_USERNAME || '';
-const CAL_EVENT_SLUG = import.meta.env.CAL_EVENT_SLUG || '';
-const CAL_URL = import.meta.env.CAL_URL || 'https://cal.com';
+const CAL_USERNAME = import.meta.env.VITE_CAL_USERNAME || '';
+const CAL_EVENT_SLUG = import.meta.env.VITE_CAL_EVENT_SLUG || '';
+const CAL_URL = import.meta.env.VITE_CAL_URL || 'https://cal.com';
 
 export default function Booking() {
   const { t } = useTranslation();
@@ -92,9 +92,9 @@ export default function Booking() {
           <p className="text-muted-foreground">{t('booking.not_configured')}</p>
           <pre className="mt-6 text-left bg-muted rounded-lg p-4 text-xs overflow-x-auto">
 {`# .env (local) ou Vercel > Settings > Environment Variables
-CAL_USERNAME=votre-username-cal
-CAL_EVENT_SLUG=consultation    # optionnel
-CAL_URL=https://www.cal.eu     # ou https://cal.com`}
+VITE_CAL_USERNAME=votre-username-cal
+VITE_CAL_EVENT_SLUG=consultation    # optionnel
+VITE_CAL_URL=https://www.cal.eu     # ou https://cal.com`}
           </pre>
         </div>
       </div>

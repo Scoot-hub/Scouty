@@ -2,7 +2,7 @@ import { useMemo, useState, useCallback, useRef, useEffect } from 'react';
 import { useParams, Link, useNavigate } from 'react-router-dom';
 import { useIsPremium } from '@/hooks/use-admin';
 import { useTranslation } from 'react-i18next';
-import { usePlayer, useReports, usePlayers, useAddReport } from '@/hooks/use-players';
+import { usePlayer, useReports, usePlayers, useAddReport, useToggleArchive } from '@/hooks/use-players';
 import { useMyOrganizations } from '@/hooks/use-organization';
 import { ShareWithOrgPopover } from '@/components/ShareWithOrgPopover';
 import { CustomFieldsDisplay } from '@/components/CustomFieldsDisplay';
@@ -104,6 +104,7 @@ export default function PlayerProfile() {
   const [deleteConfirm, setDeleteConfirm] = useState('');
   const [deleting, setDeleting] = useState(false);
   const [enriching, setEnriching] = useState(false);
+  const toggleArchive = useToggleArchive();
   const [tmUrlInput, setTmUrlInput] = useState('');
   const [editingReport, setEditingReport] = useState<{ id: string; title: string; drive_link: string; file_url: string } | null>(null);
   const [editTitle, setEditTitle] = useState('');
@@ -768,6 +769,18 @@ export default function PlayerProfile() {
                   {t('custom_fields.manage')}
                 </DropdownMenuItem>
                 <DropdownMenuSeparator />
+                <DropdownMenuItem
+                  onClick={async () => {
+                    const willArchive = !player.is_archived;
+                    await toggleArchive.mutateAsync({ playerId: player.id, archived: willArchive });
+                    toast.success(willArchive ? t('players.archived_success', { count: 1 }) : t('players.unarchived_success', { count: 1 }));
+                    if (willArchive) navigate('/players');
+                  }}
+                  className="flex items-center gap-2.5"
+                >
+                  <X className="w-4 h-4" />
+                  {player.is_archived ? t('players.unarchive') : t('players.archive')}
+                </DropdownMenuItem>
                 <DropdownMenuItem
                   onClick={() => handleEnrich()}
                   disabled={enriching || !isPremium}

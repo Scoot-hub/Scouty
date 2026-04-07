@@ -1,5 +1,5 @@
-import { useState } from 'react';
-import { useSearchParams, Link, useNavigate } from 'react-router-dom';
+import { useState, useEffect, useRef } from 'react';
+import { useSearchParams, Link } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { useQuery } from '@tanstack/react-query';
 import { supabase } from '@/integrations/supabase/client';
@@ -9,15 +9,15 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Badge } from '@/components/ui/badge';
-import { Separator } from '@/components/ui/separator';
 import { ClubBadge } from '@/components/ui/club-badge';
-import { FlagIcon } from '@/components/ui/flag-icon';
 import { translateCountry } from '@/types/player';
-import { toast } from 'sonner';
+import { resolveClubName } from '@/lib/thesportsdb';
 import {
-  Search, Loader2, MapPin, Calendar, Users, Trophy, Building2, Globe, ArrowLeft,
-  ExternalLink, Shirt, Info, Newspaper, Heart, HeartOff,
+  Search, Loader2, MapPin, Calendar, Users, Trophy, Building2, Globe,
+  ExternalLink, Shirt, Info, Newspaper, Heart, HeartOff, Database,
 } from 'lucide-react';
+
+const API = (import.meta.env.API_URL || '/api').replace(/\/$/, '');
 
 interface TeamData {
   idTeam: string;
@@ -42,6 +42,34 @@ interface TeamData {
   strKeywords: string | null;
   strColour1: string | null;
   strColour2: string | null;
+  // TM-enriched fields (added by our fallback)
+  _tmUrl?: string | null;
+  _tmSquadSize?: number | null;
+  _tmAvgAge?: string | null;
+  _tmMarketValue?: string | null;
+}
+
+// ── Autocomplete suggestions from local DB ──────────────────────────────────
+
+interface ClubSuggestion {
+  club_name: string;
+  logo_url: string | null;
+  competition: string;
+  country: string;
+}
+
+function useClubSuggestions(query: string) {
+  return useQuery<ClubSuggestion[]>({
+    queryKey: ['club-search', query],
+    queryFn: async () => {
+      if (query.length < 2) return [];
+      const resp = await fetch(`${API}/club-search?q=${encodeURIComponent(query)}`);
+      if (!resp.ok) return [];
+      return resp.json();
+    },
+    enabled: query.length >= 2,
+    staleTime: 60_000,
+  });
 }
 
 export default function ClubProfile() {
@@ -56,19 +84,68 @@ export default function ClubProfile() {
   const unfollowClub = useUnfollowClub();
   const followedEntry = followedClubs.find(c => c.club_name.toLowerCase() === clubName.toLowerCase());
 
-  const { data: team, isLoading, error } = useQuery<TeamData | null>({
+  // Autocomplete
+  const [showSuggestions, setShowSuggestions] = useState(false);
+  const { data: suggestions = [] } = useClubSuggestions(search);
+  const suggestionsRef = useRef<HTMLDivElement>(null);
+
+  // Close suggestions on outside click
+  useEffect(() => {
+    const handler = (e: MouseEvent) => {
+      if (suggestionsRef.current && !suggestionsRef.current.contains(e.target as Node)) {
+        setShowSuggestions(false);
+      }
+    };
+    document.addEventListener('mousedown', handler);
+    return () => document.removeEventListener('mousedown', handler);
+  }, []);
+
+  // Resolve common abbreviations
+  const resolvedClub = clubName ? resolveClubName(clubName) : '';
+
+  // Helper: convert TM profile to TeamData shape
+  const tmToTeam = (p: any): TeamData => ({
+    idTeam: p.clubId, strTeam: p.clubName, strTeamBadge: p.badge || '',
+    strStadium: p.stadium || '', strStadiumThumb: '', intStadiumCapacity: '',
+    strCountry: p.country || '', strLeague: p.league || '', intFormedYear: '',
+    strDescriptionFR: null, strDescriptionEN: null, strDescriptionES: null,
+    strWebsite: null, strFacebook: null, strTwitter: null, strInstagram: null,
+    strKit: null, strBanner: null, strManager: null, strKeywords: null,
+    strColour1: null, strColour2: null,
+    _tmUrl: p.tmUrl, _tmSquadSize: p.squadSize, _tmAvgAge: p.avgAge, _tmMarketValue: p.marketValue,
+  });
+
+  // ── Fetch club data: TheSportsDB → Transfermarkt fallback ──
+  const { data: team, isLoading } = useQuery<TeamData | null>({
     queryKey: ['club-profile', clubName],
     queryFn: async () => {
       if (!clubName) return null;
-      const { data, error } = await supabase.functions.invoke('thesportsdb-proxy', {
-        body: { endpoint: 'searchteams', params: { t: clubName } },
-      });
-      if (error) throw error;
-      const teams = data?.teams;
-      if (!teams || teams.length === 0) return null;
-      // Find best match (soccer/football only)
-      const soccer = teams.filter((t: any) => t.strSport === 'Soccer' || t.strSport === 'Football');
-      return soccer[0] || teams[0];
+
+      const searchTerms = [resolvedClub];
+      if (resolvedClub !== clubName) searchTerms.push(clubName);
+
+      // 1. Try TheSportsDB (fast, rich data)
+      for (const term of searchTerms) {
+        try {
+          const { data } = await supabase.functions.invoke('thesportsdb-proxy', {
+            body: { endpoint: 'searchteams', params: { t: term } },
+          });
+          const soccer = (data?.teams || []).filter((t: any) => t.strSport === 'Soccer' || t.strSport === 'Football');
+          if (soccer.length > 0) return soccer[0] as TeamData;
+        } catch {}
+      }
+
+      // 2. Fallback: Transfermarkt search → scrape profile
+      for (const term of searchTerms) {
+        try {
+          const resp = await fetch(`${API}/club-tm-search?q=${encodeURIComponent(term)}`);
+          if (!resp.ok) continue;
+          const profile = await resp.json();
+          if (profile?.clubName) return tmToTeam(profile);
+        } catch {}
+      }
+
+      return null;
     },
     enabled: !!clubName,
     staleTime: 10 * 60 * 1000,
@@ -77,15 +154,16 @@ export default function ClubProfile() {
   const handleSearch = (e: React.FormEvent) => {
     e.preventDefault();
     if (!search.trim()) return;
+    setShowSuggestions(false);
     setSearchParams({ club: search.trim() });
   };
 
   const handleClubClick = (club: string) => {
     setSearch(club);
+    setShowSuggestions(false);
     setSearchParams({ club });
   };
 
-  // Get description in user language
   const description = (() => {
     if (!team) return '';
     const lang = i18n.language;
@@ -94,12 +172,10 @@ export default function ClubProfile() {
     return team.strDescriptionEN || team.strDescriptionFR || '';
   })();
 
-  // Players in user's DB from this club
   const clubPlayers = players.filter(p =>
     p.club && clubName && p.club.toLowerCase().includes(clubName.toLowerCase())
   );
 
-  // Unique clubs from user's player database for quick access
   const userClubs = [...new Set(players.map(p => p.club).filter(Boolean))].sort();
 
   return (
@@ -113,18 +189,53 @@ export default function ClubProfile() {
         <p className="text-muted-foreground text-sm mt-1">{t('club.subtitle')}</p>
       </div>
 
-      {/* Search */}
+      {/* Search with autocomplete */}
       <Card>
         <CardContent className="p-4">
           <form onSubmit={handleSearch} className="flex gap-2">
-            <div className="flex-1 relative">
+            <div className="flex-1 relative" ref={suggestionsRef}>
               <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
               <Input
                 value={search}
-                onChange={e => setSearch(e.target.value)}
+                onChange={e => { setSearch(e.target.value); setShowSuggestions(true); }}
+                onFocus={() => setShowSuggestions(true)}
                 placeholder={t('club.search_placeholder')}
                 className="pl-10"
+                autoComplete="off"
               />
+              {/* Autocomplete dropdown */}
+              {showSuggestions && suggestions.length > 0 && (
+                <div className="absolute z-50 top-full left-0 right-0 mt-1 rounded-xl border bg-popover shadow-lg max-h-64 overflow-y-auto">
+                  <div className="p-1.5">
+                    <p className="px-2.5 py-1 text-[10px] font-semibold text-muted-foreground uppercase tracking-wider flex items-center gap-1.5">
+                      <Database className="w-3 h-3" />
+                      {t('club.from_database')}
+                    </p>
+                    {suggestions.map(s => (
+                      <button
+                        key={s.club_name}
+                        type="button"
+                        onClick={() => handleClubClick(s.club_name)}
+                        className="w-full flex items-center gap-2.5 px-2.5 py-2 rounded-lg text-left hover:bg-muted transition-colors"
+                      >
+                        {s.logo_url ? (
+                          <img src={s.logo_url} alt="" className="w-6 h-6 object-contain shrink-0" />
+                        ) : (
+                          <ClubBadge club={s.club_name} size="xs" />
+                        )}
+                        <div className="flex-1 min-w-0">
+                          <p className="text-sm font-medium truncate">{s.club_name}</p>
+                          {(s.competition || s.country) && (
+                            <p className="text-[10px] text-muted-foreground truncate">
+                              {[s.competition, s.country].filter(Boolean).join(' · ')}
+                            </p>
+                          )}
+                        </div>
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              )}
             </div>
             <Button type="submit" disabled={isLoading || !search.trim()}>
               {isLoading ? <Loader2 className="w-4 h-4 animate-spin mr-2" /> : <Search className="w-4 h-4 mr-2" />}
@@ -191,25 +302,15 @@ export default function ClubProfile() {
                   <h2 className="text-2xl font-bold">{team.strTeam}</h2>
                   <div className="flex flex-wrap items-center gap-3 mt-1 text-sm text-muted-foreground">
                     {team.strLeague && (
-                      <span className="flex items-center gap-1">
-                        <Trophy className="w-3.5 h-3.5" />
-                        {team.strLeague}
-                      </span>
+                      <span className="flex items-center gap-1"><Trophy className="w-3.5 h-3.5" />{team.strLeague}</span>
                     )}
                     {team.strCountry && (
-                      <span className="flex items-center gap-1">
-                        <Globe className="w-3.5 h-3.5" />
-                        {team.strCountry}
-                      </span>
+                      <span className="flex items-center gap-1"><Globe className="w-3.5 h-3.5" />{team.strCountry}</span>
                     )}
                     {team.intFormedYear && (
-                      <span className="flex items-center gap-1">
-                        <Calendar className="w-3.5 h-3.5" />
-                        {t('club.founded')} {team.intFormedYear}
-                      </span>
+                      <span className="flex items-center gap-1"><Calendar className="w-3.5 h-3.5" />{t('club.founded')} {team.intFormedYear}</span>
                     )}
                   </div>
-                  {/* Colors */}
                   {(team.strColour1 || team.strColour2) && (
                     <div className="flex items-center gap-2 mt-2">
                       {team.strColour1 && <div className="w-5 h-5 rounded-full border border-border" style={{ backgroundColor: team.strColour1 }} />}
@@ -217,14 +318,13 @@ export default function ClubProfile() {
                     </div>
                   )}
                 </div>
-                {/* Actions */}
-                <div className="flex items-center gap-2 shrink-0">
+                <div className="flex items-center gap-2 shrink-0 flex-wrap">
                   {followedEntry ? (
                     <Button variant="outline" size="sm" onClick={() => unfollowClub.mutate(followedEntry.id)}>
                       <HeartOff className="w-4 h-4 mr-1" /> {t('club.unfollow')}
                     </Button>
                   ) : (
-                    <Button size="sm" onClick={() => followClub.mutate({ club_name: clubName })}>
+                    <Button size="sm" onClick={() => followClub.mutate({ club_name: team.strTeam || clubName })}>
                       <Heart className="w-4 h-4 mr-1" /> {t('club.follow')}
                     </Button>
                   )}
@@ -233,23 +333,21 @@ export default function ClubProfile() {
                       <Button variant="outline" size="sm"><Globe className="w-4 h-4 mr-1" /> {t('club.website')}</Button>
                     </a>
                   )}
+                  {(team as any)._tmUrl && (
+                    <a href={(team as any)._tmUrl} target="_blank" rel="noopener noreferrer">
+                      <Button variant="outline" size="sm"><ExternalLink className="w-4 h-4 mr-1" /> Transfermarkt</Button>
+                    </a>
+                  )}
                 </div>
               </div>
             </CardContent>
           </Card>
 
           <div className="grid md:grid-cols-3 gap-6">
-            {/* Main info */}
             <div className="md:col-span-2 space-y-6">
-              {/* Description */}
               {description && (
                 <Card>
-                  <CardHeader>
-                    <CardTitle className="flex items-center gap-2 text-base">
-                      <Info className="w-4 h-4 text-primary" />
-                      {t('club.about')}
-                    </CardTitle>
-                  </CardHeader>
+                  <CardHeader><CardTitle className="flex items-center gap-2 text-base"><Info className="w-4 h-4 text-primary" />{t('club.about')}</CardTitle></CardHeader>
                   <CardContent>
                     <p className="text-sm text-muted-foreground leading-relaxed whitespace-pre-line">
                       {description.length > 800 ? description.slice(0, 800) + '...' : description}
@@ -258,26 +356,14 @@ export default function ClubProfile() {
                 </Card>
               )}
 
-              {/* Scouted players from this club */}
               {clubPlayers.length > 0 && (
                 <Card>
-                  <CardHeader>
-                    <CardTitle className="flex items-center gap-2 text-base">
-                      <Users className="w-4 h-4 text-primary" />
-                      {t('club.your_players')} ({clubPlayers.length})
-                    </CardTitle>
-                  </CardHeader>
+                  <CardHeader><CardTitle className="flex items-center gap-2 text-base"><Users className="w-4 h-4 text-primary" />{t('club.your_players')} ({clubPlayers.length})</CardTitle></CardHeader>
                   <CardContent>
                     <div className="space-y-2">
                       {clubPlayers.slice(0, 10).map(p => (
-                        <Link
-                          key={p.id}
-                          to={`/player/${p.id}`}
-                          className="flex items-center gap-3 p-2 rounded-lg hover:bg-muted transition-colors"
-                        >
-                          <div className="w-8 h-8 rounded-full bg-muted flex items-center justify-center text-xs font-bold shrink-0">
-                            {p.name?.[0]}
-                          </div>
+                        <Link key={p.id} to={`/player/${p.id}`} className="flex items-center gap-3 p-2 rounded-lg hover:bg-muted transition-colors">
+                          <div className="w-8 h-8 rounded-full bg-muted flex items-center justify-center text-xs font-bold shrink-0">{p.name?.[0]}</div>
                           <div className="flex-1 min-w-0">
                             <p className="text-sm font-medium truncate">{p.name}</p>
                             <p className="text-[10px] text-muted-foreground">{p.position} · {translateCountry(p.nationality, i18n.language)}</p>
@@ -286,9 +372,7 @@ export default function ClubProfile() {
                         </Link>
                       ))}
                       {clubPlayers.length > 10 && (
-                        <p className="text-xs text-muted-foreground text-center pt-2">
-                          +{clubPlayers.length - 10} {t('club.more_players')}
-                        </p>
+                        <p className="text-xs text-muted-foreground text-center pt-2">+{clubPlayers.length - 10} {t('club.more_players')}</p>
                       )}
                     </div>
                   </CardContent>
@@ -296,107 +380,62 @@ export default function ClubProfile() {
               )}
             </div>
 
-            {/* Sidebar info */}
             <div className="space-y-4">
-              {/* Stadium */}
               {team.strStadium && (
                 <Card>
-                  <CardHeader className="pb-2">
-                    <CardTitle className="flex items-center gap-2 text-sm">
-                      <MapPin className="w-4 h-4 text-primary" />
-                      {t('club.stadium')}
-                    </CardTitle>
-                  </CardHeader>
+                  <CardHeader className="pb-2"><CardTitle className="flex items-center gap-2 text-sm"><MapPin className="w-4 h-4 text-primary" />{t('club.stadium')}</CardTitle></CardHeader>
                   <CardContent>
                     <p className="text-sm font-medium">{team.strStadium}</p>
-                    {team.intStadiumCapacity && (
-                      <p className="text-xs text-muted-foreground mt-1">
-                        {t('club.capacity')} {parseInt(team.intStadiumCapacity).toLocaleString()}
-                      </p>
-                    )}
+                    {team.intStadiumCapacity && <p className="text-xs text-muted-foreground mt-1">{t('club.capacity')} {parseInt(team.intStadiumCapacity).toLocaleString()}</p>}
                   </CardContent>
                 </Card>
               )}
 
-              {/* Manager */}
               {team.strManager && (
                 <Card>
-                  <CardHeader className="pb-2">
-                    <CardTitle className="flex items-center gap-2 text-sm">
-                      <Shirt className="w-4 h-4 text-primary" />
-                      {t('club.manager')}
-                    </CardTitle>
-                  </CardHeader>
-                  <CardContent>
-                    <p className="text-sm font-medium">{team.strManager}</p>
+                  <CardHeader className="pb-2"><CardTitle className="flex items-center gap-2 text-sm"><Shirt className="w-4 h-4 text-primary" />{t('club.manager')}</CardTitle></CardHeader>
+                  <CardContent><p className="text-sm font-medium">{team.strManager}</p></CardContent>
+                </Card>
+              )}
+
+              {/* TM stats (if from Transfermarkt) */}
+              {((team as any)._tmSquadSize || (team as any)._tmAvgAge || (team as any)._tmMarketValue) && (
+                <Card>
+                  <CardHeader className="pb-2"><CardTitle className="flex items-center gap-2 text-sm"><Users className="w-4 h-4 text-primary" />{t('club.squad_info')}</CardTitle></CardHeader>
+                  <CardContent className="space-y-2 text-xs">
+                    {(team as any)._tmSquadSize && (
+                      <div className="flex justify-between"><span className="text-muted-foreground">{t('club.squad_size')}</span><span className="font-medium">{(team as any)._tmSquadSize}</span></div>
+                    )}
+                    {(team as any)._tmAvgAge && (
+                      <div className="flex justify-between"><span className="text-muted-foreground">{t('club.avg_age')}</span><span className="font-medium">{(team as any)._tmAvgAge}</span></div>
+                    )}
+                    {(team as any)._tmMarketValue && (
+                      <div className="flex justify-between"><span className="text-muted-foreground">{t('club.market_value')}</span><span className="font-medium">{(team as any)._tmMarketValue}</span></div>
+                    )}
                   </CardContent>
                 </Card>
               )}
 
-              {/* Social links */}
               {(team.strTwitter || team.strInstagram || team.strFacebook) && (
                 <Card>
-                  <CardHeader className="pb-2">
-                    <CardTitle className="flex items-center gap-2 text-sm">
-                      <Newspaper className="w-4 h-4 text-primary" />
-                      {t('club.social')}
-                    </CardTitle>
-                  </CardHeader>
+                  <CardHeader className="pb-2"><CardTitle className="flex items-center gap-2 text-sm"><Newspaper className="w-4 h-4 text-primary" />{t('club.social')}</CardTitle></CardHeader>
                   <CardContent className="space-y-2">
-                    {team.strTwitter && (
-                      <a href={`https://twitter.com/${team.strTwitter}`} target="_blank" rel="noopener noreferrer"
-                        className="flex items-center gap-2 text-xs text-muted-foreground hover:text-foreground transition-colors">
-                        <ExternalLink className="w-3 h-3" /> Twitter / X
-                      </a>
-                    )}
-                    {team.strInstagram && (
-                      <a href={`https://instagram.com/${team.strInstagram}`} target="_blank" rel="noopener noreferrer"
-                        className="flex items-center gap-2 text-xs text-muted-foreground hover:text-foreground transition-colors">
-                        <ExternalLink className="w-3 h-3" /> Instagram
-                      </a>
-                    )}
-                    {team.strFacebook && (
-                      <a href={`https://${team.strFacebook}`} target="_blank" rel="noopener noreferrer"
-                        className="flex items-center gap-2 text-xs text-muted-foreground hover:text-foreground transition-colors">
-                        <ExternalLink className="w-3 h-3" /> Facebook
-                      </a>
-                    )}
+                    {team.strTwitter && <a href={`https://twitter.com/${team.strTwitter}`} target="_blank" rel="noopener noreferrer" className="flex items-center gap-2 text-xs text-muted-foreground hover:text-foreground transition-colors"><ExternalLink className="w-3 h-3" /> Twitter / X</a>}
+                    {team.strInstagram && <a href={`https://instagram.com/${team.strInstagram}`} target="_blank" rel="noopener noreferrer" className="flex items-center gap-2 text-xs text-muted-foreground hover:text-foreground transition-colors"><ExternalLink className="w-3 h-3" /> Instagram</a>}
+                    {team.strFacebook && <a href={`https://${team.strFacebook}`} target="_blank" rel="noopener noreferrer" className="flex items-center gap-2 text-xs text-muted-foreground hover:text-foreground transition-colors"><ExternalLink className="w-3 h-3" /> Facebook</a>}
                   </CardContent>
                 </Card>
               )}
 
-              {/* Quick facts */}
               <Card>
-                <CardHeader className="pb-2">
-                  <CardTitle className="flex items-center gap-2 text-sm">
-                    <Info className="w-4 h-4 text-primary" />
-                    {t('club.facts')}
-                  </CardTitle>
-                </CardHeader>
+                <CardHeader className="pb-2"><CardTitle className="flex items-center gap-2 text-sm"><Info className="w-4 h-4 text-primary" />{t('club.facts')}</CardTitle></CardHeader>
                 <CardContent className="space-y-2 text-xs">
-                  {team.strCountry && (
-                    <div className="flex justify-between">
-                      <span className="text-muted-foreground">{t('club.country')}</span>
-                      <span className="font-medium">{team.strCountry}</span>
-                    </div>
-                  )}
-                  {team.strLeague && (
-                    <div className="flex justify-between">
-                      <span className="text-muted-foreground">{t('club.league')}</span>
-                      <span className="font-medium">{team.strLeague}</span>
-                    </div>
-                  )}
-                  {team.intFormedYear && (
-                    <div className="flex justify-between">
-                      <span className="text-muted-foreground">{t('club.founded_year')}</span>
-                      <span className="font-medium">{team.intFormedYear}</span>
-                    </div>
-                  )}
+                  {team.strCountry && <div className="flex justify-between"><span className="text-muted-foreground">{t('club.country')}</span><span className="font-medium">{team.strCountry}</span></div>}
+                  {team.strLeague && <div className="flex justify-between"><span className="text-muted-foreground">{t('club.league')}</span><span className="font-medium">{team.strLeague}</span></div>}
+                  {team.intFormedYear && <div className="flex justify-between"><span className="text-muted-foreground">{t('club.founded_year')}</span><span className="font-medium">{team.intFormedYear}</span></div>}
                   {team.strKeywords && (
                     <div className="flex flex-wrap gap-1 pt-1">
-                      {team.strKeywords.split(',').map((kw: string) => (
-                        <Badge key={kw} variant="secondary" className="text-[9px]">{kw.trim()}</Badge>
-                      ))}
+                      {team.strKeywords.split(',').map((kw: string) => <Badge key={kw} variant="secondary" className="text-[9px]">{kw.trim()}</Badge>)}
                     </div>
                   )}
                 </CardContent>
@@ -406,7 +445,6 @@ export default function ClubProfile() {
         </div>
       )}
 
-      {/* Empty state */}
       {!clubName && !isLoading && (
         <div className="text-center py-16">
           <Building2 className="w-10 h-10 text-muted-foreground/20 mx-auto mb-3" />

@@ -386,7 +386,7 @@ const ALLOWED_TABLES = {
   players: [
     "id", "name", "photo_url", "generation", "nationality", "foot", "club", "league", "zone", "position", "position_secondaire", "role",
     "current_level", "potential", "general_opinion", "contract_end", "notes", "ts_report_published", "date_of_birth", "market_value",
-    "transfermarkt_id", "external_data", "external_data_fetched_at", "shared_with_org", "has_news", "task", "user_id", "created_at", "updated_at",
+    "transfermarkt_id", "external_data", "external_data_fetched_at", "shared_with_org", "has_news", "task", "is_archived", "user_id", "created_at", "updated_at",
   ],
   reports: ["id", "player_id", "report_date", "title", "opinion", "drive_link", "file_url", "user_id", "created_at"],
   custom_fields: ["id", "user_id", "field_name", "field_type", "field_options", "display_order", "created_at"],
@@ -604,7 +604,7 @@ function sanitizeValueByColumn(col, value) {
     if (value == null) return null;
     return typeof value === "string" ? value : JSON.stringify(value);
   }
-  if (col === "ts_report_published" || col === "is_premium" || col === "is_favorite") {
+  if (col === "ts_report_published" || col === "is_premium" || col === "is_favorite" || col === "is_archived") {
     return value ? 1 : 0;
   }
   return value;
@@ -805,6 +805,11 @@ async function runMigrations() {
   // Ensure task column exists on players
   try {
     await pool.query(`ALTER TABLE players ADD COLUMN task VARCHAR(30) NULL DEFAULT NULL`);
+  } catch { /* column already exists */ }
+
+  // Ensure is_archived column exists on players
+  try {
+    await pool.query(`ALTER TABLE players ADD COLUMN is_archived TINYINT(1) NOT NULL DEFAULT 0`);
   } catch { /* column already exists */ }
 
   // Ensure has_news column exists on players
@@ -1409,9 +1414,15 @@ app.post("/api/auth/signout", (_req, res) => {
 
 // ── Mailer (configured via SMTP_* env vars) ────────────────────────────────
 let _mailerInstance = null;
+let _mailerVerified = false;
+
 function createMailer() {
   if (_mailerInstance) return _mailerInstance;
-  if (!nodemailer || !process.env.SMTP_HOST) return null;
+  if (!nodemailer) { console.warn("[email] nodemailer not available"); return null; }
+  if (!process.env.SMTP_HOST) { console.warn("[email] SMTP_HOST not set"); return null; }
+  if (!process.env.SMTP_USER) { console.warn("[email] SMTP_USER not set"); return null; }
+  if (!process.env.SMTP_PASS) { console.warn("[email] SMTP_PASS not set"); return null; }
+
   _mailerInstance = nodemailer.createTransport({
     host: process.env.SMTP_HOST,
     port: Number(process.env.SMTP_PORT || 587),
@@ -1420,39 +1431,91 @@ function createMailer() {
       user: process.env.SMTP_USER,
       pass: process.env.SMTP_PASS,
     },
+    pool: true,
+    maxConnections: 3,
+    maxMessages: 100,
+    // Timeouts to avoid hanging
+    connectionTimeout: 10000,
+    greetingTimeout: 10000,
+    socketTimeout: 15000,
   });
-  // Verify connection at startup
+
+  // Verify connection (non-blocking, does NOT null the transport on failure)
   _mailerInstance.verify().then(() => {
-    console.log("[info] SMTP mailer connected to", process.env.SMTP_HOST);
+    _mailerVerified = true;
+    console.log("[email] SMTP connected to", process.env.SMTP_HOST);
   }).catch(err => {
-    console.error("[error] SMTP mailer verification failed:", err?.message);
-    _mailerInstance = null;
+    console.error("[email] SMTP verify failed:", err?.message, "— will retry on first send");
   });
+
   return _mailerInstance;
 }
+
+// Build the "from" field: "Scouty <address>"
+function getFromAddress() {
+  const addr = process.env.SMTP_FROM || process.env.SMTP_USER;
+  // If already formatted like "Name <email>", return as-is
+  if (addr && addr.includes("<")) return addr;
+  return addr ? `Scouty <${addr}>` : null;
+}
+
 // Initialize mailer eagerly
 createMailer();
 
 async function sendEmail(to, subject, html) {
-  const mailer = createMailer();
+  let mailer = createMailer();
   if (!mailer) {
     console.warn(`[email] Mailer not configured — skipping email to ${to}: ${subject}`);
     return false;
   }
-  try {
-    await mailer.sendMail({
-      from: process.env.SMTP_FROM || process.env.SMTP_USER,
-      to,
-      subject,
-      html,
-    });
-    console.log(`[email] Sent to ${to}: ${subject}`);
-    return true;
-  } catch (err) {
-    console.error(`[email] Failed to send to ${to}:`, err?.message);
+
+  const from = getFromAddress();
+  if (!from) {
+    console.warn(`[email] No SMTP_FROM or SMTP_USER set — skipping email to ${to}`);
     return false;
   }
+
+  // Retry once on transient failure (connection reset, timeout, etc.)
+  for (let attempt = 1; attempt <= 2; attempt++) {
+    try {
+      const info = await mailer.sendMail({ from, to, subject, html });
+      console.log(`[email] Sent to ${to}: ${subject} (messageId: ${info.messageId})`);
+      _mailerVerified = true;
+      return true;
+    } catch (err) {
+      console.error(`[email] Attempt ${attempt} failed to ${to}:`, err?.message);
+      if (attempt === 1) {
+        // Reset transport and retry
+        try { mailer.close(); } catch (_) {}
+        _mailerInstance = null;
+        _mailerVerified = false;
+        mailer = createMailer();
+        if (!mailer) return false;
+      }
+    }
+  }
+  return false;
 }
+
+// ── POST /api/admin/test-email — send a test email to verify SMTP config ──
+app.post("/api/admin/test-email", authMiddleware, ensureAdmin, async (req, res) => {
+  const { to } = req.body || {};
+  const recipient = to || req.user.email;
+  if (!recipient) return res.status(400).json({ error: "No recipient" });
+
+  const sent = await sendEmail(recipient, "Scouty – Test email", `
+    <div style="font-family:sans-serif;max-width:480px;margin:0 auto;padding:24px">
+      <img src="https://scouty.app/logo.png" alt="Scouty" width="40" style="border-radius:10px;margin-bottom:16px" />
+      <h2 style="color:#1a1a2e;margin:0 0 8px">Test email</h2>
+      <p style="color:#555">Si vous recevez cet email, la configuration SMTP fonctionne correctement.</p>
+      <p style="color:#888;font-size:13px;margin-top:24px">Envoyé le ${new Date().toLocaleString("fr-FR")} depuis ${process.env.SMTP_HOST || "N/A"}</p>
+      <hr style="border:none;border-top:1px solid #eee;margin:24px 0" />
+      <p style="color:#aaa;font-size:11px;text-align:center">Scouty — Scouting footballistique professionnel</p>
+    </div>
+  `);
+  if (sent) return res.json({ ok: true, message: `Email envoyé à ${recipient}` });
+  return res.status(500).json({ error: "Échec de l'envoi. Vérifiez les logs serveur et la configuration SMTP." });
+});
 
 // ── POST /api/auth/forgot-password ─────────────────────────────────────────
 app.post("/api/auth/forgot-password", rateLimitAuth, async (req, res) => {
@@ -1714,6 +1777,40 @@ app.get("/api/profile/user/:userId", async (req, res) => {
   }
 });
 
+// ── Public user directory (for About page community showcase) ─────────────
+app.get("/api/public/users", async (_req, res) => {
+  try {
+    const [rows] = await pool.query(`
+      SELECT p.user_id, p.full_name, p.first_name, p.last_name, p.civility,
+             p.club, p.role, p.photo_url, p.company, p.reference_club,
+             p.social_public, p.created_at
+      FROM profiles p
+      INNER JOIN users u ON u.id = p.user_id
+      WHERE p.full_name IS NOT NULL AND p.full_name != ''
+      ORDER BY p.created_at ASC
+      LIMIT 50
+    `);
+    const users = rows.map(r => ({
+      user_id: r.user_id,
+      full_name: r.full_name,
+      first_name: r.first_name,
+      last_name: r.last_name,
+      civility: r.civility,
+      club: r.club,
+      role: r.role,
+      photo_url: r.photo_url,
+      company: r.company,
+      reference_club: r.reference_club,
+      social_public: !!r.social_public,
+      created_at: r.created_at,
+    }));
+    return res.json(users);
+  } catch (err) {
+    console.error("[public/users] Error:", err);
+    return res.status(500).json({ error: "Erreur serveur." });
+  }
+});
+
 // ── Community notifications (generic + mention) ──────────────────────────
 app.post("/api/community/notify", authMiddleware, async (req, res) => {
   try {
@@ -1890,74 +1987,180 @@ app.post("/api/report-issue", authMiddleware, async (req, res) => {
   const userEmail = req.user?.email || "inconnu";
   const userName = req.user?.name || req.user?.email || "inconnu";
   const userId = req.user?.id || "inconnu";
-
   const categoryLabels = { bug: "Bug", feature: "Demande de fonctionnalité", other: "Autre" };
   const catLabel = categoryLabels[category] || category || "Autre";
 
-  const recipient = process.env.REPORT_ISSUE_TO || process.env.SMTP_FROM || process.env.SMTP_USER;
-  if (!recipient) {
-    console.error("[report-issue] Aucun destinataire configuré (REPORT_ISSUE_TO / SMTP_FROM / SMTP_USER)");
-    return res.status(500).json({ error: "Email de destination non configuré." });
-  }
-
-  const mailer = createMailer();
-  if (!mailer) {
-    console.error("[report-issue] SMTP non configuré – ticket non envoyé");
-    console.log(`[DEV] Report issue from ${userEmail}: [${catLabel}] ${subject}\n${message}`);
-    return res.status(500).json({ error: "Service d'envoi d'email non configuré." });
-  }
-
+  // Persist ticket in DB
+  const ticketId = uuidv4();
   try {
-    await mailer.sendMail({
-      from: process.env.SMTP_FROM || process.env.SMTP_USER,
-      to: recipient,
-      replyTo: userEmail,
-      subject: `[Scouty - ${catLabel}] ${subject}`,
-      html: `
+    await pool.query(
+      `INSERT INTO tickets (id, user_id, category, subject, message, page_url, user_agent) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      [ticketId, userId, category || "bug", subject, message, url || null, userAgent || null]
+    );
+  } catch (dbErr) {
+    console.error("[report-issue] DB insert error:", dbErr.message);
+  }
+
+  // Also send email (best-effort)
+  const recipient = process.env.REPORT_ISSUE_TO || process.env.SMTP_FROM || process.env.SMTP_USER;
+  try {
+    if (recipient) {
+      await sendEmail(recipient, `[Scouty - ${catLabel}] ${subject}`, `
         <div style="font-family:sans-serif;max-width:600px;margin:0 auto;color:#1a1a2e">
-          <div style="background:#6366f1;color:#fff;padding:16px 24px;border-radius:8px 8px 0 0">
-            <h2 style="margin:0;font-size:18px">Nouveau ticket – ${catLabel}</h2>
-          </div>
+          <div style="background:#6366f1;color:#fff;padding:16px 24px;border-radius:8px 8px 0 0"><h2 style="margin:0;font-size:18px">Nouveau ticket – ${catLabel}</h2></div>
           <div style="border:1px solid #e5e7eb;border-top:none;padding:24px;border-radius:0 0 8px 8px">
             <table style="width:100%;border-collapse:collapse;font-size:14px;margin-bottom:20px">
-              <tr>
-                <td style="padding:6px 12px 6px 0;color:#6b7280;font-weight:600;white-space:nowrap">Utilisateur</td>
-                <td style="padding:6px 0">${userName} (${userEmail})</td>
-              </tr>
-              <tr>
-                <td style="padding:6px 12px 6px 0;color:#6b7280;font-weight:600;white-space:nowrap">ID</td>
-                <td style="padding:6px 0;font-family:monospace;font-size:12px">${userId}</td>
-              </tr>
-              <tr>
-                <td style="padding:6px 12px 6px 0;color:#6b7280;font-weight:600;white-space:nowrap">Catégorie</td>
-                <td style="padding:6px 0">${catLabel}</td>
-              </tr>
-              <tr>
-                <td style="padding:6px 12px 6px 0;color:#6b7280;font-weight:600;white-space:nowrap">Sujet</td>
-                <td style="padding:6px 0;font-weight:600">${subject}</td>
-              </tr>
-              ${url ? `<tr>
-                <td style="padding:6px 12px 6px 0;color:#6b7280;font-weight:600;white-space:nowrap">Page</td>
-                <td style="padding:6px 0"><a href="${url}" style="color:#6366f1">${url}</a></td>
-              </tr>` : ""}
-              ${userAgent ? `<tr>
-                <td style="padding:6px 12px 6px 0;color:#6b7280;font-weight:600;white-space:nowrap">Navigateur</td>
-                <td style="padding:6px 0;font-size:12px;color:#6b7280">${userAgent}</td>
-              </tr>` : ""}
+              <tr><td style="padding:6px 12px 6px 0;color:#6b7280;font-weight:600">Utilisateur</td><td>${userName} (${userEmail})</td></tr>
+              <tr><td style="padding:6px 12px 6px 0;color:#6b7280;font-weight:600">Catégorie</td><td>${catLabel}</td></tr>
+              <tr><td style="padding:6px 12px 6px 0;color:#6b7280;font-weight:600">Sujet</td><td style="font-weight:600">${subject}</td></tr>
+              ${url ? `<tr><td style="padding:6px 12px 6px 0;color:#6b7280;font-weight:600">Page</td><td><a href="${url}" style="color:#6366f1">${url}</a></td></tr>` : ""}
             </table>
             <div style="background:#f9fafb;border-radius:6px;padding:16px;font-size:14px;line-height:1.6;white-space:pre-wrap">${message}</div>
-            <p style="margin-top:20px;font-size:12px;color:#9ca3af">Ce ticket a été envoyé depuis Scouty. Répondez directement à cet email pour contacter l'utilisateur.</p>
           </div>
         </div>
-      `,
-    });
+      `);
+    }
+  } catch { /* email is best-effort */ }
 
-    console.log(`[report-issue] Ticket envoyé: [${catLabel}] ${subject} — par ${userEmail}`);
-    return res.json({ ok: true });
+  console.log(`[report-issue] Ticket ${ticketId} created by ${userEmail}: [${catLabel}] ${subject}`);
+  return res.json({ ok: true, ticketId });
+});
+
+// ── Admin ticket management ────────────────────────────────────────────────
+
+app.get("/api/admin/tickets", authMiddleware, async (req, res) => {
+  try {
+    const [tickets] = await pool.query(`
+      SELECT t.*, u.email AS user_email, p.full_name AS user_name,
+        (SELECT COUNT(*) FROM ticket_messages tm WHERE tm.ticket_id = t.id AND tm.is_admin = 0
+          AND tm.created_at > COALESCE((SELECT MAX(tm2.created_at) FROM ticket_messages tm2 WHERE tm2.ticket_id = t.id AND tm2.is_admin = 1), '1970-01-01')
+        ) AS unread_count
+      FROM tickets t
+      LEFT JOIN users u ON u.id = t.user_id
+      LEFT JOIN profiles p ON p.user_id = t.user_id
+      ORDER BY t.updated_at DESC
+    `);
+    return res.json(tickets);
   } catch (err) {
-    console.error("[report-issue] Erreur envoi email:", err);
-    return res.status(500).json({ error: "Erreur lors de l'envoi de l'email." });
+    return res.status(500).json({ error: err.message });
   }
+});
+
+app.get("/api/admin/tickets/unread-count", authMiddleware, async (req, res) => {
+  try {
+    const [rows] = await pool.query(`
+      SELECT COUNT(DISTINCT t.id) AS count FROM tickets t
+      WHERE t.status != 'closed'
+        AND (NOT EXISTS (SELECT 1 FROM ticket_messages tm WHERE tm.ticket_id = t.id AND tm.is_admin = 1)
+          OR EXISTS (SELECT 1 FROM ticket_messages tm WHERE tm.ticket_id = t.id AND tm.is_admin = 0
+            AND tm.created_at > (SELECT MAX(tm2.created_at) FROM ticket_messages tm2 WHERE tm2.ticket_id = t.id AND tm2.is_admin = 1)))
+    `);
+    return res.json({ count: rows[0]?.count || 0 });
+  } catch { return res.json({ count: 0 }); }
+});
+
+app.get("/api/admin/tickets/:id", authMiddleware, async (req, res) => {
+  try {
+    const [tickets] = await pool.query(`
+      SELECT t.*, u.email AS user_email, p.full_name AS user_name
+      FROM tickets t LEFT JOIN users u ON u.id = t.user_id LEFT JOIN profiles p ON p.user_id = t.user_id
+      WHERE t.id = ?
+    `, [req.params.id]);
+    if (!tickets.length) return res.status(404).json({ error: "Ticket not found" });
+    const [messages] = await pool.query(`
+      SELECT tm.*, p.full_name AS sender_name FROM ticket_messages tm
+      LEFT JOIN profiles p ON p.user_id = tm.sender_id
+      WHERE tm.ticket_id = ? ORDER BY tm.created_at ASC
+    `, [req.params.id]);
+    return res.json({ ticket: tickets[0], messages });
+  } catch (err) { return res.status(500).json({ error: err.message }); }
+});
+
+app.post("/api/admin/tickets/:id/reply", authMiddleware, async (req, res) => {
+  const { body: msgBody } = req.body || {};
+  if (!msgBody) return res.status(400).json({ error: "Message requis." });
+  try {
+    const [tickets] = await pool.query("SELECT * FROM tickets WHERE id = ? LIMIT 1", [req.params.id]);
+    if (!tickets.length) return res.status(404).json({ error: "Ticket not found" });
+    const ticket = tickets[0];
+    await pool.query(`INSERT INTO ticket_messages (id, ticket_id, sender_id, is_admin, body) VALUES (?, ?, ?, 1, ?)`,
+      [uuidv4(), req.params.id, req.user.id, msgBody]);
+    if (ticket.status === "open") await pool.query("UPDATE tickets SET status = 'in_progress', updated_at = NOW() WHERE id = ?", [req.params.id]);
+    else await pool.query("UPDATE tickets SET updated_at = NOW() WHERE id = ?", [req.params.id]);
+    await createNotification(ticket.user_id, { type: "system", title: "Réponse à votre ticket", message: `Un admin a répondu à « ${ticket.subject} »`, icon: "message-square", link: "/my-tickets" });
+    return res.json({ ok: true });
+  } catch (err) { return res.status(500).json({ error: err.message }); }
+});
+
+app.post("/api/admin/tickets/:id/email", authMiddleware, async (req, res) => {
+  try {
+    const [tickets] = await pool.query(`SELECT t.*, u.email AS user_email, p.full_name AS user_name FROM tickets t LEFT JOIN users u ON u.id = t.user_id LEFT JOIN profiles p ON p.user_id = t.user_id WHERE t.id = ?`, [req.params.id]);
+    if (!tickets.length) return res.status(404).json({ error: "Ticket not found" });
+    const ticket = tickets[0];
+    if (!ticket.user_email) return res.status(400).json({ error: "No email" });
+    const [messages] = await pool.query(`SELECT tm.*, p.full_name AS sender_name FROM ticket_messages tm LEFT JOIN profiles p ON p.user_id = tm.sender_id WHERE tm.ticket_id = ? ORDER BY tm.created_at ASC`, [req.params.id]);
+    const catLabels = { bug: "Bug", feature: "Feature", other: "Autre" };
+    const messagesHtml = messages.map(m => `<div style="margin-bottom:12px;padding:12px;border-radius:8px;background:${m.is_admin ? '#f0f0ff' : '#f9fafb'}"><div style="font-size:12px;color:#6b7280;margin-bottom:4px"><strong>${m.is_admin ? 'Équipe Scouty' : (m.sender_name || 'Vous')}</strong> — ${new Date(m.created_at).toLocaleString('fr-FR')}</div><div style="font-size:14px;line-height:1.6;white-space:pre-wrap">${m.body}</div></div>`).join("");
+    await sendEmail(ticket.user_email, `[Scouty] Suivi de votre ticket : ${ticket.subject}`, `
+      <div style="font-family:sans-serif;max-width:600px;margin:0 auto;color:#1a1a2e">
+        <div style="background:#6366f1;color:#fff;padding:16px 24px;border-radius:8px 8px 0 0"><h2 style="margin:0;font-size:18px">Suivi de votre ticket — ${catLabels[ticket.category] || ticket.category}</h2></div>
+        <div style="border:1px solid #e5e7eb;border-top:none;padding:24px;border-radius:0 0 8px 8px">
+          <p style="font-weight:600;font-size:16px;margin:0 0 4px">${ticket.subject}</p>
+          <p style="font-size:13px;color:#6b7280;margin:0 0 20px">Créé le ${new Date(ticket.created_at).toLocaleString('fr-FR')}</p>
+          <div style="background:#f9fafb;border-radius:6px;padding:16px;margin-bottom:20px"><p style="margin:0;font-size:14px;white-space:pre-wrap">${ticket.message}</p></div>
+          ${messages.length ? `<h3 style="font-size:14px;margin:20px 0 12px">Échanges</h3>${messagesHtml}` : ""}
+        </div>
+      </div>
+    `);
+    await createNotification(ticket.user_id, { type: "system", title: "Récapitulatif envoyé par email", message: `Le suivi de « ${ticket.subject} » vous a été envoyé.`, icon: "mail" });
+    return res.json({ ok: true });
+  } catch (err) { return res.status(500).json({ error: err.message }); }
+});
+
+app.patch("/api/admin/tickets/:id/status", authMiddleware, async (req, res) => {
+  const { status } = req.body || {};
+  if (!["open", "in_progress", "closed"].includes(status)) return res.status(400).json({ error: "Invalid status" });
+  try {
+    await pool.query("UPDATE tickets SET status = ?, updated_at = NOW() WHERE id = ?", [status, req.params.id]);
+    if (status === "closed") {
+      const [t] = await pool.query("SELECT user_id, subject FROM tickets WHERE id = ?", [req.params.id]);
+      if (t[0]) await createNotification(t[0].user_id, { type: "system", title: "Ticket résolu", message: `Votre ticket « ${t[0].subject} » a été clôturé.`, icon: "check-circle" });
+    }
+    return res.json({ ok: true });
+  } catch (err) { return res.status(500).json({ error: err.message }); }
+});
+
+// ── User-side: own tickets ──────────────────────────────────────────────────
+app.get("/api/my-tickets", authMiddleware, async (req, res) => {
+  try {
+    const [tickets] = await pool.query(`SELECT t.*,
+      (SELECT COUNT(*) FROM ticket_messages tm WHERE tm.ticket_id = t.id AND tm.is_admin = 1
+        AND tm.created_at > COALESCE((SELECT MAX(tm2.created_at) FROM ticket_messages tm2 WHERE tm2.ticket_id = t.id AND tm2.is_admin = 0), t.created_at)
+      ) AS unread_count
+      FROM tickets t WHERE t.user_id = ? ORDER BY t.updated_at DESC`, [req.user.id]);
+    return res.json(tickets);
+  } catch (err) { return res.status(500).json({ error: err.message }); }
+});
+
+app.get("/api/my-tickets/:id", authMiddleware, async (req, res) => {
+  try {
+    const [tickets] = await pool.query("SELECT * FROM tickets WHERE id = ? AND user_id = ?", [req.params.id, req.user.id]);
+    if (!tickets.length) return res.status(404).json({ error: "Not found" });
+    const [messages] = await pool.query(`SELECT tm.*, p.full_name AS sender_name FROM ticket_messages tm LEFT JOIN profiles p ON p.user_id = tm.sender_id WHERE tm.ticket_id = ? ORDER BY tm.created_at ASC`, [req.params.id]);
+    return res.json({ ticket: tickets[0], messages });
+  } catch (err) { return res.status(500).json({ error: err.message }); }
+});
+
+app.post("/api/my-tickets/:id/reply", authMiddleware, async (req, res) => {
+  const { body: msgBody } = req.body || {};
+  if (!msgBody) return res.status(400).json({ error: "Message requis." });
+  try {
+    const [tickets] = await pool.query("SELECT * FROM tickets WHERE id = ? AND user_id = ?", [req.params.id, req.user.id]);
+    if (!tickets.length) return res.status(404).json({ error: "Not found" });
+    await pool.query(`INSERT INTO ticket_messages (id, ticket_id, sender_id, is_admin, body) VALUES (?, ?, ?, 0, ?)`, [uuidv4(), req.params.id, req.user.id, msgBody]);
+    await pool.query("UPDATE tickets SET status = 'open', updated_at = NOW() WHERE id = ?", [req.params.id]);
+    return res.json({ ok: true });
+  } catch (err) { return res.status(500).json({ error: err.message }); }
 });
 
 // ── POST /api/feedback ────────────────────────────────────────────────────
@@ -3660,6 +3863,178 @@ app.get("/api/club-directory", async (_req, res) => {
   } catch (err) {
     console.error("[club-directory] GET error:", err);
     return res.status(500).json({ error: "Server error" });
+  }
+});
+
+// ── Search clubs in local DB (autocomplete) ──────────────────────────────────
+app.get("/api/club-search", async (req, res) => {
+  const q = String(req.query.q || "").trim();
+  if (q.length < 2) return res.json([]);
+  try {
+    const like = `%${q}%`;
+    const [rows] = await pool.query(`
+      SELECT DISTINCT club_name, logo_url, competition, country, country_code
+      FROM (
+        SELECT cd.club_name, cd.logo_url, cd.competition, cd.country, cd.country_code
+        FROM club_directory cd WHERE cd.club_name LIKE ?
+        UNION
+        SELECT cl.club_name, cl.logo_url, '' AS competition, '' AS country, '' AS country_code
+        FROM club_logos cl WHERE cl.club_name LIKE ? AND cl.club_name NOT IN (SELECT club_name FROM club_directory WHERE club_name LIKE ?)
+      ) combined
+      ORDER BY
+        CASE WHEN club_name LIKE ? THEN 0 ELSE 1 END,
+        club_name
+      LIMIT 20
+    `, [like, like, like, `${q}%`]);
+    return res.json(rows);
+  } catch (err) {
+    return res.json([]);
+  }
+});
+
+// ── Transfermarkt club profile scraping ────────────────────────────────────
+app.get("/api/club-tm/:clubId", async (req, res) => {
+  const { clubId } = req.params;
+  if (!clubId || !/^\d+$/.test(clubId)) return res.status(400).json({ error: "Invalid club ID" });
+
+  try {
+    const cacheKey = `tm-club:${clubId}`;
+    try {
+      const [cached] = await pool.query(
+        "SELECT response_json FROM api_football_cache WHERE cache_key = ? AND expires_at > NOW() LIMIT 1",
+        [cacheKey]
+      );
+      if (cached.length > 0) {
+        return res.json(typeof cached[0].response_json === "string" ? JSON.parse(cached[0].response_json) : cached[0].response_json);
+      }
+    } catch {}
+
+    const url = `https://www.transfermarkt.fr/club/startseite/verein/${clubId}`;
+    const resp = await fetch(url, { headers: TM_HEADERS, signal: AbortSignal.timeout(12000) });
+    if (!resp.ok) return res.status(502).json({ error: `TM returned ${resp.status}` });
+    const html = await resp.text();
+
+    // Club name — directly inside <h1 class="data-header__headline-wrapper...">Club Name</h1>
+    const nameM = html.match(/<h1[^>]*class="[^"]*data-header__headline-wrapper[^"]*"[^>]*>\s*([\s\S]*?)\s*<\/h1>/);
+    let clubName = "";
+    if (nameM) {
+      // Strip any inner HTML tags (<b>, <strong>, etc.) and trim
+      clubName = nameM[1].replace(/<[^>]+>/g, "").trim();
+    }
+    // Fallback: <title> tag
+    if (!clubName) {
+      const titleM = html.match(/<title>([^|<]+)/);
+      if (titleM) clubName = titleM[1].replace(/[-–].*$/, "").trim();
+    }
+
+    // Badge — in data-header__profile-container <img src="...">
+    const badgeM = html.match(/data-header__profile-container[\s\S]*?<img[^>]*src="([^"]+)"/);
+    const badge = badgeM ? badgeM[1] : null;
+
+    // League/competition — <span class="data-header__club"...><a>League Name</a>
+    const leagueM = html.match(/<span[^>]*class="[^"]*data-header__club[^"]*"[^>]*>[\s\S]*?<a[^>]*>\s*([^<]+)/);
+    const league = leagueM ? leagueM[1].trim() : "";
+
+    // Country — <img title="Country" class="...flaggenrahmen...">
+    const countryM = html.match(/<img[^>]*title="([^"]+)"[^>]*class="[^"]*flaggenrahmen/);
+    const country = countryM ? countryM[1].trim() : "";
+
+    // Stadium — "Stade:" or "Stadium:" label in data-header
+    const stadiumM = html.match(/(?:Stade|Stadium)\s*:[\s\S]*?<a[^>]*title="[^"]*"[^>]*href="[^"]*\/stadion\/[^"]*">([^<]+)/i)
+      || html.match(/(?:Stade|Stadium)\s*:[\s\S]*?<a[^>]*>([^<]+)/i);
+    const stadium = stadiumM ? stadiumM[1].trim() : null;
+
+    // Squad size — "Taille de l'effectif:" or "Squad size:"
+    const squadM = html.match(/(?:Taille de l.effectif|Squad size|Effectif)\s*:[\s\S]*?data-header__content[^>]*>\s*(\d+)/i);
+    const squadSize = squadM ? parseInt(squadM[1]) : null;
+
+    // Average age — "Âge moyen:" or "Average age:"
+    const avgAgeM = html.match(/(?:Âge moyen|Average age|ge moyen)\s*:[\s\S]*?data-header__content[^>]*>\s*([\d,\.]+)/i);
+    const avgAge = avgAgeM ? avgAgeM[1].replace(",", ".") : null;
+
+    // Market value — data-header__market-value-wrapper
+    const mvM = html.match(/data-header__market-value-wrapper[^>]*>([\d\s,.]+)\s*<span class="waehrung">([^<]+)<\/span>/);
+    const marketValue = mvM ? `${mvM[1].trim()} ${mvM[2].trim()}` : null;
+
+    const result = {
+      clubId,
+      clubName,
+      badge,
+      league,
+      country,
+      stadium,
+      squadSize,
+      avgAge,
+      marketValue,
+      tmUrl: `https://www.transfermarkt.fr/club/startseite/verein/${clubId}`,
+      source: "transfermarkt",
+    };
+
+    // Cache 24h
+    try {
+      await pool.query(
+        `INSERT INTO api_football_cache (cache_key, response_json, fetched_at, expires_at)
+         VALUES (?, ?, NOW(), DATE_ADD(NOW(), INTERVAL 24 HOUR))
+         ON DUPLICATE KEY UPDATE response_json = VALUES(response_json), fetched_at = NOW(), expires_at = DATE_ADD(NOW(), INTERVAL 24 HOUR)`,
+        [cacheKey, JSON.stringify(result)]
+      );
+    } catch {}
+
+    // Upsert club_directory + club_logos
+    if (clubName) {
+      try {
+        await pool.query(
+          `INSERT INTO club_directory (club_name, competition, country, logo_url)
+           VALUES (?, ?, ?, ?) ON DUPLICATE KEY UPDATE competition = COALESCE(NULLIF(VALUES(competition),''), competition), country = COALESCE(NULLIF(VALUES(country),''), country), logo_url = COALESCE(VALUES(logo_url), logo_url)`,
+          [clubName, league, country, badge]
+        );
+        if (badge) {
+          await pool.query("INSERT INTO club_logos (club_name, logo_url) VALUES (?, ?) ON DUPLICATE KEY UPDATE logo_url = VALUES(logo_url)", [clubName, badge]);
+        }
+      } catch {}
+    }
+
+    return res.json(result);
+  } catch (err) {
+    console.error("[club-tm] Error:", err.message);
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+// ── Transfermarkt club search (find club ID by name) ────────────────────────
+app.get("/api/club-tm-search", async (req, res) => {
+  const q = String(req.query.q || "").trim();
+  if (!q) return res.status(400).json({ error: "Missing q" });
+  try {
+    const searchUrl = `https://www.transfermarkt.fr/schnellsuche/ergebnis/schnellsuche?query=${encodeURIComponent(q)}`;
+    const resp = await fetch(searchUrl, { headers: TM_HEADERS, signal: AbortSignal.timeout(12000) });
+    if (!resp.ok) return res.status(502).json({ error: `TM returned ${resp.status}` });
+    const html = await resp.text();
+
+    // Find club links in the search results
+    const clubs = [];
+    const regex = /<td[^>]*class="[^"]*hauptlink[^"]*"[^>]*>\s*<a[^>]*href="\/([\w-]+)\/startseite\/verein\/(\d+)"[^>]*title="([^"]*)"/g;
+    let m;
+    while ((m = regex.exec(html)) !== null && clubs.length < 5) {
+      clubs.push({ slug: m[1], clubId: m[2], clubName: m[3] });
+    }
+    // Fallback: any verein link
+    if (clubs.length === 0) {
+      const fb = html.match(/href="\/([\w-]+)\/startseite\/verein\/(\d+)"/);
+      if (fb) clubs.push({ slug: fb[1], clubId: fb[2], clubName: q });
+    }
+
+    if (clubs.length === 0) return res.json(null);
+
+    // Return first match, but also fetch its profile to populate club_directory
+    const best = clubs[0];
+    const profileResp = await fetch(`${req.protocol}://${req.get("host")}/api/club-tm/${best.clubId}`);
+    const profile = profileResp.ok ? await profileResp.json() : best;
+
+    return res.json(profile);
+  } catch (err) {
+    console.error("[club-tm-search] Error:", err.message);
+    return res.status(500).json({ error: err.message });
   }
 });
 
@@ -6251,13 +6626,9 @@ app.post("/api/functions/:name", authMiddleware, async (req, res) => {
         }
       }
 
-      if (query) {
-        const searchUrl = `https://www.transfermarkt.fr/schnellsuche/ergebnis/schnellsuche?query=${encodeURIComponent(query)}&Spieler_page=${page || 1}`;
-        const resp = await fetch(searchUrl, opts);
-        if (!resp.ok) throw new Error(`TM search returned ${resp.status}`);
-        const html = await resp.text();
-
-        // Find the first <table class="items"> with proper nested table handling
+      // ── Helper: parse player rows from TM search HTML ──
+      function parseTmSearchHtml(html) {
+        const parsed = [];
         const tableStart = html.indexOf('<table class="items">');
         let tableEnd = -1;
         if (tableStart !== -1) {
@@ -6267,81 +6638,131 @@ app.post("/api/functions/:name", authMiddleware, async (req, res) => {
             if (html.slice(k, k + 8) === '</table>') { d--; if (d === 0) { tableEnd = k + 8; break; } }
           }
         }
-        if (tableStart !== -1 && tableEnd !== -1) {
-          const table = html.slice(tableStart, tableEnd);
+        if (tableStart === -1 || tableEnd === -1) return parsed;
+        const table = html.slice(tableStart, tableEnd);
 
-          // Split rows by finding each <tr class="odd/even"> boundary
-          const rowStarts = [];
-          const rowPattern = /<tr class="(?:odd|even)">/g;
-          let rm;
-          while ((rm = rowPattern.exec(table)) !== null) rowStarts.push(rm.index);
+        const rowStarts = [];
+        const rowPattern = /<tr class="(?:odd|even)">/g;
+        let rm;
+        while ((rm = rowPattern.exec(table)) !== null) rowStarts.push(rm.index);
 
-          const rows = [];
-          for (let ri = 0; ri < rowStarts.length; ri++) {
-            const start = rowStarts[ri];
-            const end = ri + 1 < rowStarts.length ? rowStarts[ri + 1] : table.length;
-            rows.push(table.slice(start, end));
+        for (let ri = 0; ri < rowStarts.length; ri++) {
+          const start = rowStarts[ri];
+          const end = ri + 1 < rowStarts.length ? rowStarts[ri + 1] : table.length;
+          const row = table.slice(start, end);
+
+          const photoMatch = row.match(/img[^>]*src="(https:\/\/img[^"]*portrait[^"]*)"/);
+          const photo = photoMatch ? photoMatch[1].replace('/small/', '/big/') : null;
+          const nameMatch = row.match(/class="hauptlink"[^>]*>\s*<a[^>]*title="([^"]*)"[^>]*href="([^"]*)"/);
+          if (!nameMatch) continue;
+          const pName = nameMatch[1].replace(/&#0?39;/g, "'").replace(/&amp;/g, '&').replace(/&quot;/g, '"');
+          const tmPath = nameMatch[2];
+          const tdZentriert = row.match(/<td class="zentriert">([^<]{1,30})<\/td>/g) || [];
+          let posText = '', ageVal = null;
+          for (const td of tdZentriert) {
+            const val = td.replace(/<[^>]*>/g, '').trim();
+            if (/^\d{1,2}$/.test(val)) ageVal = parseInt(val);
+            else if (val && !posText && !/^\d+$/.test(val)) posText = val;
+          }
+          const natFlags = [];
+          const flagRegex = /title="([^"]*)"[^>]*class="flaggenrahmen"/g;
+          let fm;
+          while ((fm = flagRegex.exec(row)) !== null) natFlags.push(fm[1]);
+          const clubCellMatch = row.match(/<a[^>]*title="([^"]*)"[^>]*>[^<]*<img[^>]*class="tiny_wappen"/);
+          const club = clubCellMatch ? clubCellMatch[1] : '';
+          const clubLogoMatch = row.match(/<img[^>]*class="tiny_wappen"[^>]*src="([^"]*)"/);
+          const clubLogo = clubLogoMatch ? clubLogoMatch[1] : '';
+          const valueMatch = row.match(/<td[^>]*class="rechts hauptlink"[^>]*>([\s\S]*?)<\/td>/);
+          const marketValue = valueMatch ? valueMatch[1].replace(/<[^>]*>/g, '').trim() : '';
+
+          parsed.push({
+            name: pName, tmPath,
+            tmId: tmPath.match(/\/spieler\/(\d+)/)?.[1] || null,
+            photo, position: posText, age: ageVal,
+            nationality: natFlags.join(', '), club, clubLogo, marketValue,
+          });
+        }
+        return parsed;
+      }
+
+      // ── Helper: fetch one TM search query and return parsed players ──
+      async function fetchTmSearch(q, pg = 1) {
+        try {
+          const searchUrl = `https://www.transfermarkt.fr/schnellsuche/ergebnis/schnellsuche?query=${encodeURIComponent(q)}&Spieler_page=${pg}`;
+          const resp = await fetch(searchUrl, opts);
+          if (!resp.ok) return [];
+          return parseTmSearchHtml(await resp.text());
+        } catch { return []; }
+      }
+
+      // ── Helper: deduplicate by tmId, keep first occurrence ──
+      function dedupeResults(arr) {
+        const seen = new Set();
+        return arr.filter(r => {
+          const key = r.tmId || r.tmPath;
+          if (seen.has(key)) return false;
+          seen.add(key);
+          return true;
+        });
+      }
+
+      // ── Helper: apply user filters to results ──
+      function applyFilters(arr) {
+        return arr.filter(r => {
+          if (ageMin && r.age && r.age < parseInt(ageMin)) return false;
+          if (ageMax && r.age && r.age > parseInt(ageMax)) return false;
+          if (position && position !== '_all' && r.position) {
+            if (!r.position.toLowerCase().includes(position.toLowerCase())) return false;
+          }
+          if (nationality && r.nationality) {
+            if (!r.nationality.toLowerCase().includes(nationality.toLowerCase())) return false;
+          }
+          return true;
+        });
+      }
+
+      if (query) {
+        // 1) Primary search with exact query
+        const primary = await fetchTmSearch(query, page || 1);
+        results.push(...primary);
+        results = dedupeResults(results);
+
+        // 2) If < 3 results, try broadened searches
+        const MIN_RESULTS = 3;
+        if (results.length < MIN_RESULTS) {
+          const extraQueries = [];
+          const normalizedQuery = query.normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+          // Try without accents if different from original
+          if (normalizedQuery !== query) extraQueries.push(normalizedQuery);
+          // Try individual words (for multi-word queries like "Luis Diaz")
+          const words = query.trim().split(/\s+/).filter(w => w.length >= 2);
+          if (words.length >= 2) {
+            for (const word of words) extraQueries.push(word);
+          }
+          // Try with common suffix removed (e.g., "Jr", "Jr.", "III")
+          const cleanedQuery = query.replace(/\s+(Jr\.?|Sr\.?|III?|IV|V)$/i, '').trim();
+          if (cleanedQuery !== query && cleanedQuery.length >= 2) extraQueries.push(cleanedQuery);
+
+          // Run extra searches with small delays to avoid rate-limiting
+          for (const eq of extraQueries) {
+            if (results.length >= MIN_RESULTS) break;
+            await new Promise(r => setTimeout(r, 300));
+            const extra = await fetchTmSearch(eq);
+            results.push(...extra);
+            results = dedupeResults(results);
           }
 
-          for (const row of rows) {
-            // Photo (src= not data-src on TM)
-            const photoMatch = row.match(/img[^>]*src="(https:\/\/img[^"]*portrait[^"]*)"/);
-            const photo = photoMatch ? photoMatch[1].replace('/small/', '/big/') : null;
-            // Name + link
-            const nameMatch = row.match(/class="hauptlink"[^>]*>\s*<a[^>]*title="([^"]*)"[^>]*href="([^"]*)"/);
-            if (!nameMatch) continue;
-            const name = nameMatch[1].replace(/&#0?39;/g, "'").replace(/&amp;/g, '&').replace(/&quot;/g, '"');
-            const tmPath = nameMatch[2];
-            // Position: first <td class="zentriert"> with plain text (not containing <a> or <img>)
-            const tdZentriert = row.match(/<td class="zentriert">([^<]{1,30})<\/td>/g) || [];
-            let posText = '';
-            let ageVal = null;
-            for (const td of tdZentriert) {
-              const val = td.replace(/<[^>]*>/g, '').trim();
-              if (/^\d{1,2}$/.test(val)) { ageVal = parseInt(val); }
-              else if (val && !posText && !/^\d+$/.test(val)) { posText = val; }
-            }
-            // Nationality flags
-            const natFlags = [];
-            const flagRegex = /title="([^"]*)"[^>]*class="flaggenrahmen"/g;
-            let fm;
-            while ((fm = flagRegex.exec(row)) !== null) natFlags.push(fm[1]);
-            // Club: from the <a> wrapping the tiny_wappen img, or from inline-table
-            const clubCellMatch = row.match(/<a[^>]*title="([^"]*)"[^>]*>[^<]*<img[^>]*class="tiny_wappen"/);
-            const club = clubCellMatch ? clubCellMatch[1] : '';
-            const clubLogoMatch = row.match(/<img[^>]*class="tiny_wappen"[^>]*src="([^"]*)"/);
-            const clubLogo = clubLogoMatch ? clubLogoMatch[1] : '';
-            // Market value
-            const valueMatch = row.match(/<td[^>]*class="rechts hauptlink"[^>]*>([\s\S]*?)<\/td>/);
-            const marketValue = valueMatch ? valueMatch[1].replace(/<[^>]*>/g, '').trim() : '';
-
-            // Apply filters
-            if (ageMin && ageVal && ageVal < parseInt(ageMin)) continue;
-            if (ageMax && ageVal && ageVal > parseInt(ageMax)) continue;
-            if (position && position !== '_all' && posText) {
-              const posLower = posText.toLowerCase();
-              const filterLower = position.toLowerCase();
-              if (!posLower.includes(filterLower)) continue;
-            }
-            if (nationality && natFlags.length > 0) {
-              const natLower = nationality.toLowerCase();
-              if (!natFlags.some(f => f.toLowerCase().includes(natLower))) continue;
-            }
-
-            results.push({
-              name,
-              tmPath,
-              tmId: tmPath.match(/\/spieler\/(\d+)/)?.[1] || null,
-              photo,
-              position: posText,
-              age: ageVal,
-              nationality: natFlags.join(', '),
-              club,
-              clubLogo,
-              marketValue,
-            });
+          // 3) If still < 3, try page 2 of original query
+          if (results.length < MIN_RESULTS && (!page || page === 1)) {
+            await new Promise(r => setTimeout(r, 300));
+            const page2 = await fetchTmSearch(query, 2);
+            results.push(...page2);
+            results = dedupeResults(results);
           }
         }
+
+        // Apply filters after all searches
+        results = applyFilters(results);
       }
 
       // Value filter
@@ -6488,6 +6909,95 @@ app.post("/api/functions/:name", authMiddleware, async (req, res) => {
     }
   }
 
+  // ── SofaScore: fetch league info (teams, season) ──
+  if (name === "sofascore-league") {
+    const { tournamentId } = req.body || {};
+    if (!tournamentId) return res.status(400).json({ error: "Missing tournamentId" });
+
+    const SOFA_HEADERS = {
+      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
+      'Accept': 'application/json, text/plain, */*',
+      'Accept-Language': 'fr-FR,fr;q=0.9,en-US;q=0.8,en;q=0.7',
+      'Referer': 'https://www.sofascore.com/',
+      'Origin': 'https://www.sofascore.com',
+      'Cache-Control': 'no-cache',
+    };
+    const opts = { headers: SOFA_HEADERS, signal: AbortSignal.timeout(12000) };
+    const apiBase = 'https://api.sofascore.com/api/v1';
+
+    // Check DB cache first (24h TTL)
+    const cacheKey = `sofascore_league_${tournamentId}`;
+    try {
+      const [cached] = await pool.query(
+        'SELECT response_json FROM api_football_cache WHERE cache_key = ? AND expires_at > NOW()',
+        [cacheKey]
+      );
+      if (cached.length > 0) {
+        return res.json(JSON.parse(cached[0].response_json));
+      }
+    } catch { /* cache miss, continue */ }
+
+    try {
+      // 1. Fetch seasons to get the current one
+      const seasonsResp = await fetch(`${apiBase}/unique-tournament/${tournamentId}/seasons`, opts);
+      if (!seasonsResp.ok) {
+        console.warn(`[sofascore] seasons ${seasonsResp.status} for tournament ${tournamentId}`);
+        return res.status(seasonsResp.status).json({ error: `SofaScore returned ${seasonsResp.status}` });
+      }
+      const seasonsData = await seasonsResp.json();
+      const currentSeason = seasonsData?.seasons?.[0]; // first = most recent
+      if (!currentSeason) return res.json({ teams: [], season: null });
+
+      // 2. Fetch standings to get teams
+      await new Promise(r => setTimeout(r, 500));
+      const standingsResp = await fetch(
+        `${apiBase}/unique-tournament/${tournamentId}/season/${currentSeason.id}/standings/total`,
+        opts
+      );
+      let teams = [];
+      if (standingsResp.ok) {
+        const standingsData = await standingsResp.json();
+        const rows = standingsData?.standings?.[0]?.rows ?? [];
+        teams = rows.map(r => ({
+          id: r.team?.id,
+          name: r.team?.name,
+          shortName: r.team?.shortName,
+          position: r.position,
+          points: r.points,
+          played: r.matches,
+          wins: r.wins,
+          draws: r.draws,
+          losses: r.losses,
+          goalsFor: r.scoresFor,
+          goalsAgainst: r.scoresAgainst,
+        }));
+      } else {
+        console.warn(`[sofascore] standings ${standingsResp.status} for ${tournamentId}/${currentSeason.id}`);
+      }
+
+      const result = {
+        tournamentId: Number(tournamentId),
+        season: { id: currentSeason.id, name: currentSeason.name, year: currentSeason.year },
+        teams,
+      };
+
+      // Cache for 24h
+      try {
+        const expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString().slice(0, 19).replace('T', ' ');
+        await pool.query(
+          `INSERT INTO api_football_cache (cache_key, response_json, expires_at) VALUES (?, ?, ?)
+           ON DUPLICATE KEY UPDATE response_json = VALUES(response_json), expires_at = VALUES(expires_at), fetched_at = NOW()`,
+          [cacheKey, JSON.stringify(result), expiresAt]
+        );
+      } catch { /* cache write failure is non-critical */ }
+
+      return res.json(result);
+    } catch (err) {
+      console.error('[sofascore] Error:', err?.message);
+      return res.status(502).json({ error: 'SofaScore fetch failed', detail: err?.message });
+    }
+  }
+
   return res.status(404).json({ error: `Unknown function: ${name}` });
 });
 
@@ -6558,9 +7068,41 @@ async function ensureFixtureTables() {
       await pool.query("ALTER TABLE fixtures ADD UNIQUE KEY uniq_user_api_fixture (user_id, api_fixture_id)");
       console.log("[startup] Added API columns to fixtures table");
     }
-    console.log("[startup] Fixture tables ready");
+    // ── Tickets / bug reports ──
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS tickets (
+        id CHAR(36) PRIMARY KEY,
+        user_id CHAR(36) NOT NULL,
+        category VARCHAR(50) NOT NULL DEFAULT 'bug',
+        subject VARCHAR(255) NOT NULL,
+        message TEXT NOT NULL,
+        page_url VARCHAR(500) NULL,
+        user_agent VARCHAR(500) NULL,
+        status ENUM('open','in_progress','closed') NOT NULL DEFAULT 'open',
+        created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        INDEX idx_tickets_user (user_id),
+        INDEX idx_tickets_status (status, created_at),
+        FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+      )
+    `);
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS ticket_messages (
+        id CHAR(36) PRIMARY KEY,
+        ticket_id CHAR(36) NOT NULL,
+        sender_id CHAR(36) NOT NULL,
+        is_admin TINYINT(1) NOT NULL DEFAULT 0,
+        body TEXT NOT NULL,
+        created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        INDEX idx_ticket_messages_ticket (ticket_id, created_at),
+        FOREIGN KEY (ticket_id) REFERENCES tickets(id) ON DELETE CASCADE,
+        FOREIGN KEY (sender_id) REFERENCES users(id) ON DELETE CASCADE
+      )
+    `);
+
+    console.log("[startup] Fixture + ticket tables ready");
   } catch (err) {
-    console.error("[startup] Error creating fixture tables:", err.message);
+    console.error("[startup] Error creating tables:", err.message);
   }
 }
 
@@ -6571,7 +7113,8 @@ export default app;
 if (!isVercel) {
   app.listen(port, () => {
     console.log(`API listening on http://localhost:${port}`);
-    ensureMigrations();
+    runMigrations();
+    ensureFixtureTables();
   });
 }
 

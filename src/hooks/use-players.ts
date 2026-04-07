@@ -37,6 +37,7 @@ export function usePlayers() {
         potential: Number(row.potential),
         position_secondaire: (row as any).position_secondaire ?? undefined,
         has_news: (row as any).has_news || null,
+        is_archived: !!(row as any).is_archived,
         created_at: row.created_at,
         updated_at: row.updated_at,
       })) as Player[];
@@ -216,6 +217,24 @@ export function useUnsharePlayerFromOrg() {
       queryClient.invalidateQueries({ queryKey: ['player'] });
       queryClient.invalidateQueries({ queryKey: ['org-players'] });
       queryClient.invalidateQueries({ queryKey: ['player-org-shares'] });
+    },
+  });
+}
+
+// Toggle archive status
+export function useToggleArchive() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async ({ playerId, archived }: { playerId: string; archived: boolean }) => {
+      const { error } = await supabase
+        .from('players')
+        .update({ is_archived: archived ? 1 : 0 } as any)
+        .eq('id', playerId);
+      if (error) throw error;
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['players'] });
+      queryClient.invalidateQueries({ queryKey: ['player'] });
     },
   });
 }

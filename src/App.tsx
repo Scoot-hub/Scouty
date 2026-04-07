@@ -19,6 +19,8 @@ const AddPlayer = lazy(() => import("@/pages/AddPlayer"));
 const EditPlayer = lazy(() => import("@/pages/EditPlayer"));
 const Settings = lazy(() => import("@/pages/Settings"));
 const Admin = lazy(() => import("@/pages/Admin"));
+const AdminTickets = lazy(() => import("@/pages/AdminTickets"));
+const MyTickets = lazy(() => import("@/pages/MyTickets"));
 const Pricing = lazy(() => import("@/pages/Pricing"));
 const PremiumSuccess = lazy(() => import("@/pages/PremiumSuccess"));
 const Account = lazy(() => import("@/pages/Account"));
@@ -47,6 +49,7 @@ const ClubProfile = lazy(() => import("@/pages/ClubProfile"));
 const MyClubs = lazy(() => import("@/pages/MyClubs"));
 const Privacy = lazy(() => import("@/pages/Privacy"));
 const AdminAnalytics = lazy(() => import("@/pages/AdminAnalytics"));
+const Championships = lazy(() => import("@/pages/Championships"));
 const MapView = lazy(() => import("@/pages/MapView"));
 const MatchDetail = lazy(() => import("@/pages/MatchDetail"));
 const NotFound = lazy(() => import("@/pages/NotFound"));
@@ -101,6 +104,8 @@ const App = () => (
                 <Route path="/admin" element={<Admin />} />
                 <Route path="/admin/roles" element={<Navigate to="/admin" replace />} />
                 <Route path="/admin/analytics" element={<AdminAnalytics />} />
+                <Route path="/admin/tickets" element={<AdminTickets />} />
+                <Route path="/my-tickets" element={<MyTickets />} />
                 <Route path="/premium-success" element={<PremiumSuccess />} />
                 <Route path="/account" element={<Account />} />
                 <Route path="/organization" element={<Organization />} />
@@ -114,6 +119,7 @@ const App = () => (
                 <Route path="/profile/:userId" element={<UserProfile />} />
                 <Route path="/club" element={<ClubProfile />} />
                 <Route path="/my-clubs" element={<MyClubs />} />
+                <Route path="/championships" element={<Championships />} />
                 <Route path="/map" element={<MapView />} />
                 <Route path="/checkout" element={<Checkout />} />
                 <Route path="/affiliate" element={<Affiliate />} />
