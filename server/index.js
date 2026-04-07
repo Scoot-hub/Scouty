@@ -4134,15 +4134,50 @@ const TM_HEADERS = {
 };
 
 // French month abbreviations → month number
-const FR_MONTHS = { janv:1, févr:2, mars:3, avr:4, mai:5, juin:6, juil:7, août:8, sept:9, oct:10, nov:11, déc:12 };
+const FR_MONTHS = {
+  janv:1, janvier:1,
+  févr:2, février:2, fevr:2,
+  mars:3,
+  avr:4, avril:4,
+  mai:5,
+  juin:6,
+  juil:7, juillet:7,
+  août:8, aout:8,
+  sept:9, septembre:9,
+  oct:10, octobre:10,
+  nov:11, novembre:11,
+  déc:12, décembre:12,
+};
+
+// Decode common HTML entities in scraped text
+function decodeHtmlEntities(str) {
+  if (!str) return str;
+  return str
+    .replace(/&#(\d+);/g, (_, n) => String.fromCharCode(parseInt(n)))
+    .replace(/&#x([0-9a-fA-F]+);/g, (_, h) => String.fromCharCode(parseInt(h, 16)))
+    .replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"').replace(/&apos;/g, "'").replace(/&#x27;/g, "'")
+    .replace(/&eacute;/g, 'é').replace(/&egrave;/g, 'è').replace(/&agrave;/g, 'à')
+    .replace(/&uuml;/g, 'ü').replace(/&ouml;/g, 'ö').replace(/&auml;/g, 'ä')
+    .replace(/&oacute;/g, 'ó').replace(/&iacute;/g, 'í').replace(/&ntilde;/g, 'ñ')
+    .replace(/&ccedil;/g, 'ç').replace(/&szlig;/g, 'ß')
+    .replace(/&nbsp;/g, ' ');
+}
+
+function matchFrMonth(raw) {
+  const norm = raw.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/\.$/, '');
+  for (const [k, v] of Object.entries(FR_MONTHS)) {
+    const kNorm = k.normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+    if (norm === kNorm || norm.startsWith(kNorm) || kNorm.startsWith(norm)) return v;
+  }
+  return null;
+}
 
 function parseFrDate(str) {
   if (!str) return null;
   const m = String(str).trim().match(/(\d{1,2})\s+([^\s\d]+)\.?\s+(\d{4})/);
   if (!m) return null;
-  const key = m[2].toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').slice(0, 4);
-  const frKey = Object.keys(FR_MONTHS).find(k => k.normalize('NFD').replace(/[\u0300-\u036f]/g, '').slice(0, 4) === key);
-  const month = frKey ? FR_MONTHS[frKey] : null;
+  const month = matchFrMonth(m[2]);
   if (!month || parseInt(m[3]) < 2020) return null;
   return `${m[3]}-${String(month).padStart(2, '0')}-${m[1].padStart(2, '0')}`;
 }
@@ -4328,8 +4363,21 @@ async function fetchPlayerDataFromTransfermarkt(player, tmPath = null) {
       }
     }
 
-    console.log(`[TM] ${player.name} → contract:${contract} agent:${agent} value:${marketValue} height:${heightCm}cm club:${currentClub} onLoan:${onLoan} parentClub:${parentClub} loanEnd:${loanEndDate} parentContract:${parentContractEnd} photo:${!!photoUrl} logo:${!!clubLogoUrl}`);
-    return { tmId: best.id, contract, heightCm, agent, marketValue, currentClub, onLoan, parentClub, loanEndDate, parentContractEnd, photoUrl, clubLogoUrl };
+    // ── Foot ──
+    const footRaw = extractBetween(html, 'Pied fort\u00a0:</span>', '</span>')
+      || extractBetween(html, 'Pied fort :</span>', '</span>')
+      || extractBetween(html, 'Pied fort:</span>', '</span>');
+
+    // ── Position ──
+    const positionRaw = extractBetween(html, 'Poste\u00a0:</span>', '</span>')
+      || extractBetween(html, 'Poste :</span>', '</span>')
+      || extractBetween(html, 'Poste:</span>', '</span>');
+
+    // ── Nationality ──
+    const nationalityRaw = extractBetween(html, 'Nationalit\u00e9:</span>', '</span>');
+
+    console.log(`[TM] ${player.name} → contract:${contract} agent:${agent} value:${marketValue} height:${heightCm}cm club:${currentClub} onLoan:${onLoan} foot:${footRaw} pos:${positionRaw} nat:${nationalityRaw} photo:${!!photoUrl} logo:${!!clubLogoUrl}`);
+    return { tmId: best.id, contract, heightCm, agent, marketValue, currentClub, onLoan, parentClub, loanEndDate, parentContractEnd, photoUrl, clubLogoUrl, footRaw, positionRaw, nationalityRaw };
   } catch (e) {
     console.error('[enrich] Transfermarkt scrape error:', e.message);
     return null;
@@ -4501,7 +4549,14 @@ async function enrichOnePlayer(playerInfo, row, tmPath = null) {
 
   if (newsLabel) { setClauses.push('has_news = ?'); params.push(newsLabel); }
 
-  if (dateOfBirth) { setClauses.push('date_of_birth = ?'); params.push(dateOfBirth); }
+  if (dateOfBirth) {
+    setClauses.push('date_of_birth = ?'); params.push(dateOfBirth);
+    // Also fix generation (birth year) when we have an authoritative date of birth
+    const dobYear = parseInt(dateOfBirth.slice(0, 4), 10);
+    if (dobYear && (!row.generation || Math.abs(row.generation - dobYear) > 1)) {
+      setClauses.push('generation = ?'); params.push(dobYear);
+    }
+  }
   if (ext.market_value) { setClauses.push('market_value = ?'); params.push(ext.market_value); }
 
   // Club: TM is authoritative — always write when TM returns one
@@ -4519,6 +4574,46 @@ async function enrichOnePlayer(playerInfo, row, tmPath = null) {
   if (tm?.photoUrl && !row.photo_url) {
     setClauses.push('photo_url = ?');
     params.push(tm.photoUrl);
+  }
+
+  // ── TM foot: update from profile if current value is default/missing ──
+  if (tm?.footRaw) {
+    const s = tm.footRaw.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+    let foot = null;
+    if (s.includes('gauche')) foot = 'Gaucher';
+    else if (s.includes('deux') || s.includes('ambidextre')) foot = 'Ambidextre';
+    else if (s.includes('droit')) foot = 'Droitier';
+    if (foot) { setClauses.push('foot = ?'); params.push(foot); }
+  }
+
+  // ── TM position: update from profile if missing ───────────────────
+  if (tm?.positionRaw) {
+    const mapPos = (raw) => {
+      const s = raw.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+      if (s.includes('gardien')) return 'GK';
+      if (s.includes('lateral droit') || s.includes('arriere droit')) return 'LD';
+      if (s.includes('lateral gauche') || s.includes('arriere gauche')) return 'LG';
+      if (s.includes('defenseur central') || s.includes('stopper')) return 'DC';
+      if (s.includes('milieu defensif') || s.includes('sentinelle')) return 'MDef';
+      if (s.includes('milieu offensif') || s.includes('meneur')) return 'MO';
+      if (s.includes('ailier droit') || s.includes('extremite droite')) return 'AD';
+      if (s.includes('ailier gauche') || s.includes('extremite gauche')) return 'AG';
+      if (s.includes('avant-centre') || s.includes('avant centre') || s.includes('attaquant') || s.includes('buteur') || s.includes('second attaquant')) return 'ATT';
+      if (s.includes('milieu central') || s.includes('milieu de terrain') || s.includes('milieu')) return 'MC';
+      return null;
+    };
+    const posZone = { GK: 'Gardien', DC: 'Défenseur', LD: 'Défenseur', LG: 'Défenseur', MDef: 'Milieu', MC: 'Milieu', MO: 'Milieu', AD: 'Attaquant', AG: 'Attaquant', ATT: 'Attaquant' };
+    const pos = mapPos(tm.positionRaw);
+    if (pos) {
+      setClauses.push('position = ?'); params.push(pos);
+      setClauses.push('zone = ?'); params.push(posZone[pos] || '');
+    }
+  }
+
+  // ── TM nationality: update from profile if missing ────────────────
+  if (tm?.nationalityRaw && (!row.nationality || row.nationality === 'Inconnu')) {
+    const nat = tm.nationalityRaw.split(/\s{2,}/)[0].trim();
+    if (nat) { setClauses.push('nationality = ?'); params.push(nat); }
   }
 
   // ── TM club logo: save to club_logos if not already present ────────
@@ -4796,15 +4891,18 @@ app.post("/api/functions/:name", authMiddleware, async (req, res) => {
       }
 
       // ── Date of birth / generation year ──
-      const dobRaw = extractBetween(html, 'Date de naissance:</span>', '</span>');
+      const dobRaw = extractBetween(html, 'Date de naissance:</span>', '</span>')
+        || extractBetween(html, 'Date de naissance\u00a0:</span>', '</span>')
+        || extractBetween(html, 'Date de naissance :</span>', '</span>')
+        || extractBetween(html, 'Geboortedatum:</span>', '</span>')
+        || extractBetween(html, 'Date of birth:</span>', '</span>')
+        || extractBetween(html, 'Geburtsdatum:</span>', '</span>');
       let dateOfBirth = null, generation = null;
       if (dobRaw) {
         // "1 sept. 1999 (25 ans)" or "20 décembre 1998"
         const dmyM = dobRaw.match(/(\d{1,2})\s+([^\s\d(]+)\.?\s+(\d{4})/);
         if (dmyM) {
-          const key = dmyM[2].toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').slice(0, 4);
-          const frKey = Object.keys(FR_MONTHS).find(k => k.normalize('NFD').replace(/[\u0300-\u036f]/g, '').slice(0, 4) === key);
-          const month = frKey ? FR_MONTHS[frKey] : null;
+          const month = matchFrMonth(dmyM[2]);
           if (month) {
             dateOfBirth = `${dmyM[3]}-${String(month).padStart(2, '0')}-${dmyM[1].padStart(2, '0')}`;
             generation = parseInt(dmyM[3]);
@@ -4814,7 +4912,18 @@ app.post("/api/functions/:name", authMiddleware, async (req, res) => {
           const yearM = dobRaw.match(/(\d{4})/);
           if (yearM) generation = parseInt(yearM[1]);
         }
+        // Fallback: extract age from "(25 ans)" or "(25)" to compute generation
+        if (!generation) {
+          const ageM = dobRaw.match(/\((\d{1,2})\s*(?:ans)?\s*\)/);
+          if (ageM) generation = new Date().getFullYear() - parseInt(ageM[1]);
+        }
       }
+      // Last resort: look for age in the page header area (TM always shows age)
+      if (!generation) {
+        const ageHeaderM = html.match(/class="data-header__label"[^>]*>[^<]*?(\d{1,2})\s*(?:ans|jaar|years?|Jahre?)/i);
+        if (ageHeaderM) generation = new Date().getFullYear() - parseInt(ageHeaderM[1]);
+      }
+      console.log(`[fetch-tm-profile] dobRaw=${JSON.stringify(dobRaw)} → dateOfBirth=${dateOfBirth} generation=${generation}`);
 
       // ── Nationality (first one listed) ──
       // TM fr: "Nationalité:</span>...<span>...<a title="France">France</a>..."
@@ -4824,6 +4933,16 @@ app.post("/api/functions/:name", authMiddleware, async (req, res) => {
       const positionRaw = extractBetween(html, 'Poste\u00a0:</span>', '</span>')
         || extractBetween(html, 'Poste :</span>', '</span>')
         || extractBetween(html, 'Poste:</span>', '</span>');
+
+      // ── Secondary position ──
+      const secondaryPositionRaw = extractBetween(html, 'Autres postes\u00a0:</span>', '</span>')
+        || extractBetween(html, 'Autres postes :</span>', '</span>')
+        || extractBetween(html, 'Autres postes:</span>', '</span>')
+        || extractBetween(html, 'Autre poste\u00a0:</span>', '</span>')
+        || extractBetween(html, 'Autre poste :</span>', '</span>')
+        || extractBetween(html, 'Autre poste:</span>', '</span>');
+      // Take only the first secondary position if multiple are listed (comma-separated)
+      const secondaryPosition = secondaryPositionRaw ? secondaryPositionRaw.split(',')[0].trim() : null;
 
       // ── Foot ──
       const footRaw = extractBetween(html, 'Pied fort\u00a0:</span>', '</span>')
@@ -4871,7 +4990,7 @@ app.post("/api/functions/:name", authMiddleware, async (req, res) => {
         }
       }
 
-      console.log(`[fetch-tm-profile] name:${playerName} dob:${dateOfBirth} nat:${nationalityRaw} pos:${positionRaw} foot:${footRaw} club:${currentClub} value:${marketValue}`);
+      console.log(`[fetch-tm-profile] name:${playerName} dob:${dateOfBirth} nat:${nationalityRaw} pos:${positionRaw} secPos:${secondaryPosition} foot:${footRaw} club:${currentClub} value:${marketValue}`);
 
       return res.json({
         success: true,
@@ -4880,6 +4999,7 @@ app.post("/api/functions/:name", authMiddleware, async (req, res) => {
         generation,
         nationality: nationalityRaw,
         position: positionRaw,
+        secondaryPosition,
         foot: footRaw,
         club: currentClub,
         contract,
@@ -4891,6 +5011,169 @@ app.post("/api/functions/:name", authMiddleware, async (req, res) => {
       });
     } catch (err) {
       console.error('[fetch-tm-profile] Error:', err);
+      return res.status(500).json({ error: err.message });
+    }
+  }
+
+  if (name === "fetch-tm-club") {
+    const { tmUrl } = req.body || {};
+    if (!tmUrl) return res.status(400).json({ error: 'Missing tmUrl' });
+
+    let clubPath = null;
+    try {
+      const u = new URL(tmUrl.startsWith('http') ? tmUrl : `https://${tmUrl}`);
+      if (u.hostname.includes('transfermarkt')) {
+        // Accept various TM club URL formats: /startseite/verein/, /kader/verein/, etc.
+        const vereinM = u.pathname.match(/(\/[^/]+\/)(?:startseite|kader|spielplan|transfers)\/verein\/(\d+)/);
+        if (vereinM) {
+          clubPath = `${vereinM[1]}kader/verein/${vereinM[2]}`;
+        } else {
+          // Try simpler pattern
+          const simpleM = u.pathname.match(/\/verein\/(\d+)/);
+          if (simpleM) {
+            const slugM = u.pathname.match(/^(\/[^/]+\/)/);
+            clubPath = `${slugM ? slugM[1] : '/club/'}kader/verein/${simpleM[1]}`;
+          }
+        }
+      }
+    } catch {}
+    if (!clubPath) return res.status(400).json({ error: 'Invalid TM club URL' });
+
+    try {
+      const opts = { headers: TM_HEADERS, signal: AbortSignal.timeout(15000) };
+      const resp = await fetch(`https://www.transfermarkt.fr${clubPath}`, opts);
+      if (!resp.ok) return res.status(502).json({ error: `TM returned ${resp.status}` });
+      const html = await resp.text();
+
+      // ── Club name from og:title ──
+      let clubName = null;
+      const ogM = html.match(/<meta\s+property="og:title"\s+content="([^"]+)"/);
+      if (ogM) clubName = decodeHtmlEntities(ogM[1].split(' - ')[0].trim());
+
+      // ── Club logo ──
+      let clubLogo = null;
+      const logoM = html.match(/data-header__profile-image[^>]*src="([^"]+)"/);
+      if (logoM) clubLogo = logoM[1];
+
+      // ── League from breadcrumb or header ──
+      let league = null;
+      const leagueM = html.match(/data-header__club[^>]*>.*?<a[^>]+href="\/[^"]*\/startseite\/wettbewerb\/[^"]*"[^>]*>([^<]+)<\/a>/s);
+      if (leagueM) league = leagueM[1].trim();
+
+      // ── Parse squad ──
+      // TM nests player info (photo, name, position) in an inner <table> inside
+      // the outer row. The outer <td> cells after contain age, nationality, value.
+      // Restrict search to responsive-table sections (the actual squad tables).
+      const players = [];
+      const seenIds = new Set();
+
+      // Collect all responsive-table blocks (each position group is one)
+      const squadSections = [];
+      const rtRegex = /<div[^>]*class="[^"]*responsive-table[^"]*"[^>]*>([\s\S]*?)(?=<div[^>]*class="[^"]*responsive-table|$)/g;
+      let rtMatch;
+      while ((rtMatch = rtRegex.exec(html)) !== null) {
+        squadSections.push({ html: rtMatch[1], offset: rtMatch.index });
+      }
+      // Fallback: if no responsive-table found, use the full HTML
+      if (squadSections.length === 0) squadSections.push({ html, offset: 0 });
+
+      for (const section of squadSections) {
+        const sectionHtml = section.html;
+        const playerLinkRegex = /href="(\/[^"]*\/profil\/spieler\/(\d+))"/g;
+        let plMatch;
+        while ((plMatch = playerLinkRegex.exec(sectionHtml)) !== null) {
+          const tmProfilePath = plMatch[1];
+          const tmId = plMatch[2];
+          if (seenIds.has(tmId)) continue;
+
+          // Find the player name: the anchor text right at this link
+          // It may be an <img> tag (photo link) or actual text (name link)
+          const linkStart = plMatch.index;
+          const anchorChunk = sectionHtml.slice(linkStart, linkStart + 500);
+          const anchorM = anchorChunk.match(/>([\s\S]*?)<\/a>/);
+          const anchorText = anchorM ? anchorM[1].replace(/<[^>]*>/g, '').replace(/\s+/g, ' ').trim() : '';
+
+          // If this anchor has no usable text (e.g. it wraps an <img>), skip but DON'T mark as seen
+          if (!anchorText || anchorText.length < 2 || anchorText.length > 60 || /profil|statistik|kader|leistung/i.test(anchorText)) continue;
+
+          // Now we have a real name link — mark as seen
+          seenIds.add(tmId);
+          const name = decodeHtmlEntities(anchorText);
+
+          const linkIdx = plMatch.index;
+
+          // ── Photo: look BACKWARD from the link (same inline-table) ──
+          const backCtx = sectionHtml.slice(Math.max(0, linkIdx - 500), linkIdx);
+          let photoUrl = null;
+          const photoM = backCtx.match(/data-src="([^"]+(?:portrait|joueurs)[^"]*)"/);
+          if (photoM && !photoM[1].includes('default.jpg') && !photoM[1].includes('wappen')) photoUrl = photoM[1];
+
+          // ── Everything else: look FORWARD from the link ──
+          // The structure after the name link is:
+          //   </a></td></tr><tr><td>Position</td></tr></table></td>
+          //   <td class="zentriert">AGE</td>
+          //   <td class="zentriert"><img class="flaggenrahmen" title="COUNTRY" /></td>
+          //   <td class="rechts hauptlink">VALUE</td>
+          const fwdCtx = sectionHtml.slice(linkIdx, Math.min(sectionHtml.length, linkIdx + 1500));
+
+          // Position: in the nested table right after the name
+          let position = null;
+          const posM = fwdCtx.match(/<tr>\s*<td>\s*([A-ZÀ-Ü][a-zà-ü\s'-]+?)\s*<\/td>\s*<\/tr>\s*<\/table>/);
+          if (posM) position = posM[1].trim();
+
+          // After the nested </table></td>, extract ONLY this player's outer row cells.
+          const tableEndIdx = fwdCtx.indexOf('</table>');
+          const outerRowEnd = fwdCtx.indexOf('</tr>', tableEndIdx + 8);
+          const outerCells = (tableEndIdx >= 0 && outerRowEnd >= 0)
+            ? fwdCtx.slice(tableEndIdx + 8, outerRowEnd)
+            : '';
+
+
+          // Age: <td class="zentriert">21</td>
+          let generation = null;
+          const ageM = outerCells.match(/<td[^>]*class="zentriert"[^>]*>\s*(\d{1,2})\s*<\/td>/);
+          if (ageM) generation = new Date().getFullYear() - parseInt(ageM[1]);
+
+          // Nationality (flag title) — first flag img with class flaggenrahmen
+          // TM puts title BEFORE class: <img ... title="Cameroun" ... class="flaggenrahmen" />
+          let nationality = null;
+          const natM = outerCells.match(/title="([^"]+)"[^>]*flaggenrahmen/);
+          if (natM) nationality = decodeHtmlEntities(natM[1].trim());
+
+          // Market value
+          let marketValue = null;
+          const mvM = outerCells.match(/rechts hauptlink[\s\S]*?>([\d,.]+\s*[^<]*)</);
+          if (mvM) marketValue = mvM[1].replace(/&nbsp;/g, ' ').trim();
+
+          // Skip entries that don't look like real player rows
+          if (!generation && !position && !nationality) continue;
+
+          players.push({
+            tmId,
+            tmProfilePath,
+            name,
+            photoUrl,
+            position,
+            dateOfBirth: null,
+            generation,
+            nationality,
+            marketValue,
+            contractEnd: null,
+          });
+        }
+      }
+
+      console.log(`[fetch-tm-club] club:${clubName} league:${league} players:${players.length}`);
+
+      return res.json({
+        success: true,
+        clubName,
+        clubLogo,
+        league,
+        players,
+      });
+    } catch (err) {
+      console.error('[fetch-tm-club] Error:', err);
       return res.status(500).json({ error: err.message });
     }
   }
@@ -5632,29 +5915,13 @@ app.post("/api/functions/:name", authMiddleware, async (req, res) => {
         }
       } catch { /* table may not exist */ }
 
-      const url = `https://prod-public-api.livescore.com/v1/api/app/scoreboard/soccer/${matchId}?MD=1`;
-      console.log(`[livescore-lineup] Fetching: ${url}`);
-
-      const resp = await fetch(url, {
-        headers: {
-          "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-          "Accept": "application/json",
-        },
-      });
-      if (!resp.ok) {
-        return res.status(502).json({ error: `Livescore returned ${resp.status}` });
-      }
-
-      const raw = await resp.json();
-
-      // Parse lineup data from the response
-      const parseTeamLineup = (team, teamData) => {
+      const parseTeamLineup = (teamData) => {
         if (!teamData || !Array.isArray(teamData)) return [];
         return teamData.map((p) => ({
-          name: p.Nm || "",
-          number: p.Snu ? parseInt(p.Snu, 10) : null,
+          name: p.Nm || p.Pn || `${p.Fn || ''} ${p.Ln || ''}`.trim() || "",
+          number: p.Snu ? parseInt(p.Snu, 10) : (p.Jn ? parseInt(p.Jn, 10) : null),
           position: p.Pos || "",
-          grid: p.Gd || null, // Grid position e.g. "1:1", "2:3"
+          grid: p.Gd || null,
           captain: !!p.Cpt,
           substituted: !!p.Sub,
           yellow: !!p.Yc,
@@ -5662,34 +5929,73 @@ app.post("/api/functions/:name", authMiddleware, async (req, res) => {
         }));
       };
 
-      const homeLineup = parseTeamLineup("home", raw.Lu?.home?.Ps);
-      const awayLineup = parseTeamLineup("away", raw.Lu?.away?.Ps);
+      let homeLineup = [];
+      let awayLineup = [];
+      let homeFormation = null;
+      let awayFormation = null;
+      let homeSubs = [];
+      let awaySubs = [];
 
-      // Also try alternate structure
-      const altHome = parseTeamLineup("home", raw.T1?.Lu);
-      const altAway = parseTeamLineup("away", raw.T2?.Lu);
+      // Try the dedicated lineup endpoint first
+      const luUrl = `https://prod-public-api.livescore.com/v1/api/app/lineup/soccer/${matchId}`;
+      console.log(`[livescore-lineup] Fetching: ${luUrl}`);
+      const resp = await fetch(luUrl, {
+        headers: {
+          "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+          "Accept": "application/json",
+        },
+      });
+
+      if (resp.ok) {
+        const luRaw = await resp.json();
+        console.log(`[livescore-lineup] Response keys:`, Object.keys(luRaw));
+        const lu = luRaw.Lu || luRaw;
+        const hData = lu['1'] || lu.home || {};
+        const aData = lu['2'] || lu.away || {};
+        homeFormation = hData.Fo || hData.formation || null;
+        awayFormation = aData.Fo || aData.formation || null;
+        homeLineup = parseTeamLineup(hData.Ps || hData.players || hData.XI || []);
+        awayLineup = parseTeamLineup(aData.Ps || aData.players || aData.XI || []);
+        homeSubs = (hData.Sb || hData.subs || hData.Sub || []).map(p => ({ name: p.Nm || p.Pn || "", number: p.Snu ? parseInt(p.Snu, 10) : (p.Jn ? parseInt(p.Jn, 10) : null), position: p.Pos || "" }));
+        awaySubs = (aData.Sb || aData.subs || aData.Sub || []).map(p => ({ name: p.Nm || p.Pn || "", number: p.Snu ? parseInt(p.Snu, 10) : (p.Jn ? parseInt(p.Jn, 10) : null), position: p.Pos || "" }));
+        if (homeLineup.length === 0 && awayLineup.length === 0) {
+          console.log(`[livescore-lineup] Could not parse lineup, raw structure:`, JSON.stringify(luRaw).slice(0, 2000));
+        }
+      } else {
+        console.log(`[livescore-lineup] Lineup endpoint returned ${resp.status}, trying scoreboard fallback`);
+        // Fallback: try scoreboard endpoint
+        const sbUrl = `https://prod-public-api.livescore.com/v1/api/app/scoreboard/soccer/${matchId}?MD=1`;
+        const sbResp = await fetch(sbUrl, {
+          headers: { "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36", "Accept": "application/json" },
+        });
+        if (sbResp.ok) {
+          const raw = await sbResp.json();
+          if (raw.Lu) {
+            homeLineup = parseTeamLineup(raw.Lu.home?.Ps);
+            awayLineup = parseTeamLineup(raw.Lu.away?.Ps);
+            homeFormation = raw.Lu.home?.Fo || null;
+            awayFormation = raw.Lu.away?.Fo || null;
+            homeSubs = (raw.Lu.home?.Sb || []).map(p => ({ name: p.Nm || "", number: p.Snu ? parseInt(p.Snu, 10) : null, position: p.Pos || "" }));
+            awaySubs = (raw.Lu.away?.Sb || []).map(p => ({ name: p.Nm || "", number: p.Snu ? parseInt(p.Snu, 10) : null, position: p.Pos || "" }));
+          }
+        }
+      }
+
+      console.log(`[livescore-lineup] ${matchId}: home=${homeLineup.length} away=${awayLineup.length}`);
 
       const result = {
         matchId,
         home: {
-          formation: raw.Lu?.home?.Fo || raw.T1?.Fo || null,
-          players: homeLineup.length > 0 ? homeLineup : altHome,
-          subs: (raw.Lu?.home?.Sb || raw.T1?.Sub || []).map(p => ({
-            name: p.Nm || "",
-            number: p.Snu ? parseInt(p.Snu, 10) : null,
-            position: p.Pos || "",
-          })),
+          formation: homeFormation,
+          players: homeLineup,
+          subs: homeSubs,
         },
         away: {
-          formation: raw.Lu?.away?.Fo || raw.T2?.Fo || null,
-          players: awayLineup.length > 0 ? awayLineup : altAway,
-          subs: (raw.Lu?.away?.Sb || raw.T2?.Sub || []).map(p => ({
-            name: p.Nm || "",
-            number: p.Snu ? parseInt(p.Snu, 10) : null,
-            position: p.Pos || "",
-          })),
+          formation: awayFormation,
+          players: awayLineup,
+          subs: awaySubs,
         },
-        available: (homeLineup.length + altHome.length + awayLineup.length + altAway.length) > 0,
+        available: (homeLineup.length + awayLineup.length) > 0,
       };
 
       // Cache for 1 hour
@@ -5763,65 +6069,182 @@ app.post("/api/functions/:name", authMiddleware, async (req, res) => {
       const matchTime = esd.length >= 12 ? `${esd.slice(8, 10)}:${esd.slice(10, 12)}` : null;
       const matchDate = esd.length >= 8 ? `${esd.slice(0, 4)}-${esd.slice(4, 6)}-${esd.slice(6, 8)}` : null;
 
-      // Competition / venue / referee
-      const competition = raw.Snm || raw.Sn || "";
-      const country = raw.Cnm || raw.Cn || "";
-      const countryCode = raw.Ccd || "";
-      const venue = raw.Vn || raw.Stad || (raw.Venue && raw.Venue.Nm) || null;
+      // Competition / venue / referee — prefer Stg (stage) object for competition info
+      const stg = raw.Stg || {};
+      const competition = stg.Snm || stg.CompN || raw.Snm || raw.Sn || "";
+      const country = stg.Cnm || raw.Cnm || raw.Cn || "";
+      const countryCode = stg.Ccdiso || stg.Ccd || raw.Ccd || "";
+      const venue = raw.Vn || raw.Stad || (raw.Venue && typeof raw.Venue === 'object' ? (raw.Venue.Vnm || raw.Venue.Nm) : null) || null;
       const referee = raw.Ref || raw.Rfn
         || (Array.isArray(raw.Refs) && raw.Refs[0] && raw.Refs[0].Nm)
-        || (Array.isArray(raw.Ref) && raw.Ref[0] && raw.Ref[0].Nm)
         || null;
 
-      // Match events/incidents
-      const rawIncidents = raw.Incid || raw.Ev || raw.Inc || [];
+      // ── Match events/incidents ──
+      // API format: "Incs-s" → { "1": [group, ...], "2": [group, ...] }
+      // Each group: { Min, Sc, Incs: [ { IT, Pn, Min, MinEx, ... }, ... ] }
+      // IT codes: 36=Goal, 37=OwnGoal, 39=YellowCard, 40=SecondYellow,
+      //   41=RedCard, 42=Substitution, 43/45=PenMissed, 44=PenGoal, 46=VAR, 63=Assist(skip)
+      const IT_MAP = {
+        36: 'goal', 44: 'goal',
+        37: 'own_goal',
+        39: 'yellow_card',
+        40: 'second_yellow',
+        41: 'red_card',
+        42: 'substitution',
+        43: 'penalty_missed',
+        45: 'penalty_missed',
+        46: 'var',
+      };
       const events = [];
-      for (const inc of (Array.isArray(rawIncidents) ? rawIncidents : [])) {
-        const typRaw = (inc.ITyp || inc.Typ || inc.IT || "").toUpperCase();
-        let type = null;
-        if (typRaw === "G" || typRaw === "GOAL" || typRaw === "PG") type = "goal";
-        else if (typRaw === "OG" || typRaw === "OWN_GOAL") type = "own_goal";
-        else if (typRaw === "YC" || typRaw === "YELLOW_CARD" || typRaw === "YELLOW") type = "yellow_card";
-        else if (typRaw === "RC" || typRaw === "RED_CARD" || typRaw === "RED") type = "red_card";
-        else if (typRaw === "Y2C" || typRaw === "SECOND_YELLOW") type = "second_yellow";
-        else if (typRaw === "SB" || typRaw === "SUB" || typRaw === "SUBSTITUT" || typRaw === "SUBST") type = "substitution";
-        else if (typRaw === "PM" || typRaw === "PENALTY_MISSED") type = "penalty_missed";
-        else if (typRaw === "VAR" || typRaw.includes("VAR")) type = "var";
-        if (!type) continue;
-        events.push({
-          type,
-          minute: parseInt(inc.Min || inc.Mn || 0, 10) || 0,
-          extra_time: parseInt(inc.Ax || 0, 10) || 0,
-          player: inc.Nm || inc.Pl || "",
-          player_in: type === "substitution" ? (inc.Nm2 || inc.Pl2 || null) : null,
-          team: (inc.Tm || "").toUpperCase() === "H" ? "home" : "away",
-        });
+      const incsS = raw['Incs-s'];
+      if (incsS && typeof incsS === 'object') {
+        for (const [side, groups] of Object.entries(incsS)) {
+          const team = side === '1' ? 'home' : 'away';
+          if (!Array.isArray(groups)) continue;
+          for (const group of groups) {
+            // Incidents are nested inside group.Incs
+            const subIncs = Array.isArray(group.Incs) ? group.Incs : [];
+            for (const inc of subIncs) {
+              const itCode = typeof inc.IT === 'number' ? inc.IT : parseInt(inc.IT, 10);
+              const type = IT_MAP[itCode];
+              if (!type) {
+                if (itCode !== 63) console.log(`[livescore-detail] Unknown IT: ${itCode} (${inc.Pn})`);
+                continue;
+              }
+              const event = {
+                type,
+                minute: parseInt(inc.Min || group.Min || 0, 10) || 0,
+                extra_time: parseInt(inc.MinEx || group.MinEx || 0, 10) || 0,
+                player: inc.Pn || `${inc.Fn || ''} ${inc.Ln || ''}`.trim() || "",
+                player_in: null,
+                team,
+              };
+              // For substitutions, pair with the other player in the same group
+              if (type === 'substitution') {
+                const other = subIncs.find(i => i !== inc && i.IT !== 63);
+                if (other) {
+                  event.player_in = other.Pn || `${other.Fn || ''} ${other.Ln || ''}`.trim() || null;
+                }
+              }
+              events.push(event);
+            }
+          }
+        }
+        events.sort((a, b) => a.minute - b.minute || a.extra_time - b.extra_time);
       }
 
-      // Match statistics
-      const rawStats = raw.Stat || raw.Stats || raw.Statistic || [];
-      const stats = (Array.isArray(rawStats) ? rawStats : []).map(s => ({
-        type: s.Nm || s.Ty || "",
-        home: s.H != null ? s.H : null,
-        away: s.A != null ? s.A : null,
-      })).filter(s => s.type && (s.home != null || s.away != null));
-
-      // Lineups
-      const parseTeamLineup = (teamData) => {
-        if (!teamData || !Array.isArray(teamData)) return [];
-        return teamData.map((p) => ({
-          name: p.Nm || "",
-          number: p.Snu ? parseInt(p.Snu, 10) : null,
-          position: p.Pos || "",
-          grid: p.Gd || null,
-          captain: !!p.Cpt,
-          substituted: !!p.Sub,
-          yellow: !!p.Yc,
-          red: !!p.Rc,
-        }));
+      // ── Fetch statistics & lineups from dedicated Livescore endpoints (in parallel) ──
+      const lsHeaders = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+        "Accept": "application/json",
       };
-      const homeLineup = parseTeamLineup(raw.Lu?.home?.Ps || raw.T1?.Lu);
-      const awayLineup = parseTeamLineup(raw.Lu?.away?.Ps || raw.T2?.Lu);
+      const [statsResp, lineupsResp] = await Promise.all([
+        fetch(`https://prod-public-api.livescore.com/v1/api/app/statistics/soccer/${matchId}`, { headers: lsHeaders }).catch(() => null),
+        fetch(`https://prod-public-api.livescore.com/v1/api/app/lineups/soccer/${matchId}`, { headers: lsHeaders }).catch(() => null),
+      ]);
+
+      // ── Parse statistics ──
+      // Stat: [{Tnb:1, Fls, Pss, Cos, Shon, Shof, ...}, {Tnb:2, ...}]
+      const STAT_MAP = {
+        Pss: 'Ball Possession', Shon: 'Shots on Target', Shof: 'Shots Off Target',
+        Shbl: 'Blocked Shots', Cos: 'Corner Kicks', Fls: 'Fouls',
+        Ycs: 'Yellow Cards', Rcs: 'Red Cards', Ofs: 'Offsides',
+        Gks: 'Goalkeeper Saves', Ths: 'Throw-ins', Crs: 'Crosses',
+        Att: 'Attacks', YRcs: 'Yellow-Red Cards',
+      };
+      let stats = [];
+      if (statsResp?.ok) {
+        try {
+          const stRaw = await statsResp.json();
+          const stArr = stRaw.Stat || [];
+          const homeSt = stArr.find(s => s.Tnb === 1) || {};
+          const awaySt = stArr.find(s => s.Tnb === 2) || {};
+          for (const [key, label] of Object.entries(STAT_MAP)) {
+            if (homeSt[key] != null || awaySt[key] != null) {
+              const hVal = homeSt[key] ?? 0;
+              const aVal = awaySt[key] ?? 0;
+              // Skip if both are 0
+              if (hVal === 0 && aVal === 0) continue;
+              // Possession is a percentage
+              const displayH = key === 'Pss' ? `${hVal}%` : hVal;
+              const displayA = key === 'Pss' ? `${aVal}%` : aVal;
+              stats.push({ type: label, home: displayH, away: displayA });
+            }
+          }
+          console.log(`[livescore-detail] Stats: ${stats.length} items`);
+        } catch (e) {
+          console.log(`[livescore-detail] Stats parse error:`, e.message);
+        }
+      }
+
+      // ── Parse lineups ──
+      // Lu: [{Tnb:1, Ps:[...]}, {Tnb:2, Ps:[...]}]
+      // Pos: 1=GK, 2=DEF, 3=MID, 4=FWD, 5=SUB — Pon: "GOALKEEPER", "DEFENDER", etc.
+      let homeLineup = [];
+      let awayLineup = [];
+      let homeFormation = null;
+      let awayFormation = null;
+      let homeSubs = [];
+      let awaySubs = [];
+
+      if (lineupsResp?.ok) {
+        try {
+          const luRaw = await lineupsResp.json();
+          const luArr = luRaw.Lu || [];
+          for (const team of luArr) {
+            const side = team.Tnb === 1 ? 'home' : 'away';
+            const players = (team.Ps || []);
+            const starters = players.filter(p => p.Pos !== 5 && p.Pon !== 'SUBSTITUTE_PLAYER');
+            const subs = players.filter(p => p.Pos === 5 || p.Pon === 'SUBSTITUTE_PLAYER');
+
+            const parsedStarters = starters.map(p => ({
+              name: p.Pn || `${p.Fn || ''} ${p.Ln || ''}`.trim() || "",
+              number: p.Snu ?? null,
+              position: p.Pon || "",
+              grid: p.Fp || null,
+              captain: !!p.Cpt,
+              substituted: p.Mo != null, // Mo = minute subbed out
+              yellow: false,
+              red: false,
+            }));
+            const parsedSubs = subs.map(p => ({
+              name: p.Pn || `${p.Fn || ''} ${p.Ln || ''}`.trim() || "",
+              number: p.Snu ?? null,
+              position: p.Pon || "",
+            }));
+
+            // Derive formation from grid positions (Fp: "row:col")
+            let formation = null;
+            const grids = starters.filter(p => p.Fp).map(p => p.Fp);
+            if (grids.length > 0) {
+              const rows = {};
+              for (const g of grids) {
+                const [r] = g.split(':');
+                rows[r] = (rows[r] || 0) + 1;
+              }
+              // Remove GK row (row 1) and build formation string
+              const rowNums = Object.keys(rows).map(Number).sort((a, b) => a - b);
+              const outfield = rowNums.filter(r => r > 1).map(r => rows[String(r)]);
+              if (outfield.length > 0) formation = outfield.join('-');
+            }
+
+            if (side === 'home') {
+              homeLineup = parsedStarters;
+              homeSubs = parsedSubs;
+              homeFormation = formation;
+            } else {
+              awayLineup = parsedStarters;
+              awaySubs = parsedSubs;
+              awayFormation = formation;
+            }
+          }
+          console.log(`[livescore-detail] Lineups: home=${homeLineup.length} away=${awayLineup.length} (${homeFormation} vs ${awayFormation})`);
+        } catch (e) {
+          console.log(`[livescore-detail] Lineups parse error:`, e.message);
+        }
+      }
+
+      console.log(`[livescore-detail] ${matchId}: ${events.length} events, ${stats.length} stats, lineups home=${homeLineup.length} away=${awayLineup.length}`);
 
       const result = {
         matchId,
@@ -5845,29 +6268,23 @@ app.post("/api/functions/:name", authMiddleware, async (req, res) => {
         stats,
         lineups: {
           home: {
-            formation: raw.Lu?.home?.Fo || raw.T1?.Fo || null,
+            formation: homeFormation,
             players: homeLineup,
-            subs: (raw.Lu?.home?.Sb || raw.T1?.Sub || []).map(p => ({
-              name: p.Nm || "",
-              number: p.Snu ? parseInt(p.Snu, 10) : null,
-              position: p.Pos || "",
-            })),
+            subs: homeSubs,
           },
           away: {
-            formation: raw.Lu?.away?.Fo || raw.T2?.Fo || null,
+            formation: awayFormation,
             players: awayLineup,
-            subs: (raw.Lu?.away?.Sb || raw.T2?.Sub || []).map(p => ({
-              name: p.Nm || "",
-              number: p.Snu ? parseInt(p.Snu, 10) : null,
-              position: p.Pos || "",
-            })),
+            subs: awaySubs,
           },
           available: (homeLineup.length + awayLineup.length) > 0,
         },
       };
 
       const isFinishedStatus = ["FT", "AET", "AP", "PEN"].includes(status.toUpperCase());
-      const ttl = isFinishedStatus ? 60 : 5;
+      // Only cache long if we actually have data; otherwise short TTL to retry
+      const hasData = events.length > 0 || stats.length > 0 || result.lineups.available;
+      const ttl = isFinishedStatus && hasData ? 60 : 5;
       try {
         await pool.query(
           `INSERT INTO api_football_cache (cache_key, response_json, fetched_at, expires_at)
@@ -6559,7 +6976,11 @@ export default app;
 if (!isVercel) {
   app.listen(port, () => {
     console.log(`API listening on http://localhost:${port}`);
-    ensureMigrations();
+    ensureFixtureTables();
+    // Clear stale match-detail caches on startup so new parsing logic takes effect
+    pool.query("DELETE FROM api_football_cache WHERE cache_key LIKE 'match-detail:%' OR cache_key LIKE 'lineup:%'")
+      .then(() => console.log("[startup] Cleared match-detail & lineup caches"))
+      .catch(() => {});
   });
 }
 

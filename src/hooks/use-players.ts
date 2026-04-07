@@ -131,6 +131,7 @@ export function useUpsertPlayer() {
             contract_end: player.contract_end,
             notes: player.notes,
             ts_report_published: player.ts_report_published,
+            date_of_birth: player.date_of_birth,
             position_secondaire: (player as any).position_secondaire,
             task: (player as any).task ?? null,
           } as any)
@@ -159,6 +160,7 @@ export function useUpsertPlayer() {
             contract_end: player.contract_end,
             notes: player.notes,
             ts_report_published: player.ts_report_published,
+            date_of_birth: player.date_of_birth,
             position_secondaire: (player as any).position_secondaire,
             task: (player as any).task ?? null,
             user_id: userId,

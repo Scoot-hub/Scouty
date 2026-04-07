@@ -23,6 +23,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from '@/components/ui/dialog';
 import { ImportPlayersDialog } from '@/components/ImportPlayersDialog';
+import { ImportTmClubDialog } from '@/components/ImportTmClubDialog';
 import { AddToWatchlistDialog } from '@/components/AddToWatchlistDialog';
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from '@/components/ui/dropdown-menu';
 import { supabase } from '@/integrations/supabase/client';
@@ -114,6 +115,7 @@ export default function Players() {
 
   const [exporting, setExporting] = useState(false);
   const [watchlistDialogOpen, setWatchlistDialogOpen] = useState(false);
+  const [importClubOpen, setImportClubOpen] = useState(false);
   const [orgDialogOpen, setOrgDialogOpen] = useState(false);
   const [bulkReportOpen, setBulkReportOpen] = useState(false);
   const [bulkReportDate, setBulkReportDate] = useState(new Date().toISOString().slice(0, 10));
@@ -532,6 +534,27 @@ export default function Players() {
         <div className="flex items-center gap-2">
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
+              <Button size="sm" className="rounded-xl">
+                <Users className="w-4 h-4 mr-1.5" />
+                {t('players.add_player')}
+                <ChevronDown className="w-3.5 h-3.5 ml-1.5" />
+              </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end">
+              <DropdownMenuItem asChild>
+                <Link to="/player/new">
+                  <Users className="w-4 h-4 mr-2" />
+                  {t('players.add_player')}
+                </Link>
+              </DropdownMenuItem>
+              <DropdownMenuItem onClick={() => setImportClubOpen(true)}>
+                <Building2 className="w-4 h-4 mr-2" />
+                {t('players.add_club')}
+              </DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
               <Button variant="outline" size="sm" className="rounded-xl">
                 <Zap className="w-4 h-4 mr-1.5" />
                 {t('players.bulk_action')}
@@ -711,6 +734,7 @@ export default function Players() {
             <Download className="w-4 h-4 mr-1.5" />
             {exporting ? t('players.exporting') : selectedIds.size > 0 ? `${t('players.export_excel')} (${selectedIds.size})` : t('players.export_excel')}
           </Button>
+          <ImportTmClubDialog externalOpen={importClubOpen} onExternalOpenChange={setImportClubOpen} />
           <ImportPlayersDialog />
         </div>
       </div>

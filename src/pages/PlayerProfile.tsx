@@ -393,7 +393,7 @@ export default function PlayerProfile() {
       const items: { icon: React.ReactNode; label: string; value: string }[] = [];
       if (player.date_of_birth) {
         const dob = new Date(player.date_of_birth);
-        const ageVal = Math.floor((Date.now() - dob.getTime()) / (365.25 * 24 * 60 * 60 * 1000));
+        const ageVal = getPlayerAge(player.generation, player.date_of_birth);
         items.push({ icon: <Calendar className="w-3.5 h-3.5" />, label: t('profile.birth_date'), value: `${dob.toLocaleDateString(locale, { day: 'numeric', month: 'long', year: 'numeric' })} (${ageVal} ${t('common.year')})` });
       }
       if (ext.height) items.push({ icon: <Ruler className="w-3.5 h-3.5" />, label: t('profile.height'), value: ext.height });

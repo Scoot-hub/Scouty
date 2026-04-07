@@ -1,6 +1,7 @@
 import { useState, useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
+import { useQueryClient } from '@tanstack/react-query';
 import { CustomFieldsForm } from '@/components/CustomFieldsDisplay';
 import { useBulkUpsertCustomFieldValues } from '@/hooks/use-custom-fields';
 import { LEAGUES, CLUBS, NATIONALITIES, ZONES, POTENTIAL_SCALE, PLAYER_TASKS, translateCountry, type Position, type Foot, type Zone, type PlayerTask } from '@/types/player';
@@ -112,6 +113,7 @@ function SearchableSelect({ value, onValueChange, options, placeholder }: {
 
 export default function AddPlayer() {
   const navigate = useNavigate();
+  const queryClient = useQueryClient();
   const { toast } = useToast();
   const { t, i18n } = useTranslation();
   const { positions: posLabels } = usePositions();
@@ -149,6 +151,7 @@ export default function AddPlayer() {
   const [notes, setNotes] = useState('');
   const [task, setTask] = useState<PlayerTask | ''>('');
   const [videoUrl, setVideoUrl] = useState('');
+  const [dateOfBirth, setDateOfBirth] = useState('');
 
   // Transfermarkt import
   const [tmUrl, setTmUrl] = useState('');
@@ -179,6 +182,14 @@ export default function AddPlayer() {
       if (data.name) setName(data.name);
       if (data.photoUrl) setPhotoUrl(data.photoUrl);
       if (data.generation) setGeneration(String(data.generation));
+      if (data.dateOfBirth) {
+        setDateOfBirth(data.dateOfBirth);
+        // Ensure generation matches date_of_birth
+        if (!data.generation) {
+          const year = parseInt(data.dateOfBirth.slice(0, 4), 10);
+          if (year) setGeneration(String(year));
+        }
+      }
 
       // Nationality
       if (data.nationality) {
@@ -208,6 +219,12 @@ export default function AddPlayer() {
         }
       }
 
+      // Secondary position
+      if (data.secondaryPosition) {
+        const secPos = mapTmPosition(data.secondaryPosition);
+        if (secPos) setPositionSecondaire(secPos);
+      }
+
       // Foot
       if (data.foot) setFoot(mapTmFoot(data.foot));
 
@@ -217,6 +234,8 @@ export default function AddPlayer() {
       // Store TM URL so enrich-player can be called after save
       setTmEnrichmentUrl(url);
       setTmImported(true);
+      // Auto-advance to evaluation step (steps 0-1 are auto-filled)
+      setStep(2);
       toast({ title: t('player_form.tm_import_success'), description: data.name || '' });
     } catch (err: any) {
       toast({ title: t('common.error'), description: err.message || t('player_form.tm_import_failed'), variant: 'destructive' });
@@ -234,6 +253,7 @@ export default function AddPlayer() {
   ];
 
   const canNext = () => {
+    if (tmImported) return true;
     if (step === 0) return name.trim().length > 0 && nationality !== '';
     if (step === 1) return position !== '';
     return true;
@@ -248,6 +268,7 @@ export default function AddPlayer() {
         role: role || undefined,
         foot, current_level: level[0], potential: potential[0],
         general_opinion: 'À revoir', contract_end: contractEnd || undefined,
+        date_of_birth: dateOfBirth || undefined,
         task: task || null,
         notes: notes || undefined, ts_report_published: tsPublished,
       });
@@ -266,6 +287,9 @@ export default function AddPlayer() {
       if (tmEnrichmentUrl && result?.id) {
         supabase.functions.invoke('enrich-player', {
           body: { playerName: name, club, playerId: result.id, tmUrl: tmEnrichmentUrl },
+        }).then(() => {
+          queryClient.invalidateQueries({ queryKey: ['players'] });
+          queryClient.invalidateQueries({ queryKey: ['player', result.id] });
         }).catch((e: any) => console.warn('[enrich] background enrich failed:', e));
       }
       toast({ title: t('player_form.player_added'), description: `${name} ${t('player_form.player_added_desc')}` });
@@ -338,46 +362,58 @@ export default function AddPlayer() {
               <div className="flex-1 h-px bg-border" />
             </div>
 
-            <div><Label>{t('player_form.name')} *</Label><Input value={name} onChange={e => setName(e.target.value)} placeholder={t('player_form.name_placeholder')} className="mt-1" /></div>
+            <div><Label>{t('player_form.name')} *</Label><Input value={name} onChange={e => setName(e.target.value)} placeholder={t('player_form.name_placeholder')} className="mt-1" disabled={tmImported} /></div>
             <PhotoUpload currentUrl={photoUrl} onPhotoChange={setPhotoUrl} label={t('player_form.photo')} />
-            <div><Label>{t('player_form.birth_year')} *</Label><Input type="number" min={1990} max={2010} value={generation} onChange={e => setGeneration(e.target.value)} className="mt-1" /></div>
+            <div><Label>{t('player_form.birth_year')} *</Label><Input type="number" min={1990} max={2010} value={generation} onChange={e => setGeneration(e.target.value)} className="mt-1" disabled={tmImported} /></div>
             <div><Label>{t('player_form.nationality')} *</Label>
-              <SearchableSelect value={nationality} onValueChange={setNationality} options={nationalityOptions} placeholder={t('player_form.nationality_placeholder')} />
+              {tmImported ? (
+                <Input value={nationalityOptions.find(o => o.value === nationality)?.label ?? nationality} disabled className="mt-1" />
+              ) : (
+                <SearchableSelect value={nationality} onValueChange={setNationality} options={nationalityOptions} placeholder={t('player_form.nationality_placeholder')} />
+              )}
             </div>
           </>)}
           {step === 1 && (<>
             <div><Label>{t('player_form.club')}</Label>
-              <SearchableSelect value={club} onValueChange={(v) => {
-                setClub(v);
-                const autoLeague = clubToLeague.get(v);
-                if (autoLeague) {
-                  setLeague(autoLeague);
-                } else if (v) {
-                  resolveClubLeague.mutate(v, {
-                    onSuccess: (result) => {
-                      if (result.league) setLeague(result.league);
-                    },
-                  });
-                }
-              }} options={mergedClubs} placeholder={t('player_form.club_placeholder')} />
+              {tmImported ? (
+                <Input value={club} disabled className="mt-1" />
+              ) : (
+                <SearchableSelect value={club} onValueChange={(v) => {
+                  setClub(v);
+                  const autoLeague = clubToLeague.get(v);
+                  if (autoLeague) {
+                    setLeague(autoLeague);
+                  } else if (v) {
+                    resolveClubLeague.mutate(v, {
+                      onSuccess: (result) => {
+                        if (result.league) setLeague(result.league);
+                      },
+                    });
+                  }
+                }} options={mergedClubs} placeholder={t('player_form.club_placeholder')} />
+              )}
             </div>
             <div><Label>{t('player_form.league')}</Label>
-              <SearchableSelect value={league} onValueChange={setLeague} options={mergedLeagues} placeholder={t('player_form.league_placeholder')} />
+              {tmImported ? (
+                <Input value={league} disabled className="mt-1" />
+              ) : (
+                <SearchableSelect value={league} onValueChange={setLeague} options={mergedLeagues} placeholder={t('player_form.league_placeholder')} />
+              )}
             </div>
             <div><Label>{t('player_form.zone')}</Label>
-              <Select value={zone} onValueChange={setZone}>
+              <Select value={zone} onValueChange={setZone} disabled={tmImported}>
                 <SelectTrigger className="mt-1"><SelectValue placeholder={t('player_form.select_placeholder')} /></SelectTrigger>
                 <SelectContent>{ZONES.map(z => <SelectItem key={z} value={z}>{z}</SelectItem>)}</SelectContent>
               </Select>
             </div>
             <div><Label>{t('player_form.position_main')} *</Label>
-              <Select value={position} onValueChange={(v) => setPosition(v as Position)}>
+              <Select value={position} onValueChange={(v) => setPosition(v as Position)} disabled={tmImported}>
                 <SelectTrigger className="mt-1"><SelectValue placeholder={t('player_form.select_placeholder')} /></SelectTrigger>
                 <SelectContent>{Object.entries(posLabels).map(([k, v]) => <SelectItem key={k} value={k}>{v} ({k})</SelectItem>)}</SelectContent>
               </Select>
             </div>
             <div><Label>{t('player_form.position_secondary')}</Label>
-              <Select value={positionSecondaire} onValueChange={(v) => setPositionSecondaire(v as Position)}>
+              <Select value={positionSecondaire} onValueChange={(v) => setPositionSecondaire(v as Position)} disabled={tmImported}>
                 <SelectTrigger className="mt-1"><SelectValue placeholder={t('player_form.position_none')} /></SelectTrigger>
                 <SelectContent>
                   <SelectItem value="none">{t('player_form.position_none')}</SelectItem>
@@ -386,12 +422,12 @@ export default function AddPlayer() {
               </Select>
             </div>
             <div><Label>{t('player_form.role')}</Label><Input value={role} onChange={e => setRole(e.target.value)} placeholder={t('player_form.role_placeholder')} className="mt-1" /></div>
-            <div><Label>{t('player_form.strong_foot')}</Label><div className="flex gap-3 mt-1">{(['Gaucher', 'Droitier', 'Ambidextre'] as Foot[]).map(f => (<Button key={f} type="button" variant={foot === f ? 'default' : 'outline'} size="sm" onClick={() => setFoot(f)}>{f}</Button>))}</div></div>
+            <div><Label>{t('player_form.strong_foot')}</Label><div className="flex gap-3 mt-1">{(['Gaucher', 'Droitier', 'Ambidextre'] as Foot[]).map(f => (<Button key={f} type="button" variant={foot === f ? 'default' : 'outline'} size="sm" onClick={() => setFoot(f)} disabled={tmImported}>{f}</Button>))}</div></div>
+            <div><Label>{t('player_form.contract_end')}</Label><Input type="date" value={contractEnd} onChange={e => setContractEnd(e.target.value)} className="mt-1" disabled={tmImported && !!contractEnd} /></div>
           </>)}
           {step === 2 && (<>
             <div><Label>{t('player_form.current_level')} <span className="font-mono font-bold">{level[0]}</span>/10</Label><Slider value={level} onValueChange={setLevel} min={0} max={10} step={0.5} className="mt-3" /></div>
             <div><Label>{t('player_form.potential')} <span className="font-mono font-bold">{potential[0]}</span>/10</Label><Slider value={potential} onValueChange={setPotential} min={0} max={10} step={0.5} className="mt-3" /><p className="text-xs text-muted-foreground mt-2 italic">{getPotentialLabel(potential[0])}</p></div>
-            <div><Label>{t('player_form.contract_end')}</Label><Input type="date" value={contractEnd} onChange={e => setContractEnd(e.target.value)} className="mt-1" /></div>
             <div><Label>{t('player_form.task')}</Label><div className="flex gap-3 mt-1">
               <Button type="button" variant={task === '' ? 'default' : 'outline'} size="sm" onClick={() => setTask('')}>{t('player_form.task_none')}</Button>
               {PLAYER_TASKS.map(tk => (<Button key={tk} type="button" variant={task === tk ? 'default' : 'outline'} size="sm" onClick={() => setTask(tk)}>{tk}</Button>))}

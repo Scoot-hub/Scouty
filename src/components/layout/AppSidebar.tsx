@@ -79,23 +79,33 @@ export default function AppSidebar({ collapsed, onToggle }: AppSidebarProps) {
   const sidebar = (
     <div className="flex flex-col h-full">
       {/* Logo + collapse toggle */}
-      <div className={cn('py-6 flex items-center', collapsed ? 'justify-center px-2' : 'justify-between px-5')}>
-        <div className="flex items-center gap-3">
-          <img src={logo} alt="Scouty" className="w-10 h-10 rounded-xl shrink-0" />
-          {!collapsed && (
+      {collapsed ? (
+        <div className="py-6 flex flex-col items-center gap-2 px-2">
+          <button
+            onClick={onToggle}
+            className="hidden lg:flex items-center justify-center w-7 h-7 rounded-lg text-sidebar-foreground/50 hover:text-sidebar-foreground hover:bg-sidebar-accent/50 transition-all shrink-0"
+          >
+            <ChevronRight className="w-4 h-4" />
+          </button>
+          <img src={logo} alt="Scouty" className="w-6 h-6 rounded-xl shrink-0" />
+        </div>
+      ) : (
+        <div className="py-6 flex items-center justify-between px-5">
+          <div className="flex items-center gap-3">
+            <img src={logo} alt="Scouty" className="w-10 h-10 rounded-xl shrink-0" />
             <div>
               <span className="text-lg font-extrabold text-sidebar-foreground tracking-tight">Scouty</span>
               <p className="text-[10px] text-sidebar-muted font-medium tracking-widest uppercase">Football Scouting</p>
             </div>
-          )}
+          </div>
+          <button
+            onClick={onToggle}
+            className="hidden lg:flex items-center justify-center w-7 h-7 rounded-lg text-sidebar-foreground/50 hover:text-sidebar-foreground hover:bg-sidebar-accent/50 transition-all shrink-0"
+          >
+            <ChevronLeft className="w-4 h-4" />
+          </button>
         </div>
-        <button
-          onClick={onToggle}
-          className="hidden lg:flex items-center justify-center w-7 h-7 rounded-lg text-sidebar-foreground/50 hover:text-sidebar-foreground hover:bg-sidebar-accent/50 transition-all shrink-0"
-        >
-          {collapsed ? <ChevronRight className="w-4 h-4" /> : <ChevronLeft className="w-4 h-4" />}
-        </button>
-      </div>
+      )}
 
       {/* Nav */}
       <nav className={cn('flex-1 space-y-1', collapsed ? 'px-2 overflow-hidden' : 'px-3 overflow-y-auto sidebar-scroll')}>
