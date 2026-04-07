@@ -40,7 +40,7 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const ROOT_DIR = path.resolve(__dirname, "..");
 const isVercel = process.env.VERCEL === "1";
-const UPLOAD_DIR = isVercel ? "/tmp/uploads" : path.join(ROOT_DIR, "public", "uploads");
+const UPLOAD_DIR = isVercel ? "/tmp/uploads" : path.join(ROOT_DIR, "dist", "uploads");
 
 if (!fs.existsSync(UPLOAD_DIR)) {
   fs.mkdirSync(UPLOAD_DIR, { recursive: true });
@@ -51,15 +51,17 @@ if (!fs.existsSync(UPLOAD_DIR)) {
 // returned CDN URL instead of a relative /uploads/ path.
 let _blobPut = null;
 let _blobDel = null;
-if (isVercel) {
+if (isVercel && process.env.BLOB_READ_WRITE_TOKEN) {
   try {
     const blobMod = await import("@vercel/blob");
     _blobPut = blobMod.put;
     _blobDel = blobMod.del;
-    console.log("[info] Vercel Blob storage ready");
+    console.log("[info] Vercel Blob storage ready (token configured)");
   } catch {
-    console.warn("[warn] @vercel/blob not found — uploads will not persist across cold starts");
+    console.warn("[warn] @vercel/blob not found — uploads will use /tmp (ephemeral)");
   }
+} else if (isVercel) {
+  console.warn("[warn] BLOB_READ_WRITE_TOKEN not set — uploads will use /tmp (ephemeral). Set this env var in Vercel dashboard > Storage > Blob.");
 }
 
 /**
@@ -404,7 +406,7 @@ const ALLOWED_TABLES = {
   organization_members: ["id", "organization_id", "user_id", "role", "joined_at"],
   player_org_shares: ["id", "player_id", "organization_id", "user_id", "created_at"],
   match_assignments: ["id", "user_id", "organization_id", "assigned_to", "assigned_by", "home_team", "away_team", "match_date", "match_time", "competition", "venue", "home_badge", "away_badge", "notes", "status", "created_at", "updated_at"],
-  community_posts: ["id", "user_id", "author_name", "category", "title", "content", "likes", "replies_count", "created_at"],
+  community_posts: ["id", "user_id", "author_name", "category", "title", "content", "likes", "replies_count", "is_archived", "created_at"],
   community_replies: ["id", "post_id", "user_id", "author_name", "content", "created_at"],
   community_likes: ["id", "post_id", "user_id", "created_at"],
 };
@@ -810,6 +812,11 @@ async function runMigrations() {
   // Ensure is_archived column exists on players
   try {
     await pool.query(`ALTER TABLE players ADD COLUMN is_archived TINYINT(1) NOT NULL DEFAULT 0`);
+  } catch { /* column already exists */ }
+
+  // Ensure is_archived column exists on community_posts
+  try {
+    await pool.query(`ALTER TABLE community_posts ADD COLUMN is_archived TINYINT(1) NOT NULL DEFAULT 0`);
   } catch { /* column already exists */ }
 
   // Ensure has_news column exists on players
@@ -2032,9 +2039,11 @@ app.get("/api/admin/tickets", authMiddleware, async (req, res) => {
   try {
     const [tickets] = await pool.query(`
       SELECT t.*, u.email AS user_email, p.full_name AS user_name,
-        (SELECT COUNT(*) FROM ticket_messages tm WHERE tm.ticket_id = t.id AND tm.is_admin = 0
-          AND tm.created_at > COALESCE((SELECT MAX(tm2.created_at) FROM ticket_messages tm2 WHERE tm2.ticket_id = t.id AND tm2.is_admin = 1), '1970-01-01')
-        ) AS unread_count
+        CASE WHEN t.status = 'closed' THEN 0 ELSE
+          (SELECT COUNT(*) FROM ticket_messages tm WHERE tm.ticket_id = t.id AND tm.is_admin = 0
+            AND tm.created_at > COALESCE((SELECT MAX(tm2.created_at) FROM ticket_messages tm2 WHERE tm2.ticket_id = t.id AND tm2.is_admin = 1), '1970-01-01')
+          )
+        END AS unread_count
       FROM tickets t
       LEFT JOIN users u ON u.id = t.user_id
       LEFT JOIN profiles p ON p.user_id = t.user_id

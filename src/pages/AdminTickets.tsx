@@ -103,7 +103,7 @@ export default function AdminTickets() {
                       {categoryIcon(ticket.category)}
                       <span className="text-sm font-semibold truncate max-w-[200px]">{ticket.subject}</span>
                     </div>
-                    {(ticket.unread_count ?? 0) > 0 && (
+                    {ticket.status !== 'closed' && (ticket.unread_count ?? 0) > 0 && (
                       <span className="bg-primary text-primary-foreground text-[9px] rounded-full w-5 h-5 flex items-center justify-center font-bold shrink-0">
                         {ticket.unread_count}
                       </span>

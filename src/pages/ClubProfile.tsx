@@ -63,9 +63,32 @@ function useClubSuggestions(query: string) {
     queryKey: ['club-search', query],
     queryFn: async () => {
       if (query.length < 2) return [];
+      // 1. Local DB search (fast)
       const resp = await fetch(`${API}/club-search?q=${encodeURIComponent(query)}`);
-      if (!resp.ok) return [];
-      return resp.json();
+      const local: ClubSuggestion[] = resp.ok ? await resp.json() : [];
+      if (local.length >= 3) return local;
+
+      // 2. Transfermarkt fallback (if local results are sparse)
+      if (query.length >= 3) {
+        try {
+          const tmResp = await fetch(`${API}/club-tm-search?q=${encodeURIComponent(query)}`);
+          if (tmResp.ok) {
+            const tm = await tmResp.json();
+            if (tm?.clubName) {
+              const alreadyHas = local.some(l => l.club_name.toLowerCase() === tm.clubName.toLowerCase());
+              if (!alreadyHas) {
+                local.push({
+                  club_name: tm.clubName,
+                  logo_url: tm.badge || null,
+                  competition: tm.league || '',
+                  country: tm.country || '',
+                });
+              }
+            }
+          }
+        } catch { /* TM fallback failed, no problem */ }
+      }
+      return local;
     },
     enabled: query.length >= 2,
     staleTime: 60_000,
@@ -75,7 +98,6 @@ function useClubSuggestions(query: string) {
 export default function ClubProfile() {
   const { t, i18n } = useTranslation();
   const [searchParams, setSearchParams] = useSearchParams();
-  const navigate = useNavigate();
   const [search, setSearch] = useState(searchParams.get('q') || '');
   const clubName = searchParams.get('club') || '';
   const { data: players = [] } = usePlayers();
@@ -115,14 +137,39 @@ export default function ClubProfile() {
     _tmUrl: p.tmUrl, _tmSquadSize: p.squadSize, _tmAvgAge: p.avgAge, _tmMarketValue: p.marketValue,
   });
 
+  // Build search term variants for TheSportsDB (which uses non-standard club names)
+  const buildSearchTerms = (name: string): string[] => {
+    const terms = new Set<string>();
+    const resolved = resolveClubName(name);
+    terms.add(resolved);
+    if (resolved !== name) terms.add(name);
+
+    // Add all aliases from CLUB_NAME_MAP via resolveClubName's lookup
+    // Generate common short forms: "Paris Saint-Germain" → "Paris SG", abbreviations, etc.
+    const words = resolved.split(/[\s-]+/);
+    if (words.length >= 2) {
+      // Try first word + initials of remaining: "Paris Saint-Germain" → "Paris SG"
+      const initials = words.slice(1).map(w => w[0]?.toUpperCase()).join('');
+      if (initials.length >= 1) terms.add(`${words[0]} ${initials}`);
+      // Try just the first word if it's long enough (e.g., "Marseille", "Lyon")
+      if (words[0].length >= 4) terms.add(words[0]);
+      // Try first two words only
+      if (words.length >= 3) terms.add(words.slice(0, 2).join(' '));
+    }
+    // Try without common prefixes: "FC ", "AC ", "AS ", "RC ", etc.
+    const noPrefix = resolved.replace(/^(FC|AC|AS|RC|SC|SS|US|AJ|OGC|LOSC|Stade|Real|Sporting|Athletic)\s+/i, '').trim();
+    if (noPrefix !== resolved && noPrefix.length >= 3) terms.add(noPrefix);
+
+    return [...terms];
+  };
+
   // ── Fetch club data: TheSportsDB → Transfermarkt fallback ──
   const { data: team, isLoading } = useQuery<TeamData | null>({
     queryKey: ['club-profile', clubName],
     queryFn: async () => {
       if (!clubName) return null;
 
-      const searchTerms = [resolvedClub];
-      if (resolvedClub !== clubName) searchTerms.push(clubName);
+      const searchTerms = buildSearchTerms(clubName);
 
       // 1. Try TheSportsDB (fast, rich data)
       for (const term of searchTerms) {
@@ -144,6 +191,28 @@ export default function ClubProfile() {
           if (profile?.clubName) return tmToTeam(profile);
         } catch {}
       }
+
+      // 3. Last fallback: build from internal DB (club_directory + club_logos)
+      try {
+        const resp = await fetch(`${API}/club-search?q=${encodeURIComponent(clubName)}`);
+        if (resp.ok) {
+          const results: { club_name: string; logo_url?: string; competition?: string; country?: string }[] = await resp.json();
+          const match = results.find(r => r.club_name.toLowerCase() === clubName.toLowerCase())
+            || results.find(r => r.club_name.toLowerCase().includes(clubName.toLowerCase()))
+            || results[0];
+          if (match) {
+            return {
+              idTeam: '', strTeam: match.club_name, strTeamBadge: match.logo_url || '',
+              strStadium: '', strStadiumThumb: '', intStadiumCapacity: '',
+              strCountry: match.country || '', strLeague: match.competition || '', intFormedYear: '',
+              strDescriptionFR: null, strDescriptionEN: null, strDescriptionES: null,
+              strWebsite: null, strFacebook: null, strTwitter: null, strInstagram: null,
+              strKit: null, strBanner: null, strManager: null, strKeywords: null,
+              strColour1: null, strColour2: null,
+            } as TeamData;
+          }
+        }
+      } catch {}
 
       return null;
     },

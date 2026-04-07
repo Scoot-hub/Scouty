@@ -1813,6 +1813,11 @@ export default {
     insert_link: 'Lien',
     insert_image: 'Image',
     link_text_placeholder: 'Texte du lien…',
+    archive_post: 'Archiver le post',
+    unarchive_post: 'Désarchiver le post',
+    post_archived: 'Post archivé',
+    post_unarchived: 'Post désarchivé',
+    archived: 'Archivé',
   },
   discover: {
     title: 'Découverte de joueurs',

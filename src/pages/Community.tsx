@@ -17,7 +17,7 @@ import { cn } from '@/lib/utils';
 import {
   MessageSquare, Crown, Sparkles, Send, User, Calendar, Filter,
   MessageCircle, HelpCircle, Lightbulb, Trophy, Users as UsersIcon, Heart, ExternalLink, Trash2, AlertTriangle,
-  Link2, ImageIcon,
+  Link2, ImageIcon, Archive, ArchiveRestore,
 } from 'lucide-react';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from '@/components/ui/dialog';
 import { moderateFields } from '@/lib/content-moderation';
@@ -37,6 +37,7 @@ interface CommunityPost {
   content: string;
   likes: number;
   replies_count: number;
+  is_archived?: boolean;
   created_at: string;
 }
 
@@ -382,10 +383,16 @@ export default function Community() {
       }
       const { data, error } = await query;
       if (error) throw error;
-      return (data || []) as unknown as CommunityPost[];
+      return ((data || []) as unknown as CommunityPost[]).map(p => ({
+        ...p,
+        is_archived: !!(p as any).is_archived,
+      }));
     },
     enabled: !!isPremium,
   });
+
+  // Non-admins never see archived posts; admins see everything
+  const visiblePosts = isAdmin ? posts : posts.filter(p => !p.is_archived);
 
   // --- Fetch user's likes ---
   const { data: likedPostIds = [] } = useQuery({
@@ -551,6 +558,22 @@ export default function Community() {
       queryClient.invalidateQueries({ queryKey: ['community-mentionable-users'] });
       setJustReplied(postId);
       setTimeout(() => setJustReplied(null), 1200);
+    },
+    onError: (err: any) => toast.error(err.message || t('common.error')),
+  });
+
+  // --- Archive/unarchive post (admin only) ---
+  const toggleArchivePost = useMutation({
+    mutationFn: async ({ postId, archived }: { postId: string; archived: boolean }) => {
+      const { error } = await supabase
+        .from('community_posts' as any)
+        .update({ is_archived: archived ? 1 : 0 } as any)
+        .eq('id', postId);
+      if (error) throw error;
+    },
+    onSuccess: (_, { archived }) => {
+      toast.success(archived ? t('community.post_archived') : t('community.post_unarchived'));
+      queryClient.invalidateQueries({ queryKey: ['community-posts'] });
     },
     onError: (err: any) => toast.error(err.message || t('common.error')),
   });
@@ -846,7 +869,7 @@ export default function Community() {
         <div className="flex items-center justify-center py-16">
           <div className="w-8 h-8 border-2 border-primary border-t-transparent rounded-full animate-spin" />
         </div>
-      ) : posts.length === 0 ? (
+      ) : visiblePosts.length === 0 ? (
         <div className="text-center py-16">
           <MessageSquare className="w-10 h-10 text-muted-foreground/20 mx-auto mb-3" />
           <p className="text-sm font-medium text-muted-foreground">{t('community.empty')}</p>
@@ -854,11 +877,12 @@ export default function Community() {
         </div>
       ) : (
         <div className="space-y-3">
-          {posts.map((post, idx) => {
+          {visiblePosts.map((post, idx) => {
             const isLiked = likedPosts.has(post.id);
             const isAnimatingLike = animatingLike === post.id;
             const isNew = justPosted === post.id;
             const hasNewReply = justReplied === post.id;
+            const isArchived = !!post.is_archived;
 
             return (
               <Card
@@ -867,10 +891,18 @@ export default function Community() {
                   'transition-all duration-300 hover:border-primary/20',
                   isNew && 'animate-in slide-in-from-top-3 fade-in duration-500 ring-2 ring-primary/30',
                   hasNewReply && 'ring-2 ring-green-500/30',
+                  isArchived && 'opacity-50 border-dashed',
                 )}
                 style={{ animationDelay: isNew ? '0ms' : `${idx * 30}ms` }}
               >
                 <CardContent className="p-4">
+                  {/* Archived badge */}
+                  {isArchived && (
+                    <div className="flex items-center gap-1.5 mb-2 text-[10px] font-semibold text-muted-foreground uppercase tracking-wider">
+                      <Archive className="w-3 h-3" />
+                      {t('community.archived')}
+                    </div>
+                  )}
                   {/* Post header */}
                   <div className="flex items-start gap-3">
                     <AuthorAvatar userId={post.user_id} name={post.author_name} />
@@ -889,15 +921,26 @@ export default function Community() {
                           <Calendar className="w-3 h-3" />
                           {formatDate(post.created_at)}
                         </span>
-                        {(isAdmin || post.user_id === user?.id) && (
-                          <button
-                            onClick={() => setDeletePostId(post.id)}
-                            className="ml-auto text-muted-foreground hover:text-destructive transition-colors"
-                            title={t('community.delete_post')}
-                          >
-                            <Trash2 className="w-3.5 h-3.5" />
-                          </button>
-                        )}
+                        <div className="ml-auto flex items-center gap-1.5">
+                          {isAdmin && (
+                            <button
+                              onClick={() => toggleArchivePost.mutate({ postId: post.id, archived: !isArchived })}
+                              className="text-muted-foreground hover:text-amber-500 transition-colors"
+                              title={isArchived ? t('community.unarchive_post') : t('community.archive_post')}
+                            >
+                              {isArchived ? <ArchiveRestore className="w-3.5 h-3.5" /> : <Archive className="w-3.5 h-3.5" />}
+                            </button>
+                          )}
+                          {(isAdmin || post.user_id === user?.id) && (
+                            <button
+                              onClick={() => setDeletePostId(post.id)}
+                              className="text-muted-foreground hover:text-destructive transition-colors"
+                              title={t('community.delete_post')}
+                            >
+                              <Trash2 className="w-3.5 h-3.5" />
+                            </button>
+                          )}
+                        </div>
                       </div>
                       <h3 className="text-sm font-bold mt-1">{post.title}</h3>
                       <p className="text-sm text-muted-foreground mt-1 whitespace-pre-line leading-relaxed">

@@ -1792,6 +1792,11 @@ export default {
     insert_link: 'Link',
     insert_image: 'Image',
     link_text_placeholder: 'Link text…',
+    archive_post: 'Archive post',
+    unarchive_post: 'Unarchive post',
+    post_archived: 'Post archived',
+    post_unarchived: 'Post unarchived',
+    archived: 'Archived',
   },
   discover: {
     title: 'Player Discovery',

@@ -1792,6 +1792,11 @@ export default {
     insert_link: 'Enlace',
     insert_image: 'Imagen',
     link_text_placeholder: 'Texto del enlace…',
+    archive_post: 'Archivar publicación',
+    unarchive_post: 'Desarchivar publicación',
+    post_archived: 'Publicación archivada',
+    post_unarchived: 'Publicación desarchivada',
+    archived: 'Archivado',
   },
   discover: {
     title: 'Descubrimiento de jugadores',

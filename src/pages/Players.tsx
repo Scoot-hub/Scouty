@@ -356,6 +356,7 @@ export default function Players() {
   }
 
   const archivedCount = useMemo(() => players.filter(p => p.is_archived).length, [players]);
+  const activeCount = useMemo(() => players.filter(p => !p.is_archived).length, [players]);
 
   const filtered = useMemo(() => {
     let result = [...players];
@@ -547,17 +548,11 @@ export default function Players() {
             onClick={() => setShowArchived(!showArchived)}
           >
             {showArchived ? t('players.show_active') : t('players.show_archived')}
-            {archivedCount > 0 && (
+            {(showArchived ? activeCount : archivedCount) > 0 && (
               <span className="bg-muted-foreground/20 text-[10px] rounded-full min-w-[18px] h-[18px] flex items-center justify-center font-bold px-1">
-                {archivedCount}
+                {showArchived ? activeCount : archivedCount}
               </span>
             )}
-          </Button>
-          <Button size="sm" className="rounded-xl text-xs" asChild>
-            <Link to={showArchived ? '/player/new?archived=true' : '/player/new'}>
-              <FilePlus className="w-4 h-4 mr-1.5" />
-              {t('sidebar.add_player')}
-            </Link>
           </Button>
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
