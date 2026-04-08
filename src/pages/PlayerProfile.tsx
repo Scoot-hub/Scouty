@@ -26,9 +26,10 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Badge } from '@/components/ui/badge';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from '@/components/ui/dialog';
 import { usePlayerResearch, useAddResearch, useDeleteResearch, type ResearchItem } from '@/hooks/use-player-research';
+import { usePlayerVideos, useAddVideo, useDeleteVideo, type VideoItem } from '@/hooks/use-player-videos';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from '@/components/ui/dropdown-menu';
-import { ArrowLeft, Edit, FileDown, ExternalLink, PlusCircle, Trash2, RefreshCw, Globe, TrendingUp, Calendar, Ruler, User, MapPin, Hash, Pencil, Euro, Briefcase, GripVertical, Maximize2, Minimize2, LayoutDashboard, ListPlus, Check, Building2, AlertCircle, FileText, Upload, X, Clock, Youtube, Newspaper, Link2, StickyNote, Plus, Activity } from 'lucide-react';
+import { ArrowLeft, Edit, FileDown, ExternalLink, PlusCircle, Trash2, RefreshCw, Globe, TrendingUp, Calendar, Ruler, User, MapPin, Hash, Pencil, Euro, Briefcase, GripVertical, Maximize2, Minimize2, LayoutDashboard, ListPlus, Check, Building2, AlertCircle, FileText, Upload, X, Clock, Youtube, Newspaper, Link2, StickyNote, Plus, Activity, Info, Video, ClipboardList, BarChart3, Play } from 'lucide-react';
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, ResponsiveContainer, Legend, RadarChart, PolarGrid, PolarAngleAxis, PolarRadiusAxis, Radar, AreaChart, Area, Tooltip as RechartsTooltip, BarChart, Bar } from 'recharts';
 import { toast } from 'sonner';
 import { DndContext, closestCenter, KeyboardSensor, PointerSensor, useSensor, useSensors, type DragEndEvent } from '@dnd-kit/core';
@@ -79,6 +80,9 @@ export default function PlayerProfile() {
   const { data: research = [] } = usePlayerResearch(id);
   const addResearch = useAddResearch();
   const deleteResearch = useDeleteResearch();
+  const { data: videos = [] } = usePlayerVideos(id);
+  const addVideo = useAddVideo();
+  const deleteVideo = useDeleteVideo();
   const { data: allPlayers = [] } = usePlayers();
   const { t, i18n } = useTranslation();
   const { positions: posLabels, positionShort: posShort } = usePositions();
@@ -96,9 +100,14 @@ export default function PlayerProfile() {
 
   // UI state
   const [editMode, setEditMode] = useState(false);
-  const [activeTab, setActiveTab] = useState('scouting');
+  const [activeTab, setActiveTab] = useState('infos');
   const [researchForm, setResearchForm] = useState({ type: 'note', title: '', url: '', content: '' });
   const [showResearchForm, setShowResearchForm] = useState(false);
+  const [videoForm, setVideoForm] = useState({ title: '', url: '', description: '' });
+  const [showVideoForm, setShowVideoForm] = useState(false);
+  const [videoFile, setVideoFile] = useState<File | null>(null);
+  const [uploadingVideo, setUploadingVideo] = useState(false);
+  const [playingVideo, setPlayingVideo] = useState<VideoItem | null>(null);
   const [manageFieldsOpen, setManageFieldsOpen] = useState(false);
   const [deleteOpen, setDeleteOpen] = useState(false);
   const [deleteConfirm, setDeleteConfirm] = useState('');
@@ -144,6 +153,8 @@ export default function PlayerProfile() {
 
   const ENRICH_COOLDOWN = 60 * 60 * 1000; // 1 hour cooldown between enrichments
 
+  const [tmCandidates, setTmCandidates] = useState<{ id: string; path: string; name: string; age: number | null; club: string | null; score: number }[] | null>(null);
+
   const handleEnrich = async (tmUrl?: string) => {
     if (!player) return;
 
@@ -162,6 +173,12 @@ export default function PlayerProfile() {
       if (tmUrl) body.tmUrl = tmUrl;
       const { data, error } = await supabase.functions.invoke('enrich-player', { body });
       if (error) throw error;
+      if (data?.ambiguous && data?.candidates?.length > 1) {
+        // Multiple TM matches — show disambiguation dialog
+        setTmCandidates(data.candidates);
+        setEnriching(false);
+        return;
+      }
       if (data?.success) {
         if (tmUrl && data?.tmNotFound) {
           toast.error(t('profile.enrich_tm_url_invalid'));
@@ -174,6 +191,11 @@ export default function PlayerProfile() {
       }
     } catch { toast.error(t('profile.enrich_error')); }
     finally { setEnriching(false); }
+  };
+
+  const handleSelectTmCandidate = (candidate: { id: string; path: string }) => {
+    setTmCandidates(null);
+    handleEnrich(`https://www.transfermarkt.fr${candidate.path}`);
   };
 
   const handleDelete = async () => {
@@ -418,7 +440,6 @@ export default function PlayerProfile() {
       if (ext.shirt_number) items.push({ icon: <Hash className="w-3.5 h-3.5" />, label: t('profile.shirt_number'), value: `#${ext.shirt_number}` });
       if (ext.date_signed) items.push({ icon: <Calendar className="w-3.5 h-3.5" />, label: t('profile.date_signed'), value: new Date(ext.date_signed).toLocaleDateString(locale, { day: 'numeric', month: 'long', year: 'numeric' }) });
       if (ext.signing_fee) items.push({ icon: <TrendingUp className="w-3.5 h-3.5" />, label: t('profile.transfer_fee'), value: ext.signing_fee });
-      if (ext.transfermarkt_id) items.push({ icon: <ExternalLink className="w-3.5 h-3.5" />, label: 'Transfermarkt', value: `ID: ${ext.transfermarkt_id}` });
 
       const isNationalTeamLabel = (name: string) => {
         const n = name.toLowerCase();
@@ -456,11 +477,17 @@ export default function PlayerProfile() {
         if (m) {
           const [, year, month, day] = m;
           if (month === '00') return year;
-          const safe = new Date(`${year}-${month}-${day === '00' ? '01' : day}`);
+          const dayNum = day === '00' ? 1 : Number(day);
+          const safe = new Date(Number(year), Number(month) - 1, dayNum);
           if (isNaN(safe.getTime())) return year;
           return safe.toLocaleDateString(locale, { month: 'short', year: 'numeric' });
         }
-        const date = new Date(d);
+        const parts = d.split(/[\/\-\.]/);
+        if (parts.length === 3 && parts[0].length === 4) {
+          const date = new Date(Number(parts[0]), Number(parts[1]) - 1, Number(parts[2]));
+          if (!isNaN(date.getTime())) return date.toLocaleDateString(locale, { month: 'short', year: 'numeric' });
+        }
+        const date = new Date(d + 'T00:00:00');
         return isNaN(date.getTime()) ? null : date.toLocaleDateString(locale, { month: 'short', year: 'numeric' });
       };
 
@@ -730,7 +757,7 @@ export default function PlayerProfile() {
                 </div>
               </div>
             </div>
-            <DropdownMenu>
+            <DropdownMenu modal={false}>
               <DropdownMenuTrigger asChild>
                 <Button size="sm" variant="outline" className="rounded-xl shrink-0">
                   <MoreHorizontal className="w-4 h-4 mr-1.5" />
@@ -797,51 +824,55 @@ export default function PlayerProfile() {
 
       {/* Tabs */}
       <Tabs value={activeTab} onValueChange={setActiveTab} className="w-full">
-        <TabsList className="w-full grid grid-cols-4">
-          <TabsTrigger value="scouting" className="gap-2">
-            <FileText className="w-4 h-4" />
-            <span className="hidden sm:inline">{t('profile.tab_scouting')}</span>
+        <TabsList className="w-full grid grid-cols-5">
+          <TabsTrigger value="infos" className="gap-2">
+            <Info className="w-4 h-4" />
+            <span className="hidden sm:inline">{t('profile.tab_infos')}</span>
           </TabsTrigger>
-          <TabsTrigger value="performance" className="gap-2">
+          <TabsTrigger value="scout-report" className="gap-2">
+            <ClipboardList className="w-4 h-4" />
+            <span className="hidden sm:inline">{t('profile.tab_scout_report')}</span>
+          </TabsTrigger>
+          <TabsTrigger value="videos" className="gap-2">
+            <Video className="w-4 h-4" />
+            <span className="hidden sm:inline">{t('profile.tab_videos')}</span>
+            {videos.length > 0 && <Badge variant="secondary" className="ml-1 text-[10px] h-4 px-1">{videos.length}</Badge>}
+          </TabsTrigger>
+          <TabsTrigger value="data" className="gap-2">
             <Activity className="w-4 h-4" />
-            <span className="hidden sm:inline">{t('profile.tab_performance')}</span>
+            <span className="hidden sm:inline">{t('profile.tab_data')}</span>
           </TabsTrigger>
-          <TabsTrigger value="history" className="gap-2">
-            <Clock className="w-4 h-4" />
-            <span className="hidden sm:inline">{t('profile.tab_history')}</span>
-          </TabsTrigger>
-          <TabsTrigger value="research" className="gap-2">
-            <Newspaper className="w-4 h-4" />
-            <span className="hidden sm:inline">{t('profile.tab_research')}</span>
+          <TabsTrigger value="links" className="gap-2">
+            <Link2 className="w-4 h-4" />
+            <span className="hidden sm:inline">{t('profile.tab_links')}</span>
             {research.length > 0 && <Badge variant="secondary" className="ml-1 text-[10px] h-4 px-1">{research.length}</Badge>}
           </TabsTrigger>
         </TabsList>
 
-        {/* ── Tab: Scouting (existing content) ── */}
-        <TabsContent value="scouting" className="mt-4 space-y-4">
-          {editMode && (
-            <div className="flex items-center gap-3 px-4 py-3 rounded-xl bg-primary/10 border border-primary/20">
-              <LayoutDashboard className="w-4 h-4 text-primary shrink-0" />
-              <p className="text-sm text-primary font-medium flex-1">{t('profile.edit_mode_hint')}</p>
-              <Button size="sm" className="rounded-xl" onClick={() => setEditMode(false)}>
-                <Check className="w-3.5 h-3.5 mr-1.5" />{t('profile.edit_mode_done')}
-              </Button>
+        {/* ── Tab: Infos (retrieved data only) ── */}
+        <TabsContent value="infos" className="mt-4 space-y-4">
+          {!hiddenCards.has('external_data') && (
+            <Card className="card-warm">{cardRenderers.external_data()}</Card>
+          )}
+          {hiddenCards.has('external_data') && (
+            <div className="text-center py-12">
+              <Globe className="w-10 h-10 text-muted-foreground/20 mx-auto mb-3" />
+              <p className="text-sm text-muted-foreground">{t('profile.no_external_data')}</p>
+              <p className="text-xs text-muted-foreground/60 mt-1">{t('profile.no_external_data_desc')}</p>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <span>
+                    <Button size="sm" variant="outline" className="rounded-xl mt-4" onClick={() => handleEnrich()} disabled={enriching || !isPremium}>
+                      <RefreshCw className={`w-3.5 h-3.5 mr-1.5 ${enriching ? 'animate-spin' : ''}`} />{t('profile.enrich')}
+                    </Button>
+                  </span>
+                </TooltipTrigger>
+                {!isPremium && <TooltipContent>Fonctionnalité réservée aux comptes Premium</TooltipContent>}
+              </Tooltip>
             </div>
           )}
 
-          <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={handleDragEnd}>
-            <SortableContext items={visibleOrder} strategy={rectSortingStrategy}>
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                {visibleOrder.map(cardId => (
-                  <SortableCard key={cardId} id={cardId} size={layout.sizes[cardId]} onToggleSize={() => toggleSize(cardId)} editMode={editMode}>
-                    {cardRenderers[cardId]()}
-                  </SortableCard>
-                ))}
-              </div>
-            </SortableContext>
-          </DndContext>
-
-          {/* Delete zone — inside scouting tab only */}
+          {/* Delete zone */}
           <Card className="border border-destructive/20 bg-destructive/5 mt-4">
             <CardContent className="p-6">
               <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
@@ -857,8 +888,221 @@ export default function PlayerProfile() {
           </Card>
         </TabsContent>
 
-        {/* ── Tab: Performance (radar + charts) ── */}
-        <TabsContent value="performance" className="mt-4 space-y-4">
+        {/* ── Tab: Scout Report (evaluation + notes cards) ── */}
+        <TabsContent value="scout-report" className="mt-4 space-y-4">
+          {editMode && (
+            <div className="flex items-center gap-3 px-4 py-3 rounded-xl bg-primary/10 border border-primary/20">
+              <LayoutDashboard className="w-4 h-4 text-primary shrink-0" />
+              <p className="text-sm text-primary font-medium flex-1">{t('profile.edit_mode_hint')}</p>
+              <Button size="sm" className="rounded-xl" onClick={() => setEditMode(false)}>
+                <Check className="w-3.5 h-3.5 mr-1.5" />{t('profile.edit_mode_done')}
+              </Button>
+            </div>
+          )}
+
+          {(() => {
+            const scoutCards = new Set<CardId>(['evaluation', 'physique', 'avec_ballon', 'sans_ballon', 'mental', 'personnelles']);
+            const scoutOrder = visibleOrder.filter(id => scoutCards.has(id));
+            return (
+              <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={handleDragEnd}>
+                <SortableContext items={scoutOrder} strategy={rectSortingStrategy}>
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    {scoutOrder.map(cardId => (
+                      <SortableCard key={cardId} id={cardId} size={layout.sizes[cardId]} onToggleSize={() => toggleSize(cardId)} editMode={editMode}>
+                        {cardRenderers[cardId]()}
+                      </SortableCard>
+                    ))}
+                  </div>
+                </SortableContext>
+              </DndContext>
+            );
+          })()}
+        </TabsContent>
+
+        {/* ── Tab: Vidéos ── */}
+        <TabsContent value="videos" className="mt-4 space-y-4">
+          <Card className="card-warm">
+            <CardHeader className="flex flex-row items-center justify-between pb-2">
+              <CardTitle className="text-base flex items-center gap-2">
+                <Video className="w-4 h-4 text-primary" />
+                {t('profile.videos_title')}
+              </CardTitle>
+              <Button size="sm" variant="outline" onClick={() => setShowVideoForm(!showVideoForm)}>
+                <Plus className="w-3.5 h-3.5 mr-1.5" /> {t('profile.videos_add')}
+              </Button>
+            </CardHeader>
+            <CardContent>
+              {showVideoForm && (
+                <form
+                  className="space-y-3 mb-6 p-4 rounded-xl bg-muted/30 border border-border"
+                  onSubmit={async e => {
+                    e.preventDefault();
+                    if (!videoForm.title.trim() || !id) return;
+                    let fileUrl: string | undefined;
+                    if (videoFile) {
+                      setUploadingVideo(true);
+                      try {
+                        const ext = videoFile.name.split('.').pop() || 'mp4';
+                        const fileName = `video-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.${ext}`;
+                        const formData = new FormData();
+                        formData.append('file', videoFile);
+                        formData.append('fileName', fileName);
+                        const session = JSON.parse(localStorage.getItem('scouthub_session') || '{}');
+                        const res = await fetch('/api/storage/videos/upload', {
+                          method: 'POST',
+                          headers: session.access_token ? { Authorization: `Bearer ${session.access_token}` } : {},
+                          body: formData,
+                        });
+                        if (!res.ok) throw new Error('Upload failed');
+                        const data = await res.json();
+                        fileUrl = data.publicUrl || `/uploads/${data.path}`;
+                      } catch (err) {
+                        toast.error(t('profile.videos_upload_error'));
+                        setUploadingVideo(false);
+                        return;
+                      }
+                      setUploadingVideo(false);
+                    }
+                    addVideo.mutate({
+                      player_id: id,
+                      title: videoForm.title,
+                      url: videoForm.url || undefined,
+                      file_url: fileUrl,
+                      description: videoForm.description || undefined,
+                    }, {
+                      onSuccess: () => {
+                        setVideoForm({ title: '', url: '', description: '' });
+                        setVideoFile(null);
+                        setShowVideoForm(false);
+                      },
+                    });
+                  }}
+                >
+                  <div className="space-y-1">
+                    <label className="text-xs font-medium text-muted-foreground">{t('profile.videos_title_label')}</label>
+                    <Input
+                      value={videoForm.title}
+                      onChange={e => setVideoForm(f => ({ ...f, title: e.target.value }))}
+                      placeholder={t('profile.videos_title_placeholder')}
+                      className="h-8 text-xs"
+                      required
+                    />
+                  </div>
+                  <div className="space-y-1">
+                    <label className="text-xs font-medium text-muted-foreground">{t('profile.videos_url_label')}</label>
+                    <Input
+                      value={videoForm.url}
+                      onChange={e => setVideoForm(f => ({ ...f, url: e.target.value }))}
+                      placeholder="https://youtube.com/watch?v=... ou https://..."
+                      className="h-8 text-xs"
+                      type="url"
+                    />
+                  </div>
+                  <div className="space-y-1">
+                    <label className="text-xs font-medium text-muted-foreground">{t('profile.videos_file_label')}</label>
+                    {videoFile ? (
+                      <div className="flex items-center gap-2 p-2 rounded-lg bg-muted/50 border">
+                        <Video className="w-4 h-4 text-primary shrink-0" />
+                        <span className="text-xs truncate flex-1">{videoFile.name}</span>
+                        <button type="button" onClick={() => setVideoFile(null)} className="p-1 rounded hover:bg-muted text-muted-foreground hover:text-foreground">
+                          <X className="w-3.5 h-3.5" />
+                        </button>
+                      </div>
+                    ) : (
+                      <label className="flex items-center gap-2 p-2 rounded-lg border border-dashed border-border hover:border-primary/50 cursor-pointer transition-colors">
+                        <Upload className="w-4 h-4 text-muted-foreground" />
+                        <span className="text-xs text-muted-foreground">{t('profile.videos_upload')}</span>
+                        <input type="file" accept="video/*" className="hidden" onChange={e => { if (e.target.files?.[0]) setVideoFile(e.target.files[0]); }} />
+                      </label>
+                    )}
+                  </div>
+                  <div className="space-y-1">
+                    <label className="text-xs font-medium text-muted-foreground">{t('profile.videos_description')}</label>
+                    <Textarea
+                      value={videoForm.description}
+                      onChange={e => setVideoForm(f => ({ ...f, description: e.target.value }))}
+                      placeholder={t('profile.videos_description_placeholder')}
+                      rows={2}
+                      className="text-xs resize-none"
+                    />
+                  </div>
+                  <div className="flex gap-2">
+                    <Button type="submit" size="sm" disabled={addVideo.isPending || uploadingVideo || !videoForm.title.trim()}>
+                      {uploadingVideo ? t('profile.videos_uploading') : t('common.save')}
+                    </Button>
+                    <Button type="button" size="sm" variant="ghost" onClick={() => { setShowVideoForm(false); setVideoFile(null); }}>
+                      {t('common.cancel')}
+                    </Button>
+                  </div>
+                </form>
+              )}
+
+              {/* Videos list */}
+              {videos.length === 0 && !showVideoForm ? (
+                <div className="text-center py-8">
+                  <Video className="w-8 h-8 text-muted-foreground/20 mx-auto mb-2" />
+                  <p className="text-sm text-muted-foreground">{t('profile.videos_empty')}</p>
+                  <p className="text-xs text-muted-foreground/60 mt-1">{t('profile.videos_empty_desc')}</p>
+                </div>
+              ) : (
+                <div className="space-y-3">
+                  {videos.map(item => {
+                    const isYoutube = item.url && /(?:youtube\.com|youtu\.be)/.test(item.url);
+                    const ytId = isYoutube ? item.url!.match(/(?:v=|youtu\.be\/|embed\/)([a-zA-Z0-9_-]{11})/)?.[1] : null;
+
+                    return (
+                      <div key={item.id} className="p-4 rounded-xl bg-muted/30 hover:bg-muted/50 transition-colors space-y-2 group">
+                        <div className="flex items-start gap-3">
+                          <div className="w-8 h-8 rounded-lg bg-muted flex items-center justify-center shrink-0">
+                            {ytId ? <Youtube className="w-4 h-4 text-red-500" /> : <Video className="w-4 h-4 text-primary" />}
+                          </div>
+                          <div className="flex-1 min-w-0">
+                            <div className="flex items-center gap-2">
+                              <h4 className="text-sm font-semibold truncate">{item.title}</h4>
+                              {ytId && <Badge variant="secondary" className="text-[9px] shrink-0">YouTube</Badge>}
+                              {item.file_url && <Badge variant="secondary" className="text-[9px] shrink-0">{t('profile.videos_uploaded')}</Badge>}
+                            </div>
+                            {item.description && (
+                              <p className="text-xs text-muted-foreground mt-1 whitespace-pre-line line-clamp-2">{item.description}</p>
+                            )}
+                            <p className="text-[10px] text-muted-foreground/50 mt-1">
+                              {new Date(item.created_at).toLocaleDateString(undefined, { day: 'numeric', month: 'short', year: 'numeric' })}
+                            </p>
+                          </div>
+                          <div className="flex items-center gap-1 shrink-0">
+                            {(ytId || item.file_url || item.url) && (
+                              <button
+                                onClick={() => setPlayingVideo(item)}
+                                className="p-1.5 rounded-lg hover:bg-primary/10 text-primary transition-colors"
+                                title={t('profile.videos_play')}
+                              >
+                                <Play className="w-4 h-4" />
+                              </button>
+                            )}
+                            {item.url && (
+                              <a href={item.url} target="_blank" rel="noopener noreferrer" className="p-1 rounded hover:bg-muted">
+                                <ExternalLink className="w-3.5 h-3.5 text-primary" />
+                              </a>
+                            )}
+                            <button
+                              onClick={() => deleteVideo.mutate({ id: item.id, playerId: item.player_id })}
+                              className="p-1 rounded opacity-0 group-hover:opacity-100 hover:bg-destructive/10 hover:text-destructive transition-all"
+                            >
+                              <Trash2 className="w-3.5 h-3.5" />
+                            </button>
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </CardContent>
+          </Card>
+        </TabsContent>
+
+        {/* ── Tab: Data (radar + charts) ── */}
+        <TabsContent value="data" className="mt-4 space-y-4">
           {(() => {
             const { physical: physScore, technical: techScore, tactical: tacticScore, mental: mentalScore } = perfScores;
 
@@ -1090,78 +1334,10 @@ export default function PlayerProfile() {
           })()}
         </TabsContent>
 
-        {/* ── Tab: History (timeline of reports + events) ── */}
-        <TabsContent value="history" className="mt-4">
-          <Card>
-            <CardHeader>
-              <CardTitle className="text-base flex items-center gap-2">
-                <Clock className="w-4 h-4 text-primary" />
-                {t('profile.history_title')}
-              </CardTitle>
-            </CardHeader>
-            <CardContent>
-              {reports.length === 0 ? (
-                <div className="text-center py-8">
-                  <Clock className="w-8 h-8 text-muted-foreground/20 mx-auto mb-2" />
-                  <p className="text-sm text-muted-foreground">{t('profile.history_empty')}</p>
-                </div>
-              ) : (
-                <div className="relative">
-                  {/* Timeline line */}
-                  <div className="absolute left-4 top-0 bottom-0 w-px bg-border" />
-
-                  <div className="space-y-6">
-                    {reports.map((report, i) => (
-                      <div key={report.id} className="relative flex gap-4 pl-10">
-                        {/* Dot */}
-                        <div className={`absolute left-2.5 top-1 w-3 h-3 rounded-full border-2 border-background ${
-                          report.opinion === 'À suivre' ? 'bg-green-500' : report.opinion === 'À revoir' ? 'bg-amber-500' : 'bg-red-500'
-                        }`} />
-
-                        <div className="flex-1 p-4 rounded-xl bg-muted/30 hover:bg-muted/50 transition-colors space-y-2">
-                          <div className="flex items-center justify-between gap-3">
-                            <div className="flex items-center gap-2">
-                              <span className="text-xs font-mono text-muted-foreground">{formatDate(report.report_date)}</span>
-                              <OpinionBadge opinion={report.opinion} size="sm" />
-                            </div>
-                            <div className="flex items-center gap-1">
-                              {report.drive_link && (
-                                <a href={report.drive_link} target="_blank" rel="noopener noreferrer" className="p-1 rounded hover:bg-muted">
-                                  <ExternalLink className="w-3.5 h-3.5 text-primary" />
-                                </a>
-                              )}
-                              {report.file_url && (
-                                <a href={report.file_url} target="_blank" rel="noopener noreferrer" className="p-1 rounded hover:bg-muted">
-                                  <FileText className="w-3.5 h-3.5 text-primary" />
-                                </a>
-                              )}
-                              <button onClick={() => openEditReport(report)} className="p-1 rounded hover:bg-muted">
-                                <Pencil className="w-3.5 h-3.5 text-muted-foreground" />
-                              </button>
-                            </div>
-                          </div>
-                          {report.title && <p className="text-sm font-semibold">{report.title}</p>}
-                          {i === 0 && <p className="text-[10px] text-primary font-medium">{t('profile.last_report')}</p>}
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              )}
-
-              <div className="mt-6 text-center">
-                <Button size="sm" variant="outline" onClick={() => setAddReportOpen(true)}>
-                  <PlusCircle className="w-3.5 h-3.5 mr-1.5" /> {t('profile.add_report')}
-                </Button>
-              </div>
-            </CardContent>
-          </Card>
-        </TabsContent>
-
-        {/* ── Tab: Research (personal notes, youtube, articles) ── */}
-        <TabsContent value="research" className="mt-4 space-y-4">
+        {/* ── Tab: Links (personal notes, youtube, articles) ── */}
+        <TabsContent value="links" className="mt-4 space-y-4">
           {/* Add research form */}
-          <Card>
+          <Card className="card-warm">
             <CardHeader className="flex flex-row items-center justify-between pb-2">
               <CardTitle className="text-base flex items-center gap-2">
                 <Newspaper className="w-4 h-4 text-primary" />
@@ -1311,6 +1487,8 @@ export default function PlayerProfile() {
                               title={item.title}
                               className="w-full h-full"
                               allowFullScreen
+                              referrerPolicy="no-referrer-when-downgrade"
+                              sandbox="allow-scripts allow-same-origin allow-presentation allow-popups"
                               allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
                             />
                           </div>
@@ -1454,8 +1632,92 @@ export default function PlayerProfile() {
         </DialogContent>
       </Dialog>
 
+      {/* Video player dialog */}
+      <Dialog open={!!playingVideo} onOpenChange={(o) => { if (!o) setPlayingVideo(null); }}>
+        <DialogContent className="max-w-3xl p-0 overflow-hidden">
+          <DialogHeader className="p-4 pb-2">
+            <DialogTitle className="flex items-center gap-2 text-base">
+              <Video className="w-4 h-4 text-primary" />
+              {playingVideo?.title}
+            </DialogTitle>
+            {playingVideo?.description && (
+              <DialogDescription className="text-xs">{playingVideo.description}</DialogDescription>
+            )}
+          </DialogHeader>
+          <div className="px-4 pb-4">
+            {(() => {
+              if (!playingVideo) return null;
+              const ytId = playingVideo.url ? playingVideo.url.match(/(?:v=|youtu\.be\/|embed\/)([a-zA-Z0-9_-]{11})/)?.[1] : null;
+              if (ytId) {
+                return (
+                  <div className="rounded-lg overflow-hidden aspect-video">
+                    <iframe
+                      src={`https://www.youtube.com/embed/${ytId}?autoplay=1`}
+                      title={playingVideo.title}
+                      className="w-full h-full"
+                      allowFullScreen
+                      referrerPolicy="no-referrer-when-downgrade"
+                      sandbox="allow-scripts allow-same-origin allow-presentation allow-popups"
+                      allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
+                    />
+                  </div>
+                );
+              }
+              if (playingVideo.file_url) {
+                return (
+                  <div className="rounded-lg overflow-hidden aspect-video bg-black">
+                    <video src={playingVideo.file_url} controls autoPlay className="w-full h-full" />
+                  </div>
+                );
+              }
+              if (playingVideo.url) {
+                return (
+                  <div className="rounded-lg overflow-hidden aspect-video bg-black">
+                    <video src={playingVideo.url} controls autoPlay className="w-full h-full" />
+                  </div>
+                );
+              }
+              return null;
+            })()}
+          </div>
+        </DialogContent>
+      </Dialog>
+
       {/* Custom fields manager — controlled mode */}
       <CustomFieldsManager externalOpen={manageFieldsOpen} onExternalOpenChange={setManageFieldsOpen} />
+
+      {/* TM disambiguation dialog — shown when enrichment finds multiple matching players */}
+      <Dialog open={!!tmCandidates} onOpenChange={(o) => { if (!o) setTmCandidates(null); }}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle>{t('profile.tm_disambiguation_title')}</DialogTitle>
+            <DialogDescription>{t('profile.tm_disambiguation_desc')}</DialogDescription>
+          </DialogHeader>
+          <div className="space-y-2 max-h-[50vh] overflow-y-auto">
+            {tmCandidates?.map((c) => (
+              <button
+                key={c.id}
+                onClick={() => handleSelectTmCandidate(c)}
+                className="w-full text-left p-3 rounded-lg border hover:bg-accent/50 transition-colors flex items-center justify-between gap-3"
+              >
+                <div className="min-w-0">
+                  <p className="font-medium text-sm truncate">{c.name}</p>
+                  <p className="text-xs text-muted-foreground">
+                    {c.club || t('profile.tm_unknown_club')}
+                    {c.age ? ` · ${c.age} ${t('profile.tm_years_old')}` : ''}
+                  </p>
+                </div>
+                <ExternalLink className="w-3.5 h-3.5 shrink-0 text-muted-foreground" />
+              </button>
+            ))}
+          </div>
+          <DialogFooter>
+            <Button variant="ghost" size="sm" onClick={() => setTmCandidates(null)}>
+              {t('common.cancel')}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

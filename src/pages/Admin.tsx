@@ -8,7 +8,7 @@ import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs';
-import { Shield, Crown, Users, Mail, UserCheck, BarChart3, Lock, Check, X, Search, Plus, Trash2, ShieldCheck, ChevronDown, ChevronRight } from 'lucide-react';
+import { Shield, Crown, Users, Mail, UserCheck, BarChart3, Lock, Check, X, Search, Plus, Trash2, ShieldCheck, Building2, UserPlus, UserMinus, ChevronDown, ChevronRight, Building2, UserPlus, UserMinus } from 'lucide-react';
 import { toast } from 'sonner';
 import { Navigate, Link } from 'react-router-dom';
 import { useAuth } from '@/contexts/AuthContext';
@@ -71,6 +71,23 @@ interface PagePermission {
   allowed: number;
 }
 
+interface OrgMember {
+  user_id: string;
+  email: string;
+  role: string;
+}
+
+interface AdminOrg {
+  id: string;
+  name: string;
+  type: string;
+  invite_code: string;
+  logo_url: string | null;
+  created_at: string;
+  created_by_email: string | null;
+  members: OrgMember[];
+}
+
 async function getAuthHeaders() {
   const session = (await supabase.auth.getSession()).data.session;
   return {
@@ -100,6 +117,14 @@ export default function Admin() {
   const [newRoleName, setNewRoleName] = useState('');
   const [showNewRole, setShowNewRole] = useState(false);
   const [rolesInnerTab, setRolesInnerTab] = useState('permissions');
+
+  // ── Orgs section state ──
+  const [orgSearch, setOrgSearch] = useState('');
+  const [expandedOrg, setExpandedOrg] = useState<string | null>(null);
+  const [addingMemberOrg, setAddingMemberOrg] = useState<string | null>(null);
+  const [addMemberEmail, setAddMemberEmail] = useState('');
+  const [addMemberRole, setAddMemberRole] = useState('member');
+  const [orgActionLoading, setOrgActionLoading] = useState<string | null>(null);
   const [expandedPages, setExpandedPages] = useState<Set<string>>(new Set());
   const [addRoleForUser, setAddRoleForUser] = useState<string | null>(null);
   const [addRoleValue, setAddRoleValue] = useState('');
@@ -130,6 +155,17 @@ export default function Admin() {
     queryKey: ['admin-page-permissions'],
     queryFn: async () => {
       const res = await fetch(`${API_BASE}/admin/page-permissions`, { headers: await getAuthHeaders() });
+      if (!res.ok) throw new Error('Failed');
+      return res.json();
+    },
+    enabled: isAdmin === true,
+  });
+
+  // ── Orgs data ──
+  const { data: orgs = [], isLoading: orgsLoading } = useQuery<AdminOrg[]>({
+    queryKey: ['admin-organizations'],
+    queryFn: async () => {
+      const res = await fetch(`${API_BASE}/admin/organizations`, { headers: await getAuthHeaders() });
       if (!res.ok) throw new Error('Failed');
       return res.json();
     },
@@ -255,31 +291,24 @@ export default function Admin() {
   };
 
   // ── Roles handlers ──
-  const addRoleToUser = async (userId: string, role: string) => {
+  const setUserRole = async (userId: string, role: string) => {
     setUpdatingUser(userId);
     try {
-      const res = await fetch(`${API_BASE}/admin/roles/add`, {
-        method: 'POST', headers: await getAuthHeaders(), body: JSON.stringify({ userId, role }),
+      const res = await fetch(`${API_BASE}/admin/roles/set`, {
+        method: 'POST',
+        headers: await getAuthHeaders(),
+        body: JSON.stringify({ userId, role }),
       });
       if (!res.ok) throw new Error();
       toast.success(t('roles.role_updated'));
       setAddRoleForUser(null); setAddRoleValue('');
       queryClient.invalidateQueries({ queryKey: ['admin-users'] });
-    } catch { toast.error(t('common.error')); }
-    finally { setUpdatingUser(null); }
-  };
-
-  const removeRoleFromUser = async (userId: string, role: string) => {
-    setUpdatingUser(userId);
-    try {
-      const res = await fetch(`${API_BASE}/admin/roles/remove`, {
-        method: 'POST', headers: await getAuthHeaders(), body: JSON.stringify({ userId, role }),
-      });
-      if (!res.ok) throw new Error();
-      toast.success(t('roles.role_updated'));
-      queryClient.invalidateQueries({ queryKey: ['admin-users'] });
-    } catch { toast.error(t('common.error')); }
-    finally { setUpdatingUser(null); }
+      queryClient.invalidateQueries({ queryKey: ['admin-roles'] });
+    } catch {
+      toast.error(t('common.error'));
+    } finally {
+      setUpdatingUser(null);
+    }
   };
 
   const togglePermission = async (role: string, pageKey: string, action: string, currentlyAllowed: boolean) => {
@@ -344,9 +373,83 @@ export default function Admin() {
 
   const isActionAllowed = (role: string, pageKey: string, action: string): boolean => {
     if (role === 'admin') return true;
-    const val = permMap[role]?.[pageKey]?.[action];
-    if (val === undefined) return action === 'view' ? pageKey !== 'admin' : pageKey !== 'admin';
-    return val;
+    if (!permMap[role] || permMap[role][pageKey] === undefined) return pageKey !== 'admin';
+    return permMap[role][pageKey];
+  };
+
+  // ── Orgs derived ──
+  const filteredOrgs = useMemo(() => {
+    if (!orgSearch.trim()) return orgs;
+    const q = orgSearch.toLowerCase();
+    return orgs.filter(o =>
+      o.name.toLowerCase().includes(q) ||
+      o.members.some(m => m.email.toLowerCase().includes(q))
+    );
+  }, [orgs, orgSearch]);
+
+  // ── Orgs handlers ──
+  const addMemberToOrg = async (orgId: string) => {
+    const email = addMemberEmail.trim();
+    if (!email) return;
+    setOrgActionLoading(`add-${orgId}`);
+    try {
+      const target = users.find(u => u.email.toLowerCase() === email.toLowerCase());
+      if (!target) {
+        toast.error(t('admin.org_user_not_found'));
+        return;
+      }
+      const res = await fetch(`${API_BASE}/admin/organizations/add-member`, {
+        method: 'POST',
+        headers: await getAuthHeaders(),
+        body: JSON.stringify({ organizationId: orgId, userId: target.id, role: addMemberRole }),
+      });
+      if (!res.ok) throw new Error();
+      toast.success(t('admin.org_member_added'));
+      setAddMemberEmail('');
+      setAddMemberRole('member');
+      setAddingMemberOrg(null);
+      queryClient.invalidateQueries({ queryKey: ['admin-organizations'] });
+    } catch {
+      toast.error(t('common.error'));
+    } finally {
+      setOrgActionLoading(null);
+    }
+  };
+
+  const removeMemberFromOrg = async (orgId: string, userId: string) => {
+    setOrgActionLoading(`rm-${orgId}-${userId}`);
+    try {
+      const res = await fetch(`${API_BASE}/admin/organizations/remove-member`, {
+        method: 'POST',
+        headers: await getAuthHeaders(),
+        body: JSON.stringify({ organizationId: orgId, userId }),
+      });
+      if (!res.ok) throw new Error();
+      toast.success(t('admin.org_member_removed'));
+      queryClient.invalidateQueries({ queryKey: ['admin-organizations'] });
+    } catch {
+      toast.error(t('common.error'));
+    } finally {
+      setOrgActionLoading(null);
+    }
+  };
+
+  const updateMemberOrgRole = async (orgId: string, userId: string, role: string) => {
+    setOrgActionLoading(`role-${orgId}-${userId}`);
+    try {
+      const res = await fetch(`${API_BASE}/admin/organizations/update-member-role`, {
+        method: 'POST',
+        headers: await getAuthHeaders(),
+        body: JSON.stringify({ organizationId: orgId, userId, role }),
+      });
+      if (!res.ok) throw new Error();
+      toast.success(t('admin.org_role_updated'));
+      queryClient.invalidateQueries({ queryKey: ['admin-organizations'] });
+    } catch {
+      toast.error(t('common.error'));
+    } finally {
+      setOrgActionLoading(null);
+    }
   };
 
   // ── Guard ──
@@ -381,7 +484,7 @@ export default function Admin() {
 
       {/* Section selector */}
       <Tabs defaultValue="users" className="w-full space-y-6">
-        <TabsList className="w-full grid grid-cols-2">
+        <TabsList className="w-full grid grid-cols-3">
           <TabsTrigger value="users" className="gap-2">
             <Users className="w-4 h-4" />
             <span className="hidden sm:inline">{t('admin.tab_users')}</span>
@@ -389,6 +492,10 @@ export default function Admin() {
           <TabsTrigger value="roles" className="gap-2">
             <ShieldCheck className="w-4 h-4" />
             <span className="hidden sm:inline">{t('admin.tab_roles')}</span>
+          </TabsTrigger>
+          <TabsTrigger value="organizations" className="gap-2">
+            <Building2 className="w-4 h-4" />
+            <span className="hidden sm:inline">{t('admin.tab_orgs')}</span>
           </TabsTrigger>
         </TabsList>
 
@@ -854,6 +961,378 @@ export default function Admin() {
               </Card>
             </TabsContent>
           </Tabs>
+        </TabsContent>
+        {/* ── Tab: Organizations ── */}
+        <TabsContent value="organizations" className="space-y-4">
+          {/* Stats */}
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+            <Card className="border-none card-warm">
+              <CardContent className="p-5 flex items-center gap-4">
+                <Building2 className="w-8 h-8 text-primary" />
+                <div>
+                  <p className="text-2xl font-bold">{orgs.length}</p>
+                  <p className="text-xs text-muted-foreground">{t('admin.org_total')}</p>
+                </div>
+              </CardContent>
+            </Card>
+            <Card className="border-none card-warm">
+              <CardContent className="p-5 flex items-center gap-4">
+                <Users className="w-8 h-8 text-amber-500" />
+                <div>
+                  <p className="text-2xl font-bold">{orgs.reduce((s, o) => s + o.members.length, 0)}</p>
+                  <p className="text-xs text-muted-foreground">{t('admin.org_total_members')}</p>
+                </div>
+              </CardContent>
+            </Card>
+            <Card className="border-none card-warm">
+              <CardContent className="p-5 flex items-center gap-4">
+                <Users className="w-8 h-8 text-muted-foreground" />
+                <div>
+                  <p className="text-2xl font-bold">{users.filter(u => orgs.some(o => o.members.some(m => m.user_id === u.id))).length}</p>
+                  <p className="text-xs text-muted-foreground">{t('admin.org_users_in_orgs')}</p>
+                </div>
+              </CardContent>
+            </Card>
+          </div>
+
+          {/* Search */}
+          <div className="relative max-w-sm">
+            <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
+            <input
+              type="text"
+              value={orgSearch}
+              onChange={(e) => setOrgSearch(e.target.value)}
+              placeholder={t('admin.org_search')}
+              className="w-full pl-9 pr-3 py-2 rounded-lg border border-input bg-background text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+            />
+          </div>
+
+          {/* Org list */}
+          {orgsLoading ? (
+            <p className="p-6 text-center text-muted-foreground">{t('common.loading')}</p>
+          ) : filteredOrgs.length === 0 ? (
+            <p className="p-6 text-center text-muted-foreground">{t('admin.org_none')}</p>
+          ) : (
+            <div className="space-y-3">
+              {filteredOrgs.map(org => (
+                <Card key={org.id} className="border-none card-warm overflow-hidden">
+                  <CardHeader
+                    className="pb-2 cursor-pointer"
+                    onClick={() => setExpandedOrg(expandedOrg === org.id ? null : org.id)}
+                  >
+                    <div className="flex items-center justify-between">
+                      <div className="flex items-center gap-3">
+                        {org.logo_url ? (
+                          <img src={org.logo_url} alt="" className="w-8 h-8 rounded-lg object-cover" />
+                        ) : (
+                          <div className="w-8 h-8 rounded-lg bg-primary/10 flex items-center justify-center">
+                            <Building2 className="w-4 h-4 text-primary" />
+                          </div>
+                        )}
+                        <div>
+                          <CardTitle className="text-base flex items-center gap-2">
+                            {org.name}
+                            <Badge variant="secondary" className="text-[10px] capitalize">{org.type}</Badge>
+                          </CardTitle>
+                          <CardDescription className="text-xs">
+                            {t('admin.org_created_by', { email: org.created_by_email || '—' })} · {org.members.length} {t('admin.org_members_count')}
+                          </CardDescription>
+                        </div>
+                      </div>
+                      <Badge variant="outline" className="text-xs font-mono">{org.invite_code}</Badge>
+                    </div>
+                  </CardHeader>
+
+                  {expandedOrg === org.id && (
+                    <CardContent className="pt-0">
+                      {/* Members table */}
+                      <Table>
+                        <TableHeader>
+                          <TableRow>
+                            <TableHead>{t('admin.email')}</TableHead>
+                            <TableHead>{t('admin.org_member_role')}</TableHead>
+                            <TableHead className="text-right">{t('admin.actions')}</TableHead>
+                          </TableRow>
+                        </TableHeader>
+                        <TableBody>
+                          {org.members.map(m => (
+                            <TableRow key={m.user_id}>
+                              <TableCell className="font-medium">{m.email}</TableCell>
+                              <TableCell>
+                                <select
+                                  value={m.role}
+                                  onChange={(e) => updateMemberOrgRole(org.id, m.user_id, e.target.value)}
+                                  disabled={orgActionLoading === `role-${org.id}-${m.user_id}`}
+                                  className="h-8 px-2 text-sm rounded-lg border border-input bg-background focus:outline-none focus:ring-2 focus:ring-ring disabled:opacity-50 capitalize"
+                                >
+                                  <option value="owner">{t('admin.org_role_owner')}</option>
+                                  <option value="admin">{t('admin.org_role_admin')}</option>
+                                  <option value="member">{t('admin.org_role_member')}</option>
+                                </select>
+                              </TableCell>
+                              <TableCell className="text-right">
+                                <Button
+                                  variant="ghost"
+                                  size="icon"
+                                  className="rounded-lg h-7 w-7 text-destructive hover:text-destructive hover:bg-destructive/10"
+                                  onClick={() => removeMemberFromOrg(org.id, m.user_id)}
+                                  disabled={orgActionLoading === `rm-${org.id}-${m.user_id}`}
+                                  title={t('admin.org_remove_member')}
+                                >
+                                  <UserMinus className="w-3.5 h-3.5" />
+                                </Button>
+                              </TableCell>
+                            </TableRow>
+                          ))}
+                          {org.members.length === 0 && (
+                            <TableRow>
+                              <TableCell colSpan={3} className="text-center text-muted-foreground text-sm py-4">
+                                {t('admin.org_no_members')}
+                              </TableCell>
+                            </TableRow>
+                          )}
+                        </TableBody>
+                      </Table>
+
+                      {/* Add member */}
+                      {addingMemberOrg === org.id ? (
+                        <div className="flex flex-wrap items-center gap-2 mt-3">
+                          <input
+                            type="email"
+                            value={addMemberEmail}
+                            onChange={(e) => setAddMemberEmail(e.target.value)}
+                            placeholder={t('admin.org_add_email_placeholder')}
+                            className="h-8 px-3 text-sm rounded-lg border border-input bg-background focus:outline-none focus:ring-2 focus:ring-ring flex-1 min-w-[200px]"
+                            onKeyDown={(e) => e.key === 'Enter' && addMemberToOrg(org.id)}
+                            autoFocus
+                          />
+                          <select
+                            value={addMemberRole}
+                            onChange={(e) => setAddMemberRole(e.target.value)}
+                            className="h-8 px-2 text-sm rounded-lg border border-input bg-background focus:outline-none focus:ring-2 focus:ring-ring capitalize"
+                          >
+                            <option value="member">{t('admin.org_role_member')}</option>
+                            <option value="admin">{t('admin.org_role_admin')}</option>
+                            <option value="owner">{t('admin.org_role_owner')}</option>
+                          </select>
+                          <Button
+                            size="sm"
+                            onClick={() => addMemberToOrg(org.id)}
+                            disabled={!addMemberEmail.trim() || orgActionLoading === `add-${org.id}`}
+                          >
+                            <Check className="w-3.5 h-3.5" />
+                          </Button>
+                          <Button
+                            size="sm"
+                            variant="ghost"
+                            onClick={() => { setAddingMemberOrg(null); setAddMemberEmail(''); setAddMemberRole('member'); }}
+                          >
+                            <X className="w-3.5 h-3.5" />
+                          </Button>
+                        </div>
+                      ) : (
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          className="mt-3 gap-1.5"
+                          onClick={() => setAddingMemberOrg(org.id)}
+                        >
+                          <UserPlus className="w-3.5 h-3.5" />
+                          {t('admin.org_add_member')}
+                        </Button>
+                      )}
+                    </CardContent>
+                  )}
+                </Card>
+              ))}
+            </div>
+          )}
+        </TabsContent>
+        {/* ── Tab: Organizations ── */}
+        <TabsContent value="organizations" className="space-y-4">
+          {/* Stats */}
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+            <Card className="border-none card-warm">
+              <CardContent className="p-5 flex items-center gap-4">
+                <Building2 className="w-8 h-8 text-primary" />
+                <div>
+                  <p className="text-2xl font-bold">{orgs.length}</p>
+                  <p className="text-xs text-muted-foreground">{t('admin.org_total')}</p>
+                </div>
+              </CardContent>
+            </Card>
+            <Card className="border-none card-warm">
+              <CardContent className="p-5 flex items-center gap-4">
+                <Users className="w-8 h-8 text-amber-500" />
+                <div>
+                  <p className="text-2xl font-bold">{orgs.reduce((s, o) => s + o.members.length, 0)}</p>
+                  <p className="text-xs text-muted-foreground">{t('admin.org_total_members')}</p>
+                </div>
+              </CardContent>
+            </Card>
+            <Card className="border-none card-warm">
+              <CardContent className="p-5 flex items-center gap-4">
+                <Users className="w-8 h-8 text-muted-foreground" />
+                <div>
+                  <p className="text-2xl font-bold">{users.filter(u => orgs.some(o => o.members.some(m => m.user_id === u.id))).length}</p>
+                  <p className="text-xs text-muted-foreground">{t('admin.org_users_in_orgs')}</p>
+                </div>
+              </CardContent>
+            </Card>
+          </div>
+
+          {/* Search */}
+          <div className="relative max-w-sm">
+            <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
+            <input
+              type="text"
+              value={orgSearch}
+              onChange={(e) => setOrgSearch(e.target.value)}
+              placeholder={t('admin.org_search')}
+              className="w-full pl-9 pr-3 py-2 rounded-lg border border-input bg-background text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+            />
+          </div>
+
+          {/* Org list */}
+          {orgsLoading ? (
+            <p className="p-6 text-center text-muted-foreground">{t('common.loading')}</p>
+          ) : filteredOrgs.length === 0 ? (
+            <p className="p-6 text-center text-muted-foreground">{t('admin.org_none')}</p>
+          ) : (
+            <div className="space-y-3">
+              {filteredOrgs.map(org => (
+                <Card key={org.id} className="border-none card-warm overflow-hidden">
+                  <CardHeader
+                    className="pb-2 cursor-pointer"
+                    onClick={() => setExpandedOrg(expandedOrg === org.id ? null : org.id)}
+                  >
+                    <div className="flex items-center justify-between">
+                      <div className="flex items-center gap-3">
+                        {org.logo_url ? (
+                          <img src={org.logo_url} alt="" className="w-8 h-8 rounded-lg object-cover" />
+                        ) : (
+                          <div className="w-8 h-8 rounded-lg bg-primary/10 flex items-center justify-center">
+                            <Building2 className="w-4 h-4 text-primary" />
+                          </div>
+                        )}
+                        <div>
+                          <CardTitle className="text-base flex items-center gap-2">
+                            {org.name}
+                            <Badge variant="secondary" className="text-[10px] capitalize">{org.type}</Badge>
+                          </CardTitle>
+                          <CardDescription className="text-xs">
+                            {t('admin.org_created_by', { email: org.created_by_email || '—' })} · {org.members.length} {t('admin.org_members_count')}
+                          </CardDescription>
+                        </div>
+                      </div>
+                      <Badge variant="outline" className="text-xs font-mono">{org.invite_code}</Badge>
+                    </div>
+                  </CardHeader>
+
+                  {expandedOrg === org.id && (
+                    <CardContent className="pt-0">
+                      {/* Members table */}
+                      <Table>
+                        <TableHeader>
+                          <TableRow>
+                            <TableHead>{t('admin.email')}</TableHead>
+                            <TableHead>{t('admin.org_member_role')}</TableHead>
+                            <TableHead className="text-right">{t('admin.actions')}</TableHead>
+                          </TableRow>
+                        </TableHeader>
+                        <TableBody>
+                          {org.members.map(m => (
+                            <TableRow key={m.user_id}>
+                              <TableCell className="font-medium">{m.email}</TableCell>
+                              <TableCell>
+                                <select
+                                  value={m.role}
+                                  onChange={(e) => updateMemberOrgRole(org.id, m.user_id, e.target.value)}
+                                  disabled={orgActionLoading === `role-${org.id}-${m.user_id}`}
+                                  className="h-8 px-2 text-sm rounded-lg border border-input bg-background focus:outline-none focus:ring-2 focus:ring-ring disabled:opacity-50 capitalize"
+                                >
+                                  <option value="owner">{t('admin.org_role_owner')}</option>
+                                  <option value="admin">{t('admin.org_role_admin')}</option>
+                                  <option value="member">{t('admin.org_role_member')}</option>
+                                </select>
+                              </TableCell>
+                              <TableCell className="text-right">
+                                <Button
+                                  variant="ghost"
+                                  size="icon"
+                                  className="rounded-lg h-7 w-7 text-destructive hover:text-destructive hover:bg-destructive/10"
+                                  onClick={() => removeMemberFromOrg(org.id, m.user_id)}
+                                  disabled={orgActionLoading === `rm-${org.id}-${m.user_id}`}
+                                  title={t('admin.org_remove_member')}
+                                >
+                                  <UserMinus className="w-3.5 h-3.5" />
+                                </Button>
+                              </TableCell>
+                            </TableRow>
+                          ))}
+                          {org.members.length === 0 && (
+                            <TableRow>
+                              <TableCell colSpan={3} className="text-center text-muted-foreground text-sm py-4">
+                                {t('admin.org_no_members')}
+                              </TableCell>
+                            </TableRow>
+                          )}
+                        </TableBody>
+                      </Table>
+
+                      {/* Add member */}
+                      {addingMemberOrg === org.id ? (
+                        <div className="flex flex-wrap items-center gap-2 mt-3">
+                          <input
+                            type="email"
+                            value={addMemberEmail}
+                            onChange={(e) => setAddMemberEmail(e.target.value)}
+                            placeholder={t('admin.org_add_email_placeholder')}
+                            className="h-8 px-3 text-sm rounded-lg border border-input bg-background focus:outline-none focus:ring-2 focus:ring-ring flex-1 min-w-[200px]"
+                            onKeyDown={(e) => e.key === 'Enter' && addMemberToOrg(org.id)}
+                            autoFocus
+                          />
+                          <select
+                            value={addMemberRole}
+                            onChange={(e) => setAddMemberRole(e.target.value)}
+                            className="h-8 px-2 text-sm rounded-lg border border-input bg-background focus:outline-none focus:ring-2 focus:ring-ring capitalize"
+                          >
+                            <option value="member">{t('admin.org_role_member')}</option>
+                            <option value="admin">{t('admin.org_role_admin')}</option>
+                            <option value="owner">{t('admin.org_role_owner')}</option>
+                          </select>
+                          <Button
+                            size="sm"
+                            onClick={() => addMemberToOrg(org.id)}
+                            disabled={!addMemberEmail.trim() || orgActionLoading === `add-${org.id}`}
+                          >
+                            <Check className="w-3.5 h-3.5" />
+                          </Button>
+                          <Button
+                            size="sm"
+                            variant="ghost"
+                            onClick={() => { setAddingMemberOrg(null); setAddMemberEmail(''); setAddMemberRole('member'); }}
+                          >
+                            <X className="w-3.5 h-3.5" />
+                          </Button>
+                        </div>
+                      ) : (
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          className="mt-3 gap-1.5"
+                          onClick={() => setAddingMemberOrg(org.id)}
+                        >
+                          <UserPlus className="w-3.5 h-3.5" />
+                          {t('admin.org_add_member')}
+                        </Button>
+                      )}
+                    </CardContent>
+                  )}
+                </Card>
+              ))}
+            </div>
+          )}
         </TabsContent>
       </Tabs>
       <AlertDialog open={!!deletingUser} onOpenChange={open => { if (!open) setDeletingUser(null); }}>

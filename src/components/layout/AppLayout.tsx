@@ -7,6 +7,7 @@ import AppSidebar from './AppSidebar';
 import NotificationCenter from '@/components/NotificationCenter';
 import ChatBot from '@/components/ChatBot';
 import FeedbackPopup from '@/components/FeedbackPopup';
+import ScrollRestoration from '@/components/ScrollRestoration';
 import { OperationBannerProvider } from '@/contexts/OperationBannerContext';
 import OperationBanner from '@/components/OperationBanner';
 
@@ -57,6 +58,7 @@ export default function AppLayout() {
             <Outlet />
           </main>
         </div>
+        <ScrollRestoration />
         <OperationBanner />
         <ChatBot />
         <FeedbackPopup />

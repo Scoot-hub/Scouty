@@ -40,7 +40,7 @@ async function sportsDbFetch(endpoint: string, params: Record<string, string>): 
 // Mapping des noms de clubs → noms de recherche TheSportsDB
 const CLUB_NAME_MAP: Record<string, string[]> = {
   // France
-  'Paris Saint-Germain': ['Paris Saint-Germain', 'PSG'],
+  'Paris Saint-Germain': ['Paris SG', 'Paris SG', 'Paris Saint-Germain', 'Paris Saint Germain', 'PSG', 'Paris Saint Germain'],
   'Olympique de Marseille': ['Marseille', 'Olympique Marseille', 'OM'],
   'Olympique Lyonnais': ['Lyon', 'Olympique Lyonnais', 'OL'],
   'AS Monaco': ['AS Monaco', 'ASM'],
@@ -902,6 +902,16 @@ const CLUB_NAME_MAP: Record<string, string[]> = {
  * Cover all expected variants: official name, typos, French/English/Spanish spellings.
  */
 const BADGE_OVERRIDES: Record<string, string> = {
+  // Paris Saint-Germain — "Paris Saint-Germain" search returns Aris (Greek club) on TheSportsDB
+  'paris saint germain':          'https://r2.thesportsdb.com/images/media/team/badge/rwqrrq1473504808.png',
+  'paris saint-germain':          'https://r2.thesportsdb.com/images/media/team/badge/rwqrrq1473504808.png',
+  'psg':                          'https://r2.thesportsdb.com/images/media/team/badge/rwqrrq1473504808.png',
+  'paris sg':                     'https://r2.thesportsdb.com/images/media/team/badge/rwqrrq1473504808.png',
+  // Paris Saint-Germain — "Paris Saint-Germain" search returns Aris (Greek club) on TheSportsDB
+  'paris saint germain':          'https://r2.thesportsdb.com/images/media/team/badge/rwqrrq1473504808.png',
+  'paris saint-germain':          'https://r2.thesportsdb.com/images/media/team/badge/rwqrrq1473504808.png',
+  'psg':                          'https://r2.thesportsdb.com/images/media/team/badge/rwqrrq1473504808.png',
+  'paris sg':                     'https://r2.thesportsdb.com/images/media/team/badge/rwqrrq1473504808.png',
   // Eintracht Frankfurt — many spelling variants in different languages
   'eintracht frankfurt':          'https://r2.thesportsdb.com/images/media/team/badge/rurwpy1473453269.png',
   'eintracht francfort':          'https://r2.thesportsdb.com/images/media/team/badge/rurwpy1473453269.png',
