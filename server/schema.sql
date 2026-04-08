@@ -1,4 +1,12 @@
-﻿CREATE TABLE IF NOT EXISTS users (
+-- ============================================================================
+-- Scouty — Full database schema
+-- All tables used by the application (server/index.js auto-migrates missing
+-- columns/tables at startup, but this file is the canonical reference).
+-- ============================================================================
+
+-- ── Authentication & Users ──────────────────────────────────────────────────
+
+CREATE TABLE IF NOT EXISTS users (
   id CHAR(36) PRIMARY KEY,
   email VARCHAR(255) NOT NULL,
   password_hash VARCHAR(255) NOT NULL,
@@ -18,8 +26,18 @@ CREATE TABLE IF NOT EXISTS profiles (
   id CHAR(36) PRIMARY KEY,
   user_id CHAR(36) NOT NULL UNIQUE,
   full_name VARCHAR(100) NOT NULL DEFAULT '',
+  first_name VARCHAR(100) NULL,
+  last_name VARCHAR(100) NULL,
   club VARCHAR(100) NOT NULL DEFAULT '',
   role VARCHAR(50) NOT NULL DEFAULT 'scout',
+  photo_url TEXT NULL,
+  company VARCHAR(200) NULL,
+  siret VARCHAR(20) NULL,
+  phone VARCHAR(30) NULL,
+  civility ENUM('M.','Mme','Non précisé') NULL DEFAULT NULL,
+  address TEXT NULL,
+  date_of_birth DATE NULL,
+  reference_club VARCHAR(200) NULL,
   social_x VARCHAR(100) NULL,
   social_instagram VARCHAR(100) NULL,
   social_linkedin VARCHAR(255) NULL,
@@ -29,6 +47,17 @@ CREATE TABLE IF NOT EXISTS profiles (
   updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
   FOREIGN KEY (referred_by) REFERENCES users(id) ON DELETE SET NULL
+);
+
+CREATE TABLE IF NOT EXISTS password_reset_tokens (
+  id CHAR(36) PRIMARY KEY,
+  user_id CHAR(36) NOT NULL,
+  token CHAR(64) NOT NULL,
+  expires_at DATETIME NOT NULL,
+  used_at DATETIME NULL,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  UNIQUE KEY uniq_reset_token (token),
+  FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
 );
 
 CREATE TABLE IF NOT EXISTS user_roles (
@@ -54,6 +83,19 @@ CREATE TABLE IF NOT EXISTS user_subscriptions (
   updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
 );
+
+CREATE TABLE IF NOT EXISTS page_permissions (
+  id CHAR(36) PRIMARY KEY,
+  role VARCHAR(50) NOT NULL,
+  page_key VARCHAR(100) NOT NULL,
+  action VARCHAR(50) NOT NULL DEFAULT 'view',
+  allowed TINYINT(1) NOT NULL DEFAULT 1,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  UNIQUE KEY uniq_role_page_action (role, page_key, action)
+);
+
+-- ── Players & Scouting ──────────────────────────────────────────────────────
 
 CREATE TABLE IF NOT EXISTS players (
   id CHAR(36) PRIMARY KEY,
@@ -83,6 +125,7 @@ CREATE TABLE IF NOT EXISTS players (
   shared_with_org TINYINT(1) NOT NULL DEFAULT 0,
   task VARCHAR(30) NULL DEFAULT NULL,
   has_news VARCHAR(50) NULL DEFAULT NULL,
+  is_archived TINYINT(1) NOT NULL DEFAULT 0,
   created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   INDEX idx_players_user_name (user_id, name(191)),
@@ -116,28 +159,62 @@ CREATE TABLE IF NOT EXISTS custom_fields (
   FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
 );
 
-CREATE TABLE IF NOT EXISTS password_reset_tokens (
+CREATE TABLE IF NOT EXISTS custom_field_values (
   id CHAR(36) PRIMARY KEY,
   user_id CHAR(36) NOT NULL,
-  token CHAR(64) NOT NULL,
-  expires_at DATETIME NOT NULL,
-  used_at DATETIME NULL,
+  custom_field_id CHAR(36) NOT NULL,
+  player_id CHAR(36) NOT NULL,
+  value TEXT NULL,
   created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  UNIQUE KEY uniq_reset_token (token),
+  UNIQUE KEY uniq_custom_field_player (custom_field_id, player_id),
+  FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+  FOREIGN KEY (custom_field_id) REFERENCES custom_fields(id) ON DELETE CASCADE,
+  FOREIGN KEY (player_id) REFERENCES players(id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS player_research (
+  id CHAR(36) PRIMARY KEY,
+  user_id CHAR(36) NOT NULL,
+  player_id CHAR(36) NOT NULL,
+  type VARCHAR(30) NOT NULL DEFAULT 'note',
+  title VARCHAR(500) NOT NULL,
+  url TEXT NULL,
+  content TEXT NULL,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  INDEX idx_player_research (user_id, player_id, created_at),
+  FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+  FOREIGN KEY (player_id) REFERENCES players(id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS player_videos (
+  id CHAR(36) PRIMARY KEY,
+  user_id CHAR(36) NOT NULL,
+  player_id CHAR(36) NOT NULL,
+  title VARCHAR(500) NOT NULL,
+  url TEXT NULL,
+  file_url TEXT NULL,
+  description TEXT NULL,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  INDEX idx_player_videos (user_id, player_id, created_at),
+  FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+  FOREIGN KEY (player_id) REFERENCES players(id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS player_org_shares (
+  id CHAR(36) PRIMARY KEY,
+  player_id CHAR(36) NOT NULL,
+  organization_id CHAR(36) NOT NULL,
+  user_id CHAR(36) NOT NULL,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  UNIQUE KEY uniq_player_org (player_id, organization_id),
+  INDEX idx_player_org_shares_org (organization_id),
+  INDEX idx_player_org_shares_user (user_id),
+  FOREIGN KEY (player_id) REFERENCES players(id) ON DELETE CASCADE,
+  FOREIGN KEY (organization_id) REFERENCES organizations(id) ON DELETE CASCADE,
   FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
 );
 
-CREATE TABLE IF NOT EXISTS club_logos (
-  club_name VARCHAR(255) NOT NULL PRIMARY KEY,
-  logo_url TEXT NOT NULL,
-  name_fr VARCHAR(255) NULL,
-  name_en VARCHAR(255) NULL,
-  name_es VARCHAR(255) NULL,
-  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-  INDEX idx_club_logos_fr (name_fr),
-  INDEX idx_club_logos_en (name_en),
-  INDEX idx_club_logos_es (name_es)
-);
+-- ── Watchlists & Shadow Teams ───────────────────────────────────────────────
 
 CREATE TABLE IF NOT EXISTS watchlists (
   id CHAR(36) PRIMARY KEY,
@@ -162,6 +239,34 @@ CREATE TABLE IF NOT EXISTS watchlist_players (
   FOREIGN KEY (player_id) REFERENCES players(id) ON DELETE CASCADE
 );
 
+CREATE TABLE IF NOT EXISTS shadow_teams (
+  id CHAR(36) PRIMARY KEY,
+  user_id CHAR(36) NOT NULL,
+  name VARCHAR(255) NOT NULL,
+  formation VARCHAR(20) NOT NULL DEFAULT '4-3-3',
+  logo_url TEXT,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  INDEX idx_shadow_teams_user (user_id),
+  FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS shadow_team_players (
+  id CHAR(36) PRIMARY KEY,
+  user_id CHAR(36) NOT NULL,
+  shadow_team_id CHAR(36) NOT NULL,
+  player_id CHAR(36) NOT NULL,
+  position_slot VARCHAR(20) NOT NULL,
+  `rank` INT NOT NULL DEFAULT 0,
+  added_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  UNIQUE KEY uniq_shadow_slot_player (shadow_team_id, position_slot, player_id),
+  FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+  FOREIGN KEY (shadow_team_id) REFERENCES shadow_teams(id) ON DELETE CASCADE,
+  FOREIGN KEY (player_id) REFERENCES players(id) ON DELETE CASCADE
+);
+
+-- ── Organizations ───────────────────────────────────────────────────────────
+
 CREATE TABLE IF NOT EXISTS organizations (
   id CHAR(36) PRIMARY KEY,
   name VARCHAR(255) NOT NULL,
@@ -184,138 +289,6 @@ CREATE TABLE IF NOT EXISTS organization_members (
   UNIQUE KEY uniq_org_user (organization_id, user_id),
   FOREIGN KEY (organization_id) REFERENCES organizations(id) ON DELETE CASCADE,
   FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
-);
-
-CREATE TABLE IF NOT EXISTS fixtures (
-  id CHAR(36) PRIMARY KEY,
-  user_id CHAR(36) NOT NULL,
-  home_team VARCHAR(255) NOT NULL,
-  away_team VARCHAR(255) NOT NULL,
-  match_date DATE NOT NULL,
-  match_time TIME NULL,
-  competition VARCHAR(255) NOT NULL DEFAULT '',
-  venue VARCHAR(255) NOT NULL DEFAULT '',
-  score_home INT NULL,
-  score_away INT NULL,
-  notes TEXT NULL,
-  is_favorite TINYINT(1) NOT NULL DEFAULT 0,
-  source ENUM('manual','api') NOT NULL DEFAULT 'manual',
-  api_fixture_id INT NULL,
-  api_league_id INT NULL,
-  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-  INDEX idx_fixtures_user_date (user_id, match_date),
-  UNIQUE KEY uniq_user_api_fixture (user_id, api_fixture_id),
-  FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
-);
-
-CREATE TABLE IF NOT EXISTS api_football_cache (
-  cache_key VARCHAR(255) PRIMARY KEY,
-  response_json JSON NOT NULL,
-  fetched_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  expires_at DATETIME NOT NULL,
-  INDEX idx_cache_expires (expires_at)
-);
-
-CREATE TABLE IF NOT EXISTS user_followed_leagues (
-  id CHAR(36) PRIMARY KEY,
-  user_id CHAR(36) NOT NULL,
-  league_id INT NOT NULL,
-  league_name VARCHAR(255) NOT NULL,
-  league_country VARCHAR(255) NOT NULL DEFAULT '',
-  league_logo VARCHAR(500) NULL,
-  season INT NOT NULL,
-  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  UNIQUE KEY uniq_user_league_season (user_id, league_id, season),
-  INDEX idx_followed_user (user_id),
-  FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
-);
-
-CREATE TABLE IF NOT EXISTS league_name_mappings (
-  id CHAR(36) PRIMARY KEY,
-  app_league_name VARCHAR(255) NOT NULL,
-  api_league_id INT NOT NULL,
-  api_league_name VARCHAR(255) NOT NULL,
-  api_country VARCHAR(255) NOT NULL DEFAULT '',
-  api_league_logo VARCHAR(500) NULL,
-  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  UNIQUE KEY uniq_app_league (app_league_name(191))
-);
-
-CREATE TABLE IF NOT EXISTS club_directory (
-  club_name VARCHAR(255) NOT NULL PRIMARY KEY,
-  competition VARCHAR(255) NOT NULL DEFAULT '',
-  country VARCHAR(255) NOT NULL DEFAULT '',
-  country_code VARCHAR(10) NOT NULL DEFAULT '',
-  logo_url TEXT NULL,
-  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-  INDEX idx_club_dir_competition (competition),
-  INDEX idx_club_dir_country (country)
-);
-
-CREATE TABLE IF NOT EXISTS thesportsdb_team_cache (
-  club_name VARCHAR(255) NOT NULL PRIMARY KEY,
-  tsdb_team_id INT NOT NULL,
-  tsdb_team_name VARCHAR(255) NOT NULL,
-  tsdb_league_name VARCHAR(255) NULL,
-  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
-);
-
-CREATE TABLE IF NOT EXISTS custom_field_values (
-  id CHAR(36) PRIMARY KEY,
-  user_id CHAR(36) NOT NULL,
-  custom_field_id CHAR(36) NOT NULL,
-  player_id CHAR(36) NOT NULL,
-  value TEXT NULL,
-  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  UNIQUE KEY uniq_custom_field_player (custom_field_id, player_id),
-  FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
-  FOREIGN KEY (custom_field_id) REFERENCES custom_fields(id) ON DELETE CASCADE,
-  FOREIGN KEY (player_id) REFERENCES players(id) ON DELETE CASCADE
-);
-
-CREATE TABLE IF NOT EXISTS shadow_teams (
-  id CHAR(36) PRIMARY KEY,
-  user_id CHAR(36) NOT NULL,
-  name VARCHAR(255) NOT NULL,
-  formation VARCHAR(20) NOT NULL DEFAULT '4-3-3',
-  logo_url TEXT,
-  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-  INDEX idx_shadow_teams_user (user_id),
-  FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
-);
-
-CREATE TABLE IF NOT EXISTS contacts (
-  id CHAR(36) PRIMARY KEY,
-  user_id CHAR(36) NOT NULL,
-  first_name VARCHAR(255) NOT NULL DEFAULT '',
-  last_name VARCHAR(255) NOT NULL DEFAULT '',
-  photo_url TEXT NULL,
-  organization VARCHAR(255) NOT NULL DEFAULT '',
-  role_title VARCHAR(255) NOT NULL DEFAULT '',
-  phone VARCHAR(100) NOT NULL DEFAULT '',
-  email VARCHAR(255) NOT NULL DEFAULT '',
-  linkedin_url TEXT NULL,
-  notes TEXT NULL,
-  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-  INDEX idx_contacts_user (user_id),
-  FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
-);
-
-CREATE TABLE IF NOT EXISTS shadow_team_players (
-  id CHAR(36) PRIMARY KEY,
-  user_id CHAR(36) NOT NULL,
-  shadow_team_id CHAR(36) NOT NULL,
-  player_id CHAR(36) NOT NULL,
-  position_slot VARCHAR(20) NOT NULL,
-  rank INT NOT NULL DEFAULT 0,
-  added_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  UNIQUE KEY uniq_shadow_slot_player (shadow_team_id, position_slot, player_id),
-  FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
-  FOREIGN KEY (shadow_team_id) REFERENCES shadow_teams(id) ON DELETE CASCADE,
-  FOREIGN KEY (player_id) REFERENCES players(id) ON DELETE CASCADE
 );
 
 CREATE TABLE IF NOT EXISTS squad_players (
@@ -348,17 +321,28 @@ CREATE TABLE IF NOT EXISTS squad_players (
   FOREIGN KEY (created_by) REFERENCES users(id) ON DELETE CASCADE
 );
 
-CREATE TABLE IF NOT EXISTS player_org_shares (
+-- ── Fixtures & Matches ──────────────────────────────────────────────────────
+
+CREATE TABLE IF NOT EXISTS fixtures (
   id CHAR(36) PRIMARY KEY,
-  player_id CHAR(36) NOT NULL,
-  organization_id CHAR(36) NOT NULL,
   user_id CHAR(36) NOT NULL,
+  home_team VARCHAR(255) NOT NULL,
+  away_team VARCHAR(255) NOT NULL,
+  match_date DATE NOT NULL,
+  match_time TIME NULL,
+  competition VARCHAR(255) NOT NULL DEFAULT '',
+  venue VARCHAR(255) NOT NULL DEFAULT '',
+  score_home INT NULL,
+  score_away INT NULL,
+  notes TEXT NULL,
+  is_favorite TINYINT(1) NOT NULL DEFAULT 0,
+  source ENUM('manual','api') NOT NULL DEFAULT 'manual',
+  api_fixture_id INT NULL,
+  api_league_id INT NULL,
   created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  UNIQUE KEY uniq_player_org (player_id, organization_id),
-  INDEX idx_player_org_shares_org (organization_id),
-  INDEX idx_player_org_shares_user (user_id),
-  FOREIGN KEY (player_id) REFERENCES players(id) ON DELETE CASCADE,
-  FOREIGN KEY (organization_id) REFERENCES organizations(id) ON DELETE CASCADE,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  INDEX idx_fixtures_user_date (user_id, match_date),
+  UNIQUE KEY uniq_user_api_fixture (user_id, api_fixture_id),
   FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
 );
 
@@ -388,6 +372,169 @@ CREATE TABLE IF NOT EXISTS match_assignments (
   FOREIGN KEY (assigned_by) REFERENCES users(id) ON DELETE SET NULL
 );
 
+-- ── Clubs & Leagues ─────────────────────────────────────────────────────────
+
+CREATE TABLE IF NOT EXISTS club_logos (
+  club_name VARCHAR(255) NOT NULL PRIMARY KEY,
+  logo_url TEXT NOT NULL,
+  name_fr VARCHAR(255) NULL,
+  name_en VARCHAR(255) NULL,
+  name_es VARCHAR(255) NULL,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  INDEX idx_club_logos_fr (name_fr),
+  INDEX idx_club_logos_en (name_en),
+  INDEX idx_club_logos_es (name_es)
+);
+
+CREATE TABLE IF NOT EXISTS club_directory (
+  club_name VARCHAR(255) NOT NULL PRIMARY KEY,
+  competition VARCHAR(255) NOT NULL DEFAULT '',
+  country VARCHAR(255) NOT NULL DEFAULT '',
+  country_code VARCHAR(10) NOT NULL DEFAULT '',
+  logo_url TEXT NULL,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  INDEX idx_club_dir_competition (competition),
+  INDEX idx_club_dir_country (country)
+);
+
+CREATE TABLE IF NOT EXISTS followed_clubs (
+  id CHAR(36) PRIMARY KEY,
+  user_id CHAR(36) NOT NULL,
+  club_name VARCHAR(255) NOT NULL,
+  notes TEXT NULL,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  UNIQUE KEY uniq_user_club (user_id, club_name(191)),
+  INDEX idx_followed_clubs_user (user_id),
+  FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS user_followed_leagues (
+  id CHAR(36) PRIMARY KEY,
+  user_id CHAR(36) NOT NULL,
+  league_id INT NOT NULL,
+  league_name VARCHAR(255) NOT NULL,
+  league_country VARCHAR(255) NOT NULL DEFAULT '',
+  league_logo VARCHAR(500) NULL,
+  season INT NOT NULL,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  UNIQUE KEY uniq_user_league_season (user_id, league_id, season),
+  INDEX idx_followed_user (user_id),
+  FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS league_name_mappings (
+  id CHAR(36) PRIMARY KEY,
+  app_league_name VARCHAR(255) NOT NULL,
+  api_league_id INT NOT NULL,
+  api_league_name VARCHAR(255) NOT NULL,
+  api_country VARCHAR(255) NOT NULL DEFAULT '',
+  api_league_logo VARCHAR(500) NULL,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  UNIQUE KEY uniq_app_league (app_league_name(191))
+);
+
+-- Role metadata (color)
+CREATE TABLE IF NOT EXISTS role_metadata (
+  role VARCHAR(50) NOT NULL PRIMARY KEY,
+  color VARCHAR(20) NOT NULL DEFAULT '#6366f1',
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS custom_championships (
+  id CHAR(36) PRIMARY KEY,
+  name VARCHAR(255) NOT NULL,
+  country VARCHAR(255) NOT NULL DEFAULT 'Autre',
+  created_by CHAR(36) NOT NULL,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  UNIQUE KEY uniq_custom_champ_name (name(191)),
+  FOREIGN KEY (created_by) REFERENCES users(id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS championship_players (
+  id CHAR(36) PRIMARY KEY,
+  user_id CHAR(36) NOT NULL,
+  championship_name VARCHAR(255) NOT NULL,
+  player_id CHAR(36) NOT NULL,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  UNIQUE KEY uniq_champ_player (user_id, championship_name(150), player_id),
+  INDEX idx_champ_players_name (championship_name(191)),
+  FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+  FOREIGN KEY (player_id) REFERENCES players(id) ON DELETE CASCADE
+);
+
+-- ── Community ───────────────────────────────────────────────────────────────
+
+CREATE TABLE IF NOT EXISTS community_posts (
+  id CHAR(36) PRIMARY KEY,
+  user_id CHAR(36) NOT NULL,
+  author_name VARCHAR(255) NOT NULL,
+  category ENUM('question','suggestion','match','player','general') NOT NULL DEFAULT 'general',
+  title VARCHAR(120) NOT NULL,
+  content TEXT NOT NULL,
+  likes INT NOT NULL DEFAULT 0,
+  replies_count INT NOT NULL DEFAULT 0,
+  is_archived TINYINT(1) NOT NULL DEFAULT 0,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  INDEX idx_community_posts_user (user_id),
+  INDEX idx_community_posts_category (category),
+  INDEX idx_community_posts_created (created_at DESC),
+  FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS community_replies (
+  id CHAR(36) PRIMARY KEY,
+  post_id CHAR(36) NOT NULL,
+  user_id CHAR(36) NOT NULL,
+  author_name VARCHAR(255) NOT NULL,
+  content TEXT NOT NULL,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  INDEX idx_community_replies_post (post_id),
+  FOREIGN KEY (post_id) REFERENCES community_posts(id) ON DELETE CASCADE,
+  FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS community_likes (
+  id CHAR(36) PRIMARY KEY,
+  post_id CHAR(36) NOT NULL,
+  user_id CHAR(36) NOT NULL,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  UNIQUE KEY uniq_post_user (post_id, user_id),
+  FOREIGN KEY (post_id) REFERENCES community_posts(id) ON DELETE CASCADE,
+  FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+);
+
+-- ── Tickets & Support ───────────────────────────────────────────────────────
+
+CREATE TABLE IF NOT EXISTS tickets (
+  id CHAR(36) PRIMARY KEY,
+  user_id CHAR(36) NOT NULL,
+  category VARCHAR(50) NOT NULL DEFAULT 'bug',
+  subject VARCHAR(255) NOT NULL,
+  message TEXT NOT NULL,
+  page_url VARCHAR(500) NULL,
+  user_agent VARCHAR(500) NULL,
+  status ENUM('open','in_progress','closed') NOT NULL DEFAULT 'open',
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  INDEX idx_tickets_user (user_id),
+  INDEX idx_tickets_status (status, created_at),
+  FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS ticket_messages (
+  id CHAR(36) PRIMARY KEY,
+  ticket_id CHAR(36) NOT NULL,
+  sender_id CHAR(36) NOT NULL,
+  is_admin TINYINT(1) NOT NULL DEFAULT 0,
+  body TEXT NOT NULL,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  INDEX idx_ticket_messages_ticket (ticket_id, created_at),
+  FOREIGN KEY (ticket_id) REFERENCES tickets(id) ON DELETE CASCADE,
+  FOREIGN KEY (sender_id) REFERENCES users(id) ON DELETE CASCADE
+);
+
+-- ── Notifications ───────────────────────────────────────────────────────────
+
 CREATE TABLE IF NOT EXISTS notifications (
   id CHAR(36) PRIMARY KEY,
   user_id CHAR(36) NOT NULL,
@@ -403,46 +550,8 @@ CREATE TABLE IF NOT EXISTS notifications (
   FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
 );
 
--- Player research items (personal notes, youtube, articles)
-CREATE TABLE IF NOT EXISTS player_research (
-  id CHAR(36) PRIMARY KEY,
-  user_id CHAR(36) NOT NULL,
-  player_id CHAR(36) NOT NULL,
-  type VARCHAR(30) NOT NULL DEFAULT 'note',
-  title VARCHAR(500) NOT NULL,
-  url TEXT NULL,
-  content TEXT NULL,
-  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  INDEX idx_player_research (user_id, player_id, created_at),
-  FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
-  FOREIGN KEY (player_id) REFERENCES players(id) ON DELETE CASCADE
-);
+-- ── Feedback & Referrals ────────────────────────────────────────────────────
 
--- Followed clubs
-CREATE TABLE IF NOT EXISTS followed_clubs (
-  id CHAR(36) PRIMARY KEY,
-  user_id CHAR(36) NOT NULL,
-  club_name VARCHAR(255) NOT NULL,
-  notes TEXT NULL,
-  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  UNIQUE KEY uniq_user_club (user_id, club_name(191)),
-  INDEX idx_followed_clubs_user (user_id),
-  FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
-);
-
--- Page permissions per role
-CREATE TABLE IF NOT EXISTS page_permissions (
-  id CHAR(36) PRIMARY KEY,
-  role VARCHAR(50) NOT NULL,
-  page_key VARCHAR(100) NOT NULL,
-  action VARCHAR(50) NOT NULL DEFAULT 'view',
-  allowed TINYINT(1) NOT NULL DEFAULT 1,
-  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-  UNIQUE KEY uniq_role_page_action (role, page_key, action)
-);
-
--- Feedback table
 CREATE TABLE IF NOT EXISTS feedback (
   id CHAR(36) PRIMARY KEY,
   user_id CHAR(36) NOT NULL,
@@ -454,48 +563,6 @@ CREATE TABLE IF NOT EXISTS feedback (
   FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
 );
 
--- Community posts (PRO only)
-CREATE TABLE IF NOT EXISTS community_posts (
-  id CHAR(36) PRIMARY KEY,
-  user_id CHAR(36) NOT NULL,
-  author_name VARCHAR(255) NOT NULL,
-  category ENUM('question','suggestion','match','player','general') NOT NULL DEFAULT 'general',
-  title VARCHAR(120) NOT NULL,
-  content TEXT NOT NULL,
-  likes INT NOT NULL DEFAULT 0,
-  replies_count INT NOT NULL DEFAULT 0,
-  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  INDEX idx_community_posts_user (user_id),
-  INDEX idx_community_posts_category (category),
-  INDEX idx_community_posts_created (created_at DESC),
-  FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
-);
-
--- Community replies
-CREATE TABLE IF NOT EXISTS community_replies (
-  id CHAR(36) PRIMARY KEY,
-  post_id CHAR(36) NOT NULL,
-  user_id CHAR(36) NOT NULL,
-  author_name VARCHAR(255) NOT NULL,
-  content TEXT NOT NULL,
-  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  INDEX idx_community_replies_post (post_id),
-  FOREIGN KEY (post_id) REFERENCES community_posts(id) ON DELETE CASCADE,
-  FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
-);
-
--- Community likes (prevent duplicates)
-CREATE TABLE IF NOT EXISTS community_likes (
-  id CHAR(36) PRIMARY KEY,
-  post_id CHAR(36) NOT NULL,
-  user_id CHAR(36) NOT NULL,
-  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  UNIQUE KEY uniq_post_user (post_id, user_id),
-  FOREIGN KEY (post_id) REFERENCES community_posts(id) ON DELETE CASCADE,
-  FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
-);
-
--- Referrals / affiliations
 CREATE TABLE IF NOT EXISTS referrals (
   id CHAR(36) PRIMARY KEY,
   referrer_id CHAR(36) NOT NULL,
@@ -508,34 +575,55 @@ CREATE TABLE IF NOT EXISTS referrals (
   FOREIGN KEY (referred_id) REFERENCES users(id) ON DELETE CASCADE
 );
 
--- Custom championships added by admin (static leagues come from frontend code)
-CREATE TABLE IF NOT EXISTS custom_championships (
-  id CHAR(36) PRIMARY KEY,
-  name VARCHAR(255) NOT NULL,
-  country VARCHAR(255) NOT NULL DEFAULT 'Autre',
-  created_by CHAR(36) NOT NULL,
-  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  UNIQUE KEY uniq_custom_champ_name (name(191)),
-  FOREIGN KEY (created_by) REFERENCES users(id) ON DELETE CASCADE
-);
+-- ── Contacts ────────────────────────────────────────────────────────────────
 
--- Many-to-many: players linked to championships (by name)
-CREATE TABLE IF NOT EXISTS championship_players (
+CREATE TABLE IF NOT EXISTS contacts (
   id CHAR(36) PRIMARY KEY,
   user_id CHAR(36) NOT NULL,
-  championship_name VARCHAR(255) NOT NULL,
-  player_id CHAR(36) NOT NULL,
+  first_name VARCHAR(255) NOT NULL DEFAULT '',
+  last_name VARCHAR(255) NOT NULL DEFAULT '',
+  photo_url TEXT NULL,
+  organization VARCHAR(255) NOT NULL DEFAULT '',
+  role_title VARCHAR(255) NOT NULL DEFAULT '',
+  phone VARCHAR(100) NOT NULL DEFAULT '',
+  email VARCHAR(255) NOT NULL DEFAULT '',
+  linkedin_url TEXT NULL,
+  notes TEXT NULL,
   created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  UNIQUE KEY uniq_champ_player (user_id, championship_name(150), player_id),
-  INDEX idx_champ_players_name (championship_name(191)),
-  FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
-  FOREIGN KEY (player_id) REFERENCES players(id) ON DELETE CASCADE
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  INDEX idx_contacts_user (user_id),
+  FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
 );
 
--- Migration: add 2FA TOTP columns to users table
--- (already included in CREATE TABLE above, run these only on existing databases)
--- ALTER TABLE users ADD COLUMN totp_secret VARCHAR(255) NULL, ADD COLUMN totp_secret_temp VARCHAR(255) NULL, ADD COLUMN totp_enabled TINYINT(1) NOT NULL DEFAULT 0;
+-- ── Caches & Internal ───────────────────────────────────────────────────────
 
--- Migration: add email 2FA columns to users table
--- ALTER TABLE users ADD COLUMN email_2fa_enabled TINYINT(1) NOT NULL DEFAULT 0, ADD COLUMN email_2fa_code VARCHAR(6) NULL, ADD COLUMN email_2fa_expires_at DATETIME NULL;
+CREATE TABLE IF NOT EXISTS api_football_cache (
+  cache_key VARCHAR(255) PRIMARY KEY,
+  response_json JSON NOT NULL,
+  fetched_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  expires_at DATETIME NOT NULL,
+  INDEX idx_cache_expires (expires_at)
+);
 
+CREATE TABLE IF NOT EXISTS thesportsdb_team_cache (
+  club_name VARCHAR(255) NOT NULL PRIMARY KEY,
+  tsdb_team_id INT NOT NULL,
+  tsdb_team_name VARCHAR(255) NOT NULL,
+  tsdb_league_name VARCHAR(255) NULL,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS uploaded_images (
+  id VARCHAR(255) PRIMARY KEY,
+  data LONGBLOB NOT NULL,
+  mime_type VARCHAR(100) NOT NULL DEFAULT 'image/jpeg',
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+-- ── Feature flags (admin toggles) ──────────────────────────────────────────
+
+CREATE TABLE IF NOT EXISTS app_settings (
+  setting_key VARCHAR(100) NOT NULL PRIMARY KEY,
+  setting_value VARCHAR(500) NOT NULL DEFAULT '1',
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+);

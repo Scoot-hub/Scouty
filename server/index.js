@@ -667,8 +667,10 @@ function buildWhereClause(table, filters = [], userId) {
   };
 }
 
-// All DB migrations are deferred to startup (runMigrations) to avoid blocking module load
-async function runMigrations() {
+// DB schema is managed via schema.sql — no runtime migrations.
+// To apply schema changes, run: mysql -u ... < server/schema.sql
+async function runMigrations() { /* removed — use schema.sql */ }
+async function _legacyRunMigrations() {
   // Ensure password_reset_tokens table exists
   try {
     await pool.query(`
@@ -1211,7 +1213,23 @@ async function runMigrations() {
     if (!err?.message?.includes("already exists")) console.warn("[warn] feedback table migration:", err?.message);
   }
 
-  console.log("[startup] Migrations complete");
+  // Ensure uploaded_images table exists (persistent image storage for Vercel)
+  try {
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS uploaded_images (
+        id VARCHAR(255) PRIMARY KEY,
+        data LONGBLOB NOT NULL,
+        mime_type VARCHAR(100) NOT NULL DEFAULT 'image/jpeg',
+        created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+      )
+    `);
+  } catch (err) {
+    if (!err?.message?.includes("already exists")) console.warn("[warn] uploaded_images table migration:", err?.message);
+  }
+
+  await migrateLegacyProfilePhotosToDb();
+
+  console.log("[startup] Legacy migrations complete");
 }
 
 // ── Notification helper ──────────────────────────────────────────────────
@@ -1251,6 +1269,118 @@ app.get("/api/image-proxy", async (req, res) => {
   } catch (err) {
     console.warn(`[image-proxy] FAIL for ${url}:`, err?.message);
     res.status(502).end();
+  }
+});
+
+// ── Serve uploaded images from DB ─────────────────────────────────────────
+app.get("/api/images/:id", async (req, res) => {
+  try {
+    const [rows] = await pool.query("SELECT data, mime_type FROM uploaded_images WHERE id = ? LIMIT 1", [req.params.id]);
+    if (!rows.length) return res.status(404).end();
+    res.set("Content-Type", rows[0].mime_type);
+    res.set("Cache-Control", "public, max-age=31536000, immutable");
+    res.send(rows[0].data);
+  } catch (err) {
+    console.error("[images] Error:", err.message);
+    res.status(500).end();
+  }
+});
+
+// ── Community player search (search across premium/mod/admin scouts' players) ──
+app.get("/api/community-players/search", authMiddleware, async (req, res) => {
+  try {
+    const q = String(req.query.q || "").trim();
+    const position = String(req.query.position || "").trim();
+    const nationality = String(req.query.nationality || "").trim();
+    const club = String(req.query.club || "").trim();
+    const ageMin = req.query.ageMin ? parseInt(req.query.ageMin) : null;
+    const ageMax = req.query.ageMax ? parseInt(req.query.ageMax) : null;
+    const limit = Math.min(parseInt(req.query.limit) || 30, 50);
+
+    if (!q && !club) return res.status(400).json({ error: "q or club required" });
+
+    // Find users who are premium, moderator, or admin (eligible to share)
+    const [eligibleUsers] = await pool.query(`
+      SELECT DISTINCT u.id
+      FROM users u
+      LEFT JOIN user_roles ur ON ur.user_id = u.id
+      LEFT JOIN user_subscriptions us ON us.user_id = u.id
+      WHERE ur.role IN ('admin', 'moderator') OR us.is_premium = 1
+    `);
+    if (!eligibleUsers.length) return res.json({ players: [] });
+
+    const userIds = eligibleUsers.map(u => u.id);
+    // Exclude current user's own players (they already see those)
+    const filteredIds = userIds.filter(id => id !== req.user.id);
+    if (!filteredIds.length) return res.json({ players: [] });
+
+    const ph = filteredIds.map(() => "?").join(",");
+    let where = `p.user_id IN (${ph})`;
+    const params = [...filteredIds];
+
+    if (q) {
+      where += ` AND (p.name LIKE ? OR p.club LIKE ?)`;
+      params.push(`%${q}%`, `%${q}%`);
+    }
+    if (club) {
+      where += ` AND p.club LIKE ?`;
+      params.push(`%${club}%`);
+    }
+    if (position) {
+      where += ` AND (p.position LIKE ? OR p.zone LIKE ?)`;
+      params.push(`%${position}%`, `%${position}%`);
+    }
+    if (nationality) {
+      where += ` AND p.nationality LIKE ?`;
+      params.push(`%${nationality}%`);
+    }
+    if (ageMin) {
+      where += ` AND p.generation <= ?`;
+      params.push(new Date().getFullYear() - ageMin);
+    }
+    if (ageMax) {
+      where += ` AND p.generation >= ?`;
+      params.push(new Date().getFullYear() - ageMax);
+    }
+
+    const [rows] = await pool.query(`
+      SELECT p.id, p.name, p.club, p.league, p.nationality, p.position, p.zone,
+             p.generation, p.photo_url, p.market_value, p.current_level, p.potential,
+             p.general_opinion, p.transfermarkt_id, p.user_id,
+             pr.full_name AS scout_name, pr.photo_url AS scout_photo, pr.club AS scout_club
+      FROM players p
+      LEFT JOIN profiles pr ON pr.user_id = p.user_id
+      WHERE ${where} AND p.name != ''
+      ORDER BY p.updated_at DESC
+      LIMIT ?
+    `, [...params, limit]);
+
+    const players = rows.map(r => ({
+      id: r.id,
+      name: r.name,
+      club: r.club,
+      league: r.league,
+      nationality: r.nationality,
+      position: r.position,
+      zone: r.zone,
+      age: r.generation ? new Date().getFullYear() - r.generation : null,
+      photo_url: r.photo_url,
+      market_value: r.market_value,
+      current_level: r.current_level,
+      potential: r.potential,
+      general_opinion: r.general_opinion,
+      transfermarkt_id: r.transfermarkt_id,
+      scout: {
+        name: r.scout_name || "Scout",
+        photo: r.scout_photo,
+        club: r.scout_club,
+      },
+    }));
+
+    return res.json({ players });
+  } catch (err) {
+    console.error("[community-players/search] Error:", err);
+    return res.status(500).json({ error: "Erreur serveur." });
   }
 });
 
@@ -1594,6 +1724,56 @@ app.post("/api/auth/forgot-password", rateLimitAuth, async (req, res) => {
   }
 });
 
+// ── Helper: save uploaded file into uploaded_images table ─────────────────
+async function saveImageToDb(filePath, imageId, mimeType) {
+  const data = fs.readFileSync(filePath);
+  try { fs.unlinkSync(filePath); } catch {}
+  // Max 5 MB check
+  if (data.length > 5 * 1024 * 1024) throw new Error("Image trop volumineuse (max 5 MB).");
+  await pool.query(
+    `INSERT INTO uploaded_images (id, data, mime_type) VALUES (?, ?, ?)
+     ON DUPLICATE KEY UPDATE data = VALUES(data), mime_type = VALUES(mime_type), created_at = NOW()`,
+    [imageId, data, mimeType || "image/jpeg"]
+  );
+  return `/api/images/${imageId}`;
+}
+
+async function deleteImageFromDb(url) {
+  if (!url || !url.startsWith("/api/images/")) return;
+  const id = url.replace("/api/images/", "");
+  try { await pool.query("DELETE FROM uploaded_images WHERE id = ?", [id]); } catch {}
+}
+
+async function migrateLegacyProfilePhotosToDb() {
+  try {
+    const [rows] = await pool.query(
+      "SELECT user_id, photo_url FROM profiles WHERE photo_url IS NOT NULL AND photo_url LIKE '/uploads/%'"
+    );
+    for (const row of rows) {
+      const relativePath = String(row.photo_url || "");
+      const fileName = relativePath.replace(/^\/uploads\//, "");
+      const filePath = path.join(UPLOAD_DIR, fileName);
+      if (!fs.existsSync(filePath)) continue;
+
+      const ext = path.extname(fileName).toLowerCase();
+      const mimeType =
+        ext === ".png" ? "image/png" :
+        ext === ".webp" ? "image/webp" :
+        ext === ".gif" ? "image/gif" :
+        "image/jpeg";
+
+      const imageId = `profile_${row.user_id}`;
+      const photoUrl = await saveImageToDb(filePath, imageId, mimeType);
+      await pool.query(
+        "UPDATE profiles SET photo_url = ?, updated_at = NOW() WHERE user_id = ?",
+        [photoUrl, row.user_id]
+      );
+    }
+  } catch (err) {
+    console.warn("[warn] legacy profile photo migration:", err?.message);
+  }
+}
+
 // ── Upload profile photo ──────────────────────────────────────────────────
 app.post("/api/account/upload-photo", authMiddleware, upload.single("photo"), async (req, res) => {
   if (!req.file) return res.status(400).json({ error: "No file" });
@@ -1606,16 +1786,18 @@ app.post("/api/account/upload-photo", authMiddleware, upload.single("photo"), as
     }
     // Delete old photo (best-effort) before replacing
     const [prevRows] = await pool.query("SELECT photo_url FROM profiles WHERE user_id = ? LIMIT 1", [req.user.id]);
-    await deleteStoredFile(prevRows[0]?.photo_url);
+    const oldUrl = prevRows[0]?.photo_url;
+    await deleteImageFromDb(oldUrl);
+    await deleteStoredFile(oldUrl);
 
-    const finalName = `profile_${req.user.id}${ext}`;
-    const photoUrl = await saveUploadedFile(req.file.path, finalName, req.file.mimetype);
+    const imageId = `profile_${req.user.id}`;
+    const photoUrl = await saveImageToDb(req.file.path, imageId, req.file.mimetype);
     await pool.query("UPDATE profiles SET photo_url = ?, updated_at = NOW() WHERE user_id = ?", [photoUrl, req.user.id]);
     return res.json({ photo_url: photoUrl });
   } catch (err) {
     console.error("upload-photo error:", err);
     try { if (req.file?.path) fs.unlinkSync(req.file.path); } catch {}
-    return res.status(500).json({ error: "Erreur serveur" });
+    return res.status(500).json({ error: err.message || "Erreur serveur" });
   }
 });
 
@@ -3522,14 +3704,16 @@ app.get("/api/admin/roles", authMiddleware, ensureAdmin, async (_req, res) => {
   try {
     const [userRoleRows] = await pool.query("SELECT DISTINCT role FROM user_roles");
     const [permRoleRows] = await pool.query("SELECT DISTINCT role FROM page_permissions");
-    const allRolesSet = new Set(["admin", "user"]);
+    const allRolesSet = new Set(["admin", "moderateur", "user"]);
     for (const r of userRoleRows) allRolesSet.add(r.role);
     for (const r of permRoleRows) allRolesSet.add(r.role);
+    const order = ['admin', 'moderateur', 'user'];
     return res.json([...allRolesSet].sort((a, b) => {
-      if (a === 'admin') return -1;
-      if (b === 'admin') return 1;
-      if (a === 'user') return -1;
-      if (b === 'user') return 1;
+      const ai = order.indexOf(a);
+      const bi = order.indexOf(b);
+      if (ai !== -1 && bi !== -1) return ai - bi;
+      if (ai !== -1) return -1;
+      if (bi !== -1) return 1;
       return a.localeCompare(b);
     }));
   } catch (err) {
@@ -3583,9 +3767,10 @@ app.post("/api/admin/roles/remove", authMiddleware, ensureAdmin, async (req, res
 });
 
 // DELETE /api/admin/roles/delete — remove a custom role and its permissions
+const PROTECTED_ROLES = ['admin', 'user', 'moderateur'];
 app.post("/api/admin/roles/delete", authMiddleware, ensureAdmin, async (req, res) => {
   const { role } = req.body || {};
-  if (!role || role === 'admin' || role === 'user') {
+  if (!role || PROTECTED_ROLES.includes(role)) {
     return res.status(400).json({ error: "Cannot delete built-in roles." });
   }
   try {
@@ -3597,10 +3782,43 @@ app.post("/api/admin/roles/delete", authMiddleware, ensureAdmin, async (req, res
     }
     // Delete all permissions for this role
     await pool.query("DELETE FROM page_permissions WHERE role = ?", [role]);
+    // Delete role metadata
+    await pool.query("DELETE FROM role_metadata WHERE role = ?", [role]).catch(() => {});
     return res.json({ ok: true });
   } catch (err) {
     console.error("[admin/roles/delete] Error:", err);
     return res.status(500).json({ error: "Erreur serveur." });
+  }
+});
+
+// GET /api/admin/role-metadata — get color metadata for all roles
+app.get("/api/admin/role-metadata", authMiddleware, ensureAdmin, async (_req, res) => {
+  try {
+    await pool.query(`CREATE TABLE IF NOT EXISTS role_metadata (role VARCHAR(50) NOT NULL PRIMARY KEY, color VARCHAR(20) NOT NULL DEFAULT '#6366f1', updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP)`).catch(() => {});
+    const [rows] = await pool.query("SELECT role, color FROM role_metadata");
+    const map = {};
+    for (const r of rows) map[r.role] = r.color;
+    return res.json(map);
+  } catch (err) {
+    console.error("[role-metadata] GET error:", err);
+    return res.json({});
+  }
+});
+
+// POST /api/admin/role-metadata — set color for a role
+app.post("/api/admin/role-metadata", authMiddleware, ensureAdmin, async (req, res) => {
+  const { role, color } = req.body || {};
+  if (!role || !color) return res.status(400).json({ error: "role and color required." });
+  try {
+    await pool.query(`CREATE TABLE IF NOT EXISTS role_metadata (role VARCHAR(50) NOT NULL PRIMARY KEY, color VARCHAR(20) NOT NULL DEFAULT '#6366f1', updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP)`).catch(() => {});
+    await pool.query(
+      "INSERT INTO role_metadata (role, color) VALUES (?, ?) ON DUPLICATE KEY UPDATE color = VALUES(color)",
+      [role, color]
+    );
+    return res.json({ ok: true });
+  } catch (err) {
+    console.error("[role-metadata] POST error:", err);
+    return res.status(500).json({ error: err.message });
   }
 });
 
@@ -3889,21 +4107,22 @@ app.patch("/api/organizations/:id/logo", authMiddleware, upload.single("file"), 
       return res.status(403).json({ error: "Vous n'êtes pas autorisé à modifier cette organisation." });
     }
 
-    const ext = path.extname(req.file.originalname || "") || ".png";
-    const finalName = `org-${id}${ext}`;
+    const imageId = `org_${id}`;
 
     // Delete previous logo (best-effort)
     const [orgRows] = await pool.query("SELECT logo_url FROM organizations WHERE id = ? LIMIT 1", [id]);
-    await deleteStoredFile(orgRows[0]?.logo_url);
+    const oldUrl = orgRows[0]?.logo_url;
+    await deleteImageFromDb(oldUrl);
+    await deleteStoredFile(oldUrl);
 
-    const publicUrl = await saveUploadedFile(req.file.path, finalName, req.file.mimetype);
+    const publicUrl = await saveImageToDb(req.file.path, imageId, req.file.mimetype);
     await pool.query("UPDATE organizations SET logo_url = ?, updated_at = NOW() WHERE id = ?", [publicUrl, id]);
 
     return res.json({ logo_url: publicUrl });
   } catch (err) {
     console.error("[org/logo] Error:", err);
-    try { fs.unlinkSync(req.file.path); } catch {}
-    return res.status(500).json({ error: "Erreur serveur." });
+    try { if (req.file?.path) fs.unlinkSync(req.file.path); } catch {}
+    return res.status(500).json({ error: err.message || "Erreur serveur." });
   }
 });
 
@@ -3922,12 +4141,64 @@ app.delete("/api/organizations/:id/logo", authMiddleware, async (req, res) => {
     }
 
     const [orgRows] = await pool.query("SELECT logo_url FROM organizations WHERE id = ? LIMIT 1", [id]);
-    await deleteStoredFile(orgRows[0]?.logo_url);
+    const oldUrl = orgRows[0]?.logo_url;
+    await deleteImageFromDb(oldUrl);
+    await deleteStoredFile(oldUrl);
 
     await pool.query("UPDATE organizations SET logo_url = NULL, updated_at = NOW() WHERE id = ?", [id]);
     return res.json({ ok: true });
   } catch (err) {
     console.error("[org/logo/delete] Error:", err);
+    return res.status(500).json({ error: "Erreur serveur." });
+  }
+});
+
+// DELETE /api/organizations/:id — delete organization and all linked data (owner only)
+app.delete("/api/organizations/:id", authMiddleware, async (req, res) => {
+  const { id } = req.params;
+  const userId = req.user.id;
+
+  try {
+    // Only the owner can delete
+    const [memberRows] = await pool.query(
+      "SELECT role FROM organization_members WHERE organization_id = ? AND user_id = ? LIMIT 1",
+      [id, userId],
+    );
+    if (!memberRows.length || memberRows[0].role !== 'owner') {
+      return res.status(403).json({ error: "Seul le propriétaire peut supprimer l'organisation." });
+    }
+
+    // Delete logo from DB storage
+    const [orgRows] = await pool.query("SELECT logo_url FROM organizations WHERE id = ? LIMIT 1", [id]);
+    const logoUrl = orgRows[0]?.logo_url;
+    await deleteImageFromDb(logoUrl);
+    await deleteStoredFile(logoUrl);
+
+    // Detach players: clear club field for players whose club matches this org name (case-insensitive, accent-insensitive)
+    const [orgInfo] = await pool.query("SELECT name FROM organizations WHERE id = ? LIMIT 1", [id]);
+    if (orgInfo[0]?.name) {
+      const orgName = orgInfo[0].name;
+      // Match exact, case-insensitive, and common variations (with/without accents)
+      await pool.query(
+        `UPDATE players SET club = '', updated_at = NOW()
+         WHERE (club = ? OR LOWER(club) = LOWER(?))
+           AND user_id IN (SELECT user_id FROM organization_members WHERE organization_id = ?)`,
+        [orgName, orgName, id]
+      );
+    }
+
+    // Also clean club_directory / club_logos entries for this club name
+    if (orgInfo[0]?.name) {
+      try { await pool.query("DELETE FROM club_directory WHERE club_name = ?", [orgInfo[0].name]); } catch {}
+      try { await pool.query("DELETE FROM club_logos WHERE club_name = ?", [orgInfo[0].name]); } catch {}
+    }
+
+    // CASCADE will handle: organization_members, player_org_shares, match_assignments, squad_players
+    await pool.query("DELETE FROM organizations WHERE id = ?", [id]);
+
+    return res.json({ ok: true });
+  } catch (err) {
+    console.error("[org/delete] Error:", err);
     return res.status(500).json({ error: "Erreur serveur." });
   }
 });
@@ -3967,6 +4238,102 @@ app.get("/api/my-permissions", authMiddleware, async (req, res) => {
   }
 });
 
+// ── Admin Settings: test email, purge data, feature flags ─────────────────
+
+// Test SMTP email
+app.post("/api/admin/test-email", authMiddleware, ensureAdmin, async (req, res) => {
+  const { to } = req.body || {};
+  const recipient = to || req.user.email;
+  if (!recipient) return res.status(400).json({ error: "No recipient" });
+  try {
+    const ok = await sendEmail(recipient, "[Scouty] Test email", `
+      <div style="font-family:sans-serif;max-width:480px;margin:0 auto;padding:24px">
+        <h2 style="color:#6366f1">Email de test</h2>
+        <p>Si vous lisez ceci, la configuration SMTP fonctionne correctement.</p>
+        <p style="font-size:12px;color:#9ca3af;margin-top:20px">Envoyé depuis le panneau d'administration Scouty le ${new Date().toLocaleString('fr-FR')}.</p>
+      </div>
+    `);
+    if (!ok) return res.status(500).json({ error: "SMTP non configuré ou envoi échoué." });
+    return res.json({ ok: true });
+  } catch (err) {
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+// Purge data by type
+app.post("/api/admin/purge", authMiddleware, ensureAdmin, async (req, res) => {
+  const { type } = req.body || {};
+  const allowed = {
+    players: "DELETE FROM players",
+    reports: "DELETE FROM reports",
+    contacts: "DELETE FROM contacts",
+    fixtures: "DELETE FROM fixtures",
+    match_assignments: "DELETE FROM match_assignments",
+    watchlists: "DELETE FROM watchlists",
+    shadow_teams: "DELETE FROM shadow_teams",
+    community: "DELETE FROM community_posts",
+    tickets: "DELETE FROM tickets",
+    notifications: "DELETE FROM notifications",
+    club_directory: "DELETE FROM club_directory",
+    club_logos: "DELETE FROM club_logos",
+    cache: "DELETE FROM api_football_cache",
+  };
+  if (!type || !allowed[type]) return res.status(400).json({ error: "Type invalide" });
+  try {
+    const [result] = await pool.query(allowed[type]);
+    console.log(`[admin/purge] Purged ${type}: ${result.affectedRows} rows`);
+    return res.json({ ok: true, deleted: result.affectedRows });
+  } catch (err) {
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+// Feature flags — get all
+app.get("/api/admin/feature-flags", authMiddleware, async (req, res) => {
+  try {
+    const [rows] = await pool.query("SELECT setting_key, setting_value FROM app_settings WHERE setting_key LIKE 'feature_%'");
+    const flags = {};
+    for (const r of rows) flags[r.setting_key] = r.setting_value === '1';
+    return res.json(flags);
+  } catch {
+    return res.json({});
+  }
+});
+
+// Feature flags — toggle one
+app.post("/api/admin/feature-flags", authMiddleware, ensureAdmin, async (req, res) => {
+  const { key, enabled } = req.body || {};
+  if (!key || !key.startsWith('feature_')) return res.status(400).json({ error: "Invalid key" });
+  try {
+    // Auto-create table if missing (schema.sql may not have been applied yet)
+    await pool.query(`CREATE TABLE IF NOT EXISTS app_settings (
+      setting_key VARCHAR(100) NOT NULL PRIMARY KEY,
+      setting_value VARCHAR(500) NOT NULL DEFAULT '1',
+      updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+    )`).catch(() => {});
+    await pool.query(
+      `INSERT INTO app_settings (setting_key, setting_value) VALUES (?, ?)
+       ON DUPLICATE KEY UPDATE setting_value = VALUES(setting_value)`,
+      [key, enabled ? '1' : '0']
+    );
+    return res.json({ ok: true });
+  } catch (err) {
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+// Public endpoint: check if a feature is enabled (used by frontend)
+app.get("/api/feature-flags", async (_req, res) => {
+  try {
+    const [rows] = await pool.query("SELECT setting_key, setting_value FROM app_settings WHERE setting_key LIKE 'feature_%'");
+    const flags = {};
+    for (const r of rows) flags[r.setting_key] = r.setting_value === '1';
+    return res.json(flags);
+  } catch {
+    return res.json({});
+  }
+});
+
 // ── Club logos ──────────────────────────────────────────────────────────────
 
 // Public read — no auth needed (logos are shared across all users)
@@ -4000,18 +4367,6 @@ app.post("/api/club-logos", authMiddleware, async (req, res) => {
 // ── Club directory (populated from Livescore) ──────────────────────────────
 app.get("/api/club-directory", async (_req, res) => {
   try {
-    await pool.query(`
-      CREATE TABLE IF NOT EXISTS club_directory (
-        club_name VARCHAR(255) NOT NULL PRIMARY KEY,
-        competition VARCHAR(255) NOT NULL DEFAULT '',
-        country VARCHAR(255) NOT NULL DEFAULT '',
-        country_code VARCHAR(10) NOT NULL DEFAULT '',
-        logo_url TEXT NULL,
-        updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-        INDEX idx_club_dir_competition (competition),
-        INDEX idx_club_dir_country (country)
-      )
-    `).catch(() => {});
     const [rows] = await pool.query(
       "SELECT club_name, competition, country, country_code, logo_url FROM club_directory ORDER BY country, competition, club_name"
     );
@@ -4019,6 +4374,77 @@ app.get("/api/club-directory", async (_req, res) => {
   } catch (err) {
     console.error("[club-directory] GET error:", err);
     return res.status(500).json({ error: "Server error" });
+  }
+});
+
+// ── Admin: delete a club from local DB ──────────────────────────────────────
+app.delete("/api/admin/club/:clubName", authMiddleware, async (req, res) => {
+  try {
+    // Check admin
+    const [roles] = await pool.query("SELECT role FROM user_roles WHERE user_id = ?", [req.user.id]);
+    if (!roles.some(r => r.role === 'admin')) return res.status(403).json({ error: 'Admin only' });
+
+    const name = decodeURIComponent(req.params.clubName);
+    // Strip accents for matching: "Étienne" → "Etienne"
+    const nameNoAccent = name.normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+    // Build all variants to match: exact, no-accent, Saint→St, etc.
+    const variants = new Set([name, nameNoAccent]);
+    // "Saint-Étienne" → "Saint-Etienne", "St Etienne", "St Étienne"
+    if (/saint/i.test(name)) {
+      variants.add(name.replace(/Saint[- ]?/gi, 'St ').trim());
+      variants.add(nameNoAccent.replace(/Saint[- ]?/gi, 'St ').trim());
+    }
+    if (/^(FC|AC|AS|RC|SC)\s+/i.test(name)) {
+      const noPrefix = name.replace(/^(FC|AC|AS|RC|SC)\s+/i, '').trim();
+      variants.add(noPrefix);
+      variants.add(noPrefix.normalize('NFD').replace(/[\u0300-\u036f]/g, ''));
+    }
+
+    // Build SQL: match any variant with accent-insensitive collation
+    const placeholders = [...variants].map(() => "club COLLATE utf8mb4_general_ci = ?").join(" OR ");
+    const variantArr = [...variants];
+
+    // 1. Detach all players with any club name variant
+    const [updated] = await pool.query(
+      `UPDATE players SET club = '', updated_at = NOW() WHERE ${placeholders}`,
+      variantArr
+    );
+    console.log(`[admin/club] Detached ${updated.affectedRows} players from club "${name}" (variants: ${variantArr.join(', ')})`);
+
+    // 2. Remove from player_org_shares where org name matches
+    try {
+      const orgPlaceholders = variantArr.map(() => "name COLLATE utf8mb4_general_ci = ?").join(" OR ");
+      const [orgRows] = await pool.query(`SELECT id FROM organizations WHERE ${orgPlaceholders}`, variantArr);
+      for (const org of orgRows) {
+        await pool.query("DELETE FROM player_org_shares WHERE organization_id = ?", [org.id]);
+      }
+    } catch {}
+
+    // 3. Remove from internal club tables (accent-insensitive)
+    const cdPlaceholders = variantArr.map(() => "club_name COLLATE utf8mb4_general_ci = ?").join(" OR ");
+    await pool.query(`DELETE FROM club_directory WHERE ${cdPlaceholders}`, variantArr);
+    await pool.query(`DELETE FROM club_logos WHERE ${cdPlaceholders}`, variantArr);
+
+    // 4. Clear cache entries
+    try {
+      await pool.query("DELETE FROM api_football_cache WHERE cache_key LIKE ?", [`%${nameNoAccent.replace(/%/g, '')}%`]);
+    } catch {}
+
+    // 5. Remove from followed clubs
+    try {
+      const fcPlaceholders = variantArr.map(() => "club_name COLLATE utf8mb4_general_ci = ?").join(" OR ");
+      await pool.query(`DELETE FROM followed_clubs WHERE ${fcPlaceholders}`, variantArr);
+    } catch {}
+
+    // 6. Remove from championship_players
+    try {
+      await pool.query(`DELETE FROM championship_players WHERE player_id IN (SELECT id FROM players WHERE club IS NULL AND updated_at > NOW() - INTERVAL 5 SECOND)`);
+    } catch {}
+
+    return res.json({ ok: true, deleted: name, playersDetached: updated.affectedRows });
+  } catch (err) {
+    console.error("[admin/club] DELETE error:", err);
+    return res.status(500).json({ error: err.message });
   }
 });
 
@@ -5253,6 +5679,10 @@ async function enrichOnePlayer(playerInfo, row, tmPath = null) {
   if (contractChanged) newsItems.push('contract');
   if (agentChanged) newsItems.push('agent');
   const newsLabel = newsItems.length > 1 ? 'multiples' : newsItems[0] || null;
+
+  // ── Persist enriched club/league in external_data (survives manual edits) ──
+  if (newClub) ext.enriched_club = newClub;
+  if (newLeague) ext.enriched_league = newLeague;
 
   // ── Build SET clauses ────────────────────────────────────────────────
   const setClauses = ['external_data = ?', 'external_data_fetched_at = NOW()', 'updated_at = NOW()', 'contract_end = ?'];
@@ -6741,20 +7171,6 @@ app.post("/api/functions/:name", authMiddleware, async (req, res) => {
       // Save team data to club_logos + club_directory (fire-and-forget — NOT awaited)
       (async () => {
         try {
-          // Ensure club_directory exists
-          await pool.query(`
-            CREATE TABLE IF NOT EXISTS club_directory (
-              club_name VARCHAR(255) NOT NULL PRIMARY KEY,
-              competition VARCHAR(255) NOT NULL DEFAULT '',
-              country VARCHAR(255) NOT NULL DEFAULT '',
-              country_code VARCHAR(10) NOT NULL DEFAULT '',
-              logo_url TEXT NULL,
-              updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-              INDEX idx_club_dir_competition (competition),
-              INDEX idx_club_dir_country (country)
-            )
-          `).catch(() => {});
-
           // Collect all teams first, then batch insert
           const logoValues = [];
           const logoParams = [];
@@ -7253,17 +7669,6 @@ app.post("/api/functions/:name", authMiddleware, async (req, res) => {
         if (!resp.ok) throw new Error(`TheSportsDB ${resp.status}`);
         return resp.json();
       };
-
-      // Ensure cache table exists
-      await pool.query(`
-        CREATE TABLE IF NOT EXISTS thesportsdb_team_cache (
-          club_name VARCHAR(255) NOT NULL PRIMARY KEY,
-          tsdb_team_id INT NOT NULL,
-          tsdb_team_name VARCHAR(255) NOT NULL,
-          tsdb_league_name VARCHAR(255) NULL,
-          updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
-        )
-      `).catch(() => {});
 
       // 1. Get distinct clubs from user's players
       const [clubs] = await pool.query(
@@ -7974,21 +8379,29 @@ app.post("/api/storage/:bucket/upload", authMiddleware, upload.single("file"), a
   }
 
   const requestedName = String(req.body?.fileName || "").replace(/[^a-zA-Z0-9._-]/g, "");
-  const ext = path.extname(req.file.originalname || "") || ".bin";
-  const finalName = requestedName || `${Date.now()}-${uuidv4()}${ext}`;
+  const imageId = requestedName || `${Date.now()}-${uuidv4()}`;
 
   try {
+    // For images, store in DB; for other files, use saveUploadedFile as before
+    const isImage = (req.file.mimetype || "").startsWith("image/");
+    if (isImage) {
+      const publicUrl = await saveImageToDb(req.file.path, imageId, req.file.mimetype);
+      return res.json({ path: imageId, publicUrl });
+    }
+    const ext = path.extname(req.file.originalname || "") || ".bin";
+    const finalName = requestedName || `${Date.now()}-${uuidv4()}${ext}`;
     const publicUrl = await saveUploadedFile(req.file.path, finalName, req.file.mimetype);
     return res.json({ path: finalName, publicUrl });
   } catch (err) {
     console.error("[storage/upload] Error:", err.message);
-    try { fs.unlinkSync(req.file.path); } catch {}
+    try { if (req.file?.path) fs.unlinkSync(req.file.path); } catch {}
     return res.status(500).json({ error: "Erreur lors de l'upload" });
   }
 });
 
-// ── Auto-create missing tables on startup ────────────────────────────
-async function ensureFixtureTables() {
+// DB schema is managed via schema.sql — no runtime table creation.
+async function ensureFixtureTables() { /* removed — use schema.sql */ }
+async function _legacyEnsureFixtureTables() {
   try {
     await pool.query(`
       CREATE TABLE IF NOT EXISTS api_football_cache (
@@ -8073,6 +8486,8 @@ async function ensureFixtureTables() {
   }
 }
 
+// No runtime migrations — schema is managed via schema.sql
+
 // Export for Vercel serverless
 export default app;
 
@@ -8080,8 +8495,6 @@ export default app;
 if (!isVercel) {
   app.listen(port, () => {
     console.log(`API listening on http://localhost:${port}`);
-    runMigrations();
-    ensureFixtureTables();
     // Clear stale match-detail caches on startup so new parsing logic takes effect
     pool.query("DELETE FROM api_football_cache WHERE cache_key LIKE 'match-detail:%' OR cache_key LIKE 'lineup:%'")
       .then(() => console.log("[startup] Cleared match-detail & lineup caches"))

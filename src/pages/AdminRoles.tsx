@@ -8,7 +8,7 @@ import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs';
-import { Shield, Users, Lock, Check, X, Search, Plus, Trash2, ChevronDown, ChevronRight } from 'lucide-react';
+import { Shield, Users, Lock, Check, X, Search, Plus, Trash2, ChevronDown, ChevronRight, Palette, Crown, User, ShieldAlert } from 'lucide-react';
 import { toast } from 'sonner';
 import { Navigate } from 'react-router-dom';
 import { useAuth } from '@/contexts/AuthContext';
@@ -54,6 +54,22 @@ interface PagePermission {
   page_key: string;
   action: string;
   allowed: number;
+}
+
+const DEFAULT_ROLE_COLOR = '#6366f1';
+
+function getRoleColor(role: string, roleColors: Record<string, string>) {
+  return roleColors[role] || DEFAULT_ROLE_COLOR;
+}
+
+function getRoleIcon(role: string) {
+  const normalized = role.toLowerCase();
+  if (normalized === 'admin') return ShieldAlert;
+  if (normalized === 'moderateur' || normalized === 'moderator') return Crown;
+  if (normalized === 'user') return User;
+  if (normalized.includes('manager') || normalized.includes('lead')) return Crown;
+  if (normalized.includes('recruit') || normalized.includes('scout') || normalized.includes('analyst')) return Shield;
+  return Users;
 }
 
 async function getAuthHeaders() {
@@ -107,6 +123,16 @@ export default function AdminRoles() {
     enabled: isAdmin === true,
   });
 
+  const { data: roleColors = {} } = useQuery<Record<string, string>>({
+    queryKey: ['admin-role-metadata'],
+    queryFn: async () => {
+      const res = await fetch(`${API_BASE}/admin/role-metadata`, { headers: await getAuthHeaders() });
+      if (!res.ok) return {};
+      return res.json();
+    },
+    enabled: isAdmin === true,
+  });
+
   // Build permissions map: { role: { page_key: { action: boolean } } }
   const permMap = useMemo(() => {
     const map: Record<string, Record<string, Record<string, boolean>>> = {};
@@ -152,6 +178,20 @@ export default function AdminRoles() {
       queryClient.invalidateQueries({ queryKey: ['admin-page-permissions'] });
     } catch { toast.error(t('common.error')); }
     finally { setUpdatingPerm(null); }
+  };
+
+  const updateRoleColor = async (role: string, color: string) => {
+    try {
+      const res = await fetch(`${API_BASE}/admin/role-metadata`, {
+        method: 'POST',
+        headers: await getAuthHeaders(),
+        body: JSON.stringify({ role, color }),
+      });
+      if (!res.ok) throw new Error();
+      queryClient.invalidateQueries({ queryKey: ['admin-role-metadata'] });
+    } catch {
+      toast.error(t('common.error'));
+    }
   };
 
   const createRole = async () => {
@@ -270,13 +310,24 @@ export default function AdminRoles() {
         <TabsContent value="permissions" className="space-y-4">
           {/* Role selector */}
           <div className="flex flex-wrap items-center gap-2">
-            {allRoles.map(role => (
-              <Button key={role} variant={selectedRole === role ? 'default' : 'outline'} size="sm"
-                onClick={() => setSelectedRole(role)} className="capitalize">
-                {role === 'admin' && <Shield className="w-3.5 h-3.5 mr-1.5" />}
-                {role}
-              </Button>
-            ))}
+            {allRoles.map(role => {
+              const color = getRoleColor(role, roleColors);
+              const Icon = getRoleIcon(role);
+              const isSelected = selectedRole === role;
+              return (
+                <Button
+                  key={role}
+                  variant={isSelected ? 'default' : 'outline'}
+                  size="sm"
+                  onClick={() => setSelectedRole(role)}
+                  className="capitalize gap-2 border-transparent"
+                  style={isSelected ? { backgroundColor: color, color: '#fff' } : { borderColor: `${color}33`, color }}
+                >
+                  <Icon className="w-3.5 h-3.5" />
+                  {role}
+                </Button>
+              );
+            })}
             {showNewRole ? (
               <div className="flex items-center gap-1.5">
                 <input type="text" value={newRoleName} onChange={e => setNewRoleName(e.target.value)}
@@ -299,20 +350,49 @@ export default function AdminRoles() {
               <div className="flex items-center justify-between">
                 <div>
                   <CardTitle className="text-base capitalize flex items-center gap-2">
-                    {selectedRole}
+                    {(() => {
+                      const Icon = getRoleIcon(selectedRole);
+                      return (
+                        <>
+                          <span
+                            className="inline-flex h-8 w-8 items-center justify-center rounded-xl"
+                            style={{ backgroundColor: `${getRoleColor(selectedRole, roleColors)}22`, color: getRoleColor(selectedRole, roleColors) }}
+                          >
+                            <Icon className="w-4 h-4" />
+                          </span>
+                          {selectedRole}
+                        </>
+                      );
+                    })()}
                     {selectedRole === 'admin' && <Badge variant="outline" className="text-[10px]">{t('roles.full_access')}</Badge>}
                   </CardTitle>
                   <CardDescription>
                     {selectedRole === 'admin' ? t('roles.admin_desc') : t('roles.perm_desc')}
                   </CardDescription>
                 </div>
-                {selectedRole !== 'admin' && selectedRole !== 'user' && (
-                  <Button variant="ghost" size="sm"
-                    className="text-destructive hover:text-destructive hover:bg-destructive/10"
-                    onClick={() => deleteRole(selectedRole)}>
-                    <Trash2 className="w-3.5 h-3.5 mr-1" />{t('roles.delete_role')}
-                  </Button>
-                )}
+                <div className="flex items-center gap-2">
+                  <label
+                    className="flex items-center gap-2 rounded-xl border border-border px-3 py-2 text-xs text-muted-foreground"
+                    title={t('roles.change_color')}
+                  >
+                    <Palette className="w-3.5 h-3.5" />
+                    <span className="hidden sm:inline">{t('roles.change_color')}</span>
+                    <input
+                      type="color"
+                      value={getRoleColor(selectedRole, roleColors)}
+                      onChange={(e) => updateRoleColor(selectedRole, e.target.value)}
+                      className="h-7 w-9 cursor-pointer rounded border-0 bg-transparent p-0"
+                      aria-label={t('roles.change_color')}
+                    />
+                  </label>
+                  {selectedRole !== 'admin' && selectedRole !== 'user' && (
+                    <Button variant="ghost" size="sm"
+                      className="text-destructive hover:text-destructive hover:bg-destructive/10"
+                      onClick={() => deleteRole(selectedRole)}>
+                      <Trash2 className="w-3.5 h-3.5 mr-1" />{t('roles.delete_role')}
+                    </Button>
+                  )}
+                </div>
               </div>
             </CardHeader>
             <CardContent className="p-0 overflow-x-auto">
@@ -469,10 +549,19 @@ export default function AdminRoles() {
                           <TableCell>
                             <div className="flex items-center flex-wrap gap-1.5">
                               {userRoles.map(role => (
-                                <Badge key={role}
-                                  variant={role === 'admin' ? 'default' : 'secondary'}
-                                  className="capitalize flex items-center gap-1 pr-1">
-                                  {role === 'admin' && <Shield className="w-2.5 h-2.5" />}
+                                <Badge
+                                  key={role}
+                                  variant="secondary"
+                                  className="capitalize flex items-center gap-1 pr-1 border-transparent"
+                                  style={{
+                                    backgroundColor: `${getRoleColor(role, roleColors)}18`,
+                                    color: getRoleColor(role, roleColors),
+                                  }}
+                                >
+                                  {(() => {
+                                    const Icon = getRoleIcon(role);
+                                    return <Icon className="w-2.5 h-2.5" />;
+                                  })()}
                                   {role}
                                   {!isCurrentUser && !(isCurrentUser && role === 'admin') && (
                                     <button

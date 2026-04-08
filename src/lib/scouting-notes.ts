@@ -39,6 +39,7 @@ export function serializeScoutingNotes(notes: ScoutingNotes): string {
 export const ALL_CARD_IDS = [
   'evaluation', 'details', 'external_data',
   'physique', 'avec_ballon', 'sans_ballon', 'mental', 'personnelles',
+  'custom_fields',
   'reports', 'evolution', 'similar',
 ] as const;
 

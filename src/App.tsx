@@ -20,6 +20,8 @@ const EditPlayer = lazy(() => import("@/pages/EditPlayer"));
 const Settings = lazy(() => import("@/pages/Settings"));
 const Admin = lazy(() => import("@/pages/Admin"));
 const AdminTickets = lazy(() => import("@/pages/AdminTickets"));
+const AdminRoles = lazy(() => import("@/pages/AdminRoles"));
+const AdminSettings = lazy(() => import("@/pages/AdminSettings"));
 const MyTickets = lazy(() => import("@/pages/MyTickets"));
 const Pricing = lazy(() => import("@/pages/Pricing"));
 const PremiumSuccess = lazy(() => import("@/pages/PremiumSuccess"));
@@ -102,9 +104,10 @@ const App = () => (
                 <Route path="/contacts" element={<Contacts />} />
                 <Route path="/settings" element={<Settings />} />
                 <Route path="/admin" element={<Admin />} />
-                <Route path="/admin/roles" element={<Navigate to="/admin" replace />} />
+                <Route path="/admin/roles" element={<AdminRoles />} />
                 <Route path="/admin/analytics" element={<AdminAnalytics />} />
                 <Route path="/admin/tickets" element={<AdminTickets />} />
+                <Route path="/admin/settings" element={<AdminSettings />} />
                 <Route path="/my-tickets" element={<MyTickets />} />
                 <Route path="/premium-success" element={<PremiumSuccess />} />
                 <Route path="/account" element={<Account />} />

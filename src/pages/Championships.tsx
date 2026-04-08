@@ -92,11 +92,17 @@ function ChampionshipDetail({
   const [tab, setTab] = useState<'clubs' | 'players'>('clubs');
   const [selectedClub, setSelectedClub] = useState<string | null>(null);
 
-  // Players whose league field matches this championship (auto-detected)
+  // Effective league: prefer enriched value (survives manual edits), fallback to raw field
+  const getEffectiveLeague = (p: any): string =>
+    ((p.external_data?.enriched_league ?? p.league) ?? '').trim();
+  const getEffectiveClub = (p: any): string =>
+    ((p.external_data?.enriched_club ?? p.club) ?? '').trim();
+
+  // Players whose effective league matches this championship (auto-detected)
   const leaguePlayerIds = useMemo(() => {
     const champLower = champ.name.toLowerCase();
     return new Set(
-      players.filter(p => (p.league ?? '').trim().toLowerCase() === champLower).map(p => p.id),
+      players.filter(p => getEffectiveLeague(p).toLowerCase() === champLower).map(p => p.id),
     );
   }, [players, champ.name]);
 
@@ -115,11 +121,11 @@ function ChampionshipDetail({
     [players, allLinkedIds, playerSearch],
   );
 
-  // Players grouped by club (from our data, matching by club field)
+  // Players grouped by club (prefer enriched club for accurate matching)
   const playersByClub = useMemo(() => {
     const map: Record<string, typeof players> = {};
     for (const p of players) {
-      const c = (p.club ?? '').trim();
+      const c = getEffectiveClub(p);
       if (c) (map[c] ??= []).push(p);
     }
     return map;
@@ -393,6 +399,9 @@ function ChampionshipDetail({
               {allLinkedPlayers.map(p => {
                 const isAuto = leaguePlayerIds.has(p.id);
                 const isManual = manualLinkedIds.has(p.id);
+                const isEnriched = !!p.external_data_fetched_at;
+                const enrichedLeague = p.external_data?.enriched_league;
+                const displayLeagueDiffers = enrichedLeague && enrichedLeague !== (p.league ?? '').trim();
                 return (
                   <div key={p.id} className="flex items-center justify-between gap-2 rounded-lg border bg-card p-3">
                     <a href={`/player/${p.id}`} className="flex items-center gap-3 min-w-0 hover:opacity-80 transition-opacity">
@@ -405,13 +414,24 @@ function ChampionshipDetail({
                       )}
                       <div className="min-w-0">
                         <p className="text-sm font-medium truncate">{p.name}</p>
-                        <p className="text-xs text-muted-foreground truncate">{p.club} — {p.position}</p>
+                        <p className="text-xs text-muted-foreground truncate">
+                          {getEffectiveClub(p)} — {p.position}
+                          {displayLeagueDiffers && (
+                            <span className="ml-1 text-amber-500" title={t('championships.league_mismatch', { display: p.league, enriched: enrichedLeague })}>*</span>
+                          )}
+                        </p>
                       </div>
                     </a>
                     <div className="flex items-center gap-1.5 shrink-0">
                       {isAuto && (
-                        <span className="text-[9px] px-1.5 py-0.5 rounded-full bg-muted text-muted-foreground" title={t('championships.auto_tag')}>
-                          auto
+                        <span
+                          className={cn(
+                            'text-[9px] px-1.5 py-0.5 rounded-full',
+                            isEnriched ? 'bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400' : 'bg-muted text-muted-foreground',
+                          )}
+                          title={isEnriched ? t('championships.enriched_tag') : t('championships.auto_tag')}
+                        >
+                          {isEnriched ? 'enrichi' : 'auto'}
                         </span>
                       )}
                       {isManual && (
@@ -495,7 +515,7 @@ export default function Championships() {
   const playerCountByLeague = useMemo(() => {
     const map: Record<string, number> = {};
     for (const p of players) {
-      const l = (p.league ?? '').trim();
+      const l = (p.external_data?.enriched_league ?? p.league ?? '').trim();
       if (l) map[l] = (map[l] || 0) + 1;
     }
     return map;

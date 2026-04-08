@@ -227,6 +227,28 @@ export function useLeaveOrganization() {
   });
 }
 
+export function useDeleteOrganization() {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: async (organizationId: string) => {
+      const session = (await supabase.auth.getSession()).data.session;
+      const res = await fetch(`${(import.meta.env.API_URL || '/api').replace(/\/$/, '')}/organizations/${organizationId}`, {
+        method: 'DELETE',
+        headers: { Authorization: `Bearer ${session?.access_token}` },
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.error || 'Failed');
+      }
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['my-organizations'] });
+      queryClient.invalidateQueries({ queryKey: ['organization-members'] });
+    },
+  });
+}
+
 // Upload or remove the organization logo (owner/admin only)
 const API_BASE = (import.meta.env.API_URL || '/api').replace(/\/$/, '');
 

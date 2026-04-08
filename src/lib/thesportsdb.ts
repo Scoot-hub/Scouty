@@ -907,11 +907,6 @@ const BADGE_OVERRIDES: Record<string, string> = {
   'paris saint-germain':          'https://r2.thesportsdb.com/images/media/team/badge/rwqrrq1473504808.png',
   'psg':                          'https://r2.thesportsdb.com/images/media/team/badge/rwqrrq1473504808.png',
   'paris sg':                     'https://r2.thesportsdb.com/images/media/team/badge/rwqrrq1473504808.png',
-  // Paris Saint-Germain — "Paris Saint-Germain" search returns Aris (Greek club) on TheSportsDB
-  'paris saint germain':          'https://r2.thesportsdb.com/images/media/team/badge/rwqrrq1473504808.png',
-  'paris saint-germain':          'https://r2.thesportsdb.com/images/media/team/badge/rwqrrq1473504808.png',
-  'psg':                          'https://r2.thesportsdb.com/images/media/team/badge/rwqrrq1473504808.png',
-  'paris sg':                     'https://r2.thesportsdb.com/images/media/team/badge/rwqrrq1473504808.png',
   // Eintracht Frankfurt — many spelling variants in different languages
   'eintracht frankfurt':          'https://r2.thesportsdb.com/images/media/team/badge/rurwpy1473453269.png',
   'eintracht francfort':          'https://r2.thesportsdb.com/images/media/team/badge/rurwpy1473453269.png',
@@ -1136,4 +1131,13 @@ export function resolveClubName(clubName: string): string {
   }
 
   return clubName;
+}
+
+/**
+ * Returns all known search aliases for a club name.
+ * e.g. "AS Saint-Étienne" → ["Saint-Etienne", "AS Saint-Etienne", "ASSE", "St Etienne", ...]
+ */
+export function getClubSearchAliases(clubName: string): string[] {
+  const resolved = resolveClubName(clubName);
+  return CLUB_NAME_MAP[resolved] || [];
 }

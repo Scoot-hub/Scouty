@@ -23,6 +23,7 @@ import {
   useUpdateMemberRole,
   useRemoveMember,
   useLeaveOrganization,
+  useDeleteOrganization,
   useUpdateOrgLogo,
   slugify,
 } from '@/hooks/use-organization';
@@ -309,7 +310,9 @@ function OrganizationDashboard({ org, userId }: { org: any; userId: string | und
   const updateRole = useUpdateMemberRole();
   const removeMember = useRemoveMember();
   const leaveOrg = useLeaveOrganization();
+  const deleteOrg = useDeleteOrganization();
   const { upload: uploadLogo, remove: removeLogo } = useUpdateOrgLogo(org.id);
+  const [confirmDelete, setConfirmDelete] = useState(false);
 
   const isOwner = org.myRole === 'owner';
   const isAdmin = org.myRole === 'owner' || org.myRole === 'admin';
@@ -378,6 +381,18 @@ function OrganizationDashboard({ org, userId }: { org: any; userId: string | und
       navigate('/organization');
     } catch {
       toast.error(t('common.error'));
+    }
+  };
+
+  const handleDelete = async () => {
+    try {
+      await deleteOrg.mutateAsync(org.id);
+      toast.success(t('org.deleted'));
+      navigate('/organization');
+    } catch (err: any) {
+      toast.error(err.message || t('common.error'));
+    } finally {
+      setConfirmDelete(false);
     }
   };
 
@@ -654,7 +669,7 @@ function OrganizationDashboard({ org, userId }: { org: any; userId: string | und
         </CardContent>
       </Card>
 
-      {/* Leave */}
+      {/* Leave (non-owner) */}
       {!isOwner && (
         <Card className="border-destructive/30">
           <CardContent className="pt-6">
@@ -668,6 +683,41 @@ function OrganizationDashboard({ org, userId }: { org: any; userId: string | und
                 {t('org.leave_btn')}
               </Button>
             </div>
+          </CardContent>
+        </Card>
+      )}
+
+      {/* Delete (owner only) */}
+      {isOwner && (
+        <Card className="border-destructive/30">
+          <CardContent className="pt-6 space-y-3">
+            <div className="flex items-center justify-between">
+              <div>
+                <p className="text-sm font-medium text-destructive">{t('org.delete_title')}</p>
+                <p className="text-xs text-muted-foreground">{t('org.delete_desc')}</p>
+              </div>
+              {!confirmDelete ? (
+                <Button variant="destructive" size="sm" onClick={() => setConfirmDelete(true)}>
+                  <Trash2 className="w-4 h-4 mr-2" />
+                  {t('org.delete_btn')}
+                </Button>
+              ) : (
+                <div className="flex items-center gap-2">
+                  <Button variant="outline" size="sm" onClick={() => setConfirmDelete(false)}>
+                    {t('common.cancel')}
+                  </Button>
+                  <Button variant="destructive" size="sm" onClick={handleDelete} disabled={deleteOrg.isPending}>
+                    {deleteOrg.isPending ? <Loader2 className="w-4 h-4 animate-spin mr-2" /> : <Trash2 className="w-4 h-4 mr-2" />}
+                    {t('org.delete_confirm')}
+                  </Button>
+                </div>
+              )}
+            </div>
+            {confirmDelete && (
+              <p className="text-xs text-destructive/80 bg-destructive/5 rounded-lg p-3">
+                {t('org.delete_warning')}
+              </p>
+            )}
           </CardContent>
         </Card>
       )}

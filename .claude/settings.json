@@ -55,7 +55,10 @@
       "Bash(curl -s -w '\\\\nHTTP_CODE:%{http_code}' -H 'Accept: application/json' -H 'Accept-Language: fr-FR' https://tmapi-alpha.transfermarkt.technology/transfer/history/player/503498)",
       "Bash(curl -s -H 'Accept: application/json' -H 'Accept-Language: fr-FR' 'https://tmapi-alpha.transfermarkt.technology/clubs?ids=53299,57623,88861,86076,15300,14094,15310,3718,59131,19739,515')",
       "Bash(curl -s -w '\\\\nHTTP:%{http_code}' -H 'Accept: application/json' -H 'Accept-Language: fr-FR' 'https://tmapi-alpha.transfermarkt.technology/clubs?ids=53299,515')",
-      "Bash(curl -s -H 'Accept: application/json' -H 'Accept-Language: fr-FR' 'https://tmapi-alpha.transfermarkt.technology/clubs?ids[]=53299&ids[]=515')"
+      "Bash(curl -s -H 'Accept: application/json' -H 'Accept-Language: fr-FR' 'https://tmapi-alpha.transfermarkt.technology/clubs?ids[]=53299&ids[]=515')",
+      "Bash(curl -s \"https://www.thesportsdb.com/api/v1/json/3/searchteams.php?t=AS%20Saint-Etienne\" -H \"User-Agent: Mozilla/5.0\" -H \"Accept: application/json\")",
+      "Bash(node -e \"const d=[];process.stdin.on\\('data',c=>d.push\\(c\\)\\);process.stdin.on\\('end',\\(\\)=>{const j=JSON.parse\\(Buffer.concat\\(d\\)\\);console.log\\('teams:',j.teams?.length||0\\);if\\(j.teams\\)j.teams.forEach\\(t=>console.log\\(' -',t.strTeam,'|',t.strSport\\)\\)}\\)\")",
+      "Bash(curl -s \"https://www.thesportsdb.com/api/v1/json/3/searchteams.php?t=Saint-Etienne\" -H \"User-Agent: Mozilla/5.0\" -H \"Accept: application/json\")"
     ],
     "additionalDirectories": [
       "\\tmp"

@@ -8,7 +8,7 @@ import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs';
-import { Shield, Crown, Users, Mail, UserCheck, BarChart3, Lock, Check, X, Search, Plus, Trash2, ShieldCheck, Building2, UserPlus, UserMinus, ChevronDown, ChevronRight, Building2, UserPlus, UserMinus } from 'lucide-react';
+import { Shield, Crown, Users, Mail, UserCheck, BarChart3, Lock, Check, X, Search, Plus, Trash2, ShieldCheck, ChevronDown, ChevronRight, Building2, UserPlus, UserMinus, Palette, User, ShieldAlert } from 'lucide-react';
 import { toast } from 'sonner';
 import { Navigate, Link } from 'react-router-dom';
 import { useAuth } from '@/contexts/AuthContext';
@@ -161,6 +161,16 @@ export default function Admin() {
     enabled: isAdmin === true,
   });
 
+  const { data: roleColors = {} } = useQuery<Record<string, string>>({
+    queryKey: ['admin-role-metadata'],
+    queryFn: async () => {
+      const res = await fetch(`${API_BASE}/admin/role-metadata`, { headers: await getAuthHeaders() });
+      if (!res.ok) return {};
+      return res.json();
+    },
+    enabled: isAdmin === true,
+  });
+
   // ── Orgs data ──
   const { data: orgs = [], isLoading: orgsLoading } = useQuery<AdminOrg[]>({
     queryKey: ['admin-organizations'],
@@ -185,12 +195,14 @@ export default function Admin() {
   }, [permissions]);
 
   const allRoles = useMemo(() => {
-    const set = new Set(['admin', 'user', ...roles]);
+    const set = new Set(['admin', 'moderateur', 'user', ...roles]);
+    const order = ['admin', 'moderateur', 'user'];
     return Array.from(set).sort((a, b) => {
-      if (a === 'admin') return -1;
-      if (b === 'admin') return 1;
-      if (a === 'user') return -1;
-      if (b === 'user') return 1;
+      const ai = order.indexOf(a);
+      const bi = order.indexOf(b);
+      if (ai !== -1 && bi !== -1) return ai - bi;
+      if (ai !== -1) return -1;
+      if (bi !== -1) return 1;
       return a.localeCompare(b);
     });
   }, [roles]);
@@ -291,24 +303,31 @@ export default function Admin() {
   };
 
   // ── Roles handlers ──
-  const setUserRole = async (userId: string, role: string) => {
+  const addRoleToUser = async (userId: string, role: string) => {
     setUpdatingUser(userId);
     try {
-      const res = await fetch(`${API_BASE}/admin/roles/set`, {
-        method: 'POST',
-        headers: await getAuthHeaders(),
-        body: JSON.stringify({ userId, role }),
+      const res = await fetch(`${API_BASE}/admin/roles/add`, {
+        method: 'POST', headers: await getAuthHeaders(), body: JSON.stringify({ userId, role }),
       });
       if (!res.ok) throw new Error();
       toast.success(t('roles.role_updated'));
       setAddRoleForUser(null); setAddRoleValue('');
       queryClient.invalidateQueries({ queryKey: ['admin-users'] });
-      queryClient.invalidateQueries({ queryKey: ['admin-roles'] });
-    } catch {
-      toast.error(t('common.error'));
-    } finally {
-      setUpdatingUser(null);
-    }
+    } catch { toast.error(t('common.error')); }
+    finally { setUpdatingUser(null); }
+  };
+
+  const removeRoleFromUser = async (userId: string, role: string) => {
+    setUpdatingUser(userId);
+    try {
+      const res = await fetch(`${API_BASE}/admin/roles/remove`, {
+        method: 'POST', headers: await getAuthHeaders(), body: JSON.stringify({ userId, role }),
+      });
+      if (!res.ok) throw new Error();
+      toast.success(t('roles.role_updated'));
+      queryClient.invalidateQueries({ queryKey: ['admin-users'] });
+    } catch { toast.error(t('common.error')); }
+    finally { setUpdatingUser(null); }
   };
 
   const togglePermission = async (role: string, pageKey: string, action: string, currentlyAllowed: boolean) => {
@@ -329,9 +348,11 @@ export default function Admin() {
     }
   };
 
+  const PROTECTED_ROLES = ['admin', 'user', 'moderateur'];
+
   const createRole = async () => {
-    const name = newRoleName.trim().toLowerCase().replace(/\s+/g, '_');
-    if (!name || name === 'admin' || name === 'user') return;
+    const name = newRoleName.trim();
+    if (!name || PROTECTED_ROLES.includes(name.toLowerCase())) return;
     try {
       for (const page of ALL_PAGES) {
         for (const action of PAGE_ACTIONS[page]) {
@@ -355,7 +376,7 @@ export default function Admin() {
   };
 
   const deleteRole = async (role: string) => {
-    if (role === 'admin' || role === 'user') return;
+    if (PROTECTED_ROLES.includes(role)) return;
     try {
       const res = await fetch(`${API_BASE}/admin/roles/delete`, {
         method: 'POST', headers: await getAuthHeaders(), body: JSON.stringify({ role }),
@@ -373,8 +394,9 @@ export default function Admin() {
 
   const isActionAllowed = (role: string, pageKey: string, action: string): boolean => {
     if (role === 'admin') return true;
-    if (!permMap[role] || permMap[role][pageKey] === undefined) return pageKey !== 'admin';
-    return permMap[role][pageKey];
+    const val = permMap[role]?.[pageKey]?.[action];
+    if (val === undefined) return pageKey !== 'admin';
+    return val;
   };
 
   // ── Orgs derived ──
@@ -474,24 +496,34 @@ export default function Admin() {
             <p className="text-sm text-muted-foreground">{t('admin.subtitle')}</p>
           </div>
         </div>
-        <Link to="/admin/analytics">
-          <Button variant="outline" className="rounded-xl gap-2">
-            <BarChart3 className="w-4 h-4" />
-            {t('admin.analytics')}
-          </Button>
-        </Link>
+        <div className="flex items-center gap-2">
+          <Link to="/admin/roles">
+            <Button variant="outline" className="rounded-xl gap-2">
+              <ShieldCheck className="w-4 h-4" />
+              {t('admin.tab_roles')}
+            </Button>
+          </Link>
+          <Link to="/admin/settings">
+            <Button variant="outline" className="rounded-xl gap-2">
+              <Shield className="w-4 h-4" />
+              {t('admin.settings')}
+            </Button>
+          </Link>
+          <Link to="/admin/analytics">
+            <Button variant="outline" className="rounded-xl gap-2">
+              <BarChart3 className="w-4 h-4" />
+              {t('admin.analytics')}
+            </Button>
+          </Link>
+        </div>
       </div>
 
       {/* Section selector */}
       <Tabs defaultValue="users" className="w-full space-y-6">
-        <TabsList className="w-full grid grid-cols-3">
+        <TabsList className="w-full grid grid-cols-2">
           <TabsTrigger value="users" className="gap-2">
             <Users className="w-4 h-4" />
             <span className="hidden sm:inline">{t('admin.tab_users')}</span>
-          </TabsTrigger>
-          <TabsTrigger value="roles" className="gap-2">
-            <ShieldCheck className="w-4 h-4" />
-            <span className="hidden sm:inline">{t('admin.tab_roles')}</span>
           </TabsTrigger>
           <TabsTrigger value="organizations" className="gap-2">
             <Building2 className="w-4 h-4" />
@@ -633,521 +665,7 @@ export default function Admin() {
           </Card>
         </TabsContent>
 
-        {/* ── Tab: Roles & Access ── */}
-        <TabsContent value="roles" className="space-y-4">
-          {/* Stats */}
-          <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-            <Card className="border-none card-warm">
-              <CardContent className="p-5 flex items-center gap-4">
-                <Users className="w-8 h-8 text-primary" />
-                <div>
-                  <p className="text-2xl font-bold">{users.length}</p>
-                  <p className="text-xs text-muted-foreground">{t('roles.total_users')}</p>
-                </div>
-              </CardContent>
-            </Card>
-            <Card className="border-none card-warm">
-              <CardContent className="p-5 flex items-center gap-4">
-                <Shield className="w-8 h-8 text-amber-500" />
-                <div>
-                  <p className="text-2xl font-bold">{allRoles.length}</p>
-                  <p className="text-xs text-muted-foreground">{t('roles.total_roles')}</p>
-                </div>
-              </CardContent>
-            </Card>
-            <Card className="border-none card-warm">
-              <CardContent className="p-5 flex items-center gap-4">
-                <Lock className="w-8 h-8 text-muted-foreground" />
-                <div>
-                  <p className="text-2xl font-bold">{ALL_PAGES.length}</p>
-                  <p className="text-xs text-muted-foreground">{t('roles.total_pages')}</p>
-                </div>
-              </CardContent>
-            </Card>
-          </div>
 
-          {/* Inner tabs: Permissions / User Roles */}
-          <Tabs value={rolesInnerTab} onValueChange={setRolesInnerTab} className="space-y-4">
-            <TabsList>
-              <TabsTrigger value="permissions">{t('roles.tab_permissions')}</TabsTrigger>
-              <TabsTrigger value="user-roles">{t('roles.tab_users')}</TabsTrigger>
-            </TabsList>
-
-            {/* Inner tab: Page Permissions */}
-            <TabsContent value="permissions" className="space-y-4">
-              {/* Role selector + create */}
-              <div className="flex flex-wrap items-center gap-2">
-                {allRoles.map(role => (
-                  <Button
-                    key={role}
-                    variant={selectedRole === role ? 'default' : 'outline'}
-                    size="sm"
-                    onClick={() => setSelectedRole(role)}
-                    className="capitalize"
-                  >
-                    {role === 'admin' && <Shield className="w-3.5 h-3.5 mr-1.5" />}
-                    {role}
-                  </Button>
-                ))}
-                {showNewRole ? (
-                  <div className="flex items-center gap-1.5">
-                    <input
-                      type="text"
-                      value={newRoleName}
-                      onChange={(e) => setNewRoleName(e.target.value)}
-                      placeholder={t('roles.new_role_placeholder')}
-                      className="h-8 px-2 text-sm rounded-lg border border-input bg-background focus:outline-none focus:ring-2 focus:ring-ring"
-                      onKeyDown={(e) => e.key === 'Enter' && createRole()}
-                      autoFocus
-                    />
-                    <Button size="sm" onClick={createRole} disabled={!newRoleName.trim()}>
-                      <Check className="w-3.5 h-3.5" />
-                    </Button>
-                    <Button size="sm" variant="ghost" onClick={() => { setShowNewRole(false); setNewRoleName(''); }}>
-                      <X className="w-3.5 h-3.5" />
-                    </Button>
-                  </div>
-                ) : (
-                  <Button variant="outline" size="sm" onClick={() => setShowNewRole(true)}>
-                    <Plus className="w-3.5 h-3.5 mr-1" />
-                    {t('roles.add_role')}
-                  </Button>
-                )}
-              </div>
-
-              {/* Permissions matrix with sub-actions */}
-              <Card className="border-none card-warm overflow-hidden">
-                <CardHeader className="pb-2">
-                  <div className="flex items-center justify-between">
-                    <div>
-                      <CardTitle className="text-base capitalize flex items-center gap-2">
-                        {selectedRole}
-                        {selectedRole === 'admin' && (
-                          <Badge variant="outline" className="text-[10px]">{t('roles.full_access')}</Badge>
-                        )}
-                      </CardTitle>
-                      <CardDescription>
-                        {selectedRole === 'admin' ? t('roles.admin_desc') : t('roles.perm_desc')}
-                      </CardDescription>
-                    </div>
-                    {selectedRole !== 'admin' && selectedRole !== 'user' && (
-                      <Button
-                        variant="ghost"
-                        size="sm"
-                        className="text-destructive hover:text-destructive hover:bg-destructive/10"
-                        onClick={() => deleteRole(selectedRole)}
-                      >
-                        <Trash2 className="w-3.5 h-3.5 mr-1" />
-                        {t('roles.delete_role')}
-                      </Button>
-                    )}
-                  </div>
-                </CardHeader>
-                <CardContent className="p-0 overflow-x-auto">
-                  <Table>
-                    <TableHeader>
-                      <TableRow>
-                        <TableHead className="w-[240px]">{t('roles.page')}</TableHead>
-                        <TableHead className="w-[100px] text-center">{t('roles.access')}</TableHead>
-                        <TableHead>{t('roles.sub_actions')}</TableHead>
-                      </TableRow>
-                    </TableHeader>
-                    <TableBody>
-                      {ALL_PAGES.map(pageKey => {
-                        const actions = PAGE_ACTIONS[pageKey];
-                        const hasSubActions = actions.length > 1;
-                        const isExpanded = expandedPages.has(pageKey);
-                        const isAdminRole = selectedRole === 'admin';
-                        const viewAllowed = isActionAllowed(selectedRole, pageKey, 'view');
-
-                        return (
-                          <Fragment key={pageKey}>
-                            {/* Main page row */}
-                            <TableRow className={cn(isExpanded && 'border-b-0')}>
-                              <TableCell className="font-medium">
-                                <div className="flex items-center gap-2">
-                                  {hasSubActions ? (
-                                    <button
-                                      onClick={() => setExpandedPages(prev => {
-                                        const next = new Set(prev);
-                                        next.has(pageKey) ? next.delete(pageKey) : next.add(pageKey);
-                                        return next;
-                                      })}
-                                      className="text-muted-foreground hover:text-foreground transition-colors"
-                                    >
-                                      {isExpanded ? <ChevronDown className="w-3.5 h-3.5" /> : <ChevronRight className="w-3.5 h-3.5" />}
-                                    </button>
-                                  ) : (
-                                    <Lock className="w-3.5 h-3.5 text-muted-foreground" />
-                                  )}
-                                  {t(`roles.page_${pageKey}`)}
-                                </div>
-                              </TableCell>
-                              <TableCell className="text-center">
-                                {isAdminRole ? (
-                                  <Badge className="bg-emerald-500/10 text-emerald-600 border-emerald-500/20 text-[10px]">
-                                    <Check className="w-3 h-3 mr-1" />{t('roles.allowed')}
-                                  </Badge>
-                                ) : (
-                                  <Button variant="ghost" size="sm"
-                                    disabled={updatingPerm === `${selectedRole}-${pageKey}-view`}
-                                    onClick={() => togglePermission(selectedRole, pageKey, 'view', viewAllowed)}
-                                    className={cn('text-xs', viewAllowed
-                                      ? 'text-emerald-600 hover:text-emerald-700 hover:bg-emerald-50'
-                                      : 'text-red-500 hover:text-red-600 hover:bg-red-50')}>
-                                    {viewAllowed
-                                      ? <><Check className="w-3 h-3 mr-1" />{t('roles.allowed')}</>
-                                      : <><X className="w-3 h-3 mr-1" />{t('roles.blocked')}</>}
-                                  </Button>
-                                )}
-                              </TableCell>
-                              <TableCell>
-                                {hasSubActions && !isExpanded && (
-                                  <button
-                                    onClick={() => setExpandedPages(prev => { const n = new Set(prev); n.add(pageKey); return n; })}
-                                    className="text-xs text-muted-foreground hover:text-primary transition-colors flex items-center gap-1"
-                                  >
-                                    <ChevronRight className="w-3 h-3" />
-                                    {actions.length - 1} {t('roles.more_actions')}
-                                  </button>
-                                )}
-                              </TableCell>
-                            </TableRow>
-
-                            {/* Expanded sub-actions rows */}
-                            {isExpanded && hasSubActions && actions.filter(a => a !== 'view').map(action => {
-                              const actionAllowed = isActionAllowed(selectedRole, pageKey, action);
-                              const updKey = `${selectedRole}-${pageKey}-${action}`;
-                              return (
-                                <TableRow key={`${pageKey}-${action}`} className="bg-muted/20">
-                                  <TableCell className="pl-10 py-2">
-                                    <span className="text-xs text-muted-foreground flex items-center gap-2">
-                                      <span className="w-3.5 h-3.5 rounded-sm bg-border inline-block shrink-0" />
-                                      {t(`roles.action_${action}`, { defaultValue: action.replace(/_/g, ' ') })}
-                                    </span>
-                                  </TableCell>
-                                  <TableCell className="text-center py-2">
-                                    {isAdminRole ? (
-                                      <Badge className="bg-emerald-500/10 text-emerald-600 border-emerald-500/20 text-[10px]">
-                                        <Check className="w-3 h-3 mr-1" />{t('roles.allowed')}
-                                      </Badge>
-                                    ) : (
-                                      <Button variant="ghost" size="sm"
-                                        disabled={updatingPerm === updKey}
-                                        onClick={() => togglePermission(selectedRole, pageKey, action, actionAllowed)}
-                                        className={cn('text-xs h-7', actionAllowed
-                                          ? 'text-emerald-600 hover:text-emerald-700 hover:bg-emerald-50'
-                                          : 'text-red-500 hover:text-red-600 hover:bg-red-50')}>
-                                        {actionAllowed
-                                          ? <><Check className="w-3 h-3 mr-1" />{t('roles.allowed')}</>
-                                          : <><X className="w-3 h-3 mr-1" />{t('roles.blocked')}</>}
-                                      </Button>
-                                    )}
-                                  </TableCell>
-                                  <TableCell />
-                                </TableRow>
-                              );
-                            })}
-                          </Fragment>
-                        );
-                      })}
-                    </TableBody>
-                  </Table>
-                </CardContent>
-              </Card>
-            </TabsContent>
-
-            {/* Inner tab: User Roles */}
-            <TabsContent value="user-roles" className="space-y-4">
-              {/* Search */}
-              <div className="relative max-w-sm">
-                <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
-                <input
-                  type="text"
-                  value={searchTerm}
-                  onChange={(e) => setSearchTerm(e.target.value)}
-                  placeholder={t('roles.search_users')}
-                  className="w-full pl-9 pr-3 py-2 rounded-lg border border-input bg-background text-sm focus:outline-none focus:ring-2 focus:ring-ring"
-                />
-              </div>
-
-              <Card className="border-none card-warm overflow-hidden">
-                <CardContent className="p-0 overflow-x-auto">
-                  {usersLoading ? (
-                    <p className="p-6 text-center text-muted-foreground">{t('common.loading')}</p>
-                  ) : (
-                    <Table>
-                      <TableHeader>
-                        <TableRow>
-                          <TableHead>{t('roles.email')}</TableHead>
-                          <TableHead>{t('roles.current_role')}</TableHead>
-                          <TableHead>{t('roles.add_role_action')}</TableHead>
-                        </TableRow>
-                      </TableHeader>
-                      <TableBody>
-                        {filteredUsers.map(u => {
-                          const isCurrentUser = u.id === currentUser?.id;
-                          const isUpdating = updatingUser === u.id;
-                          const userRoles = u.roles.length > 0 ? u.roles : ['user'];
-                          const availableToAdd = allRoles.filter(r => !userRoles.includes(r));
-
-                          return (
-                            <TableRow key={u.id}>
-                              <TableCell className="font-medium">
-                                <div className="flex items-center gap-2">
-                                  <span className="truncate max-w-[220px]">{u.email}</span>
-                                  {isCurrentUser && <Badge variant="secondary" className="text-[10px]">{t('roles.you')}</Badge>}
-                                </div>
-                              </TableCell>
-                              <TableCell>
-                                <div className="flex items-center flex-wrap gap-1.5">
-                                  {userRoles.map(role => (
-                                    <Badge key={role}
-                                      variant={role === 'admin' ? 'default' : 'secondary'}
-                                      className="capitalize flex items-center gap-1 pr-1">
-                                      {role === 'admin' && <Shield className="w-2.5 h-2.5" />}
-                                      {role}
-                                      {!isCurrentUser && (
-                                        <button
-                                          onClick={() => removeRoleFromUser(u.id, role)}
-                                          disabled={isUpdating}
-                                          className="ml-0.5 rounded hover:bg-destructive/20 hover:text-destructive transition-colors p-0.5"
-                                        >
-                                          <X className="w-2.5 h-2.5" />
-                                        </button>
-                                      )}
-                                    </Badge>
-                                  ))}
-                                </div>
-                              </TableCell>
-                              <TableCell>
-                                {!isCurrentUser && availableToAdd.length > 0 && (
-                                  addRoleForUser === u.id ? (
-                                    <div className="flex items-center gap-1.5">
-                                      <select
-                                        value={addRoleValue}
-                                        onChange={e => setAddRoleValue(e.target.value)}
-                                        className="h-7 px-2 text-xs rounded-lg border border-input bg-background focus:outline-none focus:ring-1 focus:ring-ring capitalize"
-                                        autoFocus
-                                      >
-                                        <option value="">— {t('roles.select_role')} —</option>
-                                        {availableToAdd.map(r => <option key={r} value={r} className="capitalize">{r}</option>)}
-                                      </select>
-                                      <Button size="sm" className="h-7"
-                                        disabled={!addRoleValue || isUpdating}
-                                        onClick={() => addRoleToUser(u.id, addRoleValue)}>
-                                        <Check className="w-3 h-3" />
-                                      </Button>
-                                      <Button size="sm" variant="ghost" className="h-7"
-                                        onClick={() => { setAddRoleForUser(null); setAddRoleValue(''); }}>
-                                        <X className="w-3 h-3" />
-                                      </Button>
-                                    </div>
-                                  ) : (
-                                    <Button variant="outline" size="sm" className="h-7 text-xs"
-                                      onClick={() => { setAddRoleForUser(u.id); setAddRoleValue(''); }}>
-                                      <Plus className="w-3 h-3 mr-1" />{t('roles.add_role_action')}
-                                    </Button>
-                                  )
-                                )}
-                              </TableCell>
-                            </TableRow>
-                          );
-                        })}
-                      </TableBody>
-                    </Table>
-                  )}
-                </CardContent>
-              </Card>
-            </TabsContent>
-          </Tabs>
-        </TabsContent>
-        {/* ── Tab: Organizations ── */}
-        <TabsContent value="organizations" className="space-y-4">
-          {/* Stats */}
-          <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-            <Card className="border-none card-warm">
-              <CardContent className="p-5 flex items-center gap-4">
-                <Building2 className="w-8 h-8 text-primary" />
-                <div>
-                  <p className="text-2xl font-bold">{orgs.length}</p>
-                  <p className="text-xs text-muted-foreground">{t('admin.org_total')}</p>
-                </div>
-              </CardContent>
-            </Card>
-            <Card className="border-none card-warm">
-              <CardContent className="p-5 flex items-center gap-4">
-                <Users className="w-8 h-8 text-amber-500" />
-                <div>
-                  <p className="text-2xl font-bold">{orgs.reduce((s, o) => s + o.members.length, 0)}</p>
-                  <p className="text-xs text-muted-foreground">{t('admin.org_total_members')}</p>
-                </div>
-              </CardContent>
-            </Card>
-            <Card className="border-none card-warm">
-              <CardContent className="p-5 flex items-center gap-4">
-                <Users className="w-8 h-8 text-muted-foreground" />
-                <div>
-                  <p className="text-2xl font-bold">{users.filter(u => orgs.some(o => o.members.some(m => m.user_id === u.id))).length}</p>
-                  <p className="text-xs text-muted-foreground">{t('admin.org_users_in_orgs')}</p>
-                </div>
-              </CardContent>
-            </Card>
-          </div>
-
-          {/* Search */}
-          <div className="relative max-w-sm">
-            <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
-            <input
-              type="text"
-              value={orgSearch}
-              onChange={(e) => setOrgSearch(e.target.value)}
-              placeholder={t('admin.org_search')}
-              className="w-full pl-9 pr-3 py-2 rounded-lg border border-input bg-background text-sm focus:outline-none focus:ring-2 focus:ring-ring"
-            />
-          </div>
-
-          {/* Org list */}
-          {orgsLoading ? (
-            <p className="p-6 text-center text-muted-foreground">{t('common.loading')}</p>
-          ) : filteredOrgs.length === 0 ? (
-            <p className="p-6 text-center text-muted-foreground">{t('admin.org_none')}</p>
-          ) : (
-            <div className="space-y-3">
-              {filteredOrgs.map(org => (
-                <Card key={org.id} className="border-none card-warm overflow-hidden">
-                  <CardHeader
-                    className="pb-2 cursor-pointer"
-                    onClick={() => setExpandedOrg(expandedOrg === org.id ? null : org.id)}
-                  >
-                    <div className="flex items-center justify-between">
-                      <div className="flex items-center gap-3">
-                        {org.logo_url ? (
-                          <img src={org.logo_url} alt="" className="w-8 h-8 rounded-lg object-cover" />
-                        ) : (
-                          <div className="w-8 h-8 rounded-lg bg-primary/10 flex items-center justify-center">
-                            <Building2 className="w-4 h-4 text-primary" />
-                          </div>
-                        )}
-                        <div>
-                          <CardTitle className="text-base flex items-center gap-2">
-                            {org.name}
-                            <Badge variant="secondary" className="text-[10px] capitalize">{org.type}</Badge>
-                          </CardTitle>
-                          <CardDescription className="text-xs">
-                            {t('admin.org_created_by', { email: org.created_by_email || '—' })} · {org.members.length} {t('admin.org_members_count')}
-                          </CardDescription>
-                        </div>
-                      </div>
-                      <Badge variant="outline" className="text-xs font-mono">{org.invite_code}</Badge>
-                    </div>
-                  </CardHeader>
-
-                  {expandedOrg === org.id && (
-                    <CardContent className="pt-0">
-                      {/* Members table */}
-                      <Table>
-                        <TableHeader>
-                          <TableRow>
-                            <TableHead>{t('admin.email')}</TableHead>
-                            <TableHead>{t('admin.org_member_role')}</TableHead>
-                            <TableHead className="text-right">{t('admin.actions')}</TableHead>
-                          </TableRow>
-                        </TableHeader>
-                        <TableBody>
-                          {org.members.map(m => (
-                            <TableRow key={m.user_id}>
-                              <TableCell className="font-medium">{m.email}</TableCell>
-                              <TableCell>
-                                <select
-                                  value={m.role}
-                                  onChange={(e) => updateMemberOrgRole(org.id, m.user_id, e.target.value)}
-                                  disabled={orgActionLoading === `role-${org.id}-${m.user_id}`}
-                                  className="h-8 px-2 text-sm rounded-lg border border-input bg-background focus:outline-none focus:ring-2 focus:ring-ring disabled:opacity-50 capitalize"
-                                >
-                                  <option value="owner">{t('admin.org_role_owner')}</option>
-                                  <option value="admin">{t('admin.org_role_admin')}</option>
-                                  <option value="member">{t('admin.org_role_member')}</option>
-                                </select>
-                              </TableCell>
-                              <TableCell className="text-right">
-                                <Button
-                                  variant="ghost"
-                                  size="icon"
-                                  className="rounded-lg h-7 w-7 text-destructive hover:text-destructive hover:bg-destructive/10"
-                                  onClick={() => removeMemberFromOrg(org.id, m.user_id)}
-                                  disabled={orgActionLoading === `rm-${org.id}-${m.user_id}`}
-                                  title={t('admin.org_remove_member')}
-                                >
-                                  <UserMinus className="w-3.5 h-3.5" />
-                                </Button>
-                              </TableCell>
-                            </TableRow>
-                          ))}
-                          {org.members.length === 0 && (
-                            <TableRow>
-                              <TableCell colSpan={3} className="text-center text-muted-foreground text-sm py-4">
-                                {t('admin.org_no_members')}
-                              </TableCell>
-                            </TableRow>
-                          )}
-                        </TableBody>
-                      </Table>
-
-                      {/* Add member */}
-                      {addingMemberOrg === org.id ? (
-                        <div className="flex flex-wrap items-center gap-2 mt-3">
-                          <input
-                            type="email"
-                            value={addMemberEmail}
-                            onChange={(e) => setAddMemberEmail(e.target.value)}
-                            placeholder={t('admin.org_add_email_placeholder')}
-                            className="h-8 px-3 text-sm rounded-lg border border-input bg-background focus:outline-none focus:ring-2 focus:ring-ring flex-1 min-w-[200px]"
-                            onKeyDown={(e) => e.key === 'Enter' && addMemberToOrg(org.id)}
-                            autoFocus
-                          />
-                          <select
-                            value={addMemberRole}
-                            onChange={(e) => setAddMemberRole(e.target.value)}
-                            className="h-8 px-2 text-sm rounded-lg border border-input bg-background focus:outline-none focus:ring-2 focus:ring-ring capitalize"
-                          >
-                            <option value="member">{t('admin.org_role_member')}</option>
-                            <option value="admin">{t('admin.org_role_admin')}</option>
-                            <option value="owner">{t('admin.org_role_owner')}</option>
-                          </select>
-                          <Button
-                            size="sm"
-                            onClick={() => addMemberToOrg(org.id)}
-                            disabled={!addMemberEmail.trim() || orgActionLoading === `add-${org.id}`}
-                          >
-                            <Check className="w-3.5 h-3.5" />
-                          </Button>
-                          <Button
-                            size="sm"
-                            variant="ghost"
-                            onClick={() => { setAddingMemberOrg(null); setAddMemberEmail(''); setAddMemberRole('member'); }}
-                          >
-                            <X className="w-3.5 h-3.5" />
-                          </Button>
-                        </div>
-                      ) : (
-                        <Button
-                          variant="outline"
-                          size="sm"
-                          className="mt-3 gap-1.5"
-                          onClick={() => setAddingMemberOrg(org.id)}
-                        >
-                          <UserPlus className="w-3.5 h-3.5" />
-                          {t('admin.org_add_member')}
-                        </Button>
-                      )}
-                    </CardContent>
-                  )}
-                </Card>
-              ))}
-            </div>
-          )}
-        </TabsContent>
         {/* ── Tab: Organizations ── */}
         <TabsContent value="organizations" className="space-y-4">
           {/* Stats */}

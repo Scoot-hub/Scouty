@@ -4,61 +4,16 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { CustomFieldsManager } from '@/components/CustomFieldsManager';
 import { useCustomFields, useDeleteCustomField } from '@/hooks/use-custom-fields';
-import { Settings2, User, Globe, Pencil, Trash2 } from 'lucide-react';
+import { Settings2, Globe, Pencil, Trash2 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
-import { Input } from '@/components/ui/input';
 import LanguageSwitcher from '@/components/LanguageSwitcher';
 import ThemeSwitcher from '@/components/ThemeSwitcher';
 import { toast } from 'sonner';
-import { supabase } from '@/integrations/supabase/client';
-import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { useState, useEffect } from 'react';
 
 export default function Settings() {
   const { t } = useTranslation();
-  const { user } = useAuth();
-  const queryClient = useQueryClient();
   const { data: fields = [] } = useCustomFields();
   const deleteField = useDeleteCustomField();
-
-  const { data: profile } = useQuery({
-    queryKey: ['profile', user?.id],
-    queryFn: async () => {
-      if (!user) return null;
-      const { data } = await supabase.from('profiles').select('*').eq('user_id', user.id).single();
-      return data;
-    },
-    enabled: !!user,
-  });
-
-  const [fullName, setFullName] = useState('');
-  const [club, setClub] = useState('');
-  const [saving, setSaving] = useState(false);
-
-  useEffect(() => {
-    if (profile) {
-      setFullName(profile.full_name || '');
-      setClub(profile.club || '');
-    }
-  }, [profile]);
-
-  const handleSaveProfile = async () => {
-    if (!user) return;
-    setSaving(true);
-    try {
-      const { error } = await supabase.from('profiles').update({
-        full_name: fullName.trim(),
-        club: club.trim(),
-      }).eq('user_id', user.id);
-      if (error) throw error;
-      queryClient.invalidateQueries({ queryKey: ['profile', user.id] });
-      toast.success(t('common.save'));
-    } catch {
-      toast.error(t('common.error'));
-    } finally {
-      setSaving(false);
-    }
-  };
 
   const handleDelete = async (id: string) => {
     try {
@@ -80,14 +35,10 @@ export default function Settings() {
       </div>
 
       <Tabs defaultValue="custom_fields" className="w-full">
-        <TabsList className="w-full grid grid-cols-3">
+        <TabsList className="w-full grid grid-cols-2">
           <TabsTrigger value="custom_fields" className="gap-2">
             <Settings2 className="w-4 h-4" />
             <span className="hidden sm:inline">{t('settings.tab_fields')}</span>
-          </TabsTrigger>
-          <TabsTrigger value="profile" className="gap-2">
-            <User className="w-4 h-4" />
-            <span className="hidden sm:inline">{t('settings.tab_profile')}</span>
           </TabsTrigger>
           <TabsTrigger value="preferences" className="gap-2">
             <Globe className="w-4 h-4" />
@@ -148,41 +99,6 @@ export default function Settings() {
                 </div>
               )}
             </CardContent>
-          </Card>
-        </TabsContent>
-
-        {/* Profile Tab */}
-        <TabsContent value="profile">
-          <Card>
-            <CardHeader>
-              <CardTitle>{t('settings.tab_profile')}</CardTitle>
-              <CardDescription>{t('settings.profile_desc')}</CardDescription>
-            </CardHeader>
-            <CardContent className="space-y-4">
-              <div>
-                <label className="text-sm font-medium text-muted-foreground">{t('auth.full_name')}</label>
-                <Input className="mt-1" value={fullName} onChange={e => setFullName(e.target.value)} />
-              </div>
-              <div>
-                <label className="text-sm font-medium text-muted-foreground">{t('auth.club')}</label>
-                <Input className="mt-1" value={club} onChange={e => setClub(e.target.value)} />
-              </div>
-              <div>
-                <label className="text-sm font-medium text-muted-foreground">{t('auth.email')}</label>
-                <p className="text-sm mt-1 p-3 rounded-xl bg-muted/40 border border-border/50">{user?.email ?? '—'}</p>
-              </div>
-              <div>
-                <label className="text-sm font-medium text-muted-foreground">{t('settings.member_since')}</label>
-                <p className="text-sm mt-1 p-3 rounded-xl bg-muted/40 border border-border/50">
-                  {user?.created_at ? new Date(user.created_at).toLocaleDateString() : '—'}
-                </p>
-              </div>
-            </CardContent>
-            <div className="px-6 pb-6">
-              <Button onClick={handleSaveProfile} disabled={saving} size="sm">
-                {saving ? t('common.saving') : t('common.save')}
-              </Button>
-            </div>
           </Card>
         </TabsContent>
 

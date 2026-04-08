@@ -1,9 +1,10 @@
 import { useState, useEffect, useRef } from 'react';
 import { useSearchParams, Link } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
-import { useQuery } from '@tanstack/react-query';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { supabase } from '@/integrations/supabase/client';
 import { usePlayers } from '@/hooks/use-players';
+import { useIsAdmin } from '@/hooks/use-admin';
 import { useFollowedClubs, useFollowClub, useUnfollowClub } from '@/hooks/use-followed-clubs';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
@@ -11,11 +12,12 @@ import { Input } from '@/components/ui/input';
 import { Badge } from '@/components/ui/badge';
 import { ClubBadge } from '@/components/ui/club-badge';
 import { translateCountry } from '@/types/player';
-import { resolveClubName } from '@/lib/thesportsdb';
+import { resolveClubName, getClubSearchAliases } from '@/lib/thesportsdb';
 import {
   Search, Loader2, MapPin, Calendar, Users, Trophy, Building2, Globe,
-  ExternalLink, Shirt, Info, Newspaper, Heart, HeartOff, Database,
+  ExternalLink, Shirt, Info, Newspaper, Heart, HeartOff, Database, Trash2,
 } from 'lucide-react';
+import { toast } from 'sonner';
 
 const API = (import.meta.env.API_URL || '/api').replace(/\/$/, '');
 
@@ -104,6 +106,8 @@ export default function ClubProfile() {
   const { data: followedClubs = [] } = useFollowedClubs();
   const followClub = useFollowClub();
   const unfollowClub = useUnfollowClub();
+  const { data: isAdmin } = useIsAdmin();
+  const queryClient = useQueryClient();
   const followedEntry = followedClubs.find(c => c.club_name.toLowerCase() === clubName.toLowerCase());
 
   // Autocomplete
@@ -144,53 +148,103 @@ export default function ClubProfile() {
     terms.add(resolved);
     if (resolved !== name) terms.add(name);
 
-    // Add all aliases from CLUB_NAME_MAP via resolveClubName's lookup
-    // Generate common short forms: "Paris Saint-Germain" → "Paris SG", abbreviations, etc.
+    // Add all known aliases from CLUB_NAME_MAP (e.g. "St Etienne", "ASSE", etc.)
+    for (const alias of getClubSearchAliases(name)) terms.add(alias);
+
+    // Generate common short forms
     const words = resolved.split(/[\s-]+/);
     if (words.length >= 2) {
-      // Try first word + initials of remaining: "Paris Saint-Germain" → "Paris SG"
+      // First word + initials: "Paris Saint-Germain" → "Paris SG"
       const initials = words.slice(1).map(w => w[0]?.toUpperCase()).join('');
       if (initials.length >= 1) terms.add(`${words[0]} ${initials}`);
-      // Try just the first word if it's long enough (e.g., "Marseille", "Lyon")
+      // Just the first word if long enough
       if (words[0].length >= 4) terms.add(words[0]);
-      // Try first two words only
+      // First two words only
       if (words.length >= 3) terms.add(words.slice(0, 2).join(' '));
     }
-    // Try without common prefixes: "FC ", "AC ", "AS ", "RC ", etc.
+    // Without common prefixes: "AS Saint-Étienne" → "Saint-Étienne"
     const noPrefix = resolved.replace(/^(FC|AC|AS|RC|SC|SS|US|AJ|OGC|LOSC|Stade|Real|Sporting|Athletic)\s+/i, '').trim();
     if (noPrefix !== resolved && noPrefix.length >= 3) terms.add(noPrefix);
+
+    // "Saint" → "St" variants: "Saint-Etienne" → "St Etienne"
+    for (const t of [...terms]) {
+      if (/saint/i.test(t)) terms.add(t.replace(/Saint[- ]?/gi, 'St ').replace(/\s+/g, ' ').trim());
+    }
+    // Remove accents variants
+    for (const t of [...terms]) {
+      const noAccent = t.normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+      if (noAccent !== t) terms.add(noAccent);
+    }
 
     return [...terms];
   };
 
-  // ── Fetch club data: TheSportsDB → Transfermarkt fallback ──
+  // Score how well a team name matches the query (higher = better)
+  const nameMatchScore = (teamName: string, query: string): number => {
+    const a = teamName.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().trim();
+    const b = query.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().trim();
+    if (a === b) return 100;
+    if (a.includes(b) || b.includes(a)) return 80;
+    // Compare words overlap
+    const aw = new Set(a.split(/[\s\-]+/));
+    const bw = new Set(b.split(/[\s\-]+/));
+    let common = 0;
+    for (const w of bw) if (aw.has(w)) common++;
+    return common > 0 ? (common / Math.max(aw.size, bw.size)) * 60 : 0;
+  };
+
+  // ── Fetch club data: Transfermarkt first, TheSportsDB to enrich ──
   const { data: team, isLoading } = useQuery<TeamData | null>({
     queryKey: ['club-profile', clubName],
     queryFn: async () => {
       if (!clubName) return null;
 
       const searchTerms = buildSearchTerms(clubName);
+      const canonical = resolveClubName(clubName);
 
-      // 1. Try TheSportsDB (fast, rich data)
+      // 1. Try Transfermarkt first (most reliable for exact club identity)
+      let tmTeam: TeamData | null = null;
+      for (const term of searchTerms) {
+        try {
+          const resp = await fetch(`${API}/club-tm-search?q=${encodeURIComponent(term)}`);
+          if (!resp.ok) continue;
+          const profile = await resp.json();
+          if (profile?.clubName) { tmTeam = tmToTeam(profile); break; }
+        } catch {}
+      }
+
+      // 2. Try TheSportsDB (richer data: description, stadium photo, etc.)
       for (const term of searchTerms) {
         try {
           const { data } = await supabase.functions.invoke('thesportsdb-proxy', {
             body: { endpoint: 'searchteams', params: { t: term } },
           });
           const soccer = (data?.teams || []).filter((t: any) => t.strSport === 'Soccer' || t.strSport === 'Football');
-          if (soccer.length > 0) return soccer[0] as TeamData;
+          if (soccer.length === 0) continue;
+
+          // Pick the best match by name similarity instead of blindly taking the first
+          const scored = soccer.map((t: any) => ({
+            team: t,
+            score: Math.max(nameMatchScore(t.strTeam, canonical), nameMatchScore(t.strTeam, clubName)),
+          })).sort((a: any, b: any) => b.score - a.score);
+
+          if (scored[0]?.score >= 40) {
+            const best = scored[0].team as TeamData;
+            // Merge TM data into TheSportsDB result if available
+            if (tmTeam) {
+              best._tmUrl = tmTeam._tmUrl;
+              best._tmSquadSize = tmTeam._tmSquadSize;
+              best._tmAvgAge = tmTeam._tmAvgAge;
+              best._tmMarketValue = tmTeam._tmMarketValue;
+              if (!best.strTeamBadge && tmTeam.strTeamBadge) best.strTeamBadge = tmTeam.strTeamBadge;
+            }
+            return best;
+          }
         } catch {}
       }
 
-      // 2. Fallback: Transfermarkt search → scrape profile
-      for (const term of searchTerms) {
-        try {
-          const resp = await fetch(`${API}/club-tm-search?q=${encodeURIComponent(term)}`);
-          if (!resp.ok) continue;
-          const profile = await resp.json();
-          if (profile?.clubName) return tmToTeam(profile);
-        } catch {}
-      }
+      // 3. Return TM-only result if TheSportsDB had no good match
+      if (tmTeam) return tmTeam;
 
       // 3. Last fallback: build from internal DB (club_directory + club_logos)
       try {
@@ -406,6 +460,38 @@ export default function ClubProfile() {
                     <a href={(team as any)._tmUrl} target="_blank" rel="noopener noreferrer">
                       <Button variant="outline" size="sm"><ExternalLink className="w-4 h-4 mr-1" /> Transfermarkt</Button>
                     </a>
+                  )}
+                  {isAdmin && (
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      className="text-destructive hover:bg-destructive/10"
+                      onClick={async () => {
+                        const name = team.strTeam || clubName;
+                        if (!confirm(t('club.confirm_delete', { name }))) return;
+                        try {
+                          const s = (await supabase.auth.getSession()).data.session;
+                          const resp = await fetch(`${API}/admin/club/${encodeURIComponent(name)}`, {
+                            method: 'DELETE',
+                            headers: { Authorization: `Bearer ${s?.access_token}` },
+                          });
+                          if (resp.ok) {
+                            const data = await resp.json();
+                            queryClient.invalidateQueries({ queryKey: ['club-profile'] });
+                            queryClient.invalidateQueries({ queryKey: ['club-search'] });
+                            queryClient.invalidateQueries({ queryKey: ['players'] });
+                            queryClient.invalidateQueries({ queryKey: ['followed-clubs'] });
+                            toast.success(t('club.deleted_with_count', { count: data.playersDetached || 0 }));
+                            setSearchParams({});
+                          } else {
+                            const err = await resp.json().catch(() => ({}));
+                            toast.error(err.error || t('common.error'));
+                          }
+                        } catch { toast.error(t('common.error')); }
+                      }}
+                    >
+                      <Trash2 className="w-4 h-4 mr-1" /> {t('club.delete_club')}
+                    </Button>
                   )}
                 </div>
               </div>

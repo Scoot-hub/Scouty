@@ -1,10 +1,12 @@
 import { useState, useEffect } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useAuth } from '@/contexts/AuthContext';
+import { useMyPermissions } from '@/hooks/use-admin';
 import { supabase } from '@/integrations/supabase/client';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
+import { Badge } from '@/components/ui/badge';
 import { Input } from '@/components/ui/input';
 import { Separator } from '@/components/ui/separator';
 import { toast } from 'sonner';
@@ -18,6 +20,7 @@ export default function Account() {
   const { t } = useTranslation();
   const { user } = useAuth();
   const queryClient = useQueryClient();
+  const { data: myPermissions } = useMyPermissions();
 
   // Profile
   const { data: profile } = useQuery({
@@ -235,6 +238,7 @@ export default function Account() {
   };
 
   const apiBase = (import.meta as any).env.API_URL || '/api';
+  const apiOrigin = apiBase.replace(/\/api$/, '');
   const authHeader = { Authorization: `Bearer ${JSON.parse(localStorage.getItem('scouthub_session') || '{}').access_token}` };
 
   const handleSetup2FA = async () => {
@@ -405,6 +409,7 @@ export default function Account() {
   };
 
   const isPremium = subscription?.subscribed;
+  const userRoles = myPermissions?.roles?.length ? myPermissions.roles : ['user'];
 
   return (
     <div className="max-w-2xl mx-auto space-y-6">
@@ -429,7 +434,7 @@ export default function Account() {
               <div className="w-20 h-20 rounded-full border-2 border-border overflow-hidden bg-muted flex items-center justify-center">
                 {photoUrl ? (
                   <img
-                    src={photoUrl.startsWith('http') ? photoUrl : `${(import.meta as any).env.API_URL?.replace('/api','') || ''}/uploads/${photoUrl.replace(/^\/uploads\//,'')}`}
+                    src={photoUrl.startsWith('http') ? photoUrl : `${apiOrigin}${photoUrl}`}
                     alt="Photo de profil"
                     className="w-full h-full object-cover"
                   />
@@ -449,6 +454,23 @@ export default function Account() {
             <div>
               <p className="text-sm font-medium">{t('account.photo_title')}</p>
               <p className="text-xs text-muted-foreground mt-0.5">{t('account.photo_desc')}</p>
+            </div>
+          </div>
+
+          <Separator />
+
+          <div>
+            <label className="text-sm font-medium text-muted-foreground">{t('account.roles_title')}</label>
+            <div className="mt-2 flex flex-wrap gap-2">
+              {userRoles.map(role => (
+                <Badge
+                  key={role}
+                  variant={role === 'admin' ? 'default' : 'secondary'}
+                  className="capitalize"
+                >
+                  {role}
+                </Badge>
+              ))}
             </div>
           </div>
 

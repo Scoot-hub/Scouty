@@ -10,8 +10,9 @@ import { Input } from '@/components/ui/input';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Badge } from '@/components/ui/badge';
 import { toast } from 'sonner';
-import { Search, Loader2, Crown, UserPlus, ExternalLink, Sparkles, Filter, Globe, Euro, Calendar, Crosshair } from 'lucide-react';
+import { Search, Loader2, Crown, UserPlus, ExternalLink, Sparkles, Filter, Globe, Euro, Calendar, Crosshair, Users } from 'lucide-react';
 import { translateCountry } from '@/types/player';
+import { useAuth } from '@/contexts/AuthContext';
 
 interface DiscoveredPlayer {
   name: string;
@@ -26,6 +27,24 @@ interface DiscoveredPlayer {
   marketValue: string;
 }
 
+interface CommunityPlayer {
+  id: string;
+  name: string;
+  club: string;
+  league: string;
+  nationality: string;
+  position: string;
+  zone: string;
+  age: number | null;
+  photo_url: string | null;
+  market_value: string | null;
+  current_level: number;
+  potential: number;
+  general_opinion: string;
+  transfermarkt_id: string | null;
+  scout: { name: string; photo: string | null; club: string | null };
+}
+
 const POSITIONS_FILTER = [
   { value: '', label: 'discover.all_positions' },
   { value: 'gardien', label: 'discover.pos_gk' },
@@ -35,15 +54,19 @@ const POSITIONS_FILTER = [
   { value: 'ailier', label: 'discover.pos_wing' },
 ];
 
+const API_BASE = (import.meta.env.API_URL || '/api').replace(/\/$/, '');
+
 export default function Discover() {
   const { t, i18n } = useTranslation();
   const navigate = useNavigate();
   const { data: isPremium } = useIsPremium();
+  const { user } = useAuth();
 
-  const [searchMode, setSearchMode] = useState<'player' | 'club'>('player');
+  const [searchMode, setSearchMode] = useState<'player' | 'club' | 'community'>('player');
   const [firstName, setFirstName] = useState('');
   const [lastName, setLastName] = useState('');
   const [clubSearch, setClubSearch] = useState('');
+  const [communitySearch, setCommunitySearch] = useState('');
   const [foundClubName, setFoundClubName] = useState('');
   const [position, setPosition] = useState('');
   const [ageMin, setAgeMin] = useState('');
@@ -52,6 +75,7 @@ export default function Discover() {
   const [valueMax, setValueMax] = useState('');
   const [nationality, setNationality] = useState('');
   const [results, setResults] = useState<DiscoveredPlayer[]>([]);
+  const [communityResults, setCommunityResults] = useState<CommunityPlayer[]>([]);
   const [filtersOpen, setFiltersOpen] = useState(true);
   const [addingPlayer, setAddingPlayer] = useState<string | null>(null);
 
@@ -104,8 +128,36 @@ export default function Discover() {
     },
   });
 
+  // Community search mutation
+  const communityMutation = useMutation({
+    mutationFn: async () => {
+      const session = (await supabase.auth.getSession()).data.session;
+      const params = new URLSearchParams();
+      if (communitySearch.trim()) params.set('q', communitySearch.trim());
+      if (position) params.set('position', position);
+      if (nationality) params.set('nationality', nationality);
+      if (ageMin) params.set('ageMin', ageMin);
+      if (ageMax) params.set('ageMax', ageMax);
+      const resp = await fetch(`${API_BASE}/community-players/search?${params}`, {
+        headers: { Authorization: `Bearer ${session?.access_token}` },
+      });
+      if (!resp.ok) throw new Error('Erreur recherche');
+      return resp.json() as Promise<{ players: CommunityPlayer[] }>;
+    },
+    onSuccess: (data) => {
+      setCommunityResults(data.players || []);
+      if ((data.players || []).length === 0) toast(t('discover.no_results'));
+    },
+    onError: (err: any) => { toast.error(err.message || t('common.error')); },
+  });
+
   const handleSearch = (e: React.FormEvent) => {
     e.preventDefault();
+    if (searchMode === 'community') {
+      if (!communitySearch.trim()) return;
+      communityMutation.mutate();
+      return;
+    }
     if (searchMode === 'club' ? !clubSearch.trim() : !query.trim()) return;
     searchMutation.mutate();
   };
@@ -122,6 +174,33 @@ export default function Discover() {
         market_value: player.marketValue,
         transfermarkt_id: player.tmId,
         photo_url: player.photo,
+      } as any);
+      if (error) throw error;
+      toast.success(t('discover.player_added', { name: player.name }));
+    } catch (err: any) {
+      toast.error(err.message || t('common.error'));
+    } finally {
+      setAddingPlayer(null);
+    }
+  };
+
+  const handleAddCommunityPlayer = async (player: CommunityPlayer) => {
+    setAddingPlayer(player.id);
+    try {
+      const { error } = await supabase.from('players').insert({
+        name: player.name,
+        club: player.club,
+        league: player.league,
+        nationality: player.nationality,
+        position: player.position,
+        zone: player.zone,
+        generation: player.age ? new Date().getFullYear() - player.age : 2000,
+        market_value: player.market_value,
+        transfermarkt_id: player.transfermarkt_id,
+        photo_url: player.photo_url,
+        current_level: player.current_level,
+        potential: player.potential,
+        general_opinion: player.general_opinion,
       } as any);
       if (error) throw error;
       toast.success(t('discover.player_added', { name: player.name }));
@@ -174,7 +253,7 @@ export default function Discover() {
             <div className="flex items-center gap-1 p-1 rounded-lg bg-muted w-fit">
               <button
                 type="button"
-                onClick={() => { setSearchMode('player'); setResults([]); setFoundClubName(''); }}
+                onClick={() => { setSearchMode('player'); setResults([]); setCommunityResults([]); setFoundClubName(''); }}
                 className={`px-3 py-1.5 rounded-md text-xs font-medium transition-all ${searchMode === 'player' ? 'bg-background shadow-sm text-foreground' : 'text-muted-foreground'}`}
               >
                 <UserPlus className="w-3.5 h-3.5 inline mr-1.5" />
@@ -182,11 +261,19 @@ export default function Discover() {
               </button>
               <button
                 type="button"
-                onClick={() => { setSearchMode('club'); setResults([]); setFoundClubName(''); }}
+                onClick={() => { setSearchMode('club'); setResults([]); setCommunityResults([]); setFoundClubName(''); }}
                 className={`px-3 py-1.5 rounded-md text-xs font-medium transition-all ${searchMode === 'club' ? 'bg-background shadow-sm text-foreground' : 'text-muted-foreground'}`}
               >
                 <Search className="w-3.5 h-3.5 inline mr-1.5" />
                 {t('discover.mode_club')}
+              </button>
+              <button
+                type="button"
+                onClick={() => { setSearchMode('community'); setResults([]); setCommunityResults([]); setFoundClubName(''); }}
+                className={`px-3 py-1.5 rounded-md text-xs font-medium transition-all ${searchMode === 'community' ? 'bg-background shadow-sm text-foreground' : 'text-muted-foreground'}`}
+              >
+                <Users className="w-3.5 h-3.5 inline mr-1.5" />
+                {t('discover.mode_community')}
               </button>
             </div>
 
@@ -209,6 +296,14 @@ export default function Discover() {
                     />
                   </div>
                 </>
+              ) : searchMode === 'community' ? (
+                <div className="flex-1">
+                  <Input
+                    value={communitySearch}
+                    onChange={e => setCommunitySearch(e.target.value)}
+                    placeholder={t('discover.community_placeholder')}
+                  />
+                </div>
               ) : (
                 <div className="flex-1">
                   <Input
@@ -218,8 +313,13 @@ export default function Discover() {
                   />
                 </div>
               )}
-              <Button type="submit" disabled={searchMutation.isPending || (searchMode === 'club' ? !clubSearch.trim() : !query.trim())}>
-                {searchMutation.isPending ? <Loader2 className="w-4 h-4 animate-spin mr-2" /> : <Search className="w-4 h-4 mr-2" />}
+              <Button type="submit" disabled={
+                (searchMode === 'community' ? communityMutation.isPending : searchMutation.isPending) ||
+                (searchMode === 'club' ? !clubSearch.trim() : searchMode === 'community' ? !communitySearch.trim() : !query.trim())
+              }>
+                {(searchMode === 'community' ? communityMutation.isPending : searchMutation.isPending)
+                  ? <Loader2 className="w-4 h-4 animate-spin mr-2" />
+                  : <Search className="w-4 h-4 mr-2" />}
                 {t('discover.search_btn')}
               </Button>
               <Button type="button" variant="outline" size="icon" onClick={() => setFiltersOpen(!filtersOpen)}>
@@ -277,100 +377,159 @@ export default function Discover() {
         </CardContent>
       </Card>
 
-      {/* Results */}
-      {searchMutation.isPending ? (
-        <div className="flex items-center justify-center py-16">
-          <Loader2 className="w-8 h-8 animate-spin text-primary" />
-        </div>
-      ) : results.length > 0 ? (
-        <div className="space-y-2">
-          <p className="text-sm text-muted-foreground">
-            {foundClubName
-              ? t('discover.club_squad', { club: foundClubName, count: results.length })
-              : t('discover.results_count', { count: results.length })}
-          </p>
-          <div className="grid gap-2">
-            {results.map((player, i) => (
-              <Card key={`${player.tmId || i}`} className="hover:border-primary/30 transition-colors">
-                <CardContent className="p-4 flex items-center gap-4">
-                  {/* Photo */}
-                  <div className="w-12 h-12 rounded-lg bg-muted overflow-hidden shrink-0">
-                    {player.photo ? (
-                      <img src={player.photo} alt={player.name} className="w-full h-full object-cover" />
-                    ) : (
-                      <div className="w-full h-full flex items-center justify-center text-lg font-bold text-muted-foreground">
-                        {player.name[0]}
-                      </div>
-                    )}
-                  </div>
-
-                  {/* Info */}
-                  <div className="flex-1 min-w-0">
-                    <div className="flex items-center gap-2">
-                      <h3 className="text-sm font-bold truncate">{player.name}</h3>
-                      {player.age && <span className="text-xs text-muted-foreground">{player.age} {t('discover.years')}</span>}
-                    </div>
-                    <div className="flex items-center gap-3 mt-0.5 text-xs text-muted-foreground">
-                      {player.position && <span>{player.position}</span>}
-                      {player.club && (
-                        <span className="flex items-center gap-1">
-                          {player.clubLogo && <img src={player.clubLogo} alt="" className="w-3.5 h-3.5" />}
-                          {player.club}
-                        </span>
-                      )}
-                      {player.nationality && <span>{translateCountry(player.nationality, i18n.language)}</span>}
-                    </div>
-                  </div>
-
-                  {/* Value */}
-                  {player.marketValue && (
-                    <Badge variant="outline" className="shrink-0 font-mono text-xs">
-                      {player.marketValue}
-                    </Badge>
-                  )}
-
-                  {/* Actions */}
-                  <div className="flex items-center gap-2 shrink-0">
-                    {player.tmPath && (
-                      <a
-                        href={`https://www.transfermarkt.fr${player.tmPath}`}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        className="p-2 rounded-lg hover:bg-muted transition-colors"
-                      >
-                        <ExternalLink className="w-4 h-4 text-muted-foreground" />
-                      </a>
-                    )}
-                    <Button
-                      size="sm"
-                      variant="outline"
-                      onClick={() => handleAddPlayer(player)}
-                      disabled={addingPlayer === (player.tmId || player.name)}
-                    >
-                      {addingPlayer === (player.tmId || player.name) ? (
-                        <Loader2 className="w-3.5 h-3.5 animate-spin mr-1" />
-                      ) : (
-                        <UserPlus className="w-3.5 h-3.5 mr-1" />
-                      )}
-                      {t('discover.add')}
-                    </Button>
-                  </div>
-                </CardContent>
-              </Card>
-            ))}
+      {/* Results — Community mode */}
+      {searchMode === 'community' ? (
+        communityMutation.isPending ? (
+          <div className="flex items-center justify-center py-16">
+            <Loader2 className="w-8 h-8 animate-spin text-primary" />
           </div>
-        </div>
-      ) : searchMutation.isSuccess ? (
-        <div className="text-center py-16">
-          <Search className="w-10 h-10 text-muted-foreground/30 mx-auto mb-3" />
-          <p className="text-sm text-muted-foreground">{t('discover.no_results')}</p>
-        </div>
+        ) : communityResults.length > 0 ? (
+          <div className="space-y-2">
+            <p className="text-sm text-muted-foreground">
+              {t('discover.community_results', { count: communityResults.length })}
+            </p>
+            <div className="grid gap-2">
+              {communityResults.map((player) => (
+                <Card key={player.id} className="hover:border-primary/30 transition-colors">
+                  <CardContent className="p-4 flex items-center gap-4">
+                    <div className="w-12 h-12 rounded-lg bg-muted overflow-hidden shrink-0">
+                      {player.photo_url ? (
+                        <img src={player.photo_url} alt={player.name} className="w-full h-full object-cover" />
+                      ) : (
+                        <div className="w-full h-full flex items-center justify-center text-lg font-bold text-muted-foreground">
+                          {player.name[0]}
+                        </div>
+                      )}
+                    </div>
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center gap-2">
+                        <h3 className="text-sm font-bold truncate">{player.name}</h3>
+                        {player.age && <span className="text-xs text-muted-foreground">{player.age} {t('discover.years')}</span>}
+                      </div>
+                      <div className="flex items-center gap-3 mt-0.5 text-xs text-muted-foreground">
+                        {player.position && <span>{player.position}</span>}
+                        {player.club && <span>{player.club}</span>}
+                        {player.nationality && <span>{translateCountry(player.nationality, i18n.language)}</span>}
+                      </div>
+                      <div className="flex items-center gap-2 mt-1">
+                        <span className="text-[10px] text-muted-foreground/60 flex items-center gap-1">
+                          <Users className="w-3 h-3" />
+                          {t('discover.scouted_by')} {player.scout.name}
+                          {player.scout.club && ` · ${player.scout.club}`}
+                        </span>
+                      </div>
+                    </div>
+                    <div className="flex items-center gap-2 shrink-0">
+                      {player.current_level > 0 && (
+                        <Badge variant="outline" className="text-[10px]">{player.current_level}/10</Badge>
+                      )}
+                      {player.market_value && (
+                        <Badge variant="outline" className="shrink-0 font-mono text-xs">{player.market_value}</Badge>
+                      )}
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        onClick={() => handleAddCommunityPlayer(player)}
+                        disabled={addingPlayer === player.id}
+                      >
+                        {addingPlayer === player.id ? (
+                          <Loader2 className="w-3.5 h-3.5 animate-spin mr-1" />
+                        ) : (
+                          <UserPlus className="w-3.5 h-3.5 mr-1" />
+                        )}
+                        {t('discover.add')}
+                      </Button>
+                    </div>
+                  </CardContent>
+                </Card>
+              ))}
+            </div>
+          </div>
+        ) : communityMutation.isSuccess ? (
+          <div className="text-center py-16">
+            <Search className="w-10 h-10 text-muted-foreground/30 mx-auto mb-3" />
+            <p className="text-sm text-muted-foreground">{t('discover.no_results')}</p>
+          </div>
+        ) : (
+          <div className="text-center py-16">
+            <Users className="w-10 h-10 text-muted-foreground/20 mx-auto mb-3" />
+            <p className="text-sm font-medium text-muted-foreground">{t('discover.community_empty_title')}</p>
+            <p className="text-xs text-muted-foreground/60 mt-1">{t('discover.community_empty_desc')}</p>
+          </div>
+        )
       ) : (
-        <div className="text-center py-16">
-          <Search className="w-10 h-10 text-muted-foreground/20 mx-auto mb-3" />
-          <p className="text-sm font-medium text-muted-foreground">{t('discover.empty_title')}</p>
-          <p className="text-xs text-muted-foreground/60 mt-1">{t('discover.empty_desc')}</p>
-        </div>
+        /* Results — TM mode (player/club) */
+        searchMutation.isPending ? (
+          <div className="flex items-center justify-center py-16">
+            <Loader2 className="w-8 h-8 animate-spin text-primary" />
+          </div>
+        ) : results.length > 0 ? (
+          <div className="space-y-2">
+            <p className="text-sm text-muted-foreground">
+              {foundClubName
+                ? t('discover.club_squad', { club: foundClubName, count: results.length })
+                : t('discover.results_count', { count: results.length })}
+            </p>
+            <div className="grid gap-2">
+              {results.map((player, i) => (
+                <Card key={`${player.tmId || i}`} className="hover:border-primary/30 transition-colors">
+                  <CardContent className="p-4 flex items-center gap-4">
+                    <div className="w-12 h-12 rounded-lg bg-muted overflow-hidden shrink-0">
+                      {player.photo ? (
+                        <img src={player.photo} alt={player.name} className="w-full h-full object-cover" />
+                      ) : (
+                        <div className="w-full h-full flex items-center justify-center text-lg font-bold text-muted-foreground">
+                          {player.name[0]}
+                        </div>
+                      )}
+                    </div>
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center gap-2">
+                        <h3 className="text-sm font-bold truncate">{player.name}</h3>
+                        {player.age && <span className="text-xs text-muted-foreground">{player.age} {t('discover.years')}</span>}
+                      </div>
+                      <div className="flex items-center gap-3 mt-0.5 text-xs text-muted-foreground">
+                        {player.position && <span>{player.position}</span>}
+                        {player.club && (
+                          <span className="flex items-center gap-1">
+                            {player.clubLogo && <img src={player.clubLogo} alt="" className="w-3.5 h-3.5" />}
+                            {player.club}
+                          </span>
+                        )}
+                        {player.nationality && <span>{translateCountry(player.nationality, i18n.language)}</span>}
+                      </div>
+                    </div>
+                    {player.marketValue && (
+                      <Badge variant="outline" className="shrink-0 font-mono text-xs">{player.marketValue}</Badge>
+                    )}
+                    <div className="flex items-center gap-2 shrink-0">
+                      {player.tmPath && (
+                        <a href={`https://www.transfermarkt.fr${player.tmPath}`} target="_blank" rel="noopener noreferrer" className="p-2 rounded-lg hover:bg-muted transition-colors">
+                          <ExternalLink className="w-4 h-4 text-muted-foreground" />
+                        </a>
+                      )}
+                      <Button size="sm" variant="outline" onClick={() => handleAddPlayer(player)} disabled={addingPlayer === (player.tmId || player.name)}>
+                        {addingPlayer === (player.tmId || player.name) ? <Loader2 className="w-3.5 h-3.5 animate-spin mr-1" /> : <UserPlus className="w-3.5 h-3.5 mr-1" />}
+                        {t('discover.add')}
+                      </Button>
+                    </div>
+                  </CardContent>
+                </Card>
+              ))}
+            </div>
+          </div>
+        ) : searchMutation.isSuccess ? (
+          <div className="text-center py-16">
+            <Search className="w-10 h-10 text-muted-foreground/30 mx-auto mb-3" />
+            <p className="text-sm text-muted-foreground">{t('discover.no_results')}</p>
+          </div>
+        ) : (
+          <div className="text-center py-16">
+            <Search className="w-10 h-10 text-muted-foreground/20 mx-auto mb-3" />
+            <p className="text-sm font-medium text-muted-foreground">{t('discover.empty_title')}</p>
+            <p className="text-xs text-muted-foreground/60 mt-1">{t('discover.empty_desc')}</p>
+          </div>
+        )
       )}
     </div>
   );
