@@ -17,7 +17,7 @@ export default defineConfig(({ mode }) => ({
     },
     headers: {
       "Content-Security-Policy":
-        "default-src 'self'; script-src 'self' 'unsafe-eval' 'unsafe-inline' https://*.cal.eu https://*.cal.com; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; img-src 'self' data: blob: https:; connect-src 'self' ws: wss: http://localhost:3001 https://*.cal.eu https://*.cal.com; frame-src 'self' https://*.cal.eu https://*.cal.com;",
+        "default-src 'self'; script-src 'self' 'unsafe-eval' 'unsafe-inline' https://*.cal.eu https://*.cal.com; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; img-src 'self' data: blob: https:; connect-src 'self' ws: wss: http://localhost:3001 https://*.cal.eu https://*.cal.com; frame-src 'self' https://*.cal.eu https://*.cal.com https://www.youtube.com https://youtube.com;",
     },
   },
   plugins: [react(), mode === "development" && componentTagger()].filter(Boolean),

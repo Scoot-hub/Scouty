@@ -42,7 +42,20 @@
       "Bash(curl -s -H \"User-Agent: Mozilla/5.0 \\(Windows NT 10.0; Win64; x64\\) AppleWebKit/537.36\" -H \"Accept: application/json\" \"https://prod-public-api.livescore.com/v1/api/app/scoreboard/soccer/1758430?MD=1&widgetId=1\" -o /dev/null -w \"%{http_code}\")",
       "Bash(curl -s -H \"User-Agent: Mozilla/5.0 \\(Windows NT 10.0; Win64; x64\\) AppleWebKit/537.36\" -H \"Accept: application/json\" \"https://prod-public-api.livescore.com/v1/api/app/lineups/soccer/1758430\")",
       "Bash(curl -s -H \"User-Agent: Mozilla/5.0 \\(Windows NT 10.0; Win64; x64\\) AppleWebKit/537.36\" -H \"Accept: application/json\" \"https://prod-public-api.livescore.com/v1/api/app/statistics/soccer/1758430\")",
-      "WebFetch(domain:www.transfermarkt.fr)"
+      "WebFetch(domain:www.transfermarkt.fr)",
+      "Read(//c/Users/commu/AppData/Local/Temp/claude/c--Users-commu-Scouty/5fba3130-5f4e-4622-be5f-4cf0a6e95c35/tasks/**)",
+      "Bash(curl -s \"https://www.thesportsdb.com/api/v1/json/3/searchteams.php?t=Paris%20Saint-Germain\")",
+      "Bash(curl -s \"https://www.thesportsdb.com/api/v1/json/3/searchteams.php?t=Paris%20SG\")",
+      "Bash(curl -s -o /dev/null -w \"%{http_code}\" http://localhost:3000/api/admin/organizations)",
+      "Bash(curl -s -o /dev/null -w \"%{http_code}\" http://localhost:5173/api/admin/organizations)",
+      "Bash(curl -s -o /tmp/tm_transfers.html -w '%{http_code}' -H 'User-Agent: Mozilla/5.0 \\(Windows NT 10.0; Win64; x64\\) AppleWebKit/537.36 \\(KHTML, like Gecko\\) Chrome/120.0.0.0 Safari/537.36' -H 'Accept-Language: fr-FR,fr;q=0.9' -H 'Accept: text/html,application/xhtml+xml' https://www.transfermarkt.fr/daam-foulon/transfers/spieler/503498)",
+      "Bash(grep -o '<tr[^>]*class=\"[^\"]*\\\\\\(odd\\\\|even\\\\\\)[^\"]*\"[^>]*>.\\\\{0,3000\\\\}</tr>' /tmp/tm_transfers.html)",
+      "Bash(curl -s -o /tmp/tm_bundle.js -w '%{http_code}' -H 'User-Agent: Mozilla/5.0 \\(Windows NT 10.0; Win64; x64\\) AppleWebKit/537.36 \\(KHTML, like Gecko\\) Chrome/120.0.0.0 Safari/537.36' https://tmsi.akamaized.net/js/svelte-components/player-transfer-history/bundle.js)",
+      "Bash(curl -s -H 'Accept: application/json' -H 'Accept-Language: fr-FR' https://tmapi-alpha.transfermarkt.technology/transfer/history/player/503498)",
+      "Bash(curl -s -w '\\\\nHTTP_CODE:%{http_code}' -H 'Accept: application/json' -H 'Accept-Language: fr-FR' https://tmapi-alpha.transfermarkt.technology/transfer/history/player/503498)",
+      "Bash(curl -s -H 'Accept: application/json' -H 'Accept-Language: fr-FR' 'https://tmapi-alpha.transfermarkt.technology/clubs?ids=53299,57623,88861,86076,15300,14094,15310,3718,59131,19739,515')",
+      "Bash(curl -s -w '\\\\nHTTP:%{http_code}' -H 'Accept: application/json' -H 'Accept-Language: fr-FR' 'https://tmapi-alpha.transfermarkt.technology/clubs?ids=53299,515')",
+      "Bash(curl -s -H 'Accept: application/json' -H 'Accept-Language: fr-FR' 'https://tmapi-alpha.transfermarkt.technology/clubs?ids[]=53299&ids[]=515')"
     ],
     "additionalDirectories": [
       "\\tmp"
