@@ -88,23 +88,6 @@ interface AdminOrg {
   members: OrgMember[];
 }
 
-interface OrgMember {
-  user_id: string;
-  email: string;
-  role: string;
-}
-
-interface AdminOrg {
-  id: string;
-  name: string;
-  type: string;
-  invite_code: string;
-  logo_url: string | null;
-  created_at: string;
-  created_by_email: string | null;
-  members: OrgMember[];
-}
-
 async function getAuthHeaders() {
   const session = (await supabase.auth.getSession()).data.session;
   return {
@@ -146,14 +129,6 @@ export default function Admin() {
   const [addRoleForUser, setAddRoleForUser] = useState<string | null>(null);
   const [addRoleValue, setAddRoleValue] = useState('');
 
-  // ── Orgs section state ──
-  const [orgSearch, setOrgSearch] = useState('');
-  const [expandedOrg, setExpandedOrg] = useState<string | null>(null);
-  const [addingMemberOrg, setAddingMemberOrg] = useState<string | null>(null);
-  const [addMemberEmail, setAddMemberEmail] = useState('');
-  const [addMemberRole, setAddMemberRole] = useState('member');
-  const [orgActionLoading, setOrgActionLoading] = useState<string | null>(null);
-
   // ── Shared data: users ──
   const { data: users = [], isLoading: usersLoading } = useQuery<AdminUser[]>({
     queryKey: ['admin-users'],
@@ -180,17 +155,6 @@ export default function Admin() {
     queryKey: ['admin-page-permissions'],
     queryFn: async () => {
       const res = await fetch(`${API_BASE}/admin/page-permissions`, { headers: await getAuthHeaders() });
-      if (!res.ok) throw new Error('Failed');
-      return res.json();
-    },
-    enabled: isAdmin === true,
-  });
-
-  // ── Orgs data ──
-  const { data: orgs = [], isLoading: orgsLoading } = useQuery<AdminOrg[]>({
-    queryKey: ['admin-organizations'],
-    queryFn: async () => {
-      const res = await fetch(`${API_BASE}/admin/organizations`, { headers: await getAuthHeaders() });
       if (!res.ok) throw new Error('Failed');
       return res.json();
     },
@@ -488,81 +452,6 @@ export default function Admin() {
     }
   };
 
-  // ── Orgs derived ──
-  const filteredOrgs = useMemo(() => {
-    if (!orgSearch.trim()) return orgs;
-    const q = orgSearch.toLowerCase();
-    return orgs.filter(o =>
-      o.name.toLowerCase().includes(q) ||
-      o.members.some(m => m.email.toLowerCase().includes(q))
-    );
-  }, [orgs, orgSearch]);
-
-  // ── Orgs handlers ──
-  const addMemberToOrg = async (orgId: string) => {
-    const email = addMemberEmail.trim();
-    if (!email) return;
-    setOrgActionLoading(`add-${orgId}`);
-    try {
-      const target = users.find(u => u.email.toLowerCase() === email.toLowerCase());
-      if (!target) {
-        toast.error(t('admin.org_user_not_found'));
-        return;
-      }
-      const res = await fetch(`${API_BASE}/admin/organizations/add-member`, {
-        method: 'POST',
-        headers: await getAuthHeaders(),
-        body: JSON.stringify({ organizationId: orgId, userId: target.id, role: addMemberRole }),
-      });
-      if (!res.ok) throw new Error();
-      toast.success(t('admin.org_member_added'));
-      setAddMemberEmail('');
-      setAddMemberRole('member');
-      setAddingMemberOrg(null);
-      queryClient.invalidateQueries({ queryKey: ['admin-organizations'] });
-    } catch {
-      toast.error(t('common.error'));
-    } finally {
-      setOrgActionLoading(null);
-    }
-  };
-
-  const removeMemberFromOrg = async (orgId: string, userId: string) => {
-    setOrgActionLoading(`rm-${orgId}-${userId}`);
-    try {
-      const res = await fetch(`${API_BASE}/admin/organizations/remove-member`, {
-        method: 'POST',
-        headers: await getAuthHeaders(),
-        body: JSON.stringify({ organizationId: orgId, userId }),
-      });
-      if (!res.ok) throw new Error();
-      toast.success(t('admin.org_member_removed'));
-      queryClient.invalidateQueries({ queryKey: ['admin-organizations'] });
-    } catch {
-      toast.error(t('common.error'));
-    } finally {
-      setOrgActionLoading(null);
-    }
-  };
-
-  const updateMemberOrgRole = async (orgId: string, userId: string, role: string) => {
-    setOrgActionLoading(`role-${orgId}-${userId}`);
-    try {
-      const res = await fetch(`${API_BASE}/admin/organizations/update-member-role`, {
-        method: 'POST',
-        headers: await getAuthHeaders(),
-        body: JSON.stringify({ organizationId: orgId, userId, role }),
-      });
-      if (!res.ok) throw new Error();
-      toast.success(t('admin.org_role_updated'));
-      queryClient.invalidateQueries({ queryKey: ['admin-organizations'] });
-    } catch {
-      toast.error(t('common.error'));
-    } finally {
-      setOrgActionLoading(null);
-    }
-  };
-
   // ── Guard ──
   if (adminLoading) return (
     <div className="flex items-center justify-center min-h-[40vh]">
@@ -596,7 +485,6 @@ export default function Admin() {
       {/* Section selector */}
       <Tabs defaultValue="users" className="w-full space-y-6">
         <TabsList className="w-full grid grid-cols-3">
-        <TabsList className="w-full grid grid-cols-3">
           <TabsTrigger value="users" className="gap-2">
             <Users className="w-4 h-4" />
             <span className="hidden sm:inline">{t('admin.tab_users')}</span>
@@ -604,10 +492,6 @@ export default function Admin() {
           <TabsTrigger value="roles" className="gap-2">
             <ShieldCheck className="w-4 h-4" />
             <span className="hidden sm:inline">{t('admin.tab_roles')}</span>
-          </TabsTrigger>
-          <TabsTrigger value="organizations" className="gap-2">
-            <Building2 className="w-4 h-4" />
-            <span className="hidden sm:inline">{t('admin.tab_orgs')}</span>
           </TabsTrigger>
           <TabsTrigger value="organizations" className="gap-2">
             <Building2 className="w-4 h-4" />
