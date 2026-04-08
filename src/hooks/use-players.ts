@@ -303,8 +303,15 @@ export function isSamePlayer(
   dbName: string,
   dbGen: number,
   importClub?: string,
-  dbClub?: string
+  dbClub?: string,
+  importTmId?: string,
+  dbTmId?: string
 ): boolean {
+  // Transfermarkt ID match is the strongest signal — definitively the same player
+  if (importTmId && dbTmId && importTmId === dbTmId) return true;
+  // Different TM IDs = definitively NOT the same player (prevents homonym merges)
+  if (importTmId && dbTmId && importTmId !== dbTmId) return false;
+
   const nA = normalizeName(importName);
   const nB = normalizeName(dbName);
   if (!nA || !nB) return false;
@@ -355,7 +362,7 @@ export function useImportPlayers() {
       // Fetch all existing players once for smart matching (scoped to current user)
       const { data: allExisting } = await supabase
         .from('players')
-        .select('id, name, generation, club');
+        .select('id, name, generation, club, transfermarkt_id');
       const existingPlayers = allExisting ?? [];
 
       let skippedCount = 0;
@@ -366,9 +373,10 @@ export function useImportPlayers() {
       for (let idx = 0; idx < players.length; idx++) {
         const { player, reports } = players[idx];
         try {
-          // Smart duplicate detection
+          // Smart duplicate detection (uses transfermarkt_id when available to avoid homonym merges)
+          const importTmId = (player as any).transfermarkt_id;
           const match = existingPlayers.find(ep =>
-            isSamePlayer(player.name, player.generation, ep.name, ep.generation, player.club, ep.club)
+            isSamePlayer(player.name, player.generation, ep.name, ep.generation, player.club, ep.club, importTmId, ep.transfermarkt_id)
           );
 
           let playerId: string;
@@ -420,6 +428,7 @@ export function useImportPlayers() {
               notes: player.notes,
               ts_report_published: player.ts_report_published,
               position_secondaire: (player as any).position_secondaire,
+              transfermarkt_id: (player as any).transfermarkt_id,
               user_id: userId,
             };
             for (const k of Object.keys(insertData)) {
@@ -435,7 +444,7 @@ export function useImportPlayers() {
               .single();
             if (error) throw error;
             playerId = newPlayer.id;
-            existingPlayers.push({ id: playerId, name: player.name, generation: player.generation, club: player.club });
+            existingPlayers.push({ id: playerId, name: player.name, generation: player.generation, club: player.club, transfermarkt_id: importTmId || null });
             importedCount++;
           }
 

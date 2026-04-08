@@ -11,28 +11,22 @@ import { useImportPlayers, usePlayers } from '@/hooks/use-players';
 import { useOperationBanner } from '@/contexts/OperationBannerContext';
 import { supabase } from '@/integrations/supabase/client';
 import { NATIONALITIES, type Position, type Zone } from '@/types/player';
-import { Building2, Loader2, Sparkles, Search } from 'lucide-react';
+import { Swords, Loader2, Sparkles, Search } from 'lucide-react';
 import { useToast } from '@/hooks/use-toast';
 
-interface TmClubPlayer {
+interface TmMatchPlayer {
   tmId: string;
   tmProfilePath: string;
   name: string;
-  photoUrl: string | null;
+  shirtNumber: number | null;
+  starter: boolean;
   position: string | null;
-  dateOfBirth: string | null;
-  generation: number | null;
-  nationality: string | null;
-  marketValue: string | null;
-  contractEnd: string | null;
 }
 
-function resolveNationality(raw: string): string {
-  if (!raw) return '';
-  const trimmed = raw.split(/\s{2,}/)[0].trim();
-  if (NATIONALITIES.includes(trimmed)) return trimmed;
-  const norm = (s: string) => s.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').trim();
-  return NATIONALITIES.find(n => norm(n) === norm(trimmed)) || trimmed;
+interface TmMatchTeam {
+  name: string;
+  logo: string | null;
+  players: TmMatchPlayer[];
 }
 
 function mapTmPosition(raw: string): Position | '' {
@@ -57,7 +51,7 @@ const POSITION_TO_ZONE: Record<Position, Zone> = {
   AD: 'Attaquant', AG: 'Attaquant', ATT: 'Attaquant',
 };
 
-export function ImportTmClubDialog({ externalOpen, onExternalOpenChange }: { externalOpen?: boolean; onExternalOpenChange?: (v: boolean) => void } = {}) {
+export function ImportTmMatchDialog({ externalOpen, onExternalOpenChange }: { externalOpen?: boolean; onExternalOpenChange?: (v: boolean) => void } = {}) {
   const { t } = useTranslation();
   const { toast } = useToast();
   const queryClient = useQueryClient();
@@ -72,10 +66,8 @@ export function ImportTmClubDialog({ externalOpen, onExternalOpenChange }: { ext
   const [tmUrl, setTmUrl] = useState('');
   const [loading, setLoading] = useState(false);
   const [importing, setImporting] = useState(false);
-  const [clubName, setClubName] = useState('');
-  const [clubLogo, setClubLogo] = useState('');
-  const [league, setLeague] = useState('');
-  const [players, setPlayers] = useState<TmClubPlayer[]>([]);
+  const [matchInfo, setMatchInfo] = useState<{ competition: string | null; score: string | null; matchDate: string | null } | null>(null);
+  const [teams, setTeams] = useState<TmMatchTeam[]>([]);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [search, setSearch] = useState('');
 
@@ -87,61 +79,71 @@ export function ImportTmClubDialog({ externalOpen, onExternalOpenChange }: { ext
     return set;
   }, [existingPlayers]);
 
+  const allPlayers = useMemo(() => {
+    return teams.flatMap(team =>
+      team.players.map(p => ({ ...p, teamName: team.name, teamLogo: team.logo }))
+    );
+  }, [teams]);
+
   const filteredPlayers = useMemo(() => {
-    if (!search) return players;
+    if (!search) return allPlayers;
     const s = search.toLowerCase();
-    return players.filter(p => p.name.toLowerCase().includes(s) || (p.position && p.position.toLowerCase().includes(s)));
-  }, [players, search]);
+    return allPlayers.filter(p =>
+      p.name.toLowerCase().includes(s) ||
+      (p.teamName && p.teamName.toLowerCase().includes(s)) ||
+      (p.position && p.position.toLowerCase().includes(s))
+    );
+  }, [allPlayers, search]);
 
   const reset = () => {
     setTmUrl('');
-    setPlayers([]);
+    setTeams([]);
+    setMatchInfo(null);
     setSelected(new Set());
-    setClubName('');
-    setClubLogo('');
-    setLeague('');
     setSearch('');
     setLoading(false);
     setImporting(false);
   };
 
-  const handleLoadSquad = async () => {
+  const handleLoadMatch = async () => {
     const url = tmUrl.trim();
     if (!url) return;
-    if (!url.includes('transfermarkt') || !url.includes('/verein/')) {
-      toast({ title: t('common.error'), description: t('player_form.tm_club_url_invalid'), variant: 'destructive' });
+    if (!url.includes('transfermarkt') || !url.includes('/spielbericht/')) {
+      toast({ title: t('common.error'), description: t('player_form.tm_match_url_invalid'), variant: 'destructive' });
       return;
     }
 
     setLoading(true);
     try {
-      const { data, error } = await supabase.functions.invoke('fetch-tm-club', {
+      const { data, error } = await supabase.functions.invoke('fetch-tm-match', {
         body: { tmUrl: url },
       });
 
       if (error || !data?.success) {
-        toast({ title: t('common.error'), description: t('player_form.tm_club_load_failed'), variant: 'destructive' });
+        toast({ title: t('common.error'), description: t('player_form.tm_match_load_failed'), variant: 'destructive' });
         return;
       }
 
-      setClubName(data.clubName || '');
-      setClubLogo(data.clubLogo || '');
-      setLeague(data.league || '');
-      setPlayers(data.players || []);
+      setMatchInfo({ competition: data.competition, score: data.score, matchDate: data.matchDate });
+      setTeams(data.teams || []);
+
       // Auto-select all new players (not already in DB)
       const autoSelected = new Set<string>();
-      for (const p of (data.players || [])) {
-        if (!existingNames.has(p.name.toLowerCase().trim())) {
-          autoSelected.add(p.tmId);
+      for (const team of (data.teams || [])) {
+        for (const p of team.players) {
+          if (!existingNames.has(p.name.toLowerCase().trim())) {
+            autoSelected.add(p.tmId);
+          }
         }
       }
       setSelected(autoSelected);
 
-      if (!data.players?.length) {
-        toast({ title: t('player_form.tm_club_no_players'), variant: 'destructive' });
+      const totalPlayers = (data.teams || []).reduce((acc: number, t: TmMatchTeam) => acc + t.players.length, 0);
+      if (!totalPlayers) {
+        toast({ title: t('player_form.tm_match_no_players'), variant: 'destructive' });
       }
     } catch (err: any) {
-      toast({ title: t('common.error'), description: err.message || t('player_form.tm_club_load_failed'), variant: 'destructive' });
+      toast({ title: t('common.error'), description: err.message || t('player_form.tm_match_load_failed'), variant: 'destructive' });
     } finally {
       setLoading(false);
     }
@@ -165,11 +167,11 @@ export function ImportTmClubDialog({ externalOpen, onExternalOpenChange }: { ext
   };
 
   const handleImport = async () => {
-    const toImport = players.filter(p => selected.has(p.tmId));
+    const toImport = allPlayers.filter(p => selected.has(p.tmId));
     if (toImport.length === 0) return;
 
     setImporting(true);
-    const opId = `tm-club-import-${Date.now()}`;
+    const opId = `tm-match-import-${Date.now()}`;
     addOperation({ id: opId, type: 'import', label: t('banner.import_label', { count: toImport.length }), current: 0, total: toImport.length });
 
     try {
@@ -177,22 +179,20 @@ export function ImportTmClubDialog({ externalOpen, onExternalOpenChange }: { ext
         toImport.map(p => {
           const pos = p.position ? mapTmPosition(p.position) : '';
           const zone = pos ? (POSITION_TO_ZONE[pos] || '') : '';
-          const nationality = p.nationality ? resolveNationality(p.nationality) : '';
           return {
             player: {
               name: p.name,
-              photo_url: p.photoUrl || undefined,
-              generation: p.generation || 2000,
-              nationality,
+              photo_url: undefined,
+              generation: 2000,
+              nationality: '',
               foot: '' as any,
-              club: clubName,
-              league,
+              club: p.teamName || '',
+              league: '',
               zone,
               position: (pos || 'MC') as Position,
               current_level: 0,
               potential: 0,
               general_opinion: 'À revoir' as const,
-              contract_end: p.contractEnd || undefined,
               ts_report_published: false,
               transfermarkt_id: p.tmId || undefined,
             },
@@ -209,7 +209,7 @@ export function ImportTmClubDialog({ externalOpen, onExternalOpenChange }: { ext
 
       // Background enrichment with TM URLs for each player
       if (result.enrichQueue?.length) {
-        const enrichOpId = `enrich-tm-club-${Date.now()}`;
+        const enrichOpId = `enrich-tm-match-${Date.now()}`;
         const queue = result.enrichQueue;
         addOperation({ id: enrichOpId, type: 'enrichment', label: t('banner.enrichment_label', { count: queue.length }), current: 0, total: queue.length });
 
@@ -236,12 +236,12 @@ export function ImportTmClubDialog({ externalOpen, onExternalOpenChange }: { ext
       }
 
       toast({
-        title: t('player_form.tm_club_import_success', { count: result.importedCount + result.updatedCount, club: clubName }),
+        title: t('player_form.tm_match_import_success', { count: result.importedCount + result.updatedCount }),
       });
       setOpen(false);
       reset();
     } catch (err) {
-      console.error('TM club import error:', err);
+      console.error('TM match import error:', err);
       completeOperation(opId, { errorCount: toImport.length });
       toast({ title: t('common.error'), description: (err as Error)?.message, variant: 'destructive' });
     } finally {
@@ -254,8 +254,8 @@ export function ImportTmClubDialog({ externalOpen, onExternalOpenChange }: { ext
       {!controlled && (
         <DialogTrigger asChild>
           <Button variant="outline" size="sm" className="rounded-xl gap-1.5">
-            <Building2 className="w-4 h-4" />
-            {t('player_form.tm_club_import_title')}
+            <Swords className="w-4 h-4" />
+            {t('player_form.tm_match_import_title')}
           </Button>
         </DialogTrigger>
       )}
@@ -263,9 +263,9 @@ export function ImportTmClubDialog({ externalOpen, onExternalOpenChange }: { ext
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2">
             <Sparkles className="w-5 h-5 text-primary" />
-            {t('player_form.tm_club_import_title')}
+            {t('player_form.tm_match_import_title')}
           </DialogTitle>
-          <p className="text-sm text-muted-foreground">{t('player_form.tm_club_import_desc')}</p>
+          <p className="text-sm text-muted-foreground">{t('player_form.tm_match_import_desc')}</p>
         </DialogHeader>
 
         {/* URL input */}
@@ -273,36 +273,45 @@ export function ImportTmClubDialog({ externalOpen, onExternalOpenChange }: { ext
           <Input
             value={tmUrl}
             onChange={e => setTmUrl(e.target.value)}
-            placeholder="https://www.transfermarkt.fr/club/kader/verein/123"
+            placeholder="https://www.transfermarkt.fr/spielbericht/index/spielbericht/..."
             className="flex-1 text-sm"
             disabled={loading || importing}
-            onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); handleLoadSquad(); } }}
+            onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); handleLoadMatch(); } }}
           />
           <Button
             size="sm"
-            onClick={handleLoadSquad}
+            onClick={handleLoadMatch}
             disabled={loading || !tmUrl.trim() || importing}
             className="shrink-0 gap-1.5"
           >
-            {loading ? <Loader2 className="w-4 h-4 animate-spin" /> : <Building2 className="w-4 h-4" />}
-            {loading ? t('player_form.tm_club_loading') : t('player_form.tm_club_import_btn')}
+            {loading ? <Loader2 className="w-4 h-4 animate-spin" /> : <Swords className="w-4 h-4" />}
+            {loading ? t('player_form.tm_match_loading') : t('player_form.tm_match_import_btn')}
           </Button>
         </div>
 
-        {/* Squad list */}
-        {players.length > 0 && (
+        {/* Match info + Player list */}
+        {teams.length > 0 && (
           <div className="flex flex-col gap-3">
-            {/* Club header */}
-            <div className="flex items-center gap-3">
-              {clubLogo && <img src={clubLogo} alt="" className="w-8 h-8 object-contain" />}
-              <div>
-                <p className="font-semibold">{clubName}</p>
-                {league && <p className="text-xs text-muted-foreground">{league}</p>}
+            {/* Match header */}
+            <div className="flex items-center gap-3 justify-center">
+              <div className="flex items-center gap-2">
+                {teams[0]?.logo && <img src={teams[0].logo} alt="" className="w-8 h-8 object-contain" />}
+                <span className="font-semibold text-sm">{teams[0]?.name}</span>
               </div>
-              <Badge variant="secondary" className="ml-auto">
-                {t('player_form.tm_club_players_found', { count: players.length })}
-              </Badge>
+              <div className="text-center">
+                {matchInfo?.score && <span className="font-bold text-lg">{matchInfo.score}</span>}
+                {matchInfo?.competition && <p className="text-[10px] text-muted-foreground">{matchInfo.competition}</p>}
+                {matchInfo?.matchDate && <p className="text-[10px] text-muted-foreground">{matchInfo.matchDate}</p>}
+              </div>
+              <div className="flex items-center gap-2">
+                <span className="font-semibold text-sm">{teams[1]?.name}</span>
+                {teams[1]?.logo && <img src={teams[1].logo} alt="" className="w-8 h-8 object-contain" />}
+              </div>
             </div>
+
+            <Badge variant="secondary" className="self-center">
+              {t('player_form.tm_club_players_found', { count: allPlayers.length })}
+            </Badge>
 
             {/* Search + select all */}
             <div className="flex items-center gap-2">
@@ -320,44 +329,53 @@ export function ImportTmClubDialog({ externalOpen, onExternalOpenChange }: { ext
               </Button>
             </div>
 
-            {/* Player list */}
+            {/* Player list grouped by team */}
             <ScrollArea className="border rounded-lg max-h-[50vh]">
               <div className="divide-y">
-                {filteredPlayers.map(p => {
-                  const alreadyExists = existingNames.has(p.name.toLowerCase().trim());
+                {teams.map((team, ti) => {
+                  const teamPlayers = filteredPlayers.filter(p => p.teamName === team.name);
+                  if (teamPlayers.length === 0) return null;
                   return (
-                    <label
-                      key={p.tmId}
-                      className={`flex items-center gap-3 px-3 py-2 cursor-pointer hover:bg-muted/50 transition-colors ${alreadyExists ? 'opacity-60' : ''}`}
-                    >
-                      <Checkbox
-                        checked={selected.has(p.tmId)}
-                        onCheckedChange={() => toggleSelect(p.tmId)}
-                      />
-                      {p.photoUrl ? (
-                        <img src={p.photoUrl} alt="" className="w-8 h-8 rounded-full object-cover bg-muted" />
-                      ) : (
-                        <div className="w-8 h-8 rounded-full bg-muted flex items-center justify-center text-xs font-bold text-muted-foreground">
-                          {p.name.charAt(0)}
-                        </div>
-                      )}
-                      <div className="flex-1 min-w-0">
-                        <div className="flex items-center gap-2">
-                          <span className="text-sm font-medium truncate">{p.name}</span>
-                          {alreadyExists && (
-                            <Badge variant="outline" className="text-[10px] shrink-0">{t('player_form.tm_club_already_exists')}</Badge>
-                          )}
-                        </div>
-                        <div className="flex items-center gap-2 text-xs text-muted-foreground">
-                          {p.position && <span>{p.position}</span>}
-                          {p.generation && <span>{p.generation}</span>}
-                          {p.nationality && <span>{p.nationality}</span>}
-                        </div>
+                    <div key={ti}>
+                      <div className="flex items-center gap-2 px-3 py-1.5 bg-muted/50 sticky top-0 z-10">
+                        {team.logo && <img src={team.logo} alt="" className="w-5 h-5 object-contain" />}
+                        <span className="text-xs font-semibold">{team.name}</span>
+                        <span className="text-[10px] text-muted-foreground">({teamPlayers.length})</span>
                       </div>
-                      {p.marketValue && (
-                        <span className="text-xs font-medium text-muted-foreground shrink-0">{p.marketValue}</span>
-                      )}
-                    </label>
+                      {teamPlayers.map(p => {
+                        const alreadyExists = existingNames.has(p.name.toLowerCase().trim());
+                        return (
+                          <label
+                            key={p.tmId}
+                            className={`flex items-center gap-3 px-3 py-2 cursor-pointer hover:bg-muted/50 transition-colors ${alreadyExists ? 'opacity-60' : ''}`}
+                          >
+                            <Checkbox
+                              checked={selected.has(p.tmId)}
+                              onCheckedChange={() => toggleSelect(p.tmId)}
+                            />
+                            <div className="w-6 text-center">
+                              {p.shirtNumber != null && (
+                                <span className="text-xs font-mono text-muted-foreground">{p.shirtNumber}</span>
+                              )}
+                            </div>
+                            <div className="flex-1 min-w-0">
+                              <div className="flex items-center gap-2">
+                                <span className="text-sm font-medium truncate">{p.name}</span>
+                                {p.starter && (
+                                  <Badge variant="default" className="text-[10px] shrink-0 px-1.5 py-0">{t('player_form.tm_match_starter')}</Badge>
+                                )}
+                                {alreadyExists && (
+                                  <Badge variant="outline" className="text-[10px] shrink-0">{t('player_form.tm_club_already_exists')}</Badge>
+                                )}
+                              </div>
+                              {p.position && (
+                                <span className="text-xs text-muted-foreground">{p.position}</span>
+                              )}
+                            </div>
+                          </label>
+                        );
+                      })}
+                    </div>
                   );
                 })}
               </div>

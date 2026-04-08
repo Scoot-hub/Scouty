@@ -13,21 +13,22 @@ import { FlagIcon } from '@/components/ui/flag-icon';
 import { useCustomFields } from '@/hooks/use-custom-fields';
 import { PlayerAvatar } from '@/components/ui/player-avatar';
 import { ClubBadge } from '@/components/ui/club-badge';
+import { resolveClubName } from '@/lib/thesportsdb';
 import { ClubLink } from '@/components/ui/club-link';
 import { LeagueLogo } from '@/components/ui/league-logo';
 import { Card, CardContent } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
 import { Checkbox } from '@/components/ui/checkbox';
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from '@/components/ui/dialog';
 import { ImportPlayersDialog } from '@/components/ImportPlayersDialog';
 import { ImportTmClubDialog } from '@/components/ImportTmClubDialog';
+import { ImportTmMatchDialog } from '@/components/ImportTmMatchDialog';
 import { AddToWatchlistDialog } from '@/components/AddToWatchlistDialog';
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from '@/components/ui/dropdown-menu';
 import { supabase } from '@/integrations/supabase/client';
-import { Search, RotateCcw, Users, RefreshCw, ChevronDown, ChevronUp, SlidersHorizontal, Download, X, LayoutGrid, List, Building2, Eye, Zap, Check, Sparkles, Copy, Trash2, FileText, Upload, FilePlus } from 'lucide-react';
+import { Search, RotateCcw, Users, RefreshCw, ChevronDown, ChevronUp, SlidersHorizontal, Download, X, LayoutGrid, List, Building2, Swords, Eye, Zap, Check, Sparkles, Copy, Trash2, FileText, Upload, FilePlus, ClipboardList } from 'lucide-react';
 import { toast } from 'sonner';
 import { useOperationBanner } from '@/contexts/OperationBannerContext';
 
@@ -48,6 +49,7 @@ export default function Players() {
   const [opinions, setOpinions] = useState<Opinion[]>(() => loadFilters().opinions ?? []);
   const [positions, setPositions] = useState<Position[]>(() => loadFilters().positions ?? []);
   const [selectedLeagues, setSelectedLeagues] = useState<string[]>(() => loadFilters().selectedLeagues ?? []);
+  const [selectedClubs, setSelectedClubs] = useState<string[]>(() => loadFilters().selectedClubs ?? []);
   const [selectedRoles, setSelectedRoles] = useState<string[]>(() => loadFilters().selectedRoles ?? []);
   const [ageMin, setAgeMin] = useState<string>(() => loadFilters().ageMin ?? '');
   const [ageMax, setAgeMax] = useState<string>(() => loadFilters().ageMax ?? '');
@@ -61,9 +63,13 @@ export default function Players() {
   const [posDropdownOpen, setPosDropdownOpen] = useState(false);
   const [leagueSearch, setLeagueSearch] = useState('');
   const [leagueDropdownOpen, setLeagueDropdownOpen] = useState(false);
+  const [clubSearch, setClubSearch] = useState('');
+  const [clubDropdownOpen, setClubDropdownOpen] = useState(false);
   const [opinionDropdownOpen, setOpinionDropdownOpen] = useState(false);
   const [roleDropdownOpen, setRoleDropdownOpen] = useState(false);
   const [contractDropdownOpen, setContractDropdownOpen] = useState(false);
+  const [sortDropdownOpen, setSortDropdownOpen] = useState(false);
+  const sortRef = useRef<HTMLDivElement>(null);
   const [extraFiltersOpen] = useState<boolean>(() => loadFilters().extraFiltersOpen ?? false);
   const [sort, setSort] = useState<SortOption>(() => loadFilters().sort ?? 'name');
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
@@ -77,6 +83,16 @@ export default function Players() {
   const [visibleCount, setVisibleCount] = useState(PAGE_SIZE);
   const [debouncedSearch, setDebouncedSearch] = useState(search);
 
+  // Close sort dropdown on outside click
+  useEffect(() => {
+    if (!sortDropdownOpen) return;
+    const handler = (e: MouseEvent) => {
+      if (sortRef.current && !sortRef.current.contains(e.target as Node)) setSortDropdownOpen(false);
+    };
+    document.addEventListener('mousedown', handler);
+    return () => document.removeEventListener('mousedown', handler);
+  }, [sortDropdownOpen]);
+
   // Debounce search to avoid filtering on every keystroke
   useEffect(() => {
     const timer = setTimeout(() => setDebouncedSearch(search), 250);
@@ -86,15 +102,15 @@ export default function Players() {
   // Reset visible count when filters change
   useEffect(() => {
     setVisibleCount(PAGE_SIZE);
-  }, [debouncedSearch, opinions, positions, selectedLeagues, selectedRoles, ageMin, ageMax, levelMin, levelMax, potMin, potMax, selectedContractRanges, selectedTasks, sort]);
+  }, [debouncedSearch, opinions, positions, selectedLeagues, selectedClubs, selectedRoles, ageMin, ageMax, levelMin, levelMax, potMin, potMax, selectedContractRanges, selectedTasks, sort]);
 
   useEffect(() => {
     sessionStorage.setItem(FILTER_KEY, JSON.stringify({
-      search, opinions, positions, selectedLeagues, selectedRoles,
+      search, opinions, positions, selectedLeagues, selectedClubs, selectedRoles,
       ageMin, ageMax, levelMin, levelMax, potMin, potMax,
       selectedContractRanges, selectedTasks, sort, filtersOpen, extraFiltersOpen, viewMode,
     }));
-  }, [search, opinions, positions, selectedLeagues, selectedRoles, ageMin, ageMax, levelMin, levelMax, potMin, potMax, selectedContractRanges, selectedTasks, sort, filtersOpen, extraFiltersOpen, viewMode]);
+  }, [search, opinions, positions, selectedLeagues, selectedClubs, selectedRoles, ageMin, ageMax, levelMin, levelMax, potMin, potMax, selectedContractRanges, selectedTasks, sort, filtersOpen, extraFiltersOpen, viewMode]);
 
   const queryClient = useQueryClient();
   const { data: players = [], isLoading, refetch } = usePlayers();
@@ -116,6 +132,7 @@ export default function Players() {
   const [exporting, setExporting] = useState(false);
   const [watchlistDialogOpen, setWatchlistDialogOpen] = useState(false);
   const [importClubOpen, setImportClubOpen] = useState(false);
+  const [importMatchOpen, setImportMatchOpen] = useState(false);
   const [orgDialogOpen, setOrgDialogOpen] = useState(false);
   const [bulkReportOpen, setBulkReportOpen] = useState(false);
   const [bulkReportDate, setBulkReportDate] = useState(new Date().toISOString().slice(0, 10));
@@ -124,6 +141,9 @@ export default function Players() {
   const [bulkReportLink, setBulkReportLink] = useState('');
   const [bulkReportFile, setBulkReportFile] = useState<File | null>(null);
   const [bulkReportSubmitting, setBulkReportSubmitting] = useState(false);
+  const [bulkTaskOpen, setBulkTaskOpen] = useState(false);
+  const [bulkTaskValue, setBulkTaskValue] = useState<PlayerTask | ''>('');
+  const [bulkTaskSubmitting, setBulkTaskSubmitting] = useState(false);
 
   const autoFetchedRef = useRef(!!sessionStorage.getItem('photos_fetched_session'));
   useEffect(() => {
@@ -163,6 +183,26 @@ export default function Players() {
     }
     return Array.from(seen.values()).sort((a, b) => a.localeCompare(b, 'fr'));
   }, [players, resolveLeague]);
+
+  const resolveClub = useCallback((club: string) => resolveClubName(club), []);
+
+  const NO_CLUB = t('players.no_club');
+  const EXCLUDED_CLUB_RE = /^_?retired.*|without club|sans club|free agent|no club|unknown|inconnu|\d+$/i;
+
+  const availableClubs = useMemo(() => {
+    const seen = new Map<string, string>();
+    let hasNoClub = false;
+    for (const p of players) {
+      const raw = p.club?.trim();
+      if (!raw || EXCLUDED_CLUB_RE.test(raw)) { hasNoClub = true; continue; }
+      const canonical = resolveClub(raw);
+      const key = canonical.toLowerCase();
+      if (!seen.has(key)) seen.set(key, canonical);
+    }
+    const sorted = Array.from(seen.values()).sort((a, b) => a.localeCompare(b, 'fr'));
+    if (hasNoClub) sorted.unshift(NO_CLUB);
+    return sorted;
+  }, [players, resolveClub, NO_CLUB]);
 
   const availableRoles = useMemo(() => {
     const roles = new Set(players.filter(p => p.role).map(p => p.role!));
@@ -330,6 +370,32 @@ export default function Players() {
     }
   };
 
+  const handleBulkSetTask = async () => {
+    const playerIds = Array.from(selectedIds);
+    if (playerIds.length === 0) return;
+    setBulkTaskSubmitting(true);
+    try {
+      const taskValue = bulkTaskValue || null;
+      let successCount = 0;
+      for (const pid of playerIds) {
+        const { error } = await supabase.from('players').update({ task: taskValue } as any).eq('id', pid);
+        if (error) console.error('Bulk task update error for player', pid, error);
+        else successCount++;
+      }
+      if (successCount === 0) throw new Error('All updates failed');
+      toast.success(t('players.bulk_task_success', { count: successCount }));
+      setBulkTaskOpen(false);
+      setBulkTaskValue('');
+      setSelectedIds(new Set());
+      refetch();
+    } catch (err) {
+      console.error('Bulk set task error:', err);
+      toast.error(t('common.error'));
+    } finally {
+      setBulkTaskSubmitting(false);
+    }
+  };
+
   const toggleSelect = (id: string) => {
     setSelectedIds(prev => { const next = new Set(prev); if (next.has(id)) next.delete(id); else next.add(id); return next; });
   };
@@ -362,6 +428,15 @@ export default function Players() {
     if (opinions.length) result = result.filter(p => opinions.includes(p.general_opinion));
     if (positions.length) result = result.filter(p => positions.includes(p.position));
     if (selectedLeagues.length) result = result.filter(p => selectedLeagues.includes(resolveLeague(p)));
+    if (selectedClubs.length) {
+      const wantsNoClub = selectedClubs.includes(NO_CLUB);
+      const selectedSet = new Set(selectedClubs.filter(c => c !== NO_CLUB).map(c => c.toLowerCase()));
+      result = result.filter(p => {
+        const raw = p.club?.trim();
+        if (!raw || EXCLUDED_CLUB_RE.test(raw)) return wantsNoClub;
+        return selectedSet.has(resolveClub(raw).toLowerCase());
+      });
+    }
     if (selectedRoles.length) result = result.filter(p => p.role && selectedRoles.includes(p.role));
     const ageMinN = ageMin !== '' ? parseInt(ageMin) : null;
     const ageMaxN = ageMax !== '' ? parseInt(ageMax) : null;
@@ -411,7 +486,20 @@ export default function Players() {
     // Players with news (non-null has_news) always on top
     result.sort((a, b) => (b.has_news ? 1 : 0) - (a.has_news ? 1 : 0));
     return result;
-  }, [players, debouncedSearch, opinions, positions, selectedLeagues, selectedRoles, ageMin, ageMax, levelMin, levelMax, potMin, potMax, selectedContractRanges, selectedTasks, sort, searchParams]);
+  }, [players, debouncedSearch, opinions, positions, selectedLeagues, selectedClubs, selectedRoles, ageMin, ageMax, levelMin, levelMax, potMin, potMax, selectedContractRanges, selectedTasks, sort, searchParams]);
+
+  const newsCount = useMemo(() => filtered.filter(p => p.has_news).length, [filtered]);
+
+  const dismissAllNews = useCallback(() => {
+    const idsWithNews = filtered.filter(p => p.has_news).map(p => p.id);
+    if (idsWithNews.length === 0) return;
+    // Optimistic update
+    queryClient.setQueryData<any[]>(['players'], (old) =>
+      old?.map(p => idsWithNews.includes(p.id) ? { ...p, has_news: null } : p)
+    );
+    // Persist to DB
+    supabase.from('players').update({ has_news: null } as any).in('id', idsWithNews).then();
+  }, [filtered, queryClient]);
 
   const playersToExport = selectedIds.size > 0 ? filtered.filter(p => selectedIds.has(p.id)) : filtered;
 
@@ -494,7 +582,7 @@ export default function Players() {
 
   const resetFilters = () => {
     setSearch(''); setOpinions([]); setPositions([]);
-    setSelectedLeagues([]); setSelectedRoles([]);
+    setSelectedLeagues([]); setSelectedClubs([]); setSelectedRoles([]);
     setAgeMin(''); setAgeMax('');
     setLevelMin(''); setLevelMax('');
     setPotMin(''); setPotMax('');
@@ -502,7 +590,7 @@ export default function Players() {
   };
 
   const activeFilterCount =
-    [opinions, positions, selectedLeagues, selectedRoles, selectedContractRanges, selectedTasks].reduce((acc, arr) => acc + arr.length, 0)
+    [opinions, positions, selectedLeagues, selectedClubs, selectedRoles, selectedContractRanges, selectedTasks].reduce((acc, arr) => acc + arr.length, 0)
     + (ageMin || ageMax ? 1 : 0)
     + (levelMin || levelMax ? 1 : 0)
     + (potMin || potMax ? 1 : 0);
@@ -519,9 +607,9 @@ export default function Players() {
 
   return (
     <div className="max-w-7xl mx-auto">
-      <div className="mb-6 flex items-center justify-between">
+      <div className="mb-6 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
         <div className="flex items-center gap-3">
-          <div className="w-10 h-10 rounded-xl bg-primary/10 flex items-center justify-center">
+          <div className="w-10 h-10 rounded-xl bg-primary/10 flex items-center justify-center shrink-0">
             <Users className="w-5 h-5 text-primary" />
           </div>
           <div>
@@ -531,13 +619,13 @@ export default function Players() {
             </p>
           </div>
         </div>
-        <div className="flex items-center gap-2">
-          <DropdownMenu>
+        <div className="flex items-center gap-2 shrink-0">
+          <DropdownMenu modal={false}>
             <DropdownMenuTrigger asChild>
               <Button size="sm" className="rounded-xl">
-                <Users className="w-4 h-4 mr-1.5" />
-                {t('players.add_player')}
-                <ChevronDown className="w-3.5 h-3.5 ml-1.5" />
+                <Users className="w-4 h-4 sm:mr-1.5" />
+                <span className="hidden sm:inline">{t('players.add_player')}</span>
+                <ChevronDown className="w-3.5 h-3.5 ml-1" />
               </Button>
             </DropdownMenuTrigger>
             <DropdownMenuContent align="end">
@@ -551,14 +639,18 @@ export default function Players() {
                 <Building2 className="w-4 h-4 mr-2" />
                 {t('players.add_club')}
               </DropdownMenuItem>
+              <DropdownMenuItem onClick={() => setImportMatchOpen(true)}>
+                <Swords className="w-4 h-4 mr-2" />
+                {t('players.add_match')}
+              </DropdownMenuItem>
             </DropdownMenuContent>
           </DropdownMenu>
-          <DropdownMenu>
+          <DropdownMenu modal={false}>
             <DropdownMenuTrigger asChild>
               <Button variant="outline" size="sm" className="rounded-xl">
-                <Zap className="w-4 h-4 mr-1.5" />
-                {t('players.bulk_action')}
-                <ChevronDown className="w-3.5 h-3.5 ml-1.5" />
+                <Zap className="w-4 h-4 sm:mr-1.5" />
+                <span className="hidden sm:inline">{t('players.bulk_action')}</span>
+                <ChevronDown className="w-3.5 h-3.5 ml-1" />
               </Button>
             </DropdownMenuTrigger>
             <DropdownMenuContent align="end" className="w-56">
@@ -587,6 +679,10 @@ export default function Players() {
                   <DropdownMenuItem onClick={() => setBulkReportOpen(true)}>
                     <FilePlus className="w-4 h-4 mr-2" />
                     {t('players.bulk_report', { count: selectedIds.size })}
+                  </DropdownMenuItem>
+                  <DropdownMenuItem onClick={() => setBulkTaskOpen(true)}>
+                    <ClipboardList className="w-4 h-4 mr-2" />
+                    {t('players.bulk_task', { count: selectedIds.size })}
                   </DropdownMenuItem>
                   <DropdownMenuSeparator />
                 </>
@@ -730,11 +826,45 @@ export default function Players() {
             </DialogContent>
           </Dialog>
 
+          {/* Bulk task dialog */}
+          <Dialog open={bulkTaskOpen} onOpenChange={setBulkTaskOpen}>
+            <DialogContent>
+              <DialogHeader>
+                <DialogTitle>{t('players.bulk_task_title', { count: selectedIds.size })}</DialogTitle>
+                <DialogDescription>{t('players.bulk_task_desc')}</DialogDescription>
+              </DialogHeader>
+              <div className="space-y-4">
+                <div className="space-y-2">
+                  <label className="text-sm font-medium">{t('players.task')}</label>
+                  <div className="flex flex-wrap gap-2">
+                    <Button type="button" size="sm" variant={bulkTaskValue === '' ? 'default' : 'outline'} className="rounded-xl" onClick={() => setBulkTaskValue('')}>
+                      {t('player_form.task_none')}
+                    </Button>
+                    {PLAYER_TASKS.map(tk => (
+                      <Button key={tk} type="button" size="sm" variant={bulkTaskValue === tk ? 'default' : 'outline'} className="rounded-xl" onClick={() => setBulkTaskValue(tk)}>
+                        {getTaskEmoji(tk)} {tk}
+                      </Button>
+                    ))}
+                  </div>
+                </div>
+              </div>
+              <DialogFooter>
+                <Button variant="outline" className="rounded-xl" onClick={() => setBulkTaskOpen(false)}>{t('common.cancel')}</Button>
+                <Button className="rounded-xl" onClick={handleBulkSetTask} disabled={bulkTaskSubmitting}>
+                  {bulkTaskSubmitting ? t('common.saving') : t('players.bulk_task_submit', { count: selectedIds.size })}
+                </Button>
+              </DialogFooter>
+            </DialogContent>
+          </Dialog>
+
           <Button variant="outline" size="sm" className="rounded-xl" onClick={handleExportExcel} disabled={exporting || playersToExport.length === 0}>
-            <Download className="w-4 h-4 mr-1.5" />
-            {exporting ? t('players.exporting') : selectedIds.size > 0 ? `${t('players.export_excel')} (${selectedIds.size})` : t('players.export_excel')}
+            <Download className="w-4 h-4 sm:mr-1.5" />
+            <span className="hidden sm:inline">
+              {exporting ? t('players.exporting') : selectedIds.size > 0 ? `${t('players.export_excel')} (${selectedIds.size})` : t('players.export_excel')}
+            </span>
           </Button>
           <ImportTmClubDialog externalOpen={importClubOpen} onExternalOpenChange={setImportClubOpen} />
+          <ImportTmMatchDialog externalOpen={importMatchOpen} onExternalOpenChange={setImportMatchOpen} />
           <ImportPlayersDialog />
         </div>
       </div>
@@ -743,27 +873,52 @@ export default function Players() {
         {/* Search + Sort + Filter bar */}
         <Card className="card-warm">
           <CardContent className="p-4 space-y-3">
-            {/* Top row: always visible */}
-            <div className="flex flex-wrap items-center gap-3">
-              <div className="relative flex-1 min-w-52">
+            {/* Top row: search full-width on mobile */}
+            <div className="flex items-center gap-3">
+              <div className="relative flex-1 min-w-0">
                 <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
                 <Input placeholder={t('common.search')} value={search} onChange={e => setSearch(e.target.value)} className="pl-9 rounded-xl" />
               </div>
-              <Select value={sort} onValueChange={v => setSort(v as SortOption)}>
-                <SelectTrigger className="rounded-xl w-44"><SelectValue /></SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="name">{t('players.sort_name')}</SelectItem>
-                  <SelectItem value="age-asc">{t('players.sort_age_asc')}</SelectItem>
-                  <SelectItem value="age-desc">{t('players.sort_age_desc')}</SelectItem>
-                  <SelectItem value="level">{t('players.sort_level')}</SelectItem>
-                  <SelectItem value="potential">{t('players.sort_potential')}</SelectItem>
-                  <SelectItem value="contract">{t('players.sort_contract')}</SelectItem>
-                  <SelectItem value="recent">{t('players.sort_recent')}</SelectItem>
-                </SelectContent>
-              </Select>
+            </div>
+            {/* Controls row: sort, filters, view mode */}
+            <div className="flex flex-wrap items-center gap-2">
+              <div ref={sortRef} className="relative">
+                <button
+                  type="button"
+                  onClick={() => setSortDropdownOpen(!sortDropdownOpen)}
+                  className="flex items-center justify-between w-36 sm:w-44 h-9 sm:h-10 px-2.5 sm:px-3 py-2 rounded-xl text-xs sm:text-sm border border-input bg-background hover:bg-muted transition-colors"
+                >
+                  <span className="truncate">
+                    {{ name: t('players.sort_name'), 'age-asc': t('players.sort_age_asc'), 'age-desc': t('players.sort_age_desc'), level: t('players.sort_level'), potential: t('players.sort_potential'), contract: t('players.sort_contract'), recent: t('players.sort_recent') }[sort]}
+                  </span>
+                  <ChevronDown className={`w-4 h-4 opacity-50 shrink-0 ml-1 transition-transform ${sortDropdownOpen ? 'rotate-180' : ''}`} />
+                </button>
+                {sortDropdownOpen && (
+                  <div className="absolute top-full left-0 mt-1 z-20 bg-popover border border-border rounded-lg shadow-lg w-36 sm:w-44 p-1">
+                    {([
+                      { value: 'name', label: t('players.sort_name') },
+                      { value: 'age-asc', label: t('players.sort_age_asc') },
+                      { value: 'age-desc', label: t('players.sort_age_desc') },
+                      { value: 'level', label: t('players.sort_level') },
+                      { value: 'potential', label: t('players.sort_potential') },
+                      { value: 'contract', label: t('players.sort_contract') },
+                      { value: 'recent', label: t('players.sort_recent') },
+                    ] as { value: SortOption; label: string }[]).map(opt => (
+                      <button
+                        key={opt.value}
+                        type="button"
+                        onClick={() => { setSort(opt.value); setSortDropdownOpen(false); }}
+                        className={`flex items-center w-full px-2 py-1.5 rounded-md text-xs transition-colors ${sort === opt.value ? 'bg-primary/10 text-primary font-semibold' : 'text-foreground hover:bg-muted'}`}
+                      >
+                        {opt.label}
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
               <button
                 onClick={() => setFiltersOpen(!filtersOpen)}
-                className={`flex items-center gap-2 px-3 py-2 rounded-xl text-sm font-medium border transition-colors ${filtersOpen ? 'bg-primary text-primary-foreground border-primary' : activeFilterCount > 0 ? 'border-primary text-primary bg-primary/10' : 'border-border bg-background hover:bg-muted'}`}
+                className={`flex items-center gap-1.5 sm:gap-2 px-2.5 sm:px-3 py-2 rounded-xl text-xs sm:text-sm font-medium border transition-colors ${filtersOpen ? 'bg-primary text-primary-foreground border-primary' : activeFilterCount > 0 ? 'border-primary text-primary bg-primary/10' : 'border-border bg-background hover:bg-muted'}`}
               >
                 <SlidersHorizontal className="w-4 h-4" />
                 {t('players.filters')}
@@ -773,8 +928,8 @@ export default function Players() {
                 {filtersOpen ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
               </button>
               {(activeFilterCount > 0 || search) && (
-                <Button variant="ghost" size="sm" onClick={resetFilters} className="rounded-xl gap-1.5 text-muted-foreground hover:text-foreground">
-                  <RotateCcw className="w-3.5 h-3.5" /> {t('common.reset')}
+                <Button variant="ghost" size="sm" onClick={resetFilters} className="rounded-xl gap-1 text-muted-foreground hover:text-foreground px-2 sm:px-3">
+                  <RotateCcw className="w-3.5 h-3.5" /> <span className="hidden sm:inline">{t('common.reset')}</span>
                 </Button>
               )}
               <div className="flex items-center gap-2 ml-auto">
@@ -794,9 +949,9 @@ export default function Players() {
                     <List className="w-4 h-4" />
                   </button>
                 </div>
-                <label className="flex items-center gap-2.5 cursor-pointer">
+                <label className="flex items-center gap-1.5 sm:gap-2.5 cursor-pointer">
                   <Checkbox checked={filtered.length > 0 && selectedIds.size === filtered.length} onCheckedChange={toggleSelectAll} />
-                  <span className="text-sm">{t('players.select_all')}</span>
+                  <span className="text-xs sm:text-sm hidden sm:inline">{t('players.select_all')}</span>
                 </label>
               </div>
             </div>
@@ -818,6 +973,9 @@ export default function Players() {
                 )}
                 {selectedLeagues.map(l => (
                   <FilterChip key={l} label={l} onRemove={() => toggleInList(selectedLeagues, l, setSelectedLeagues)} />
+                ))}
+                {selectedClubs.map(c => (
+                  <FilterChip key={c} label={c} onRemove={() => toggleInList(selectedClubs, c, setSelectedClubs)} />
                 ))}
                 {opinions.map(o => (
                   <FilterChip key={o} label={`${getOpinionEmoji(o)} ${o}`} onRemove={() => toggleInList(opinions, o, setOpinions)} />
@@ -923,8 +1081,8 @@ export default function Players() {
 
                 </div>
 
-                {/* Ligne 2 : Championnat, Avis, Type, Contrat — dropdowns alignés */}
-                <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+                {/* Ligne 2 : Championnat, Club, Avis, Type, Contrat — dropdowns alignés */}
+                <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
 
                   {/* 1. Championnat */}
                   <FilterSection title={t('players.league')}>
@@ -973,7 +1131,54 @@ export default function Players() {
                     </div>
                   </FilterSection>
 
-                  {/* 2. Avis */}
+                  {/* 2. Club */}
+                  <FilterSection title={t('players.club')}>
+                    <div className="relative">
+                      <button
+                        onClick={() => setClubDropdownOpen(!clubDropdownOpen)}
+                        className={`flex items-center justify-between w-full px-3 py-2 rounded-lg text-xs font-semibold border transition-colors ${selectedClubs.length > 0 ? 'border-primary bg-primary/5 text-primary' : 'border-border bg-background text-foreground hover:bg-muted'}`}
+                      >
+                        <span className="truncate flex items-center gap-1.5">{selectedClubs.length === 0 ? t('players.all_clubs') : selectedClubs.length === 1 ? <><ClubBadge club={selectedClubs[0]} size="xs" /> {selectedClubs[0]}</> : t('players.clubs_selected', { count: selectedClubs.length })}</span>
+                        <ChevronDown className={`w-3.5 h-3.5 text-muted-foreground shrink-0 ml-1 transition-transform ${clubDropdownOpen ? 'rotate-180' : ''}`} />
+                      </button>
+                      {clubDropdownOpen && (
+                        <div className="absolute top-full left-0 mt-1 z-20 bg-popover border border-border rounded-lg shadow-lg w-80">
+                          <div className="p-2 border-b border-border/40">
+                            <div className="relative">
+                              <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3 h-3 text-muted-foreground" />
+                              <input
+                                placeholder={t('players.filter_placeholder')}
+                                value={clubSearch}
+                                onChange={e => setClubSearch(e.target.value)}
+                                className="w-full pl-7 pr-2 py-1.5 text-xs rounded-lg bg-background border border-border text-foreground focus:outline-none focus:ring-1 focus:ring-primary"
+                              />
+                            </div>
+                          </div>
+                          <div className="max-h-64 overflow-y-auto p-1">
+                            {availableClubs
+                              .filter(c => c.toLowerCase().includes(clubSearch.toLowerCase()))
+                              .map(club => (
+                                <label key={club} className={`flex items-center gap-2 px-2 py-1.5 rounded-md cursor-pointer transition-colors ${selectedClubs.includes(club) ? 'bg-primary/10' : 'hover:bg-muted'}`}>
+                                  <Checkbox checked={selectedClubs.includes(club)} onCheckedChange={() => toggleInList(selectedClubs, club, setSelectedClubs)} />
+                                  <ClubBadge club={club} size="xs" />
+                                  <span className={`text-xs font-medium truncate ${selectedClubs.includes(club) ? 'text-primary font-semibold' : 'text-foreground'}`}>{club}</span>
+                                </label>
+                              ))}
+                            {availableClubs.filter(c => c.toLowerCase().includes(clubSearch.toLowerCase())).length === 0 && (
+                              <p className="text-xs text-muted-foreground p-3 text-center">{t('players.no_results')}</p>
+                            )}
+                          </div>
+                          {selectedClubs.length > 0 && (
+                            <button onClick={() => setSelectedClubs([])} className="w-full text-xs text-muted-foreground hover:text-destructive py-2 text-center border-t border-border/40">
+                              {t('players.clear_selection')}
+                            </button>
+                          )}
+                        </div>
+                      )}
+                    </div>
+                  </FilterSection>
+
+                  {/* 3. Avis */}
                   <FilterSection title={t('players.opinion')}>
                     <div className="relative">
                       <button
@@ -1127,28 +1332,28 @@ export default function Players() {
                   </div>
                   <Card className={`card-warm overflow-hidden hover:scale-[1.02] transition-all duration-200 ${player.has_news ? 'ring-2 ring-amber-400 dark:ring-amber-500' : ''}`}>
                     <Link to={`/player/${player.id}`} className="block group" onClick={() => player.has_news && dismissNews(player.id)}>
-                      <div className="p-4">
-                        <div className="flex items-center gap-3 mb-3">
+                      <div className="p-3 sm:p-4">
+                        <div className="flex items-center gap-2.5 sm:gap-3 mb-2.5 sm:mb-3">
                           <PlayerAvatar name={player.name} photoUrl={player.photo_url} size="lg" />
                           <div className="flex-1 min-w-0">
-                            <div className="flex items-center gap-2">
-                              <h3 className="font-bold text-base truncate group-hover:text-primary transition-colors">{player.name}</h3>
+                            <div className="flex items-center gap-1.5 sm:gap-2 flex-wrap">
+                              <h3 className="font-bold text-sm sm:text-base truncate max-w-[140px] sm:max-w-none group-hover:text-primary transition-colors">{player.name}</h3>
                               {player.task && (
-                                <span className={`shrink-0 flex items-center gap-1 px-1.5 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wide ${getTaskBgClass(player.task as any)}`}>
-                                  {getTaskEmoji(player.task as any)} {player.task}
+                                <span className={`shrink-0 flex items-center gap-0.5 sm:gap-1 px-1 sm:px-1.5 py-0.5 rounded-full text-[9px] sm:text-[10px] font-bold uppercase tracking-wide ${getTaskBgClass(player.task as any)}`}>
+                                  {getTaskEmoji(player.task as any)} <span className="hidden sm:inline">{player.task}</span>
                                 </span>
                               )}
                               {player.has_news && (
-                                <span className="shrink-0 flex items-center gap-1 px-1.5 py-0.5 rounded-full bg-amber-100 dark:bg-amber-900/40 text-amber-700 dark:text-amber-300 text-[10px] font-bold uppercase tracking-wide">
+                                <span className="shrink-0 flex items-center gap-0.5 sm:gap-1 px-1 sm:px-1.5 py-0.5 rounded-full bg-amber-100 dark:bg-amber-900/40 text-amber-700 dark:text-amber-300 text-[9px] sm:text-[10px] font-bold uppercase tracking-wide">
                                   <Sparkles className="w-3 h-3" />
-                                  {t('players.new_badge')}: {t(`players.news_${player.has_news}` as any)}
+                                  <span className="hidden sm:inline">{t('players.new_badge')}: {t(`players.news_${player.has_news}` as any)}</span>
                                 </span>
                               )}
                             </div>
                             <div className="flex items-center gap-2 mt-0.5">
                               <ClubBadge club={player.club} size="sm" />
                               <div className="min-w-0">
-                                <ClubLink club={player.club} className="text-sm text-muted-foreground truncate">{player.club}</ClubLink>
+                                <span className="text-xs sm:text-sm text-muted-foreground block truncate">{player.club}</span>
                                 {ext.on_loan && ext.parent_club && (
                                   <div className="flex items-center gap-1 mt-0.5">
                                     <span className="text-[10px] text-amber-600 dark:text-amber-400 font-medium">{t('profile.on_loan')}</span>
@@ -1160,11 +1365,11 @@ export default function Players() {
                             </div>
                           </div>
                         </div>
-                        <div className="flex items-center gap-1.5">
+                        <div className="flex items-center gap-1 sm:gap-1.5">
                           <FlagIcon nationality={player.nationality} size="sm" />
-                          <span className="px-2 py-0.5 rounded-md bg-muted text-xs font-medium">{getPlayerAge(player.generation, player.date_of_birth)} {t('common.year')}</span>
-                          <span className="px-2 py-0.5 rounded-md bg-muted text-xs font-medium">{posShort[player.position]}</span>
-                          <div className="ml-auto flex items-center gap-2 text-sm font-bold font-mono">
+                          <span className="px-1.5 sm:px-2 py-0.5 rounded-md bg-muted text-[11px] sm:text-xs font-medium">{getPlayerAge(player.generation, player.date_of_birth)} {t('common.year')}</span>
+                          <span className="px-1.5 sm:px-2 py-0.5 rounded-md bg-muted text-[11px] sm:text-xs font-medium">{posShort[player.position]}</span>
+                          <div className="ml-auto flex items-center gap-1.5 sm:gap-2 text-sm font-bold font-mono">
                             <span title={t('players.level')}>{player.current_level}</span>
                             <span className="text-muted-foreground font-normal">/</span>
                             <span className="text-primary" title={t('players.potential')}>{player.potential}</span>
@@ -1225,6 +1430,20 @@ export default function Players() {
           )}
         </div>
       </div>
+
+      {/* Bottom banner for new players */}
+      {newsCount > 0 && (
+        <div className="fixed bottom-5 left-1/2 -translate-x-1/2 z-50 animate-in slide-in-from-bottom-4 fade-in duration-300 w-[calc(100%-2rem)] sm:w-auto max-w-md sm:max-w-none">
+          <div className="flex items-center gap-2 sm:gap-3 px-3 sm:px-5 py-2.5 sm:py-3 rounded-2xl bg-amber-500 text-white shadow-xl">
+            <Sparkles className="w-5 h-5 shrink-0" />
+            <span className="text-sm font-semibold">{t('banner.new_count', { count: newsCount })}</span>
+            <Button size="sm" variant="secondary" className="rounded-xl text-xs h-7" onClick={dismissAllNews}>
+              <Check className="w-3.5 h-3.5 mr-1" />
+              {t('notifications.mark_all_read')}
+            </Button>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

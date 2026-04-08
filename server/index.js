@@ -1091,6 +1091,27 @@ async function runMigrations() {
     if (!err?.message?.includes("already exists")) console.warn("[warn] player_research migration:", err?.message);
   }
 
+  // Ensure player_videos table exists
+  try {
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS player_videos (
+        id CHAR(36) PRIMARY KEY,
+        user_id CHAR(36) NOT NULL,
+        player_id CHAR(36) NOT NULL,
+        title VARCHAR(500) NOT NULL,
+        url TEXT NULL,
+        file_url TEXT NULL,
+        description TEXT NULL,
+        created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        INDEX idx_player_videos (user_id, player_id, created_at),
+        FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+        FOREIGN KEY (player_id) REFERENCES players(id) ON DELETE CASCADE
+      )
+    `);
+  } catch (err) {
+    if (!err?.message?.includes("already exists")) console.warn("[warn] player_videos migration:", err?.message);
+  }
+
   // Ensure followed_clubs table exists
   try {
     await pool.query(`
@@ -1773,6 +1794,47 @@ app.delete("/api/player-research/:id", authMiddleware, async (req, res) => {
     return res.json({ ok: true });
   } catch (err) {
     console.error("[player-research] DELETE error:", err);
+    return res.status(500).json({ error: "Erreur serveur" });
+  }
+});
+
+// ── Player Videos CRUD ───────────────────────────────────────────────────
+app.get("/api/player-videos/:playerId", authMiddleware, async (req, res) => {
+  try {
+    const [rows] = await pool.query(
+      "SELECT * FROM player_videos WHERE user_id = ? AND player_id = ? ORDER BY created_at DESC",
+      [req.user.id, req.params.playerId]
+    );
+    return res.json(rows);
+  } catch (err) {
+    console.error("[player-videos] GET error:", err);
+    return res.status(500).json({ error: "Erreur serveur" });
+  }
+});
+
+app.post("/api/player-videos", authMiddleware, async (req, res) => {
+  const { player_id, title, url, file_url, description } = req.body || {};
+  if (!player_id || !title) return res.status(400).json({ error: "player_id et title requis." });
+  try {
+    const id = uuidv4();
+    await pool.query(
+      "INSERT INTO player_videos (id, user_id, player_id, title, url, file_url, description) VALUES (?, ?, ?, ?, ?, ?, ?)",
+      [id, req.user.id, player_id, title.trim(), url || null, file_url || null, description || null]
+    );
+    const [rows] = await pool.query("SELECT * FROM player_videos WHERE id = ?", [id]);
+    return res.json(rows[0]);
+  } catch (err) {
+    console.error("[player-videos] POST error:", err);
+    return res.status(500).json({ error: "Erreur serveur" });
+  }
+});
+
+app.delete("/api/player-videos/:id", authMiddleware, async (req, res) => {
+  try {
+    await pool.query("DELETE FROM player_videos WHERE id = ? AND user_id = ?", [req.params.id, req.user.id]);
+    return res.json({ ok: true });
+  } catch (err) {
+    console.error("[player-videos] DELETE error:", err);
     return res.status(500).json({ error: "Erreur serveur" });
   }
 });
@@ -3349,6 +3411,91 @@ app.post("/api/admin/page-permissions", authMiddleware, ensureAdmin, async (req,
   }
 });
 
+// GET /api/admin/organizations — list all organizations with members
+app.get("/api/admin/organizations", authMiddleware, ensureAdmin, async (_req, res) => {
+  try {
+    const [orgs] = await pool.query(
+      `SELECT o.id, o.name, o.type, o.invite_code, o.logo_url, o.created_at,
+              u.email as created_by_email
+       FROM organizations o
+       LEFT JOIN users u ON u.id = o.created_by
+       ORDER BY o.created_at DESC`
+    );
+    const [members] = await pool.query(
+      `SELECT om.organization_id, om.user_id, om.role, u.email
+       FROM organization_members om
+       JOIN users u ON u.id = om.user_id
+       ORDER BY om.role ASC, om.joined_at ASC`
+    );
+    const membersByOrg = new Map();
+    for (const m of members) {
+      const arr = membersByOrg.get(m.organization_id) || [];
+      arr.push({ user_id: m.user_id, email: m.email, role: m.role });
+      membersByOrg.set(m.organization_id, arr);
+    }
+    const payload = orgs.map((o) => ({
+      ...o,
+      members: membersByOrg.get(o.id) || [],
+    }));
+    res.json(payload);
+  } catch (err) {
+    console.error("[admin/organizations]", err);
+    res.status(500).json({ error: "Server error" });
+  }
+});
+
+// POST /api/admin/organizations/add-member — add a user to an organization
+app.post("/api/admin/organizations/add-member", authMiddleware, ensureAdmin, async (req, res) => {
+  const { organizationId, userId, role } = req.body || {};
+  if (!organizationId || !userId) return res.status(400).json({ error: "Missing organizationId or userId" });
+  const memberRole = role || "member";
+  try {
+    const id = require("crypto").randomUUID();
+    await pool.query(
+      `INSERT INTO organization_members (id, organization_id, user_id, role, joined_at)
+       VALUES (?, ?, ?, ?, NOW())
+       ON DUPLICATE KEY UPDATE role = VALUES(role)`,
+      [id, organizationId, userId, memberRole]
+    );
+    res.json({ ok: true });
+  } catch (err) {
+    console.error("[admin/organizations/add-member]", err);
+    res.status(500).json({ error: "Server error" });
+  }
+});
+
+// POST /api/admin/organizations/remove-member — remove a user from an organization
+app.post("/api/admin/organizations/remove-member", authMiddleware, ensureAdmin, async (req, res) => {
+  const { organizationId, userId } = req.body || {};
+  if (!organizationId || !userId) return res.status(400).json({ error: "Missing organizationId or userId" });
+  try {
+    await pool.query(
+      "DELETE FROM organization_members WHERE organization_id = ? AND user_id = ?",
+      [organizationId, userId]
+    );
+    res.json({ ok: true });
+  } catch (err) {
+    console.error("[admin/organizations/remove-member]", err);
+    res.status(500).json({ error: "Server error" });
+  }
+});
+
+// POST /api/admin/organizations/update-member-role — change a member's role in an org
+app.post("/api/admin/organizations/update-member-role", authMiddleware, ensureAdmin, async (req, res) => {
+  const { organizationId, userId, role } = req.body || {};
+  if (!organizationId || !userId || !role) return res.status(400).json({ error: "Missing fields" });
+  try {
+    await pool.query(
+      "UPDATE organization_members SET role = ? WHERE organization_id = ? AND user_id = ?",
+      [role, organizationId, userId]
+    );
+    res.json({ ok: true });
+  } catch (err) {
+    console.error("[admin/organizations/update-member-role]", err);
+    res.status(500).json({ error: "Server error" });
+  }
+});
+
 // GET /api/admin/analytics — comprehensive dashboard KPIs
 app.get("/api/admin/analytics", authMiddleware, ensureAdmin, async (req, res) => {
   try {
@@ -4182,6 +4329,21 @@ function parseFrDate(str) {
   return `${m[3]}-${String(month).padStart(2, '0')}-${m[1].padStart(2, '0')}`;
 }
 
+/** Like parseFrDate but accepts any year (for career/transfer dates). */
+function parseFrDateAny(str) {
+  if (!str) return null;
+  // Try French format: "1 juil. 2018"
+  const m = String(str).trim().match(/(\d{1,2})\s+([^\s\d]+)\.?\s+(\d{4})/);
+  if (m) {
+    const month = matchFrMonth(m[2]);
+    if (month) return `${m[3]}-${String(month).padStart(2, '0')}-${m[1].padStart(2, '0')}`;
+  }
+  // Try numeric: "01/07/2018" or "01.07.2018"
+  const n = String(str).trim().match(/(\d{1,2})[./](\d{1,2})[./](\d{4})/);
+  if (n) return `${n[3]}-${n[2].padStart(2, '0')}-${n[1].padStart(2, '0')}`;
+  return null;
+}
+
 // Extract inner text between two HTML markers (strips tags)
 function extractBetween(html, before, after) {
   const idx = html.indexOf(before);
@@ -4205,6 +4367,10 @@ async function fetchPlayerDataFromTransfermarkt(player, tmPath = null) {
     const playerClubNorm = normalizeStr(player.club || '');
 
     let best = null, bestScore = -1;
+    const allCandidates = []; // collect all matching candidates for disambiguation
+
+    const playerNatNorm = normalizeStr(player.nationality || '');
+    const genKnown = player.generation && player.generation !== 2000;
 
     if (tmPath) {
       // Direct path provided by user — skip search entirely
@@ -4233,8 +4399,19 @@ async function fetchPlayerDataFromTransfermarkt(player, tmPath = null) {
           const [, path, , id, name, age, mktVal, agent] = m;
           if (!namesMatch(player.name, name)) continue;
           let score = 0;
-          if (player.generation && age && Math.abs(new Date().getFullYear() - parseInt(age) - player.generation) <= 1) score += 3;
-          // Try to find club in surrounding HTML context
+
+          // ── Age matching (stricter for known generations) ──
+          const candidateAge = age ? parseInt(age) : null;
+          const candidateBornYear = candidateAge ? (new Date().getFullYear() - candidateAge) : null;
+          if (genKnown && candidateBornYear) {
+            const ageDiff = Math.abs(candidateBornYear - player.generation);
+            if (ageDiff <= 1) score += 3;
+            else if (ageDiff > 2) score -= 10; // hard penalty: clearly wrong player
+          } else if (player.generation && candidateBornYear && Math.abs(candidateBornYear - player.generation) <= 1) {
+            score += 2; // weaker bonus when generation is uncertain (2000)
+          }
+
+          // ── Club matching ──
           const ctxStart = searchHtml.indexOf(path);
           const ctxEnd = Math.min(ctxStart + 800, searchHtml.length);
           const ctx = searchHtml.slice(ctxStart, ctxEnd);
@@ -4243,6 +4420,19 @@ async function fetchPlayerDataFromTransfermarkt(player, tmPath = null) {
             const cNorm = normalizeStr(clubM[1]);
             if (cNorm.includes(playerClubNorm.slice(0, 5)) || playerClubNorm.includes(cNorm.slice(0, 5))) score += 5;
           }
+
+          // ── Nationality matching (flag images in search results) ──
+          if (playerNatNorm) {
+            const natM = ctx.match(/title="([^"]+)"[^>]*flaggenrahmen/g);
+            if (natM) {
+              const natMatched = natM.some(flagHtml => {
+                const titleM = flagHtml.match(/title="([^"]+)"/);
+                return titleM && normalizeStr(titleM[1]).includes(playerNatNorm.slice(0, 5));
+              });
+              if (natMatched) score += 4;
+            }
+          }
+
           // Fallback queries are ambiguous — require club/generation match OR very close first names
           // "Very close" = same last name + first names within edit distance 1 (catches typos like "Anas" → "Anan")
           if (isFallback && score < 3) {
@@ -4254,14 +4444,31 @@ async function fetchPlayerDataFromTransfermarkt(player, tmPath = null) {
             const firstsClose = aF.length >= 3 && bF.length >= 3 && editDist1(aF, bF);
             if (!lastsMatch || !firstsClose) continue;
           }
+
+          const candidate = { id, path, name, age: candidateAge, mktVal: mktVal?.trim() || null, agent: agent?.trim() || null, score };
+          // Extract club name for candidate info
+          if (clubM) candidate.club = clubM[1].trim();
+          allCandidates.push(candidate);
+
           if (score > bestScore || !best) { bestScore = score; best = { id, path, mktVal: mktVal?.trim() || null, agent: agent?.trim() || null }; }
         }
+      }
+    }
 
-        // Fallback: first href matching name (first query only, no extra validation needed)
-        if (!best && !isFallback) {
-          const fm = searchHtml.match(/href="(\/[^/]+\/profil\/spieler\/(\d+))"[^>]*>([^<]+)<\/a>/);
-          if (fm && namesMatch(player.name, fm[3])) best = { id: fm[2], path: fm[1], mktVal: null, agent: null };
-        }
+    // ── Minimum confidence threshold ──
+    // When generation is known, require at least age OR club match to proceed
+    // This prevents returning the wrong homonym when we have no confirming signal
+    if (best && !tmPath && bestScore < 0) {
+      console.log(`[TM] ${player.name} → rejected best match (score ${bestScore}, too low)`);
+      best = null;
+    }
+    // When multiple candidates exist with similar scores, flag ambiguity
+    if (best && !tmPath && allCandidates.length > 1) {
+      const closeMatches = allCandidates.filter(c => c.score >= bestScore - 2 && c.score >= 0);
+      if (closeMatches.length > 1) {
+        console.log(`[TM] ${player.name} → ${closeMatches.length} close candidates: ${closeMatches.map(c => `${c.name} (age:${c.age}, club:${c.club||'?'}, score:${c.score})`).join(' | ')}`);
+        // Return ambiguous result — let the caller decide (UI disambiguation)
+        return { ambiguous: true, candidates: closeMatches.map(c => ({ id: c.id, path: c.path, name: c.name, age: c.age, club: c.club || null, score: c.score })) };
       }
     }
 
@@ -4366,18 +4573,110 @@ async function fetchPlayerDataFromTransfermarkt(player, tmPath = null) {
     // ── Foot ──
     const footRaw = extractBetween(html, 'Pied fort\u00a0:</span>', '</span>')
       || extractBetween(html, 'Pied fort :</span>', '</span>')
-      || extractBetween(html, 'Pied fort:</span>', '</span>');
+      || extractBetween(html, 'Pied fort:</span>', '</span>')
+      || extractBetween(html, 'Pied\u00a0:</span>', '</span>')
+      || extractBetween(html, 'Pied :</span>', '</span>')
+      || extractBetween(html, 'Pied:</span>', '</span>');
 
     // ── Position ──
     const positionRaw = extractBetween(html, 'Poste\u00a0:</span>', '</span>')
       || extractBetween(html, 'Poste :</span>', '</span>')
-      || extractBetween(html, 'Poste:</span>', '</span>');
+      || extractBetween(html, 'Poste:</span>', '</span>')
+      || extractBetween(html, 'Position\u00a0:</span>', '</span>')
+      || extractBetween(html, 'Position :</span>', '</span>')
+      || extractBetween(html, 'Position:</span>', '</span>');
 
     // ── Nationality ──
-    const nationalityRaw = extractBetween(html, 'Nationalit\u00e9:</span>', '</span>');
+    // TM profile shows nationality as flag images: <img title="Portugal" class="flaggenrahmen" />
+    // extractBetween strips HTML tags, losing the country name inside the title attribute.
+    // So we first try to extract from flag title attributes near the "Nationalité" label.
+    let nationalityRaw = null;
+    const natLabelIdx = html.search(/Nationalit[eé]\s*\u00a0?:/);
+    if (natLabelIdx !== -1) {
+      const natBlock = html.slice(natLabelIdx, natLabelIdx + 500);
+      const natFlags = [...natBlock.matchAll(/title="([^"]+)"[^>]*flaggenrahmen/g)].map(m => m[1].trim());
+      if (natFlags.length > 0) nationalityRaw = natFlags.join('  ');
+    }
+    // Fallback: try text-based extraction
+    if (!nationalityRaw) {
+      nationalityRaw = extractBetween(html, 'Nationalit\u00e9:</span>', '</span>')
+        || extractBetween(html, 'Nationalit\u00e9\u00a0:</span>', '</span>')
+        || extractBetween(html, 'Nationalit\u00e9 :</span>', '</span>');
+    }
+
+    // ── 3. Fetch career history via TM JSON API ──────────────────────────
+    let career = null;
+    try {
+      const apiOpts = { headers: { 'Accept': 'application/json', 'Accept-Language': 'fr-FR' }, signal: AbortSignal.timeout(10000) };
+      const histResp = await fetch(`https://tmapi-alpha.transfermarkt.technology/transfer/history/player/${best.id}`, apiOpts);
+      if (histResp.ok) {
+        const histJson = await histResp.json();
+        const transfers = histJson?.data?.history?.terminated || [];
+        const clubIdsSet = new Set();
+
+        // Collect all club IDs to resolve names in one batch
+        for (const t of transfers) {
+          if (t.transferSource?.clubId) clubIdsSet.add(t.transferSource.clubId);
+          if (t.transferDestination?.clubId) clubIdsSet.add(t.transferDestination.clubId);
+        }
+
+        // Resolve club names via /clubs API
+        const clubMap = new Map();
+        const clubIds = [...clubIdsSet].filter(id => id && id !== '0');
+        if (clubIds.length > 0) {
+          const qs = clubIds.map(id => `ids[]=${id}`).join('&');
+          const clubsResp = await fetch(`https://tmapi-alpha.transfermarkt.technology/clubs?${qs}`, apiOpts);
+          if (clubsResp.ok) {
+            const clubsJson = await clubsResp.json();
+            for (const c of (clubsJson?.data || [])) {
+              clubMap.set(c.id, { name: c.name, isNational: c.baseDetails?.isNationalTeam || false });
+            }
+          }
+        }
+
+        if (transfers.length > 0 && clubMap.size > 0) {
+          // Sort chronologically (oldest first)
+          const sorted = [...transfers].sort((a, b) =>
+            (a.details?.date || '').localeCompare(b.details?.date || '')
+          );
+
+          const entries = [];
+          for (let i = 0; i < sorted.length; i++) {
+            const t = sorted[i];
+            const destId = t.transferDestination?.clubId;
+            const dest = clubMap.get(destId);
+            if (!dest) continue;
+
+            // Skip "Sans club" / special clubs
+            const destNorm = dest.name.toLowerCase();
+            if (destNorm === 'sans club' || destNorm === 'without club' || destNorm.includes('karriereende') || destNorm.includes('retired')) continue;
+
+            const fromDate = t.details?.date ? t.details.date.slice(0, 10) : null;
+            const nextDate = sorted[i + 1]?.details?.date ? sorted[i + 1].details.date.slice(0, 10) : null;
+
+            entries.push({
+              club: dest.name,
+              from: fromDate,
+              to: nextDate,
+              isNational: dest.isNational,
+              type: t.typeDetails?.type || null, // STANDARD, ACTIVE_LOAN_TRANSFER, RETURNED_FROM_PREVIOUS_LOAN
+              fee: t.typeDetails?.feeDescription || null,
+            });
+          }
+
+          if (entries.length > 0) {
+            // Reverse: newest first (current club on top)
+            career = entries.reverse();
+            console.log(`[TM] ${player.name} → career: ${career.length} entries from TM API`);
+          }
+        }
+      }
+    } catch (e) {
+      console.error('[TM] career API error:', e.message);
+    }
 
     console.log(`[TM] ${player.name} → contract:${contract} agent:${agent} value:${marketValue} height:${heightCm}cm club:${currentClub} onLoan:${onLoan} foot:${footRaw} pos:${positionRaw} nat:${nationalityRaw} photo:${!!photoUrl} logo:${!!clubLogoUrl}`);
-    return { tmId: best.id, contract, heightCm, agent, marketValue, currentClub, onLoan, parentClub, loanEndDate, parentContractEnd, photoUrl, clubLogoUrl, footRaw, positionRaw, nationalityRaw };
+    return { tmId: best.id, contract, heightCm, agent, marketValue, currentClub, onLoan, parentClub, loanEndDate, parentContractEnd, photoUrl, clubLogoUrl, footRaw, positionRaw, nationalityRaw, career };
   } catch (e) {
     console.error('[enrich] Transfermarkt scrape error:', e.message);
     return null;
@@ -4395,6 +4694,11 @@ async function enrichOnePlayer(playerInfo, row, tmPath = null) {
     fetchPlayerDataFromWikidata(playerInfo),
     fetchPlayerDataFromTransfermarkt(playerInfo, tmPath),
   ]);
+
+  // If TM returned ambiguous candidates, propagate to caller for UI disambiguation
+  if (tm && tm.ambiguous) {
+    return { ambiguous: true, candidates: tm.candidates };
+  }
 
   let ext = {};
   try { ext = JSON.parse(row.external_data || '{}') || {}; } catch {}
@@ -4509,6 +4813,14 @@ async function enrichOnePlayer(playerInfo, row, tmPath = null) {
     if (tm.tmId) ext.transfermarkt_id = tm.tmId;
     if (tm.heightCm && !ext.height) ext.height = `${tm.heightCm} cm`;
     if (tm.currentClub) newClub = tm.currentClub; // TM is most up-to-date
+    // TM career overrides Wikidata career (more complete & accurate dates)
+    if (tm.career && tm.career.length > 0) {
+      const clubCareer = tm.career.filter(e => !e.isNational);
+      const nationalCareer = tm.career.filter(e => e.isNational);
+      ext.career = clubCareer;
+      if (nationalCareer.length > 0) ext.national_career = nationalCareer;
+      console.log(`[enrich] Using TM career: ${clubCareer.length} club + ${nationalCareer.length} national entries`);
+    }
     delete ext.tm_not_found; // clear flag now that TM succeeded
   } else {
     ext.tm_not_found = true; // signal frontend to show manual-URL input
@@ -4519,11 +4831,14 @@ async function enrichOnePlayer(playerInfo, row, tmPath = null) {
   if (currentClubForCareer) {
     if (!ext.career) ext.career = [];
     const currentNorm = normalizeStr(currentClubForCareer);
-    if (!ext.career.some(e => !e.to && normalizeStr(e.club || '') === currentNorm)) {
+    // Check if current club already has an open-ended entry
+    const hasCurrentOpen = ext.career.some(e => !e.to && normalizeStr(e.club || '') === currentNorm);
+    if (!hasCurrentOpen) {
+      // Close any other open-ended entries
       ext.career = ext.career.map(e =>
         (!e.to && normalizeStr(e.club || '') !== currentNorm) ? { ...e, to: tsdb?.dateSigned || null } : e
       );
-      ext.career.push({ club: currentClubForCareer, from: tsdb?.dateSigned || null, to: null });
+      ext.career.unshift({ club: currentClubForCareer, from: tsdb?.dateSigned || null, to: null });
     }
   }
 
@@ -4559,6 +4874,9 @@ async function enrichOnePlayer(playerInfo, row, tmPath = null) {
   }
   if (ext.market_value) { setClauses.push('market_value = ?'); params.push(ext.market_value); }
 
+  // ── TM ID: persist in dedicated column for future enrichment (skip name search) ──
+  if (tm?.tmId) { setClauses.push('transfermarkt_id = ?'); params.push(tm.tmId); }
+
   // Club: TM is authoritative — always write when TM returns one
   if (tm?.currentClub) {
     setClauses.push('club = ?');
@@ -4576,14 +4894,20 @@ async function enrichOnePlayer(playerInfo, row, tmPath = null) {
     params.push(tm.photoUrl);
   }
 
-  // ── TM foot: update from profile if current value is default/missing ──
+  // ── TM foot: update if missing, unknown, or different ──────────────
   if (tm?.footRaw) {
     const s = tm.footRaw.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
     let foot = null;
     if (s.includes('gauche')) foot = 'Gaucher';
     else if (s.includes('deux') || s.includes('ambidextre')) foot = 'Ambidextre';
     else if (s.includes('droit')) foot = 'Droitier';
-    if (foot) { setClauses.push('foot = ?'); params.push(foot); }
+    if (foot) {
+      const currentFoot = (row.foot || '').trim();
+      console.log(`[enrich] Foot check: DB="${currentFoot}" vs TM="${foot}" → ${currentFoot !== foot ? 'UPDATING' : 'same'}`);
+      if (!currentFoot || currentFoot === 'Inconnu' || currentFoot !== foot) {
+        setClauses.push('foot = ?'); params.push(foot);
+      }
+    }
   }
 
   // ── TM position: update from profile if missing ───────────────────
@@ -4610,10 +4934,19 @@ async function enrichOnePlayer(playerInfo, row, tmPath = null) {
     }
   }
 
-  // ── TM nationality: update from profile if missing ────────────────
-  if (tm?.nationalityRaw && (!row.nationality || row.nationality === 'Inconnu')) {
+  // ── TM nationality: update if missing, unknown, or different ──────
+  if (tm?.nationalityRaw) {
     const nat = tm.nationalityRaw.split(/\s{2,}/)[0].trim();
-    if (nat) { setClauses.push('nationality = ?'); params.push(nat); }
+    if (nat) {
+      const currentNat = normalizeStr(row.nationality || '');
+      const tmNat = normalizeStr(nat);
+      console.log(`[enrich] Nationality check: DB="${row.nationality}" (norm="${currentNat}") vs TM="${nat}" (norm="${tmNat}") → ${currentNat !== tmNat ? 'UPDATING' : 'same'}`);
+      if (!row.nationality || row.nationality === 'Inconnu' || currentNat !== tmNat) {
+        setClauses.push('nationality = ?'); params.push(nat);
+      }
+    }
+  } else {
+    console.log(`[enrich] No TM nationalityRaw found (tm=${!!tm}, nationalityRaw=${tm?.nationalityRaw})`);
   }
 
   // ── TM club logo: save to club_logos if not already present ────────
@@ -4807,7 +5140,7 @@ app.post("/api/functions/:name", authMiddleware, async (req, res) => {
     }
     try {
       const [playerRows] = await pool.query(
-        'SELECT id, name, club, league, nationality, date_of_birth, contract_end, external_data, photo_url FROM players WHERE id = ? AND user_id = ?',
+        'SELECT id, name, club, league, nationality, date_of_birth, contract_end, external_data, photo_url, transfermarkt_id, generation, foot FROM players WHERE id = ? AND user_id = ?',
         [playerId, req.user.id]
       );
       if (!playerRows.length) return res.status(404).json({ error: 'Player not found' });
@@ -4817,7 +5150,7 @@ app.post("/api/functions/:name", authMiddleware, async (req, res) => {
         name: playerName,
         club: club || rec.club,
         nationality: nationality || rec.nationality,
-        generation: generation ? parseInt(generation) : null,
+        generation: generation ? parseInt(generation) : (rec.generation || null),
       };
 
       // Extract TM path from manually-provided URL (e.g. https://www.transfermarkt.fr/luis-diaz/profil/spieler/534995)
@@ -4828,8 +5161,24 @@ app.post("/api/functions/:name", authMiddleware, async (req, res) => {
           if (u.hostname.includes('transfermarkt') && u.pathname.includes('/spieler/')) tmPath = u.pathname;
         } catch {}
       }
+      // Fallback: use stored transfermarkt_id to build a direct profile path (skip name-based search)
+      if (!tmPath && rec.transfermarkt_id) {
+        const slug = normalizeStr(playerName).replace(/ /g, '-') || 'player';
+        tmPath = `/${slug}/profil/spieler/${rec.transfermarkt_id}`;
+      }
 
-      const { setClauses, params, tsdb, wd, tm, contractEnd, newClub, dateOfBirth } = await enrichOnePlayer(playerInfo, rec, tmPath);
+      const enrichResult = await enrichOnePlayer(playerInfo, rec, tmPath);
+
+      // If ambiguous candidates found, return them for UI disambiguation instead of proceeding
+      if (enrichResult.ambiguous) {
+        return res.json({
+          success: false,
+          ambiguous: true,
+          candidates: enrichResult.candidates,
+        });
+      }
+
+      const { setClauses, params, tsdb, wd, tm, contractEnd, newClub, dateOfBirth } = enrichResult;
       params.push(playerId, req.user.id);
       await pool.query(`UPDATE players SET ${setClauses.join(', ')} WHERE id = ? AND user_id = ?`, params);
 
@@ -4926,13 +5275,27 @@ app.post("/api/functions/:name", authMiddleware, async (req, res) => {
       console.log(`[fetch-tm-profile] dobRaw=${JSON.stringify(dobRaw)} → dateOfBirth=${dateOfBirth} generation=${generation}`);
 
       // ── Nationality (first one listed) ──
-      // TM fr: "Nationalité:</span>...<span>...<a title="France">France</a>..."
-      const nationalityRaw = extractBetween(html, 'Nationalit\u00e9:</span>', '</span>');
+      // TM profile shows nationality as flag images: <img title="Portugal" class="flaggenrahmen" />
+      let nationalityRaw = null;
+      const natLabelIdx2 = html.search(/Nationalit[eé]\s*\u00a0?:/);
+      if (natLabelIdx2 !== -1) {
+        const natBlock2 = html.slice(natLabelIdx2, natLabelIdx2 + 500);
+        const natFlags2 = [...natBlock2.matchAll(/title="([^"]+)"[^>]*flaggenrahmen/g)].map(m => m[1].trim());
+        if (natFlags2.length > 0) nationalityRaw = natFlags2.join('  ');
+      }
+      if (!nationalityRaw) {
+        nationalityRaw = extractBetween(html, 'Nationalit\u00e9:</span>', '</span>')
+          || extractBetween(html, 'Nationalit\u00e9\u00a0:</span>', '</span>')
+          || extractBetween(html, 'Nationalit\u00e9 :</span>', '</span>');
+      }
 
       // ── Position ──
       const positionRaw = extractBetween(html, 'Poste\u00a0:</span>', '</span>')
         || extractBetween(html, 'Poste :</span>', '</span>')
-        || extractBetween(html, 'Poste:</span>', '</span>');
+        || extractBetween(html, 'Poste:</span>', '</span>')
+        || extractBetween(html, 'Position\u00a0:</span>', '</span>')
+        || extractBetween(html, 'Position :</span>', '</span>')
+        || extractBetween(html, 'Position:</span>', '</span>');
 
       // ── Secondary position ──
       const secondaryPositionRaw = extractBetween(html, 'Autres postes\u00a0:</span>', '</span>')
@@ -4947,7 +5310,10 @@ app.post("/api/functions/:name", authMiddleware, async (req, res) => {
       // ── Foot ──
       const footRaw = extractBetween(html, 'Pied fort\u00a0:</span>', '</span>')
         || extractBetween(html, 'Pied fort :</span>', '</span>')
-        || extractBetween(html, 'Pied fort:</span>', '</span>');
+        || extractBetween(html, 'Pied fort:</span>', '</span>')
+        || extractBetween(html, 'Pied\u00a0:</span>', '</span>')
+        || extractBetween(html, 'Pied :</span>', '</span>')
+        || extractBetween(html, 'Pied:</span>', '</span>');
 
       // ── Contract end ──
       const contractRaw = extractBetween(html, "Contrat jusqu\u2019\u00e0:</span>", "</span>")
@@ -5178,6 +5544,162 @@ app.post("/api/functions/:name", authMiddleware, async (req, res) => {
     }
   }
 
+  // ── fetch-tm-match: scrape a Transfermarkt match report page ──────────────
+  if (name === "fetch-tm-match") {
+    const { tmUrl } = req.body || {};
+    if (!tmUrl) return res.status(400).json({ error: 'Missing tmUrl' });
+
+    let matchPath = null;
+    try {
+      const u = new URL(tmUrl.startsWith('http') ? tmUrl : `https://${tmUrl}`);
+      if (u.hostname.includes('transfermarkt')) {
+        const m = u.pathname.match(/\/spielbericht\/index\/spielbericht\/(\d+)/);
+        if (m) matchPath = `/spielbericht/index/spielbericht/${m[1]}`;
+      }
+    } catch {}
+    if (!matchPath) return res.status(400).json({ error: 'Invalid TM match URL' });
+
+    try {
+      const opts = { headers: TM_HEADERS, signal: AbortSignal.timeout(15000) };
+      const resp = await fetch(`https://www.transfermarkt.fr${matchPath}`, opts);
+      if (!resp.ok) return res.status(502).json({ error: `TM returned ${resp.status}` });
+      const html = await resp.text();
+
+      // ── Match info from og:title: "Team A - Team B, date - Competition - Rapport de match" ──
+      let competition = null;
+      const compM = html.match(/direct-headline__header-box[\s\S]*?title="([^"]+)"/);
+      if (compM) competition = decodeHtmlEntities(compM[1]);
+
+      // ── Score ──
+      let score = null;
+      const scoreM = html.match(/sb-endstand[^>]*>\s*(\d+:\d+)/);
+      if (scoreM) score = scoreM[1];
+
+      // ── Match date ──
+      let matchDate = null;
+      const dateM = html.match(/datum\/(\d{4}-\d{2}-\d{2})/);
+      if (dateM) matchDate = dateM[1];
+
+      // ── Teams from header ──
+      const homeTeamM = html.match(/sb-team sb-heim[\s\S]*?title="([^"]+)"[^>]*href="([^"]+)"/);
+      const awayTeamM = html.match(/sb-team sb-gast[\s\S]*?title="([^"]+)"[^>]*href="([^"]+)"/);
+      const homeName = homeTeamM ? decodeHtmlEntities(homeTeamM[1]) : null;
+      const awayName = awayTeamM ? decodeHtmlEntities(awayTeamM[1]) : null;
+
+      // ── Team logos ──
+      let homeLogo = null;
+      const homeLogoM = html.match(/sb-team sb-heim[\s\S]*?<img[^>]*src="([^"]+)"/);
+      if (homeLogoM) homeLogo = homeLogoM[1];
+      let awayLogo = null;
+      const awayLogoM = html.match(/sb-team sb-gast[\s\S]*?<img[^>]*src="([^"]+)"/);
+      if (awayLogoM) awayLogo = awayLogoM[1];
+
+      // ── Parse lineups ──
+      // The aufstellung-box contains both teams, split by aufstellung-unterueberschrift-mannschaft
+      const aufStart = html.indexOf('aufstellung-box');
+      if (aufStart < 0) return res.json({ success: true, homeName, awayName, homeLogo, awayLogo, competition, score, matchDate, teams: [] });
+
+      const aufSection = html.slice(aufStart, aufStart + 60000);
+      const teamSections = aufSection.split(/aufstellung-unterueberschrift-mannschaft/);
+
+      // TM bench position abbreviations (French)
+      const TM_BENCH_POS = {
+        'GdB': 'Gardien de but', 'DC': 'Défenseur central', 'DD': 'Arrière droit', 'DG': 'Arrière gauche',
+        'ArD': 'Arrière droit', 'ArG': 'Arrière gauche',
+        'MDF': 'Milieu défensif', 'MDC': 'Milieu défensif central', 'MC': 'Milieu central',
+        'MO': 'Milieu offensif', 'MOC': 'Milieu offensif central',
+        'AD': 'Ailier droit', 'AG': 'Ailier gauche', 'AiD': 'Ailier droit', 'AiG': 'Ailier gauche',
+        'AC': 'Avant-centre', 'BU': 'Buteur',
+        'MD': 'Milieu droit', 'MG': 'Milieu gauche', 'ATT': 'Attaquant',
+        'LD': 'Latéral droit', 'LG': 'Latéral gauche',
+        'SA': 'Second attaquant',
+      };
+
+      const teams = [];
+      const teamNames = [homeName, awayName];
+      const teamLogos = [homeLogo, awayLogo];
+
+      for (let ti = 1; ti <= 2 && ti < teamSections.length; ti++) {
+        const section = teamSections[ti];
+        const seenIds = new Set();
+        const starters = [];
+        const bench = [];
+
+        // Split at bench marker
+        const benchMarker = section.indexOf('ersatzbank');
+        const formationHtml = benchMarker >= 0 ? section.slice(0, benchMarker) : section;
+        const benchHtml = benchMarker >= 0 ? section.slice(benchMarker) : '';
+
+        // ── Starters: from formation-player-container divs ──
+        const starterRegex = /formation-player-container[\s\S]*?tm-shirt-number[^>]*>\s*(\d+)\s*<\/div>[\s\S]*?href="(\/[^"]*\/profil\/spieler\/(\d+))">([^<]+)<\/a>/g;
+        let sm;
+        while ((sm = starterRegex.exec(formationHtml)) !== null) {
+          const tmId = sm[3];
+          if (seenIds.has(tmId)) continue;
+          seenIds.add(tmId);
+          starters.push({
+            tmId,
+            tmProfilePath: sm[2],
+            name: decodeHtmlEntities(sm[4].trim()),
+            shirtNumber: parseInt(sm[1]),
+            starter: true,
+            position: null,
+          });
+        }
+
+        // ── Bench: from ersatzbank table rows ──
+        const benchRowRegex = /<tr>([\s\S]*?)<\/tr>/g;
+        let br;
+        while ((br = benchRowRegex.exec(benchHtml)) !== null) {
+          const row = br[1];
+          const linkM = row.match(/href="(\/[^"]*\/profil\/spieler\/(\d+))"[^>]*>([^<]+)<\/a>/);
+          if (!linkM) continue;
+          const tmId = linkM[2];
+          if (seenIds.has(tmId)) continue;
+          seenIds.add(tmId);
+
+          const numM = row.match(/tm-shirt-number[^>]*>\s*(\d+)\s*<\/div>/);
+          // Position abbreviation is in the last <td>
+          const posM = row.match(/<td>\s*([A-ZÀ-Ü][A-Za-zÀ-ü]+)\s*<\/td>\s*$/);
+          const posAbbr = posM ? posM[1].trim() : null;
+          const posExpanded = posAbbr && TM_BENCH_POS[posAbbr] ? TM_BENCH_POS[posAbbr] : posAbbr;
+
+          bench.push({
+            tmId,
+            tmProfilePath: linkM[1],
+            name: decodeHtmlEntities(linkM[3].trim()),
+            shirtNumber: numM ? parseInt(numM[1]) : null,
+            starter: false,
+            position: posExpanded,
+          });
+        }
+
+        teams.push({
+          name: teamNames[ti - 1],
+          logo: teamLogos[ti - 1],
+          players: [...starters, ...bench],
+        });
+      }
+
+      console.log(`[fetch-tm-match] ${homeName} vs ${awayName} – ${teams.map(t => t.players.length).join('+')} players`);
+
+      return res.json({
+        success: true,
+        homeName,
+        awayName,
+        homeLogo,
+        awayLogo,
+        competition,
+        score,
+        matchDate,
+        teams,
+      });
+    } catch (err) {
+      console.error('[fetch-tm-match] Error:', err);
+      return res.status(500).json({ error: err.message });
+    }
+  }
+
   if (name === "enrich-all-players") {
     const [players] = await pool.query(
       'SELECT id, name, club, nationality, generation FROM players WHERE user_id = ? ORDER BY name',
@@ -5193,7 +5715,7 @@ app.post("/api/functions/:name", authMiddleware, async (req, res) => {
       for (const p of players) {
         try {
           const [rows] = await pool.query(
-            'SELECT id, name, club, league, nationality, date_of_birth, contract_end, external_data, photo_url FROM players WHERE id = ?',
+            'SELECT id, name, club, league, nationality, date_of_birth, contract_end, external_data, photo_url, foot FROM players WHERE id = ?',
             [p.id]
           );
           if (!rows[0]) continue;
@@ -5820,59 +6342,78 @@ app.post("/api/functions/:name", authMiddleware, async (req, res) => {
         }
       }
 
-      // Save team data to club_logos + club_directory (fire-and-forget)
-      try {
-        // Ensure club_directory exists
-        await pool.query(`
-          CREATE TABLE IF NOT EXISTS club_directory (
-            club_name VARCHAR(255) NOT NULL PRIMARY KEY,
-            competition VARCHAR(255) NOT NULL DEFAULT '',
-            country VARCHAR(255) NOT NULL DEFAULT '',
-            country_code VARCHAR(10) NOT NULL DEFAULT '',
-            logo_url TEXT NULL,
-            updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-            INDEX idx_club_dir_competition (competition),
-            INDEX idx_club_dir_country (country)
-          )
-        `).catch(() => {});
+      // Save team data to club_logos + club_directory (fire-and-forget — NOT awaited)
+      (async () => {
+        try {
+          // Ensure club_directory exists
+          await pool.query(`
+            CREATE TABLE IF NOT EXISTS club_directory (
+              club_name VARCHAR(255) NOT NULL PRIMARY KEY,
+              competition VARCHAR(255) NOT NULL DEFAULT '',
+              country VARCHAR(255) NOT NULL DEFAULT '',
+              country_code VARCHAR(10) NOT NULL DEFAULT '',
+              logo_url TEXT NULL,
+              updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+              INDEX idx_club_dir_competition (competition),
+              INDEX idx_club_dir_country (country)
+            )
+          `).catch(() => {});
 
-        const teamsSeen = new Set();
-        for (const comp of competitions) {
-          for (const ev of comp.events) {
-            const teams = [
-              { name: ev.home_team, badge: ev.home_badge },
-              { name: ev.away_team, badge: ev.away_badge },
-            ];
-            for (const { name, badge } of teams) {
-              if (!name || name === "?" || teamsSeen.has(name)) continue;
-              teamsSeen.add(name);
+          // Collect all teams first, then batch insert
+          const logoValues = [];
+          const logoParams = [];
+          const dirValues = [];
+          const dirParams = [];
+          const teamsSeen = new Set();
 
-              // club_logos
-              if (badge) {
-                await pool.query(
-                  `INSERT IGNORE INTO club_logos (club_name, logo_url) VALUES (?, ?)`,
-                  [name, badge]
-                ).catch(() => {});
+          for (const comp of competitions) {
+            for (const ev of comp.events) {
+              const teams = [
+                { name: ev.home_team, badge: ev.home_badge },
+                { name: ev.away_team, badge: ev.away_badge },
+              ];
+              for (const { name, badge } of teams) {
+                if (!name || name === "?" || teamsSeen.has(name)) continue;
+                teamsSeen.add(name);
+
+                if (badge) {
+                  logoValues.push('(?, ?)');
+                  logoParams.push(name, badge);
+                }
+
+                dirValues.push('(?, ?, ?, ?, ?)');
+                dirParams.push(name, comp.name, comp.country, comp.country_code, badge || null);
               }
-
-              // club_directory — upsert with latest competition info
-              await pool.query(
-                `INSERT INTO club_directory (club_name, competition, country, country_code, logo_url)
-                 VALUES (?, ?, ?, ?, ?)
-                 ON DUPLICATE KEY UPDATE
-                   competition = VALUES(competition),
-                   country = VALUES(country),
-                   country_code = VALUES(country_code),
-                   logo_url = COALESCE(NULLIF(VALUES(logo_url), ''), logo_url)`,
-                [name, comp.name, comp.country, comp.country_code, badge || null]
-              ).catch(() => {});
             }
           }
+
+          // Batch insert club_logos
+          if (logoValues.length > 0) {
+            await pool.query(
+              `INSERT IGNORE INTO club_logos (club_name, logo_url) VALUES ${logoValues.join(', ')}`,
+              logoParams
+            ).catch(() => {});
+          }
+
+          // Batch insert club_directory
+          if (dirValues.length > 0) {
+            await pool.query(
+              `INSERT INTO club_directory (club_name, competition, country, country_code, logo_url)
+               VALUES ${dirValues.join(', ')}
+               ON DUPLICATE KEY UPDATE
+                 competition = VALUES(competition),
+                 country = VALUES(country),
+                 country_code = VALUES(country_code),
+                 logo_url = COALESCE(NULLIF(VALUES(logo_url), ''), logo_url)`,
+              dirParams
+            ).catch(() => {});
+          }
+
+          console.log(`[livescore] Saved ${teamsSeen.size} teams to club_directory + club_logos`);
+        } catch (e) {
+          console.warn("[livescore] Team data save error:", e.message);
         }
-        console.log(`[livescore] Saved ${teamsSeen.size} teams to club_directory + club_logos`);
-      } catch (e) {
-        console.warn("[livescore] Team data save error:", e.message);
-      }
+      })();
 
       const fullResult = { competitions, date, count: totalEvents };
 
@@ -6976,6 +7517,7 @@ export default app;
 if (!isVercel) {
   app.listen(port, () => {
     console.log(`API listening on http://localhost:${port}`);
+    runMigrations();
     ensureFixtureTables();
     // Clear stale match-detail caches on startup so new parsing logic takes effect
     pool.query("DELETE FROM api_football_cache WHERE cache_key LIKE 'match-detail:%' OR cache_key LIKE 'lineup:%'")

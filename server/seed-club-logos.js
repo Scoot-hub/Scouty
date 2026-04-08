@@ -20,7 +20,7 @@ const DELAY_MS = 420; // stay well within free-tier limits
 // ── Mapping: canonical name → TheSportsDB search terms ─────────────────────
 const CLUB_NAME_MAP = {
   // France
-  'Paris Saint-Germain': ['Paris Saint-Germain'],
+  'Paris Saint-Germain': ['Paris SG', 'Paris Saint-Germain', 'Paris Saint Germain'],
   'Olympique de Marseille': ['Marseille', 'Olympique Marseille'],
   'Olympique Lyonnais': ['Lyon', 'Olympique Lyonnais'],
   'AS Monaco': ['AS Monaco'],

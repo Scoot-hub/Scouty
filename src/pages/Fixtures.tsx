@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { Link, useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import {
   useEventsForDay,
@@ -683,10 +683,10 @@ function MyPlayerEventCard({ match, t, onSave, onSaveToOrg, orgs, isSaved, utcOf
         {/* Players involved */}
         <div className="mt-2.5 pt-2 border-t border-amber-500/20 flex items-center gap-2 flex-wrap">
           {players.slice(0, 4).map(p => (
-            <div key={p.id} className="flex items-center gap-1.5">
+            <Link key={p.id} to={`/player/${p.id}`} className="flex items-center gap-1.5 hover:bg-muted/50 rounded-md px-1 -mx-1 py-0.5 transition-colors" onClick={e => e.stopPropagation()}>
               <PlayerAvatar name={p.name} photoUrl={p.photo_url} size="sm" className="!w-6 !h-6 !text-[8px] !rounded-md" />
-              <span className="text-[11px] font-medium truncate max-w-[100px]">{p.name}</span>
-            </div>
+              <span className="text-[11px] font-medium truncate max-w-[100px] hover:underline">{p.name}</span>
+            </Link>
           ))}
           {players.length > 4 && (
             <span className="text-[10px] text-muted-foreground">+{players.length - 4}</span>
