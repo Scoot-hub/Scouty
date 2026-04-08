@@ -4,16 +4,26 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { CustomFieldsManager } from '@/components/CustomFieldsManager';
 import { useCustomFields, useDeleteCustomField } from '@/hooks/use-custom-fields';
-import { Settings2, Globe, Pencil, Trash2 } from 'lucide-react';
+import { Settings2, Globe, Pencil, Trash2, Eye, BellOff, MessageSquareOff } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import LanguageSwitcher from '@/components/LanguageSwitcher';
 import ThemeSwitcher from '@/components/ThemeSwitcher';
+import { Switch } from '@/components/ui/switch';
+import { useUiPreferences } from '@/contexts/UiPreferencesContext';
 import { toast } from 'sonner';
 
 export default function Settings() {
   const { t } = useTranslation();
   const { data: fields = [] } = useCustomFields();
   const deleteField = useDeleteCustomField();
+  const {
+    reducedVisionMode,
+    showNotifications,
+    showChatbot,
+    setReducedVisionMode,
+    setShowNotifications,
+    setShowChatbot,
+  } = useUiPreferences();
 
   const handleDelete = async (id: string) => {
     try {
@@ -117,6 +127,38 @@ export default function Settings() {
               <div>
                 <label className="text-sm font-medium text-muted-foreground mb-2 block">{t('settings.theme')}</label>
                 <ThemeSwitcher variant="outline" />
+              </div>
+              <div className="space-y-4">
+                <div className="flex items-start justify-between gap-4 rounded-xl border border-border/60 bg-muted/20 p-4">
+                  <div className="min-w-0">
+                    <div className="flex items-center gap-2 text-sm font-medium">
+                      <Eye className="w-4 h-4 text-primary" />
+                      {t('settings.reduced_vision_title')}
+                    </div>
+                    <p className="mt-1 text-sm text-muted-foreground">{t('settings.reduced_vision_desc')}</p>
+                  </div>
+                  <Switch checked={reducedVisionMode} onCheckedChange={setReducedVisionMode} />
+                </div>
+                <div className="flex items-start justify-between gap-4 rounded-xl border border-border/60 bg-muted/20 p-4">
+                  <div className="min-w-0">
+                    <div className="flex items-center gap-2 text-sm font-medium">
+                      <BellOff className="w-4 h-4 text-primary" />
+                      {t('settings.notifications_toggle_title')}
+                    </div>
+                    <p className="mt-1 text-sm text-muted-foreground">{t('settings.notifications_toggle_desc')}</p>
+                  </div>
+                  <Switch checked={showNotifications} onCheckedChange={setShowNotifications} />
+                </div>
+                <div className="flex items-start justify-between gap-4 rounded-xl border border-border/60 bg-muted/20 p-4">
+                  <div className="min-w-0">
+                    <div className="flex items-center gap-2 text-sm font-medium">
+                      <MessageSquareOff className="w-4 h-4 text-primary" />
+                      {t('settings.chatbot_toggle_title')}
+                    </div>
+                    <p className="mt-1 text-sm text-muted-foreground">{t('settings.chatbot_toggle_desc')}</p>
+                  </div>
+                  <Switch checked={showChatbot} onCheckedChange={setShowChatbot} />
+                </div>
               </div>
             </CardContent>
           </Card>

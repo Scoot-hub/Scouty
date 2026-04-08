@@ -6,6 +6,7 @@ import VercelAnalytics from "@/components/VercelAnalytics";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
 import { AuthProvider } from "@/contexts/AuthContext";
+import { UiPreferencesProvider } from "@/contexts/UiPreferencesContext";
 import ProtectedRoute from "@/components/layout/ProtectedRoute";
 import AppLayout from "@/components/layout/AppLayout";
 import CookieBanner from "@/components/CookieBanner";
@@ -22,6 +23,7 @@ const Admin = lazy(() => import("@/pages/Admin"));
 const AdminTickets = lazy(() => import("@/pages/AdminTickets"));
 const AdminRoles = lazy(() => import("@/pages/AdminRoles"));
 const AdminSettings = lazy(() => import("@/pages/AdminSettings"));
+const AdminNotifications = lazy(() => import("@/pages/AdminNotifications"));
 const MyTickets = lazy(() => import("@/pages/MyTickets"));
 const Pricing = lazy(() => import("@/pages/Pricing"));
 const PremiumSuccess = lazy(() => import("@/pages/PremiumSuccess"));
@@ -68,6 +70,7 @@ const queryClient = new QueryClient({
 
 const App = () => (
   <ThemeProvider>
+  <UiPreferencesProvider>
   <QueryClientProvider client={queryClient}>
     <TooltipProvider>
       <Toaster />
@@ -108,6 +111,7 @@ const App = () => (
                 <Route path="/admin/analytics" element={<AdminAnalytics />} />
                 <Route path="/admin/tickets" element={<AdminTickets />} />
                 <Route path="/admin/settings" element={<AdminSettings />} />
+                <Route path="/admin/notifications" element={<AdminNotifications />} />
                 <Route path="/my-tickets" element={<MyTickets />} />
                 <Route path="/premium-success" element={<PremiumSuccess />} />
                 <Route path="/account" element={<Account />} />
@@ -138,6 +142,7 @@ const App = () => (
       <VercelAnalytics />
     </TooltipProvider>
   </QueryClientProvider>
+  </UiPreferencesProvider>
   </ThemeProvider>
 );
 

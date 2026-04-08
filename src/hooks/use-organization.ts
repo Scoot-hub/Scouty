@@ -231,11 +231,15 @@ export function useDeleteOrganization() {
   const queryClient = useQueryClient();
 
   return useMutation({
-    mutationFn: async (organizationId: string) => {
+    mutationFn: async ({ organizationId, message }: { organizationId: string; message: string }) => {
       const session = (await supabase.auth.getSession()).data.session;
       const res = await fetch(`${(import.meta.env.API_URL || '/api').replace(/\/$/, '')}/organizations/${organizationId}`, {
         method: 'DELETE',
-        headers: { Authorization: `Bearer ${session?.access_token}` },
+        headers: {
+          Authorization: `Bearer ${session?.access_token}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ message }),
       });
       if (!res.ok) {
         const err = await res.json().catch(() => ({}));

@@ -10,6 +10,7 @@ import FeedbackPopup from '@/components/FeedbackPopup';
 import ScrollRestoration from '@/components/ScrollRestoration';
 import { OperationBannerProvider } from '@/contexts/OperationBannerContext';
 import OperationBanner from '@/components/OperationBanner';
+import { useUiPreferences } from '@/contexts/UiPreferencesContext';
 
 function ImpersonationBanner() {
   const { t } = useTranslation();
@@ -36,6 +37,7 @@ function ImpersonationBanner() {
 
 export default function AppLayout() {
   const { isImpersonating } = useAuth();
+  const { showNotifications, showChatbot } = useUiPreferences();
   const [collapsed, setCollapsed] = useState(() => localStorage.getItem('sidebar-collapsed') === 'true');
 
   const toggleCollapsed = () => {
@@ -51,16 +53,18 @@ export default function AppLayout() {
         <AppSidebar collapsed={collapsed} onToggle={toggleCollapsed} />
         <div className={`${collapsed ? 'lg:ml-[72px]' : 'lg:ml-64'} min-h-screen flex flex-col transition-[margin] duration-300`}>
           {isImpersonating && <ImpersonationBanner />}
-          <div className="flex items-center justify-end px-4 lg:px-8 pt-3 pb-1">
-            <NotificationCenter />
-          </div>
+          {showNotifications && (
+            <div className="flex items-center justify-end px-4 lg:px-8 pt-3 pb-1">
+              <NotificationCenter />
+            </div>
+          )}
           <main className="flex-1 px-4 lg:px-8 pb-4 lg:pb-8">
             <Outlet />
           </main>
         </div>
         <ScrollRestoration />
         <OperationBanner />
-        <ChatBot />
+        {showChatbot && <ChatBot />}
         <FeedbackPopup />
       </div>
     </OperationBannerProvider>

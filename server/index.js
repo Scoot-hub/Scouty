@@ -4153,31 +4153,58 @@ app.delete("/api/organizations/:id/logo", authMiddleware, async (req, res) => {
   }
 });
 
-// DELETE /api/organizations/:id — delete organization and all linked data (owner only)
+// DELETE /api/organizations/:id — delete organization and all linked data (owner/admin)
 app.delete("/api/organizations/:id", authMiddleware, async (req, res) => {
   const { id } = req.params;
   const userId = req.user.id;
+  const { message } = req.body || {};
 
   try {
-    // Only the owner can delete
+    const customMessage = String(message || "").trim();
+    if (!customMessage) {
+      return res.status(400).json({ error: "Un message de suppression est requis." });
+    }
+
+    const [adminRows] = await pool.query(
+      "SELECT id FROM user_roles WHERE user_id = ? AND role = 'admin' LIMIT 1",
+      [userId]
+    );
+    const isPlatformAdmin = adminRows.length > 0;
+
+    // Organization owner/admin or platform admin can delete
     const [memberRows] = await pool.query(
       "SELECT role FROM organization_members WHERE organization_id = ? AND user_id = ? LIMIT 1",
       [id, userId],
     );
-    if (!memberRows.length || memberRows[0].role !== 'owner') {
-      return res.status(403).json({ error: "Seul le propriétaire peut supprimer l'organisation." });
+    const isOrgAdmin = memberRows.length > 0 && ['owner', 'admin'].includes(memberRows[0].role);
+    if (!isOrgAdmin && !isPlatformAdmin) {
+      return res.status(403).json({ error: "Seuls les administrateurs de l'organisation ou de la plateforme peuvent la supprimer." });
     }
 
-    // Delete logo from DB storage
-    const [orgRows] = await pool.query("SELECT logo_url FROM organizations WHERE id = ? LIMIT 1", [id]);
+    const [orgRows] = await pool.query("SELECT name, logo_url FROM organizations WHERE id = ? LIMIT 1", [id]);
+    if (!orgRows.length) return res.status(404).json({ error: "Organisation introuvable." });
+
+    const orgName = orgRows[0].name;
     const logoUrl = orgRows[0]?.logo_url;
     await deleteImageFromDb(logoUrl);
     await deleteStoredFile(logoUrl);
 
+    const [usersToNotify] = await pool.query(
+      "SELECT id FROM users"
+    );
+
+    for (const targetUser of usersToNotify) {
+      await createNotification(targetUser.id, {
+        type: "organization",
+        title: `${orgName} a été supprimée`,
+        message: customMessage,
+        icon: "Building2",
+        link: "/organization",
+      });
+    }
+
     // Detach players: clear club field for players whose club matches this org name (case-insensitive, accent-insensitive)
-    const [orgInfo] = await pool.query("SELECT name FROM organizations WHERE id = ? LIMIT 1", [id]);
-    if (orgInfo[0]?.name) {
-      const orgName = orgInfo[0].name;
+    if (orgName) {
       // Match exact, case-insensitive, and common variations (with/without accents)
       await pool.query(
         `UPDATE players SET club = '', updated_at = NOW()
@@ -4188,9 +4215,9 @@ app.delete("/api/organizations/:id", authMiddleware, async (req, res) => {
     }
 
     // Also clean club_directory / club_logos entries for this club name
-    if (orgInfo[0]?.name) {
-      try { await pool.query("DELETE FROM club_directory WHERE club_name = ?", [orgInfo[0].name]); } catch {}
-      try { await pool.query("DELETE FROM club_logos WHERE club_name = ?", [orgInfo[0].name]); } catch {}
+    if (orgName) {
+      try { await pool.query("DELETE FROM club_directory WHERE club_name = ?", [orgName]); } catch {}
+      try { await pool.query("DELETE FROM club_logos WHERE club_name = ?", [orgName]); } catch {}
     }
 
     // CASCADE will handle: organization_members, player_org_shares, match_assignments, squad_players
@@ -4199,6 +4226,123 @@ app.delete("/api/organizations/:id", authMiddleware, async (req, res) => {
     return res.json({ ok: true });
   } catch (err) {
     console.error("[org/delete] Error:", err);
+    return res.status(500).json({ error: "Erreur serveur." });
+  }
+});
+
+// GET /api/admin/notifications — list notifications with optional filters
+app.get("/api/admin/notifications", authMiddleware, ensureAdmin, async (req, res) => {
+  try {
+    const search = String(req.query.search || "").trim();
+    const limitRaw = Number.parseInt(String(req.query.limit || "200"), 10);
+    const limit = Number.isFinite(limitRaw) ? Math.min(Math.max(limitRaw, 1), 1000) : 200;
+
+    const params = [];
+    let whereSql = "";
+    if (search) {
+      whereSql = `WHERE (
+        LOWER(n.title) LIKE ?
+        OR LOWER(COALESCE(n.message, '')) LIKE ?
+        OR LOWER(COALESCE(n.type, '')) LIKE ?
+        OR LOWER(COALESCE(u.email, '')) LIKE ?
+      )`;
+      const like = `%${search.toLowerCase()}%`;
+      params.push(like, like, like, like);
+    }
+
+    const [rows] = await pool.query(
+      `SELECT n.*, u.email AS user_email
+       FROM notifications n
+       LEFT JOIN users u ON u.id = n.user_id
+       ${whereSql}
+       ORDER BY n.created_at DESC
+       LIMIT ${limit}`,
+      params
+    );
+    return res.json(rows);
+  } catch (err) {
+    console.error("[admin/notifications] GET error:", err);
+    return res.status(500).json({ error: "Erreur serveur." });
+  }
+});
+
+// DELETE /api/admin/notifications/:id — delete one notification
+app.delete("/api/admin/notifications/:id", authMiddleware, ensureAdmin, async (req, res) => {
+  try {
+    const [result] = await pool.query("DELETE FROM notifications WHERE id = ?", [req.params.id]);
+    return res.json({ ok: true, deleted: result.affectedRows || 0 });
+  } catch (err) {
+    console.error("[admin/notifications] DELETE error:", err);
+    return res.status(500).json({ error: "Erreur serveur." });
+  }
+});
+
+// POST /api/admin/notifications/purge-older-than — delete notifications older than X days
+app.post("/api/admin/notifications/purge-older-than", authMiddleware, ensureAdmin, async (req, res) => {
+  try {
+    const daysRaw = Number.parseInt(String(req.body?.days || ""), 10);
+    if (!Number.isFinite(daysRaw) || daysRaw < 1) {
+      return res.status(400).json({ error: "Le nombre de jours doit être supérieur ou égal à 1." });
+    }
+    const [result] = await pool.query(
+      "DELETE FROM notifications WHERE created_at < DATE_SUB(NOW(), INTERVAL ? DAY)",
+      [daysRaw]
+    );
+    return res.json({ ok: true, deleted: result.affectedRows || 0 });
+  } catch (err) {
+    console.error("[admin/notifications/purge] error:", err);
+    return res.status(500).json({ error: "Erreur serveur." });
+  }
+});
+
+// DELETE /api/admin/organizations/:id — admin-only organization deletion with notification reason
+app.delete("/api/admin/organizations/:id", authMiddleware, ensureAdmin, async (req, res) => {
+  const { id } = req.params;
+  const { message } = req.body || {};
+
+  try {
+    const customMessage = String(message || "").trim();
+    if (!customMessage) {
+      return res.status(400).json({ error: "Un message de suppression est requis." });
+    }
+
+    const [orgRows] = await pool.query("SELECT name, logo_url FROM organizations WHERE id = ? LIMIT 1", [id]);
+    if (!orgRows.length) return res.status(404).json({ error: "Organisation introuvable." });
+
+    const orgName = orgRows[0].name;
+    const logoUrl = orgRows[0]?.logo_url;
+    await deleteImageFromDb(logoUrl);
+    await deleteStoredFile(logoUrl);
+
+    const [usersToNotify] = await pool.query("SELECT id FROM users");
+    for (const targetUser of usersToNotify) {
+      await createNotification(targetUser.id, {
+        type: "organization",
+        title: `${orgName} a été supprimée`,
+        message: customMessage,
+        icon: "Building2",
+        link: "/organization",
+      });
+    }
+
+    if (orgName) {
+      await pool.query(
+        `UPDATE players SET club = '', updated_at = NOW()
+         WHERE (club = ? OR LOWER(club) = LOWER(?))
+           AND user_id IN (SELECT user_id FROM organization_members WHERE organization_id = ?)`,
+        [orgName, orgName, id]
+      );
+    }
+
+    if (orgName) {
+      try { await pool.query("DELETE FROM club_directory WHERE club_name = ?", [orgName]); } catch {}
+      try { await pool.query("DELETE FROM club_logos WHERE club_name = ?", [orgName]); } catch {}
+    }
+
+    await pool.query("DELETE FROM organizations WHERE id = ?", [id]);
+    return res.json({ ok: true });
+  } catch (err) {
+    console.error("[admin/org/delete] Error:", err);
     return res.status(500).json({ error: "Erreur serveur." });
   }
 });

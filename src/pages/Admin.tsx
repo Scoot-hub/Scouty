@@ -6,9 +6,10 @@ import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
+import { Textarea } from '@/components/ui/textarea';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs';
-import { Shield, Crown, Users, Mail, UserCheck, BarChart3, Lock, Check, X, Search, Plus, Trash2, ShieldCheck, ChevronDown, ChevronRight, Building2, UserPlus, UserMinus, Palette, User, ShieldAlert } from 'lucide-react';
+import { Shield, Crown, Users, Mail, UserCheck, BarChart3, Lock, Check, X, Search, Plus, Trash2, ShieldCheck, ChevronDown, ChevronRight, Building2, UserPlus, UserMinus, Palette, User, ShieldAlert, Bell } from 'lucide-react';
 import { toast } from 'sonner';
 import { Navigate, Link } from 'react-router-dom';
 import { useAuth } from '@/contexts/AuthContext';
@@ -125,6 +126,8 @@ export default function Admin() {
   const [addMemberEmail, setAddMemberEmail] = useState('');
   const [addMemberRole, setAddMemberRole] = useState('member');
   const [orgActionLoading, setOrgActionLoading] = useState<string | null>(null);
+  const [deletingOrg, setDeletingOrg] = useState<AdminOrg | null>(null);
+  const [deleteOrgReason, setDeleteOrgReason] = useState('');
   const [expandedPages, setExpandedPages] = useState<Set<string>>(new Set());
   const [addRoleForUser, setAddRoleForUser] = useState<string | null>(null);
   const [addRoleValue, setAddRoleValue] = useState('');
@@ -474,6 +477,30 @@ export default function Admin() {
     }
   };
 
+  const deleteOrganization = async () => {
+    if (!deletingOrg || !deleteOrgReason.trim()) return;
+    setOrgActionLoading(`delete-${deletingOrg.id}`);
+    try {
+      const res = await fetch(`${API_BASE}/admin/organizations/${deletingOrg.id}`, {
+        method: 'DELETE',
+        headers: await getAuthHeaders(),
+        body: JSON.stringify({ message: deleteOrgReason.trim() }),
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.error || 'Failed');
+      }
+      toast.success(t('admin.org_deleted', { name: deletingOrg.name }));
+      queryClient.invalidateQueries({ queryKey: ['admin-organizations'] });
+      setDeletingOrg(null);
+      setDeleteOrgReason('');
+    } catch (err: any) {
+      toast.error(err?.message || t('common.error'));
+    } finally {
+      setOrgActionLoading(null);
+    }
+  };
+
   // ── Guard ──
   if (adminLoading) return (
     <div className="flex items-center justify-center min-h-[40vh]">
@@ -486,17 +513,17 @@ export default function Admin() {
   return (
     <div className="w-full max-w-6xl mx-auto space-y-6 overflow-hidden">
       {/* Header */}
-      <div className="flex items-center justify-between">
-        <div className="flex items-center gap-3">
+      <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
+        <div className="flex items-center gap-3 min-w-0">
           <div className="w-10 h-10 rounded-xl bg-primary/10 flex items-center justify-center">
             <Shield className="w-5 h-5 text-primary" />
           </div>
-          <div>
+          <div className="min-w-0">
             <h1 className="text-2xl font-extrabold tracking-tight">{t('admin.title')}</h1>
             <p className="text-sm text-muted-foreground">{t('admin.subtitle')}</p>
           </div>
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2">
           <Link to="/admin/roles">
             <Button variant="outline" className="rounded-xl gap-2">
               <ShieldCheck className="w-4 h-4" />
@@ -513,6 +540,12 @@ export default function Admin() {
             <Button variant="outline" className="rounded-xl gap-2">
               <BarChart3 className="w-4 h-4" />
               {t('admin.analytics')}
+            </Button>
+          </Link>
+          <Link to="/admin/notifications">
+            <Button variant="outline" className="rounded-xl gap-2">
+              <Bell className="w-4 h-4" />
+              {t('admin.notifications')}
             </Button>
           </Link>
         </div>
@@ -743,7 +776,23 @@ export default function Admin() {
                           </CardDescription>
                         </div>
                       </div>
-                      <Badge variant="outline" className="text-xs font-mono">{org.invite_code}</Badge>
+                      <div className="flex items-center gap-2">
+                        <Badge variant="outline" className="text-xs font-mono">{org.invite_code}</Badge>
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          size="icon"
+                          className="h-8 w-8 text-destructive hover:text-destructive hover:bg-destructive/10"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setDeletingOrg(org);
+                            setDeleteOrgReason('');
+                          }}
+                          title={t('admin.org_delete')}
+                        >
+                          <Trash2 className="w-4 h-4" />
+                        </Button>
+                      </div>
                     </div>
                   </CardHeader>
 
@@ -868,6 +917,52 @@ export default function Admin() {
               onClick={deleteUser}
             >
               {t('admin.delete_user_confirm')}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+      <AlertDialog
+        open={!!deletingOrg}
+        onOpenChange={open => {
+          if (!open) {
+            setDeletingOrg(null);
+            setDeleteOrgReason('');
+          }
+        }}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>{t('admin.org_delete_title')}</AlertDialogTitle>
+            <AlertDialogDescription>
+              {t('admin.org_delete_desc', { name: deletingOrg?.name ?? '' })}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <div className="space-y-3">
+            <p className="text-xs text-destructive/80 bg-destructive/5 rounded-lg p-3">
+              {t('admin.org_delete_warning')}
+            </p>
+            <div>
+              <label className="text-xs font-medium text-muted-foreground">{t('admin.org_delete_reason_label')}</label>
+              <Textarea
+                className="mt-1"
+                value={deleteOrgReason}
+                onChange={(e) => setDeleteOrgReason(e.target.value)}
+                placeholder={t('admin.org_delete_reason_placeholder')}
+              />
+              <p className="mt-1 text-[11px] text-muted-foreground">{t('admin.org_delete_reason_help')}</p>
+            </div>
+          </div>
+          <AlertDialogFooter>
+            <AlertDialogCancel>{t('common.cancel')}</AlertDialogCancel>
+            <AlertDialogAction
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+              disabled={!deleteOrgReason.trim() || orgActionLoading === `delete-${deletingOrg?.id}`}
+              onClick={(e) => {
+                e.preventDefault();
+                void deleteOrganization();
+              }}
+            >
+              {t('admin.org_delete_confirm')}
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>
