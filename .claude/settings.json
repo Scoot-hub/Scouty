@@ -58,7 +58,24 @@
       "Bash(curl -s -H 'Accept: application/json' -H 'Accept-Language: fr-FR' 'https://tmapi-alpha.transfermarkt.technology/clubs?ids[]=53299&ids[]=515')",
       "Bash(curl -s \"https://www.thesportsdb.com/api/v1/json/3/searchteams.php?t=AS%20Saint-Etienne\" -H \"User-Agent: Mozilla/5.0\" -H \"Accept: application/json\")",
       "Bash(node -e \"const d=[];process.stdin.on\\('data',c=>d.push\\(c\\)\\);process.stdin.on\\('end',\\(\\)=>{const j=JSON.parse\\(Buffer.concat\\(d\\)\\);console.log\\('teams:',j.teams?.length||0\\);if\\(j.teams\\)j.teams.forEach\\(t=>console.log\\(' -',t.strTeam,'|',t.strSport\\)\\)}\\)\")",
-      "Bash(curl -s \"https://www.thesportsdb.com/api/v1/json/3/searchteams.php?t=Saint-Etienne\" -H \"User-Agent: Mozilla/5.0\" -H \"Accept: application/json\")"
+      "Bash(curl -s \"https://www.thesportsdb.com/api/v1/json/3/searchteams.php?t=Saint-Etienne\" -H \"User-Agent: Mozilla/5.0\" -H \"Accept: application/json\")",
+      "WebFetch(domain:scoutingstats.ai)",
+      "WebSearch",
+      "WebFetch(domain:apps.apple.com)",
+      "WebFetch(domain:bilarna.com)",
+      "WebFetch(domain:eliteai.tools)",
+      "Bash(node -e ' *)",
+      "WebFetch(domain:www.fotmob.com)",
+      "WebFetch(domain:pypi.org)",
+      "Bash(curl -s \"https://raw.githubusercontent.com/tommhe14/fotmob-wrapper/main/fotmob/fotmob.py\")",
+      "Bash(curl -s \"https://raw.githubusercontent.com/bgrnwd/fotmob/main/fotmob/fotmob.py\")",
+      "WebFetch(domain:raw.githubusercontent.com)",
+      "Bash(gh api *)",
+      "Bash(python3 -c \"import sys,json; t=json.load\\(sys.stdin\\); [print\\(x['path']\\) for x in t.get\\('tree',[]\\)]\")",
+      "Bash(node -e \"const d=require\\('fs'\\).readFileSync\\('/dev/stdin','utf8'\\); const t=JSON.parse\\(d\\); t.tree.forEach\\(x=>console.log\\(x.path\\)\\)\")",
+      "WebFetch(domain:joyansbhathena.medium.com)",
+      "WebFetch(domain:www.npmjs.com)",
+      "WebFetch(domain:viktornilsson.github.io)"
     ],
     "additionalDirectories": [
       "\\tmp"

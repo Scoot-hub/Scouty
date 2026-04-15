@@ -1,5 +1,6 @@
 import { cn } from '@/lib/utils';
-import { Opinion, getOpinionBgClass } from '@/types/player';
+import { Opinion, getOpinionBgClass, getOpinionTranslationKey } from '@/types/player';
+import { useTranslation } from 'react-i18next';
 
 interface OpinionBadgeProps {
   opinion: Opinion;
@@ -8,6 +9,7 @@ interface OpinionBadgeProps {
 }
 
 export function OpinionBadge({ opinion, size = 'md', className }: OpinionBadgeProps) {
+  const { t } = useTranslation();
   return (
     <span
       className={cn(
@@ -19,7 +21,7 @@ export function OpinionBadge({ opinion, size = 'md', className }: OpinionBadgePr
         className
       )}
     >
-      {opinion}
+      {t(getOpinionTranslationKey(opinion))}
     </span>
   );
 }

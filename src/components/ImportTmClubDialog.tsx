@@ -192,6 +192,7 @@ export function ImportTmClubDialog({ externalOpen, onExternalOpenChange }: { ext
               current_level: 0,
               potential: 0,
               general_opinion: 'À revoir' as const,
+              date_of_birth: p.dateOfBirth || undefined,
               contract_end: p.contractEnd || undefined,
               ts_report_published: false,
               transfermarkt_id: p.tmId || undefined,

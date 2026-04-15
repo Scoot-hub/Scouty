@@ -33,8 +33,12 @@ export function CircularGauge({
 
   const strokeColor = variant === 'success' ? 'hsl(var(--success))' : 'hsl(var(--primary))';
 
+  // Responsive text sizing based on gauge size
+  const textClass = size >= 100 ? 'text-2xl' : size >= 70 ? 'text-lg' : size >= 50 ? 'text-sm' : 'text-xs';
+  const labelClass = size >= 80 ? 'text-sm' : 'text-[10px]';
+
   return (
-    <div className={cn('flex flex-col items-center gap-2', className)}>
+    <div className={cn('flex flex-col items-center gap-1', className)}>
       <div className="relative" style={{ width: size, height: size }}>
         <svg width={size} height={size} className="-rotate-90">
           <circle
@@ -59,10 +63,10 @@ export function CircularGauge({
           />
         </svg>
         <div className="absolute inset-0 flex items-center justify-center">
-          <span className="text-2xl font-bold font-mono">{value}</span>
+          <span className={`${textClass} font-bold font-mono`}>{value}</span>
         </div>
       </div>
-      {label && <span className="text-sm font-medium text-muted-foreground">{label}</span>}
+      {label && <span className={`${labelClass} font-medium text-muted-foreground`}>{label}</span>}
     </div>
   );
 }

@@ -1,8 +1,8 @@
 import { useEffect, useMemo, useState } from 'react';
-import { Link } from 'react-router-dom';
+import { Link, useParams } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { useOrgPlayers, useCurrentOrg } from '@/hooks/use-organization';
-import { getPlayerAge, getOpinionBgClass, getOpinionEmoji, resolveLeagueName, translateCountry, type Opinion, type Position } from '@/types/player';
+import { getPlayerAge, getOpinionBgClass, getOpinionEmoji, getOpinionTranslationKey, ALL_OPINIONS, translateFoot, resolveLeagueName, translateCountry, type Opinion, type Position, type Foot } from '@/types/player';
 import { usePositions } from '@/hooks/use-positions';
 import { FlagIcon } from '@/components/ui/flag-icon';
 import { PlayerAvatar } from '@/components/ui/player-avatar';
@@ -29,6 +29,7 @@ function loadFilters() {
 export default function OrgPlayers() {
   const { t, i18n } = useTranslation();
   const { positions: posLabels, positionShort: posShort } = usePositions();
+  const { orgSlug } = useParams<{ orgSlug: string }>();
   const { data: org, isLoading: orgLoading, isFetching: orgFetching } = useCurrentOrg();
   const { data: players = [], isLoading } = useOrgPlayers();
 
@@ -208,7 +209,7 @@ export default function OrgPlayers() {
     + (levelMin || levelMax ? 1 : 0)
     + (potMin || potMax ? 1 : 0);
 
-  const allOpinions: Opinion[] = ['À suivre', 'À revoir', 'Défavorable'];
+  const allOpinions = ALL_OPINIONS;
   const allPositions = Object.entries(posLabels) as [Position, string][];
 
   if (orgLoading || isLoading || (orgFetching && !org)) {
@@ -506,7 +507,7 @@ export default function OrgPlayers() {
                               <button key={o} onClick={() => toggleInList(opinions, o, setOpinions)}
                                 className={`flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs font-semibold border transition-all ${active ? `${getOpinionBgClass(o)} border-transparent shadow-sm` : 'bg-muted/50 text-muted-foreground border-border hover:bg-muted'}`}>
                                 <span>{getOpinionEmoji(o)}</span>
-                                {o}
+                                {t(getOpinionTranslationKey(o))}
                               </button>
                             );
                           })}
@@ -574,7 +575,7 @@ export default function OrgPlayers() {
                     <Checkbox checked={selectedIds.has(player.id)} onCheckedChange={() => toggleSelect(player.id)} />
                   </div>
                   <Card className="card-warm overflow-hidden hover:scale-[1.02] transition-all duration-200">
-                    <Link to={`/player/${player.id}`} className="block group">
+                    <Link to={`/organization/${orgSlug}/player/${player.id}`} className="block group">
                       <div className="p-4">
                         <div className="flex items-center gap-3 mb-3">
                           <PlayerAvatar name={player.name} photoUrl={player.photo_url} size="lg" />
@@ -600,7 +601,7 @@ export default function OrgPlayers() {
                           <div className="grid grid-cols-4 gap-2 mt-3 pt-3 border-t border-border/30">
                             <div className="rounded-lg bg-muted/50 py-2 px-1 text-center">
                               <p className="text-[10px] text-muted-foreground mb-0.5">{t('players.foot')}</p>
-                              <p className="text-xs font-semibold">{player.foot || '—'}</p>
+                              <p className="text-xs font-semibold">{translateFoot(player.foot, t)}</p>
                             </div>
                             <div className="rounded-lg bg-muted/50 py-2 px-1 text-center">
                               <p className="text-[10px] text-muted-foreground mb-0.5">{t('players.height')}</p>

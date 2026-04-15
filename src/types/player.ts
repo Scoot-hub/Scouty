@@ -205,7 +205,9 @@ const NATIONALITY_ALIASES: Record<string, string> = {
   // Common typos / short forms
   'trinite et tobago': 'Trinité-et-Tobago', 'trinidad and tobago': 'Trinité-et-Tobago',
   'rep tcheque': 'République Tchèque', 'rep. tcheque': 'République Tchèque',
-  'emirats arabes unis': 'Émirats Arabes Unis',
+  'tchequie': 'République Tchèque', 'republique tcheque': 'République Tchèque',
+  'ecosse': 'Écosse', 'egypte': 'Égypte',
+  'emirats arabes unis': 'Émirats Arabes Unis', 'eau': 'Émirats Arabes Unis',
   'coree du sud': 'Corée du Sud', 'afrique du sud': 'Afrique du Sud',
   'rd congo': 'RD Congo', 'rdc': 'RD Congo',
   'pays bas': 'Pays-Bas', 'pays de galles': 'Pays de Galles',
@@ -326,6 +328,44 @@ export function getTaskEmoji(task: PlayerTask): string {
   }
 }
 
+export function getFootTranslationKey(foot: Foot): string | null {
+  switch (foot) {
+    case 'Gaucher': return 'player_form.foot_left';
+    case 'Droitier': return 'player_form.foot_right';
+    case 'Ambidextre': return 'player_form.foot_both';
+    default: return null;
+  }
+}
+
+export function normalizeFootValue(raw: string): Foot | null {
+  const s = raw.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').trim();
+  if (['gaucher', 'gauche', 'left', 'l', 'g'].includes(s)) return 'Gaucher';
+  if (['droitier', 'droit', 'right', 'r', 'd'].includes(s)) return 'Droitier';
+  if (['ambidextre', 'deux pieds', 'deux', 'both', 'ambidextrous'].includes(s)) return 'Ambidextre';
+  if (s.includes('gauche') || s.includes('left')) return 'Gaucher';
+  if (s.includes('droit') || s.includes('right')) return 'Droitier';
+  if (s.includes('deux') || s.includes('both') || s.includes('ambidex')) return 'Ambidextre';
+  return null;
+}
+
+export function translateFoot(foot: string | undefined | null, t: (key: string) => string): string {
+  if (!foot) return '—';
+  const normalized = normalizeFootValue(foot);
+  if (normalized) {
+    const key = getFootTranslationKey(normalized);
+    return key ? t(key) : foot;
+  }
+  return foot;
+}
+
+export function getTaskTranslationKey(task: PlayerTask): string {
+  switch (task) {
+    case 'À voir': return 'player_form.task_to_see';
+    case 'À revoir': return 'player_form.task_to_review';
+    case 'À suivre': return 'player_form.task_to_follow';
+  }
+}
+
 export function getTaskBgClass(task: PlayerTask): string {
   switch (task) {
     case 'À voir': return 'bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-300';
@@ -333,6 +373,16 @@ export function getTaskBgClass(task: PlayerTask): string {
     case 'À suivre': return 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300';
   }
 }
+
+export function getOpinionTranslationKey(opinion: Opinion): string {
+  switch (opinion) {
+    case 'À suivre': return 'player_form.opinion_to_follow';
+    case 'À revoir': return 'player_form.opinion_to_review';
+    case 'Défavorable': return 'player_form.opinion_unfavorable';
+  }
+}
+
+export const ALL_OPINIONS: Opinion[] = ['À suivre', 'À revoir', 'Défavorable'];
 
 export function getOpinionColor(opinion: Opinion): string {
   switch (opinion) {

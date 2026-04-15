@@ -4,7 +4,7 @@ import { useTranslation } from 'react-i18next';
 import { useQueryClient } from '@tanstack/react-query';
 import { CustomFieldsForm } from '@/components/CustomFieldsDisplay';
 import { useBulkUpsertCustomFieldValues } from '@/hooks/use-custom-fields';
-import { LEAGUES, CLUBS, NATIONALITIES, ZONES, POTENTIAL_SCALE, PLAYER_TASKS, translateCountry, type Position, type Foot, type Zone, type PlayerTask } from '@/types/player';
+import { LEAGUES, CLUBS, NATIONALITIES, ZONES, POTENTIAL_SCALE, PLAYER_TASKS, getTaskTranslationKey, getFootTranslationKey, translateCountry, type Position, type Foot, type Zone, type PlayerTask } from '@/types/player';
 import { usePositions } from '@/hooks/use-positions';
 import { useMergedClubsAndLeagues, useResolveClubLeague } from '@/hooks/use-club-directory';
 import { useUpsertPlayer, useAddReport } from '@/hooks/use-players';
@@ -23,7 +23,7 @@ import { useToast } from '@/hooks/use-toast';
 import { ArrowLeft, ArrowRight, Check, Search, LinkIcon, Loader2, Sparkles } from 'lucide-react';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
 import { ScrollArea } from '@/components/ui/scroll-area';
-import type { Opinion } from '@/types/player';
+import { type Opinion, ALL_OPINIONS, getOpinionTranslationKey } from '@/types/player';
 
 // ── TM data helpers ──────────────────────────────────────────────────────────
 function resolveNationality(raw: string): string {
@@ -425,7 +425,7 @@ export default function AddPlayer() {
               </Select>
             </div>
             <div><Label>{t('player_form.role')}</Label><Input value={role} onChange={e => setRole(e.target.value)} placeholder={t('player_form.role_placeholder')} className="mt-1" /></div>
-            <div><Label>{t('player_form.strong_foot')}</Label><div className="flex gap-3 mt-1">{(['Gaucher', 'Droitier', 'Ambidextre'] as Foot[]).map(f => (<Button key={f} type="button" variant={foot === f ? 'default' : 'outline'} size="sm" onClick={() => setFoot(f)} disabled={tmImported}>{f}</Button>))}</div></div>
+            <div><Label>{t('player_form.strong_foot')}</Label><div className="flex gap-3 mt-1">{(['Gaucher', 'Droitier', 'Ambidextre'] as Foot[]).map(f => (<Button key={f} type="button" variant={foot === f ? 'default' : 'outline'} size="sm" onClick={() => setFoot(f)} disabled={tmImported}>{t(getFootTranslationKey(f)!)}</Button>))}</div></div>
             <div><Label>{t('player_form.contract_end')}</Label><Input type="date" value={contractEnd} onChange={e => setContractEnd(e.target.value)} className="mt-1" disabled={tmImported && !!contractEnd} /></div>
           </>)}
           {step === 2 && (<>
@@ -433,7 +433,7 @@ export default function AddPlayer() {
             <div><Label>{t('player_form.potential')} <span className="font-mono font-bold">{potential[0]}</span>/10</Label><Slider value={potential} onValueChange={setPotential} min={0} max={10} step={0.5} className="mt-3" /><p className="text-xs text-muted-foreground mt-2 italic">{getPotentialLabel(potential[0])}</p></div>
             <div><Label>{t('player_form.task')}</Label><div className="flex gap-3 mt-1">
               <Button type="button" variant={task === '' ? 'default' : 'outline'} size="sm" onClick={() => setTask('')}>{t('player_form.task_none')}</Button>
-              {PLAYER_TASKS.map(tk => (<Button key={tk} type="button" variant={task === tk ? 'default' : 'outline'} size="sm" onClick={() => setTask(tk)}>{tk}</Button>))}
+              {PLAYER_TASKS.map(tk => (<Button key={tk} type="button" variant={task === tk ? 'default' : 'outline'} size="sm" onClick={() => setTask(tk)}>{t(getTaskTranslationKey(tk))}</Button>))}
             </div></div>
           </>)}
           {step === 3 && (<>
@@ -441,9 +441,9 @@ export default function AddPlayer() {
             {addReportFlag && (
               <div className="space-y-4 pl-6 border-l-2 border-primary/20">
                 <div><Label>{t('player_form.report_date')}</Label><Input type="date" value={reportDate} onChange={e => setReportDate(e.target.value)} className="mt-1" /></div>
-                <div><Label>{t('player_form.report_opinion')}</Label><div className="flex gap-3 mt-1">{(['À suivre', 'À revoir', 'Défavorable'] as Opinion[]).map(o => (<Button key={o} type="button" variant={reportOpinion === o ? 'default' : 'outline'} size="sm" onClick={() => setReportOpinion(o)}>{o}</Button>))}</div></div>
+                <div><Label>{t('player_form.report_opinion')}</Label><div className="flex gap-3 mt-1">{ALL_OPINIONS.map(o => (<Button key={o} type="button" variant={reportOpinion === o ? 'default' : 'outline'} size="sm" onClick={() => setReportOpinion(o)}>{t(getOpinionTranslationKey(o))}</Button>))}</div></div>
                 <div><Label>{t('player_form.drive_link')}</Label><Input value={driveLink} onChange={e => setDriveLink(e.target.value)} placeholder={t('player_form.drive_placeholder')} className="mt-1" /></div>
-                <label className="flex items-center gap-2 cursor-pointer"><Checkbox checked={tsPublished} onCheckedChange={(v) => setTsPublished(!!v)} /><span className="text-sm">{t('player_form.ts_published')}</span></label>
+
               </div>
             )}
           </>)}

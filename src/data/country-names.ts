@@ -155,9 +155,30 @@ const ES: Record<string, string> = {
 
 const TRANSLATIONS: Record<string, Record<string, string>> = { en: EN, es: ES };
 
+// Alternate French names → canonical French key (used in EN/ES maps)
+const FR_ALIASES: Record<string, string> = {
+  'Tchéquie': 'République Tchèque',
+  'Ecosse': 'Écosse',
+  'Egypte': 'Égypte',
+  'EAU': 'Émirats Arabes Unis',
+  'Etats-Unis': 'États-Unis',
+  'Emirats Arabes Unis': 'Émirats Arabes Unis',
+};
+
+function resolveCanonicalKey(key: string): string {
+  if (FR_ALIASES[key]) return FR_ALIASES[key];
+  // Try case-insensitive + accent-insensitive match
+  const norm = key.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
+  for (const [alias, canonical] of Object.entries(FR_ALIASES)) {
+    if (alias.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase() === norm) return canonical;
+  }
+  return key;
+}
+
 /** Translate a French country key to the given language. Falls back to the French key. */
 export function translateCountry(frenchKey: string, lang: string): string {
   if (!frenchKey) return frenchKey;
-  if (lang === 'fr') return frenchKey;
-  return TRANSLATIONS[lang]?.[frenchKey] ?? frenchKey;
+  const canonical = resolveCanonicalKey(frenchKey);
+  if (lang === 'fr') return canonical;
+  return TRANSLATIONS[lang]?.[canonical] ?? canonical;
 }

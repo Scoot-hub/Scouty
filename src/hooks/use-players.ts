@@ -413,6 +413,7 @@ export function useImportPlayers() {
             if (player.current_level > 0) updateData.current_level = player.current_level;
             if (player.potential > 0) updateData.potential = player.potential;
             if (player.general_opinion && player.general_opinion !== 'À revoir') updateData.general_opinion = player.general_opinion;
+            if (player.date_of_birth) updateData.date_of_birth = player.date_of_birth;
             if (player.contract_end) updateData.contract_end = player.contract_end;
             if (player.notes) updateData.notes = player.notes;
             if (player.ts_report_published) updateData.ts_report_published = player.ts_report_published;
@@ -443,6 +444,7 @@ export function useImportPlayers() {
               current_level: player.current_level,
               potential: player.potential,
               general_opinion: player.general_opinion,
+              date_of_birth: player.date_of_birth,
               contract_end: player.contract_end,
               notes: player.notes,
               ts_report_published: player.ts_report_published,

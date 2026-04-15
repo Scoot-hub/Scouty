@@ -119,6 +119,7 @@ const App = () => (
                 <Route path="/organization/:orgSlug" element={<Organization />} />
                 <Route path="/organization/:orgSlug/squad" element={<Squad />} />
                 <Route path="/organization/:orgSlug/players" element={<OrgPlayers />} />
+                <Route path="/organization/:orgSlug/player/:id" element={<PlayerProfile />} />
                 <Route path="/organization/:orgSlug/roadmap" element={<OrgRoadmap />} />
                 <Route path="/booking" element={<Booking />} />
                 <Route path="/discover" element={<Discover />} />

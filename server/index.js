@@ -851,6 +851,44 @@ async function _legacyRunMigrations() {
     console.warn("[warn] Could not auto-create player_org_shares table:", err?.message);
   }
 
+  // Ensure scout_opinions table exists
+  try {
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS scout_opinions (
+        id CHAR(36) PRIMARY KEY,
+        player_id CHAR(36) NOT NULL,
+        organization_id CHAR(36) NOT NULL,
+        user_id CHAR(36) NOT NULL,
+        current_level DECIMAL(3,1) NOT NULL DEFAULT 5.0,
+        potential DECIMAL(3,1) NOT NULL DEFAULT 5.0,
+        opinion VARCHAR(20) NOT NULL DEFAULT 'À revoir',
+        notes TEXT NULL,
+        created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        INDEX idx_scout_opinions_player (player_id),
+        INDEX idx_scout_opinions_org (organization_id),
+        INDEX idx_scout_opinions_user (user_id),
+        FOREIGN KEY (player_id) REFERENCES players(id) ON DELETE CASCADE,
+        FOREIGN KEY (organization_id) REFERENCES organizations(id) ON DELETE CASCADE,
+        FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+      )
+    `);
+  } catch (err) {
+    console.error("[ERROR] Could not auto-create scout_opinions table:", err?.message, err?.code, err?.sqlMessage);
+  }
+  // Migrate scout_opinions: replace old 'rating' column with current_level + potential
+  try {
+    const [cols] = await pool.query(`SHOW COLUMNS FROM scout_opinions LIKE 'rating'`);
+    if (cols.length > 0) {
+      await pool.query(`ALTER TABLE scout_opinions DROP COLUMN rating`);
+      await pool.query(`ALTER TABLE scout_opinions ADD COLUMN current_level DECIMAL(3,1) NOT NULL DEFAULT 5.0 AFTER user_id`);
+      await pool.query(`ALTER TABLE scout_opinions ADD COLUMN potential DECIMAL(3,1) NOT NULL DEFAULT 5.0 AFTER current_level`);
+      console.log("[info] Migrated scout_opinions: rating -> current_level + potential");
+    }
+  } catch (err) {
+    // Columns may already be correct
+  }
+
   // Ensure match_assignments table exists
   try {
     await pool.query(`
@@ -3269,6 +3307,93 @@ app.post("/api/rpc/get_player_org_shares", authMiddleware, async (req, res) => {
   }
 });
 
+// ── Scout opinions (org-level reviews) ────────────────────────────
+
+// Get all scout opinions for a player within an organization
+app.post("/api/rpc/get_scout_opinions", authMiddleware, async (req, res) => {
+  try {
+    const { player_id, organization_id } = req.body || {};
+    if (!player_id || !organization_id) return res.status(400).json({ error: "Missing player_id or organization_id" });
+
+    // Verify user is a member of this org
+    const [membership] = await pool.query(
+      "SELECT id FROM organization_members WHERE organization_id = ? AND user_id = ?",
+      [organization_id, req.user.id],
+    );
+    if (!membership.length) return res.status(403).json({ error: "Not a member of this organization" });
+
+    const [rows] = await pool.query(
+      `SELECT so.*, p.full_name AS scout_name
+       FROM scout_opinions so
+       LEFT JOIN profiles p ON p.user_id = so.user_id
+       WHERE so.player_id = ? AND so.organization_id = ?
+       ORDER BY so.created_at DESC`,
+      [player_id, organization_id],
+    );
+
+    const parsed = rows.map(r => {
+      if (r.links && typeof r.links === 'string') {
+        try { r.links = JSON.parse(r.links); } catch { r.links = []; }
+      }
+      if (!r.links) r.links = [];
+      return r;
+    });
+    return res.json({ data: parsed });
+  } catch (err) {
+    console.error("get_scout_opinions error:", err);
+    return res.status(500).json({ error: "Server error" });
+  }
+});
+
+// Add a scout opinion
+app.post("/api/rpc/add_scout_opinion", authMiddleware, async (req, res) => {
+  try {
+    const { player_id, organization_id, current_level, potential, opinion, notes, links, match_observed, observed_at } = req.body || {};
+    if (!player_id || !organization_id) return res.status(400).json({ error: "Missing player_id or organization_id" });
+
+    // Verify user is a member of this org
+    const [membership] = await pool.query(
+      "SELECT id FROM organization_members WHERE organization_id = ? AND user_id = ?",
+      [organization_id, req.user.id],
+    );
+    if (!membership.length) return res.status(403).json({ error: "Not a member of this organization" });
+
+    const linksJson = links && links.length > 0 ? JSON.stringify(links) : null;
+    const id = require("crypto").randomUUID();
+    await pool.query(
+      `INSERT INTO scout_opinions (id, player_id, organization_id, user_id, current_level, potential, opinion, notes, links, match_observed, observed_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [id, player_id, organization_id, req.user.id, current_level ?? 5.0, potential ?? 5.0, opinion ?? 'À revoir', notes ?? null, linksJson, match_observed || null, observed_at || null],
+    );
+
+    // Return the created opinion with scout name
+    const [profileRows] = await pool.query("SELECT full_name FROM profiles WHERE user_id = ? LIMIT 1", [req.user.id]);
+    const scoutName = profileRows.length ? profileRows[0].full_name : null;
+
+    return res.json({ data: { id, player_id, organization_id, user_id: req.user.id, current_level: current_level ?? 5.0, potential: potential ?? 5.0, opinion: opinion ?? 'À revoir', notes: notes ?? null, links: links || [], match_observed: match_observed || null, observed_at: observed_at || null, scout_name: scoutName, created_at: new Date().toISOString(), updated_at: new Date().toISOString() } });
+  } catch (err) {
+    console.error("add_scout_opinion error:", err);
+    return res.status(500).json({ error: err?.message || "Server error" });
+  }
+});
+
+// Delete a scout opinion (only the author can delete)
+app.post("/api/rpc/delete_scout_opinion", authMiddleware, async (req, res) => {
+  try {
+    const { opinion_id } = req.body || {};
+    if (!opinion_id) return res.status(400).json({ error: "Missing opinion_id" });
+
+    const [existing] = await pool.query("SELECT id FROM scout_opinions WHERE id = ? AND user_id = ?", [opinion_id, req.user.id]);
+    if (!existing.length) return res.status(403).json({ error: "Not your opinion or not found" });
+
+    await pool.query("DELETE FROM scout_opinions WHERE id = ?", [opinion_id]);
+    return res.json({ data: { success: true } });
+  } catch (err) {
+    console.error("delete_scout_opinion error:", err);
+    return res.status(500).json({ error: err?.message || "Server error" });
+  }
+});
+
 // ── Squad players (organization effectif) ─────────────────────────
 
 app.post("/api/rpc/get_squad_players", authMiddleware, async (req, res) => {
@@ -5326,7 +5451,7 @@ function extractBetween(html, before, after) {
  */
 async function fetchPlayerDataFromTransfermarkt(player, tmPath = null) {
   try {
-    const opts = { headers: TM_HEADERS, signal: AbortSignal.timeout(12000) };
+    const opts = { headers: TM_HEADERS, signal: AbortSignal.timeout(20000) };
 
     // ── 1. Search (with fallback queries for typos / compound names) ──────────
     const rowRe = /href="(\/([^/]+)\/profil\/spieler\/(\d+))"[^>]*>([^<]+)<\/a>(?:.*?zentriert">(\d+)<\/td>)?(?:.*?rechts hauptlink">\s*([^<]*)<\/td>)?(?:.*?berater\/\d+">\s*([^<]*)<\/a>)?/gs;
@@ -5641,8 +5766,116 @@ async function fetchPlayerDataFromTransfermarkt(player, tmPath = null) {
       console.error('[TM] career API error:', e.message);
     }
 
+    // ── 4. Fetch season stats from leistungsdatendetails page ──────────
+    // TM columns: Saison | Compétition (logo+link) | Club (logo) | Matchs | Buts | PD | Cartons (J/JR/R) | Minutes
+    // Data rows have class="odd" or class="even"
+    let seasonStats = null;
+    try {
+      await new Promise(r => setTimeout(r, 400));
+      const statsPath = best.path.replace('/profil/spieler/', '/leistungsdatendetails/spieler/');
+      const statsOpts = { headers: TM_HEADERS, signal: AbortSignal.timeout(15000) };
+      const statsResp = await fetch(`https://www.transfermarkt.fr${statsPath}`, statsOpts);
+      if (statsResp.ok) {
+        const statsHtml = await statsResp.text();
+
+        const dataRows = [...statsHtml.matchAll(/<tr\s+class="(?:odd|even)">([\s\S]*?)<\/tr>/g)];
+        if (dataRows.length > 0) {
+          // Group rows by season
+          const seasonMap = new Map(); // season → { rows, totals }
+
+          for (const dr of dataRows) {
+            const rowHtml = dr[1];
+
+            // 1. Season: first zentriert cell
+            const seasonM = rowHtml.match(/<td\s+class="zentriert">(\d{2}\/\d{2})<\/td>/);
+            if (!seasonM) continue;
+            const season = seasonM[1];
+
+            // 2. Competition name: from hauptlink <a title="...">
+            const compM = rowHtml.match(/class="hauptlink\s+no-border-links">\s*<a\s+title="([^"]+)"/);
+            if (!compM) continue;
+            const competition = decodeHtmlEntities(compM[1].trim());
+
+            // 3. Club name: from <a title> or <img alt> in club cell
+            // Some rows have title="&nbsp;" on img, so fallback to alt or <a title>
+            const clubCellM = rowHtml.match(/class="hauptlink\s+no-border-rechts\s+zentriert">\s*<a\s+title="([^"]*)"[^>]*>\s*<img[^>]*alt="([^"]*)"/);
+            let club = null;
+            if (clubCellM) {
+              const aTitle = clubCellM[1].replace(/&nbsp;/g, '').trim();
+              const imgAlt = clubCellM[2].replace(/&nbsp;/g, '').trim();
+              club = (aTitle && aTitle.length > 1) ? decodeHtmlEntities(aTitle) : (imgAlt ? decodeHtmlEntities(imgAlt) : null);
+            }
+
+            // 4. Extract zentriert cells after the club column (matchs, buts, passes dé., cartons)
+            // Skip the first zentriert (season) and the club zentriert
+            const allZentriert = [...rowHtml.matchAll(/<td[^>]*class="[^"]*zentriert[^"]*"[^>]*>([\s\S]*?)<\/td>/g)];
+            // Indices: [0]=season, [1]=club (has hauptlink), then [2]=matchs, [3]=buts, [4]=passes, [5]=cartons
+            // But the club cell has "hauptlink" class, so filter accordingly
+            const statCells = allZentriert.filter(m => !m[0].includes('hauptlink'));
+            // statCells: [0]=season (already extracted), then the remaining are: matchs, buts, passes, cartons
+            // Actually season cell is plain zentriert, so statCells[0] = season, [1]=matchs, [2]=buts, [3]=passes, [4]=cartons
+            const parseCellNum = (cell) => {
+              if (!cell) return 0;
+              const raw = cell[1].replace(/<[^>]*>/g, '').replace(/&nbsp;/g, ' ').trim();
+              return raw === '-' || raw === '' ? 0 : parseInt(raw, 10) || 0;
+            };
+
+            const appearances = parseCellNum(statCells[1]);
+            const goals = parseCellNum(statCells[2]);
+            const assists = parseCellNum(statCells[3]);
+
+            // Cartons: format "3&nbsp;/&nbsp;-&nbsp;/&nbsp;-" → yellow / second_yellow / red
+            let yellow_cards = 0, second_yellow = 0, red_cards = 0;
+            if (statCells[4]) {
+              const cardsRaw = statCells[4][1].replace(/<[^>]*>/g, '').replace(/&nbsp;/g, ' ').trim();
+              const cardParts = cardsRaw.split(/\s*\/\s*/);
+              yellow_cards = cardParts[0] === '-' ? 0 : parseInt(cardParts[0], 10) || 0;
+              second_yellow = cardParts[1] === '-' ? 0 : parseInt(cardParts[1], 10) || 0;
+              red_cards = cardParts[2] === '-' ? 0 : parseInt(cardParts[2], 10) || 0;
+            }
+
+            // 5. Minutes: rechts cell, format "914'" or "1.956'"
+            const minutesM = rowHtml.match(/<td\s+class="rechts">([\s\S]*?)<\/td>/);
+            let minutes = 0;
+            if (minutesM) {
+              const minRaw = minutesM[1].replace(/<[^>]*>/g, '').replace(/&nbsp;/g, '').replace(/\./g, '').replace(/'/g, '').trim();
+              minutes = minRaw === '-' ? 0 : parseInt(minRaw, 10) || 0;
+            }
+
+            const entry = { competition, club, appearances, goals, assists, yellow_cards, second_yellow, red_cards, minutes };
+
+            if (!seasonMap.has(season)) {
+              seasonMap.set(season, []);
+            }
+            seasonMap.get(season).push(entry);
+          }
+
+          if (seasonMap.size > 0) {
+            // Build seasons array (newest first)
+            const seasons = [];
+            for (const [season, rows] of seasonMap) {
+              const totals = rows.reduce((acc, r) => ({
+                appearances: acc.appearances + r.appearances,
+                goals: acc.goals + r.goals,
+                assists: acc.assists + r.assists,
+                yellow_cards: acc.yellow_cards + r.yellow_cards,
+                second_yellow: acc.second_yellow + r.second_yellow,
+                red_cards: acc.red_cards + r.red_cards,
+                minutes: acc.minutes + r.minutes,
+              }), { appearances: 0, goals: 0, assists: 0, yellow_cards: 0, second_yellow: 0, red_cards: 0, minutes: 0 });
+              seasons.push({ season, rows, totals });
+            }
+            seasonStats = seasons;
+            console.log(`[TM] ${player.name} → season stats: ${seasons.length} seasons, ${dataRows.length} total rows`);
+          }
+        }
+      }
+    } catch (e) {
+      console.error('[TM] season stats scrape error:', e.message);
+    }
+
     console.log(`[TM] ${player.name} → contract:${contract} agent:${agent} value:${marketValue} height:${heightCm}cm club:${currentClub} onLoan:${onLoan} foot:${footRaw} pos:${positionRaw} nat:${nationalityRaw} photo:${!!photoUrl} logo:${!!clubLogoUrl}`);
-    return { tmId: best.id, contract, heightCm, agent, marketValue, currentClub, onLoan, parentClub, loanEndDate, parentContractEnd, photoUrl, clubLogoUrl, footRaw, positionRaw, nationalityRaw, career };
+    return { tmId: best.id, contract, heightCm, agent, marketValue, currentClub, onLoan, parentClub, loanEndDate, parentContractEnd, photoUrl, clubLogoUrl, footRaw, positionRaw, nationalityRaw, career, seasonStats };
   } catch (e) {
     console.error('[enrich] Transfermarkt scrape error:', e.message);
     return null;
@@ -5653,12 +5886,289 @@ async function fetchPlayerDataFromTransfermarkt(player, tmPath = null) {
 let STATIC_CLUB_TO_LEAGUE = {};
 try { STATIC_CLUB_TO_LEAGUE = require('../src/data/club-to-league.json'); } catch (e) { console.warn("[warn] Could not load club-to-league.json:", e?.message); }
 
+// ── SofaScore: free scraping of detailed player performance stats ──
+const SOFA_HEADERS = {
+  'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
+  'Accept': 'application/json, text/plain, */*',
+  'Accept-Language': 'fr-FR,fr;q=0.9,en-US;q=0.8,en;q=0.7',
+  'Referer': 'https://www.sofascore.com/',
+  'Origin': 'https://www.sofascore.com',
+  'Cache-Control': 'no-cache',
+};
+const SOFA_BASE = 'https://api.sofascore.com/api/v1';
+
+async function sofaFetch(path, timeoutMs = 10000) {
+  const resp = await fetch(`${SOFA_BASE}${path}`, {
+    headers: SOFA_HEADERS,
+    signal: AbortSignal.timeout(timeoutMs),
+  });
+  if (!resp.ok) return null;
+  return resp.json();
+}
+
+async function fetchPlayerStatsFromSofaScore(playerInfo) {
+  try {
+    // ── Check DB cache (24h) ──
+    const cacheKey = `sofascore_player_${normalizeStr(playerInfo.name)}_${playerInfo.generation || ''}`;
+    try {
+      const [cached] = await pool.query(
+        'SELECT response_json FROM api_football_cache WHERE cache_key = ? AND expires_at > NOW()',
+        [cacheKey]
+      );
+      if (cached.length > 0) {
+        const parsed = JSON.parse(cached[0].response_json);
+        if (parsed && parsed.stats) return parsed;
+      }
+    } catch { /* cache miss */ }
+
+    // ── 1. Search player on SofaScore ──
+    const searchName = playerInfo.name.trim();
+    const searchData = await sofaFetch(`/search/all?q=${encodeURIComponent(searchName)}&page=0`);
+    if (!searchData) return null;
+
+    // Extract player results
+    const playerResults = [];
+    if (searchData.results) {
+      for (const group of searchData.results) {
+        if (group.type === 'player' && group.entity) playerResults.push(group.entity);
+        if (group.type === 'player' && group.entities) playerResults.push(...group.entities);
+      }
+    }
+    // Some API versions return flat array
+    if (playerResults.length === 0 && Array.isArray(searchData.players)) {
+      playerResults.push(...searchData.players);
+    }
+
+    if (playerResults.length === 0) {
+      console.log(`[sofascore] No player results for "${searchName}"`);
+      return null;
+    }
+
+    // ── 2. Find best match by name + birth year + nationality ──
+    const normalizedSearch = searchName.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
+    const birthYear = playerInfo.generation || null;
+    let best = null;
+    let bestScore = -1;
+
+    for (const p of playerResults) {
+      let score = 0;
+      const pName = (p.name || p.shortName || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
+      const pShort = (p.shortName || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
+
+      if (pName === normalizedSearch || pShort === normalizedSearch) score += 100;
+      else if (pName.includes(normalizedSearch) || normalizedSearch.includes(pName)) score += 60;
+      else if (pShort.length >= 3 && (normalizedSearch.includes(pShort) || pShort.includes(normalizedSearch))) score += 40;
+      else continue;
+
+      // Birth year
+      if (birthYear && p.dateOfBirthTimestamp) {
+        const pYear = new Date(p.dateOfBirthTimestamp * 1000).getFullYear();
+        if (pYear === birthYear) score += 30;
+        else if (Math.abs(pYear - birthYear) <= 1) score += 15;
+      }
+
+      // Team name match
+      if (playerInfo.club && p.team?.name) {
+        const pClub = normalizeStr(playerInfo.club);
+        const sClub = normalizeStr(p.team.name);
+        if (pClub === sClub || pClub.includes(sClub) || sClub.includes(pClub)) score += 25;
+      }
+
+      if (score > bestScore) { bestScore = score; best = p; }
+    }
+
+    if (!best || bestScore < 40) {
+      console.log(`[sofascore] No confident match for "${searchName}" (best score: ${bestScore})`);
+      return null;
+    }
+
+    const sofaId = best.id;
+    console.log(`[sofascore] Matched "${searchName}" → ${best.name} (id=${sofaId}, score=${bestScore})`);
+
+    // ── 3. Get player details (includes current team + tournament) ──
+    await new Promise(r => setTimeout(r, 400)); // rate limit
+    const playerData = await sofaFetch(`/player/${sofaId}`);
+    if (!playerData?.player) return null;
+
+    const pl = playerData.player;
+    const teamId = pl.team?.id;
+    const tournamentId = pl.team?.tournament?.uniqueTournament?.id;
+
+    if (!teamId || !tournamentId) {
+      console.log(`[sofascore] Player ${sofaId} has no team/tournament`);
+      // Still return basic info
+      const basicResult = {
+        sofascore_id: sofaId,
+        season: null,
+        league: null,
+        team: pl.team?.name || null,
+        stats: { rating: null, appearances: 0, lineups: 0, minutes: 0, goals: 0, assists: 0 },
+        per90: {},
+        all_competitions: [],
+        source: 'sofascore',
+      };
+      return basicResult;
+    }
+
+    // ── 4. Get current season for this tournament ──
+    await new Promise(r => setTimeout(r, 400));
+    const seasonsData = await sofaFetch(`/unique-tournament/${tournamentId}/seasons`);
+    const currentSeason = seasonsData?.seasons?.[0];
+    if (!currentSeason) return null;
+
+    // ── 5. Get player statistics for this season ──
+    await new Promise(r => setTimeout(r, 400));
+    const statsData = await sofaFetch(
+      `/player/${sofaId}/unique-tournament/${tournamentId}/season/${currentSeason.id}/statistics/overall`
+    );
+
+    const rawStats = statsData?.statistics || {};
+
+    // Map SofaScore stat keys → our normalized format
+    const s = {
+      rating: rawStats.rating ? parseFloat(rawStats.rating).toFixed(2) : null,
+      appearances: rawStats.appearances || 0,
+      lineups: rawStats.lineups || rawStats.matchesStarted || 0,
+      minutes: rawStats.minutesPlayed || 0,
+      goals: rawStats.goals || 0,
+      assists: rawStats.assists || 0,
+      shots_total: rawStats.totalShots || rawStats.shotsTotal || 0,
+      shots_on: rawStats.shotsOnTarget || rawStats.onTargetScoringAttempt || 0,
+      passes_total: rawStats.totalPasses || rawStats.accuratePasses || 0,
+      passes_key: rawStats.keyPasses || rawStats.bigChancesCreated || 0,
+      passes_accuracy: rawStats.accuratePassesPercentage != null ? Math.round(rawStats.accuratePassesPercentage * 100) / 100 : (rawStats.accuratePasses && rawStats.totalPasses ? Math.round(rawStats.accuratePasses / rawStats.totalPasses * 10000) / 100 : null),
+      tackles: rawStats.tackles || 0,
+      blocks: rawStats.blockedShots || rawStats.blockedScoringAttempt || 0,
+      interceptions: rawStats.interceptions || 0,
+      duels_total: rawStats.totalDuels || rawStats.dpiTotal || 0,
+      duels_won: rawStats.duelsWon || rawStats.dpiWon || 0,
+      dribbles_attempts: rawStats.totalDribbles || rawStats.dribbleAttempts || 0,
+      dribbles_success: rawStats.successfulDribbles || rawStats.dribbleSuccess || 0,
+      fouls_drawn: rawStats.foulsDrawn || rawStats.wasFouled || 0,
+      fouls_committed: rawStats.foulsCommitted || rawStats.fouls || 0,
+      cards_yellow: rawStats.yellowCards || 0,
+      cards_red: rawStats.redCards || rawStats.directRedCards || 0,
+      penalty_scored: rawStats.penaltyGoals || rawStats.penaltiesScored || rawStats.penaltyWon || 0,
+      penalty_missed: rawStats.penaltyMisses || rawStats.penaltiesMissed || 0,
+      // SofaScore specific bonus stats
+      expected_goals: rawStats.expectedGoals ? parseFloat(rawStats.expectedGoals).toFixed(2) : null,
+      expected_assists: rawStats.expectedAssists ? parseFloat(rawStats.expectedAssists).toFixed(2) : null,
+      aerial_duels_won: rawStats.aerialDuelsWon || rawStats.aerialWon || 0,
+      aerial_duels_total: (rawStats.aerialDuelsWon || 0) + (rawStats.aerialDuelsLost || rawStats.aerialLost || 0),
+      big_chances_created: rawStats.bigChancesCreated || 0,
+      big_chances_missed: rawStats.bigChancesMissed || 0,
+      clean_sheets: rawStats.cleanSheet || 0,
+      saves: rawStats.saves || 0,
+      errors_leading_to_goal: rawStats.errorLeadToGoal || rawStats.errorsLeadingToGoal || 0,
+    };
+
+    const minutes = s.minutes || 0;
+    const per90Fn = (val) => val != null && minutes > 0 ? +(val / (minutes / 90)).toFixed(2) : null;
+
+    const result = {
+      sofascore_id: sofaId,
+      season: currentSeason.year || currentSeason.name,
+      league: pl.team?.tournament?.uniqueTournament?.name || null,
+      team: pl.team?.name || null,
+      stats: s,
+      per90: {
+        goals: per90Fn(s.goals),
+        assists: per90Fn(s.assists),
+        shots: per90Fn(s.shots_total),
+        key_passes: per90Fn(s.passes_key),
+        tackles: per90Fn(s.tackles),
+        interceptions: per90Fn(s.interceptions),
+        dribbles: per90Fn(s.dribbles_success),
+        duels_won: per90Fn(s.duels_won),
+        expected_goals: per90Fn(s.expected_goals ? parseFloat(s.expected_goals) : null),
+      },
+      all_competitions: [],
+      source: 'sofascore',
+    };
+
+    // ── 6. Try to get stats from other competitions too ──
+    try {
+      await new Promise(r => setTimeout(r, 400));
+      const tournamentsData = await sofaFetch(`/player/${sofaId}/statistics/seasons`);
+      if (tournamentsData?.uniqueTournamentSeasons) {
+        for (const ut of tournamentsData.uniqueTournamentSeasons.slice(0, 5)) {
+          const utId = ut.uniqueTournament?.id;
+          const utSeason = ut.seasons?.[0];
+          if (!utId || !utSeason) continue;
+
+          if (utId === tournamentId) {
+            // Already have this one — add to all_competitions from main stats
+            result.all_competitions.push({
+              league: ut.uniqueTournament.name,
+              team: result.team,
+              appearances: s.appearances,
+              rating: s.rating,
+              goals: s.goals,
+              assists: s.assists,
+              minutes: s.minutes,
+            });
+            continue;
+          }
+
+          await new Promise(r => setTimeout(r, 400));
+          const otherStats = await sofaFetch(
+            `/player/${sofaId}/unique-tournament/${utId}/season/${utSeason.id}/statistics/overall`
+          );
+          const os = otherStats?.statistics;
+          if (os && (os.appearances || 0) > 0) {
+            result.all_competitions.push({
+              league: ut.uniqueTournament.name,
+              team: result.team,
+              appearances: os.appearances || 0,
+              rating: os.rating ? parseFloat(os.rating).toFixed(2) : null,
+              goals: os.goals || 0,
+              assists: os.assists || 0,
+              minutes: os.minutesPlayed || 0,
+            });
+          }
+        }
+      }
+    } catch (e) {
+      console.warn('[sofascore] Error fetching multi-competition stats:', e.message);
+    }
+
+    // If all_competitions is empty, add the main one
+    if (result.all_competitions.length === 0 && s.appearances > 0) {
+      result.all_competitions.push({
+        league: result.league,
+        team: result.team,
+        appearances: s.appearances,
+        rating: s.rating,
+        goals: s.goals,
+        assists: s.assists,
+        minutes: s.minutes,
+      });
+    }
+
+    // ── Cache result for 24h ──
+    try {
+      const expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString().slice(0, 19).replace('T', ' ');
+      await pool.query(
+        `INSERT INTO api_football_cache (cache_key, response_json, expires_at) VALUES (?, ?, ?)
+         ON DUPLICATE KEY UPDATE response_json = VALUES(response_json), expires_at = VALUES(expires_at), fetched_at = NOW()`,
+        [cacheKey, JSON.stringify(result), expiresAt]
+      );
+    } catch { /* cache write non-critical */ }
+
+    return result;
+  } catch (e) {
+    console.error('[enrich] SofaScore stats error:', e.message);
+    return null;
+  }
+}
+
 // ── Shared enrichment logic (single source of truth for all enrichment paths) ──
 async function enrichOnePlayer(playerInfo, row, tmPath = null) {
-  const [tsdb, wd, tm] = await Promise.all([
+  const [tsdb, wd, tm, perfStats] = await Promise.all([
     fetchPlayerDataFromSportsDB(playerInfo),
     fetchPlayerDataFromWikidata(playerInfo),
     fetchPlayerDataFromTransfermarkt(playerInfo, tmPath),
+    fetchPlayerStatsFromSofaScore(playerInfo),
   ]);
 
   // If TM returned ambiguous candidates, propagate to caller for UI disambiguation
@@ -5787,9 +6297,20 @@ async function enrichOnePlayer(playerInfo, row, tmPath = null) {
       if (nationalCareer.length > 0) ext.national_career = nationalCareer;
       console.log(`[enrich] Using TM career: ${clubCareer.length} club + ${nationalCareer.length} national entries`);
     }
+    // Season performance stats from leistungsdatendetails page
+    if (tm.seasonStats) {
+      ext.season_stats = tm.seasonStats;
+    }
     delete ext.tm_not_found; // clear flag now that TM succeeded
   } else {
     ext.tm_not_found = true; // signal frontend to show manual-URL input
+  }
+
+  // ── API-Football: detailed performance stats ──────────────────────────
+  if (perfStats) {
+    ext.performance_stats = perfStats;
+    if (perfStats.sofascore_id) ext.sofascore_id = perfStats.sofascore_id;
+    console.log(`[enrich] SofaScore stats: ${perfStats.stats?.appearances || 0} apps, rating ${perfStats.stats?.rating || '—'}, season ${perfStats.season}`);
   }
 
   // ── Supplement career: force current club as open-ended entry ───────
@@ -6434,7 +6955,12 @@ app.post("/api/functions/:name", authMiddleware, async (req, res) => {
 
           // Now we have a real name link — mark as seen
           seenIds.add(tmId);
-          const name = decodeHtmlEntities(anchorText);
+
+          // Prefer the title attribute of the <a> tag (canonical "FirstName LastName")
+          // over the anchor text which may be abbreviated (e.g. "K. Mbappé")
+          const tagCtx = sectionHtml.slice(Math.max(0, linkStart - 150), linkStart);
+          const titleAttrM = tagCtx.match(/title="([^"]{2,60})"\s*$/);
+          const name = decodeHtmlEntities(titleAttrM ? titleAttrM[1].trim() : anchorText);
 
           const linkIdx = plMatch.index;
 
@@ -6465,10 +6991,31 @@ app.post("/api/functions/:name", authMiddleware, async (req, res) => {
             : '';
 
 
-          // Age: <td class="zentriert">21</td>
+          // Date of birth / generation: parse full DOB first, fallback to age
+          let dateOfBirth = null;
           let generation = null;
-          const ageM = outerCells.match(/<td[^>]*class="zentriert"[^>]*>\s*(\d{1,2})\s*<\/td>/);
-          if (ageM) generation = new Date().getFullYear() - parseInt(ageM[1]);
+          const cellTexts = [...outerCells.matchAll(/<td[^>]*class="zentriert"[^>]*>([\s\S]*?)<\/td>/g)]
+            .map(m => m[1].replace(/<[^>]*>/g, '').replace(/&nbsp;/g, ' ').trim());
+          for (const cellText of cellTexts) {
+            if (dateOfBirth) break;
+            // Try full date: "1 juil. 1999 (26)" or "01.07.1999 (26)"
+            const dob = parseFrDateAny(cellText);
+            if (dob) {
+              dateOfBirth = dob;
+              generation = parseInt(dob.split('-')[0]);
+              break;
+            }
+            // Try age in parentheses: "(26 ans)" or "(26)"
+            if (!generation) {
+              const ageInParens = cellText.match(/\((\d{1,2})\s*(?:ans)?\s*\)/);
+              if (ageInParens) generation = new Date().getFullYear() - parseInt(ageInParens[1]);
+            }
+          }
+          // Fallback: bare age number in a zentriert cell
+          if (!generation) {
+            const ageM = outerCells.match(/<td[^>]*class="zentriert"[^>]*>\s*(\d{1,2})\s*<\/td>/);
+            if (ageM) generation = new Date().getFullYear() - parseInt(ageM[1]);
+          }
 
           // Nationality (flag title) — first flag img with class flaggenrahmen
           // TM puts title BEFORE class: <img ... title="Cameroun" ... class="flaggenrahmen" />
@@ -6490,7 +7037,7 @@ app.post("/api/functions/:name", authMiddleware, async (req, res) => {
             name,
             photoUrl,
             position,
-            dateOfBirth: null,
+            dateOfBirth,
             generation,
             nationality,
             marketValue,
@@ -8631,6 +9178,45 @@ async function _legacyEnsureFixtureTables() {
 }
 
 // No runtime migrations — schema is managed via schema.sql
+
+// Ensure scout_opinions table exists (runs at module load)
+(async () => {
+  try {
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS scout_opinions (
+        id CHAR(36) PRIMARY KEY,
+        player_id CHAR(36) NOT NULL,
+        organization_id CHAR(36) NOT NULL,
+        user_id CHAR(36) NOT NULL,
+        current_level DECIMAL(3,1) NOT NULL DEFAULT 5.0,
+        potential DECIMAL(3,1) NOT NULL DEFAULT 5.0,
+        opinion VARCHAR(20) NOT NULL DEFAULT 'À revoir',
+        notes TEXT NULL,
+        links JSON NULL,
+        match_observed VARCHAR(255) NULL,
+        observed_at DATE NULL,
+        created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        INDEX idx_scout_opinions_player (player_id),
+        INDEX idx_scout_opinions_org (organization_id),
+        INDEX idx_scout_opinions_user (user_id)
+      )
+    `);
+    // Add columns if table existed before these changes
+    try {
+      const addIfMissing = async (col, def) => {
+        const [c] = await pool.query(`SHOW COLUMNS FROM scout_opinions LIKE '${col}'`);
+        if (c.length === 0) await pool.query(`ALTER TABLE scout_opinions ADD COLUMN ${def}`);
+      };
+      await addIfMissing('links', 'links JSON NULL AFTER notes');
+      await addIfMissing('match_observed', 'match_observed VARCHAR(255) NULL AFTER links');
+      await addIfMissing('observed_at', 'observed_at DATE NULL AFTER match_observed');
+    } catch { /* ignore */ }
+    console.log("[startup] scout_opinions table ready");
+  } catch (err) {
+    console.error("[startup] scout_opinions table error:", err?.message);
+  }
+})();
 
 // Export for Vercel serverless
 export default app;

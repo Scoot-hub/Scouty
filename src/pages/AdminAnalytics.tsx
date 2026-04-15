@@ -11,6 +11,7 @@ import {
   Activity, UserPlus, CreditCard, Sparkles, Target, Contact
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import { getOpinionTranslationKey, type Opinion } from '@/types/player';
 
 const API_BASE = (import.meta.env.API_URL || '/api').replace(/\/$/, '');
 
@@ -413,7 +414,7 @@ export default function AdminAnalytics() {
                     const colors: Record<string, string> = { 'À suivre': 'bg-success/15 text-success', 'À revoir': 'bg-amber-500/15 text-amber-600', 'Défavorable': 'bg-destructive/15 text-destructive' };
                     return (
                       <div key={i} className={cn('px-4 py-2.5 rounded-xl', colors[o.general_opinion] || 'bg-muted text-muted-foreground')}>
-                        <p className="text-xs font-medium">{o.general_opinion || t('analytics.not_set')}</p>
+                        <p className="text-xs font-medium">{o.general_opinion ? t(getOpinionTranslationKey(o.general_opinion as Opinion)) : t('analytics.not_set')}</p>
                         <p className="text-xl font-extrabold font-mono">{o.count}</p>
                       </div>
                     );
