@@ -2,7 +2,7 @@ import { useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { usePlayers } from '@/hooks/use-players';
-import { getPlayerAge, resolveLeagueName, type Player, type Opinion, type Position } from '@/types/player';
+import { getPlayerAge, getOpinionTranslationKey, resolveLeagueName, type Player, type Opinion, type Position } from '@/types/player';
 import { usePositions } from '@/hooks/use-positions';
 import { FlagIcon } from '@/components/ui/flag-icon';
 import { OpinionBadge } from '@/components/ui/opinion-badge';
@@ -137,7 +137,7 @@ export default function Tri() {
           return (
             <div key={groupKey}>
               <div className="flex items-center gap-3 mb-3">
-                <h2 className="text-lg font-bold">{groupKey}</h2>
+                <h2 className="text-lg font-bold">{dimension === 'opinion' && ['À suivre', 'À revoir', 'Défavorable'].includes(groupKey) ? t(getOpinionTranslationKey(groupKey as Opinion)) : groupKey}</h2>
                 <span className="px-2.5 py-0.5 rounded-full bg-muted text-xs font-bold text-muted-foreground">{groupPlayers.length}</span>
               </div>
               <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3">

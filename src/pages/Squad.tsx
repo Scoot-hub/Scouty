@@ -4,7 +4,7 @@ import { useSquadPlayers, useUpsertSquadPlayer, useDeleteSquadPlayer } from '@/h
 import { usePlayers } from '@/hooks/use-players';
 import { useCurrentOrg, useOrgPlayers } from '@/hooks/use-organization';
 import { usePositions } from '@/hooks/use-positions';
-import { getPlayerAge, translateCountry } from '@/types/player';
+import { getPlayerAge, translateFoot, translateCountry, type Foot } from '@/types/player';
 import type { SquadPlayer, SquadPlayerStatus } from '@/types/squad';
 import { getSquadPlayerAge, getContractMonthsRemaining, SQUAD_STATUSES } from '@/types/squad';
 import type { Position } from '@/types/player';
@@ -708,7 +708,7 @@ export default function Squad() {
                   {detailPlayer.foot && (
                     <div>
                       <p className="text-muted-foreground text-xs">{t('players.foot')}</p>
-                      <p className="font-medium">{detailPlayer.foot}</p>
+                      <p className="font-medium">{translateFoot(detailPlayer.foot, t)}</p>
                     </div>
                   )}
                   {detailPlayer.market_value && (

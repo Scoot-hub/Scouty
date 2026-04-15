@@ -5,7 +5,7 @@ import { CustomFieldsForm } from '@/components/CustomFieldsDisplay';
 import { useCustomFields, useCustomFieldValues, useBulkUpsertCustomFieldValues } from '@/hooks/use-custom-fields';
 import { usePlayer, useUpsertPlayer } from '@/hooks/use-players';
 import { parseScoutingNotes, serializeScoutingNotes } from '@/lib/scouting-notes';
-import { LEAGUES, CLUBS, NATIONALITIES, ZONES, POTENTIAL_SCALE, PLAYER_TASKS, resolveLeagueName, translateCountry, type Position, type Foot, type PlayerTask } from '@/types/player';
+import { LEAGUES, CLUBS, NATIONALITIES, ZONES, POTENTIAL_SCALE, PLAYER_TASKS, getTaskTranslationKey, getFootTranslationKey, resolveLeagueName, translateCountry, type Position, type Foot, type PlayerTask } from '@/types/player';
 import { useMergedClubsAndLeagues, useResolveClubLeague } from '@/hooks/use-club-directory';
 import { usePositions } from '@/hooks/use-positions';
 import { Card, CardContent } from '@/components/ui/card';
@@ -254,7 +254,7 @@ export default function EditPlayer() {
                 </Select>
               </div>
               <div><Label>{t('player_form.role')}</Label><Input value={role} onChange={e => setRole(e.target.value)} placeholder={t('player_form.role_placeholder')} className="mt-1" /></div>
-              <div><Label>{t('player_form.strong_foot')}</Label><div className="flex gap-2 mt-1">{(['Gaucher', 'Droitier', 'Ambidextre'] as Foot[]).map(f => (<Button key={f} type="button" variant={foot === f ? 'default' : 'outline'} size="sm" onClick={() => setFoot(f)}>{f}</Button>))}</div></div>
+              <div><Label>{t('player_form.strong_foot')}</Label><div className="flex gap-2 mt-1">{(['Gaucher', 'Droitier', 'Ambidextre'] as Foot[]).map(f => (<Button key={f} type="button" variant={foot === f ? 'default' : 'outline'} size="sm" onClick={() => setFoot(f)}>{t(getFootTranslationKey(f)!)}</Button>))}</div></div>
             </div>
           </CardContent>
         </Card>
@@ -267,7 +267,7 @@ export default function EditPlayer() {
             <div><Label>{t('player_form.contract_end')}</Label><Input type="date" value={contractEnd} onChange={e => setContractEnd(e.target.value)} className="mt-1" /></div>
             <div><Label>{t('player_form.task')}</Label><div className="flex gap-3 mt-1">
               <Button type="button" variant={task === '' ? 'default' : 'outline'} size="sm" onClick={() => setTask('')}>{t('player_form.task_none')}</Button>
-              {PLAYER_TASKS.map(tk => (<Button key={tk} type="button" variant={task === tk ? 'default' : 'outline'} size="sm" onClick={() => setTask(tk)}>{tk}</Button>))}
+              {PLAYER_TASKS.map(tk => (<Button key={tk} type="button" variant={task === tk ? 'default' : 'outline'} size="sm" onClick={() => setTask(tk)}>{t(getTaskTranslationKey(tk))}</Button>))}
             </div></div>
           </CardContent>
         </Card>

@@ -6,8 +6,8 @@ import * as XLSX from 'xlsx';
 import { usePlayers, isSamePlayer, useToggleArchive } from '@/hooks/use-players';
 import { useMyOrganizations } from '@/hooks/use-organization';
 import { ShareWithOrgPopover, BulkShareDialog } from '@/components/ShareWithOrgPopover';
-import { useIsPremium } from '@/hooks/use-admin';
-import { getPlayerAge, getOpinionBgClass, getOpinionEmoji, getTaskBgClass, getTaskEmoji, PLAYER_TASKS, resolveLeagueName, translateCountry, type Opinion, type Position, type PlayerTask } from '@/types/player';
+import { useIsPremium, useIsAdmin } from '@/hooks/use-admin';
+import { getPlayerAge, getOpinionBgClass, getOpinionEmoji, getOpinionTranslationKey, ALL_OPINIONS, getTaskBgClass, getTaskEmoji, getTaskTranslationKey, translateFoot, PLAYER_TASKS, resolveLeagueName, translateCountry, type Opinion, type Position, type Foot, type PlayerTask } from '@/types/player';
 import { usePositions } from '@/hooks/use-positions';
 import { FlagIcon } from '@/components/ui/flag-icon';
 import { useCustomFields } from '@/hooks/use-custom-fields';
@@ -118,6 +118,7 @@ export default function Players() {
   const toggleArchive = useToggleArchive();
   const { data: customFields = [] } = useCustomFields();
   const { data: isPremium } = useIsPremium();
+  const { data: isAdmin } = useIsAdmin();
   const { addOperation, updateOperation, completeOperation } = useOperationBanner();
   const { data: myOrgs = [] } = useMyOrganizations();
   const hasOrg = myOrgs.length > 0;
@@ -284,7 +285,7 @@ export default function Players() {
     // Selected players — client-side with progress (skip recently enriched within 1h)
     const ENRICH_COOLDOWN = 60 * 60 * 1000;
     const allTargets = filtered.filter(p => selectedIds.has(p.id));
-    const targets = allTargets.filter(p => {
+    const targets = isAdmin ? allTargets : allTargets.filter(p => {
       if (!p.external_data_fetched_at) return true;
       return Date.now() - new Date(p.external_data_fetched_at).getTime() > ENRICH_COOLDOWN;
     });
@@ -601,7 +602,7 @@ export default function Players() {
     + (levelMin || levelMax ? 1 : 0)
     + (potMin || potMax ? 1 : 0);
 
-  const allOpinions: Opinion[] = ['À suivre', 'À revoir', 'Défavorable'];
+  const allOpinions = ALL_OPINIONS;
   const allPositions = Object.entries(posLabels) as [Position, string][];
 
   if (isLoading) return (
@@ -822,8 +823,8 @@ export default function Players() {
                 <div className="space-y-2">
                   <label className="text-sm font-medium">{t('player_form.report_opinion')}</label>
                   <div className="flex gap-2">
-                    {(['À suivre', 'À revoir', 'Défavorable'] as Opinion[]).map(o => (
-                      <Button key={o} type="button" size="sm" variant={bulkReportOpinion === o ? 'default' : 'outline'} className="rounded-xl" onClick={() => setBulkReportOpinion(o)}>{o}</Button>
+                    {ALL_OPINIONS.map(o => (
+                      <Button key={o} type="button" size="sm" variant={bulkReportOpinion === o ? 'default' : 'outline'} className="rounded-xl" onClick={() => setBulkReportOpinion(o)}>{t(getOpinionTranslationKey(o))}</Button>
                     ))}
                   </div>
                 </div>
@@ -875,7 +876,7 @@ export default function Players() {
                     </Button>
                     {PLAYER_TASKS.map(tk => (
                       <Button key={tk} type="button" size="sm" variant={bulkTaskValue === tk ? 'default' : 'outline'} className="rounded-xl" onClick={() => setBulkTaskValue(tk)}>
-                        {getTaskEmoji(tk)} {tk}
+                        {getTaskEmoji(tk)} {t(getTaskTranslationKey(tk))}
                       </Button>
                     ))}
                   </div>
@@ -1020,7 +1021,7 @@ export default function Players() {
                   <FilterChip key={c} label={CONTRACT_RANGES.find(r => r.key === c)?.label ?? c} onRemove={() => toggleInList(selectedContractRanges, c, setSelectedContractRanges)} />
                 ))}
                 {selectedTasks.map(tk => (
-                  <FilterChip key={tk} label={`${getTaskEmoji(tk)} ${tk}`} onRemove={() => toggleInList(selectedTasks, tk, setSelectedTasks)} />
+                  <FilterChip key={tk} label={`${getTaskEmoji(tk)} ${t(getTaskTranslationKey(tk))}`} onRemove={() => toggleInList(selectedTasks, tk, setSelectedTasks)} />
                 ))}
               </div>
             )}
@@ -1228,7 +1229,7 @@ export default function Players() {
                               <label key={o} className={`flex items-center gap-2 px-2 py-1.5 rounded-md cursor-pointer transition-colors ${opinions.includes(o) ? 'bg-primary/10' : 'hover:bg-muted'}`}>
                                 <Checkbox checked={opinions.includes(o)} onCheckedChange={() => toggleInList(opinions, o, setOpinions)} />
                                 <span className="text-base leading-none shrink-0">{getOpinionEmoji(o)}</span>
-                                <span className={`text-xs font-medium ${opinions.includes(o) ? 'text-primary font-semibold' : 'text-foreground'}`}>{o}</span>
+                                <span className={`text-xs font-medium ${opinions.includes(o) ? 'text-primary font-semibold' : 'text-foreground'}`}>{t(getOpinionTranslationKey(o))}</span>
                               </label>
                             ))}
                           </div>
@@ -1282,7 +1283,7 @@ export default function Players() {
                         onClick={() => setTaskDropdownOpen(!taskDropdownOpen)}
                         className={`flex items-center justify-between w-full px-3 py-2 rounded-lg text-xs font-semibold border transition-colors ${selectedTasks.length > 0 ? 'border-primary bg-primary/5 text-primary' : 'border-border bg-background text-foreground hover:bg-muted'}`}
                       >
-                        <span className="truncate">{selectedTasks.length === 0 ? t('players.all_tasks') : selectedTasks.length === 1 ? `${getTaskEmoji(selectedTasks[0])} ${selectedTasks[0]}` : t('players.tasks_selected', { count: selectedTasks.length })}</span>
+                        <span className="truncate">{selectedTasks.length === 0 ? t('players.all_tasks') : selectedTasks.length === 1 ? `${getTaskEmoji(selectedTasks[0])} ${t(getTaskTranslationKey(selectedTasks[0]))}` : t('players.tasks_selected', { count: selectedTasks.length })}</span>
                         <ChevronDown className={`w-3.5 h-3.5 text-muted-foreground shrink-0 ml-1 transition-transform ${taskDropdownOpen ? 'rotate-180' : ''}`} />
                       </button>
                       {taskDropdownOpen && (
@@ -1292,7 +1293,7 @@ export default function Players() {
                               <label key={tk} className={`flex items-center gap-2 px-2 py-1.5 rounded-md cursor-pointer transition-colors ${selectedTasks.includes(tk) ? 'bg-primary/10' : 'hover:bg-muted'}`}>
                                 <Checkbox checked={selectedTasks.includes(tk)} onCheckedChange={() => toggleInList(selectedTasks, tk, setSelectedTasks)} />
                                 <span className="text-base leading-none shrink-0">{getTaskEmoji(tk)}</span>
-                                <span className={`text-xs font-medium ${selectedTasks.includes(tk) ? 'text-primary font-semibold' : 'text-foreground'}`}>{tk}</span>
+                                <span className={`text-xs font-medium ${selectedTasks.includes(tk) ? 'text-primary font-semibold' : 'text-foreground'}`}>{t(getTaskTranslationKey(tk))}</span>
                               </label>
                             ))}
                           </div>
@@ -1373,7 +1374,7 @@ export default function Players() {
                               <h3 className="font-bold text-sm sm:text-base truncate max-w-[140px] sm:max-w-none group-hover:text-primary transition-colors">{player.name}</h3>
                               {player.task && (
                                 <span className={`shrink-0 flex items-center gap-0.5 sm:gap-1 px-1 sm:px-1.5 py-0.5 rounded-full text-[9px] sm:text-[10px] font-bold uppercase tracking-wide ${getTaskBgClass(player.task as any)}`}>
-                                  {getTaskEmoji(player.task as any)} <span className="hidden sm:inline">{player.task}</span>
+                                  {getTaskEmoji(player.task as any)} <span className="hidden sm:inline">{t(getTaskTranslationKey(player.task as any))}</span>
                                 </span>
                               )}
                               {player.has_news && (
@@ -1412,7 +1413,7 @@ export default function Players() {
                           <div className="grid grid-cols-4 gap-2 mt-3 pt-3 border-t border-border/30">
                             <div className="rounded-lg bg-muted/50 py-2 px-1 text-center">
                               <p className="text-[10px] text-muted-foreground mb-0.5">{t('players.foot')}</p>
-                              <p className="text-xs font-semibold">{player.foot || '—'}</p>
+                              <p className="text-xs font-semibold">{translateFoot(player.foot, t)}</p>
                             </div>
                             <div className="rounded-lg bg-muted/50 py-2 px-1 text-center">
                               <p className="text-[10px] text-muted-foreground mb-0.5">{t('players.height')}</p>

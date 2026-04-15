@@ -1,15 +1,17 @@
 import { useMemo, useState, useCallback, useRef, useEffect } from 'react';
 import { useParams, Link, useNavigate } from 'react-router-dom';
-import { useIsPremium } from '@/hooks/use-admin';
+import { useIsPremium, useIsAdmin } from '@/hooks/use-admin';
 import { useTranslation } from 'react-i18next';
 import { usePlayer, useReports, usePlayers, useAddReport, useToggleArchive } from '@/hooks/use-players';
-import { useMyOrganizations } from '@/hooks/use-organization';
+import { useMyOrganizations, useCurrentOrg } from '@/hooks/use-organization';
+import { useScoutOpinions, useAddScoutOpinion, useDeleteScoutOpinion, type ScoutOpinion, type OpinionLink } from '@/hooks/use-scout-opinions';
+import { useAuth } from '@/contexts/AuthContext';
 import { ShareWithOrgPopover } from '@/components/ShareWithOrgPopover';
 import { CustomFieldsDisplay } from '@/components/CustomFieldsDisplay';
 import { CustomFieldsManager } from '@/components/CustomFieldsManager';
 import { MoreHorizontal } from 'lucide-react';
 import { supabase } from '@/integrations/supabase/client';
-import { getPlayerAge, getPotentialDescription, resolveLeagueName, translateCountry, type Opinion } from '@/types/player';
+import { getPlayerAge, getPotentialDescription, translateFoot, getOpinionTranslationKey, ALL_OPINIONS, resolveLeagueName, translateCountry, type Opinion, type Foot } from '@/types/player';
 import { usePositions } from '@/hooks/use-positions';
 import { FlagIcon } from '@/components/ui/flag-icon';
 import { OpinionBadge } from '@/components/ui/opinion-badge';
@@ -74,7 +76,10 @@ function SortableCard({ id, size, onToggleSize, editMode, children }: {
 }
 
 export default function PlayerProfile() {
-  const { id } = useParams<{ id: string }>();
+  const { id, orgSlug } = useParams<{ id: string; orgSlug?: string }>();
+  const isOrgView = !!orgSlug;
+  const { data: currentOrg } = useCurrentOrg();
+  const { user } = useAuth();
   const { data: player, isLoading: playerLoading } = usePlayer(id);
   const { data: reports = [] } = useReports(id);
   const { data: research = [] } = usePlayerResearch(id);
@@ -87,9 +92,24 @@ export default function PlayerProfile() {
   const { t, i18n } = useTranslation();
   const { positions: posLabels, positionShort: posShort } = usePositions();
   const { data: isPremium } = useIsPremium();
+  const { data: isAdmin } = useIsAdmin();
   const { data: myOrgs = [] } = useMyOrganizations();
   const hasOrg = myOrgs.length > 0;
   const navigate = useNavigate();
+
+  // Scout opinions (org context)
+  const { data: scoutOpinions = [] } = useScoutOpinions(id, isOrgView ? currentOrg?.id : undefined);
+  const addScoutOpinion = useAddScoutOpinion();
+  const deleteScoutOpinion = useDeleteScoutOpinion();
+  const [showOpinionForm, setShowOpinionForm] = useState(false);
+  const [newOpinionLevel, setNewOpinionLevel] = useState(5);
+  const [newOpinionPotential, setNewOpinionPotential] = useState(5);
+  const [newOpinionType, setNewOpinionType] = useState<Opinion>('À revoir');
+  const [newOpinionNotes, setNewOpinionNotes] = useState('');
+  const [newOpinionLinks, setNewOpinionLinks] = useState<OpinionLink[]>([]);
+  const [newOpinionMatch, setNewOpinionMatch] = useState('');
+  const [newOpinionDate, setNewOpinionDate] = useState(new Date().toISOString().slice(0, 10));
+  const [submittingOpinion, setSubmittingOpinion] = useState(false);
 
   // Scouting notes state
   const [scoutingNotes, setScoutingNotes] = useState<ScoutingNotes>({ physique: '', avec_ballon: '', sans_ballon: '', mental: '', personnelles: '' });
@@ -115,6 +135,12 @@ export default function PlayerProfile() {
   const [enriching, setEnriching] = useState(false);
   const toggleArchive = useToggleArchive();
   const [tmUrlInput, setTmUrlInput] = useState('');
+  const [comparePlayerId, setComparePlayerId] = useState<string | null>(null);
+  const [showPer90, setShowPer90] = useState(false);
+  const [statsSortKey, setStatsSortKey] = useState<string>('');
+  const [statsSortDir, setStatsSortDir] = useState<'asc' | 'desc'>('desc');
+  const [statsFilter, setStatsFilter] = useState<'all' | 'attack' | 'passing' | 'defending' | 'physical'>('all');
+  const [radarSelectedStats, setRadarSelectedStats] = useState<string[]>(['goals', 'assists', 'passes_accuracy', 'tackles', 'interceptions', 'duels_won', 'dribbles_success', 'passes_key']);
   const [editingReport, setEditingReport] = useState<{ id: string; title: string; drive_link: string; file_url: string } | null>(null);
   const [editTitle, setEditTitle] = useState('');
   const [editLink, setEditLink] = useState('');
@@ -158,8 +184,8 @@ export default function PlayerProfile() {
   const handleEnrich = async (tmUrl?: string) => {
     if (!player) return;
 
-    // Cooldown guard — skip scraping if enriched recently (unless providing a new TM URL)
-    if (!tmUrl && player.external_data_fetched_at) {
+    // Cooldown guard — skip scraping if enriched recently (unless providing a new TM URL or admin)
+    if (!isAdmin && !tmUrl && player.external_data_fetched_at) {
       const lastEnrich = new Date(player.external_data_fetched_at).getTime();
       if (Date.now() - lastEnrich < ENRICH_COOLDOWN) {
         toast(t('profile.enrich_cooldown'));
@@ -341,7 +367,7 @@ export default function PlayerProfile() {
     <div className="flex flex-col items-center justify-center min-h-[60vh]">
       <p className="text-xl font-semibold text-muted-foreground">{t('profile.player_not_found')}</p>
       <Button asChild variant="outline" className="mt-4 rounded-xl">
-        <Link to="/players"><ArrowLeft className="w-4 h-4 mr-2" />{t('common.back')}</Link>
+        <Link to={isOrgView ? `/organization/${orgSlug}/players` : '/players'}><ArrowLeft className="w-4 h-4 mr-2" />{t('common.back')}</Link>
       </Button>
     </div>
   );
@@ -712,9 +738,19 @@ export default function PlayerProfile() {
     <div className="max-w-5xl mx-auto space-y-6">
       {/* Breadcrumb */}
       <div className="flex items-center gap-2 text-sm">
-        <Link to="/" className="text-muted-foreground hover:text-foreground transition-colors">{t('sidebar.dashboard')}</Link>
-        <span className="text-muted-foreground">›</span>
-        <Link to="/players" className="text-muted-foreground hover:text-foreground transition-colors">{t('profile.players_breadcrumb')}</Link>
+        {isOrgView ? (
+          <>
+            <Link to={`/organization/${orgSlug}`} className="text-muted-foreground hover:text-foreground transition-colors">{currentOrg?.name || t('sidebar.organization')}</Link>
+            <span className="text-muted-foreground">›</span>
+            <Link to={`/organization/${orgSlug}/players`} className="text-muted-foreground hover:text-foreground transition-colors">{t('profile.players_breadcrumb')}</Link>
+          </>
+        ) : (
+          <>
+            <Link to="/" className="text-muted-foreground hover:text-foreground transition-colors">{t('sidebar.dashboard')}</Link>
+            <span className="text-muted-foreground">›</span>
+            <Link to="/players" className="text-muted-foreground hover:text-foreground transition-colors">{t('profile.players_breadcrumb')}</Link>
+          </>
+        )}
         <span className="text-muted-foreground">›</span>
         <span className="font-semibold">{player.name}</span>
       </div>
@@ -735,7 +771,7 @@ export default function PlayerProfile() {
                     <FlagIcon nationality={player.nationality} size="lg" />{translateCountry(player.nationality, i18n.language)}
                   </span>
                   <span>{age} {t('common.year')} ({player.generation})</span>
-                  <span>{posShort[player.position]} · {posLabels[player.position]}{player.position_secondaire ? ` / ${player.position_secondaire}` : ''} · {player.foot}</span>
+                  <span>{posShort[player.position]} · {posLabels[player.position]}{player.position_secondaire ? ` / ${player.position_secondaire}` : ''} · {translateFoot(player.foot, t)}</span>
                 </div>
                 <div className="flex items-center gap-3 mt-3">
                   <div className="flex items-center gap-2">
@@ -890,33 +926,356 @@ export default function PlayerProfile() {
 
         {/* ── Tab: Scout Report (evaluation + notes cards) ── */}
         <TabsContent value="scout-report" className="mt-4 space-y-4">
-          {editMode && (
-            <div className="flex items-center gap-3 px-4 py-3 rounded-xl bg-primary/10 border border-primary/20">
-              <LayoutDashboard className="w-4 h-4 text-primary shrink-0" />
-              <p className="text-sm text-primary font-medium flex-1">{t('profile.edit_mode_hint')}</p>
-              <Button size="sm" className="rounded-xl" onClick={() => setEditMode(false)}>
-                <Check className="w-3.5 h-3.5 mr-1.5" />{t('profile.edit_mode_done')}
-              </Button>
-            </div>
-          )}
-
-          {(() => {
-            const scoutCards = new Set<CardId>(['evaluation', 'physique', 'avec_ballon', 'sans_ballon', 'mental', 'personnelles']);
-            const scoutOrder = visibleOrder.filter(id => scoutCards.has(id));
-            return (
-              <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={handleDragEnd}>
-                <SortableContext items={scoutOrder} strategy={rectSortingStrategy}>
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                    {scoutOrder.map(cardId => (
-                      <SortableCard key={cardId} id={cardId} size={layout.sizes[cardId]} onToggleSize={() => toggleSize(cardId)} editMode={editMode}>
-                        {cardRenderers[cardId]()}
-                      </SortableCard>
-                    ))}
+          {isOrgView ? (
+            /* ── Org view: scout opinion cards ── */
+            <>
+              {/* Header bar with averages + add button */}
+              <Card className="card-warm">
+                <CardContent className="p-4">
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-3">
+                      <ClipboardList className="w-4 h-4 text-primary" />
+                      <span className="text-sm font-semibold">{t('profile.tab_scout_report')}</span>
+                      {scoutOpinions.length > 0 && (
+                        <>
+                          <span className="text-muted-foreground">·</span>
+                          <span className="text-xs text-muted-foreground">{t('profile.scout_opinions_count', { count: scoutOpinions.length })}</span>
+                          <span className="text-muted-foreground">·</span>
+                          <div className="flex items-center gap-3">
+                            <div className="flex items-center gap-1.5">
+                              <CircularGauge value={Number((scoutOpinions.reduce((s, o) => s + o.current_level, 0) / scoutOpinions.length).toFixed(1))} variant="success" size={32} strokeWidth={3} />
+                              <span className="text-[10px] text-muted-foreground font-medium">{t('profile.level')}</span>
+                            </div>
+                            <div className="flex items-center gap-1.5">
+                              <CircularGauge value={Number((scoutOpinions.reduce((s, o) => s + o.potential, 0) / scoutOpinions.length).toFixed(1))} variant="primary" size={32} strokeWidth={3} />
+                              <span className="text-[10px] text-muted-foreground font-medium">{t('profile.potential')}</span>
+                            </div>
+                          </div>
+                        </>
+                      )}
+                    </div>
+                    <Button size="sm" className="rounded-xl" onClick={() => setShowOpinionForm(v => !v)}>
+                      <PlusCircle className="w-3.5 h-3.5 mr-1.5" />{t('profile.add_opinion')}
+                    </Button>
                   </div>
-                </SortableContext>
-              </DndContext>
-            );
-          })()}
+                </CardContent>
+              </Card>
+
+              {/* Add opinion form */}
+              {(showOpinionForm || scoutOpinions.length === 0) && (
+                <Card className="card-warm border-primary/20">
+                  <CardContent className="p-5 space-y-5">
+                    {/* Row 1: Scores + Opinion type */}
+                    <div className="grid grid-cols-1 sm:grid-cols-[auto_1fr] gap-5 items-start">
+                      {/* Gauges inline */}
+                      <div className="flex items-center gap-4">
+                        <div className="flex flex-col items-center gap-1.5">
+                          <CircularGauge value={newOpinionLevel} variant="success" size={72} strokeWidth={5} />
+                          <span className="text-[10px] font-medium text-muted-foreground">{t('profile.level')}</span>
+                          <Input
+                            type="number" min={1} max={10} step={0.5}
+                            value={newOpinionLevel}
+                            onChange={(e) => setNewOpinionLevel(Math.min(10, Math.max(1, Number(e.target.value))))}
+                            className="w-16 h-7 text-center text-xs rounded-lg"
+                          />
+                        </div>
+                        <div className="flex flex-col items-center gap-1.5">
+                          <CircularGauge value={newOpinionPotential} variant="primary" size={72} strokeWidth={5} />
+                          <span className="text-[10px] font-medium text-muted-foreground">{t('profile.potential')}</span>
+                          <Input
+                            type="number" min={1} max={10} step={0.5}
+                            value={newOpinionPotential}
+                            onChange={(e) => setNewOpinionPotential(Math.min(10, Math.max(1, Number(e.target.value))))}
+                            className="w-16 h-7 text-center text-xs rounded-lg"
+                          />
+                        </div>
+                      </div>
+                      {/* Opinion type */}
+                      <div className="space-y-3">
+                        <div>
+                          <label className="text-xs font-bold uppercase tracking-wider text-muted-foreground mb-1.5 block">
+                            {t('profile.opinion_type')}
+                          </label>
+                          <Select value={newOpinionType} onValueChange={(v) => setNewOpinionType(v as Opinion)}>
+                            <SelectTrigger className="rounded-xl h-9">
+                              <SelectValue />
+                            </SelectTrigger>
+                            <SelectContent>
+                              {ALL_OPINIONS.map(op => (
+                                <SelectItem key={op} value={op}>{t(getOpinionTranslationKey(op))}</SelectItem>
+                              ))}
+                            </SelectContent>
+                          </Select>
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* Row 2: Notes */}
+                    <div>
+                      <label className="text-xs font-bold uppercase tracking-wider text-muted-foreground mb-1.5 block">
+                        {t('profile.opinion_notes')}
+                      </label>
+                      <Textarea
+                        value={newOpinionNotes}
+                        onChange={(e) => setNewOpinionNotes(e.target.value)}
+                        placeholder={t('profile.opinion_notes_placeholder')}
+                        className="rounded-xl min-h-[80px] resize-vertical"
+                      />
+                    </div>
+
+                    {/* Row 3: Match + Date (optional) */}
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                      <div>
+                        <label className="text-xs font-bold uppercase tracking-wider text-muted-foreground mb-1.5 block">
+                          {t('profile.opinion_match')}
+                        </label>
+                        <Input
+                          value={newOpinionMatch}
+                          onChange={(e) => setNewOpinionMatch(e.target.value)}
+                          placeholder={t('profile.opinion_match_placeholder')}
+                          className="rounded-xl h-9"
+                        />
+                      </div>
+                      <div>
+                        <label className="text-xs font-bold uppercase tracking-wider text-muted-foreground mb-1.5 block">
+                          {t('profile.opinion_date')}
+                        </label>
+                        <Input
+                          type="date"
+                          value={newOpinionDate}
+                          onChange={(e) => setNewOpinionDate(e.target.value)}
+                          className="rounded-xl h-9"
+                        />
+                      </div>
+                    </div>
+
+                    {/* Row 4: Links */}
+                    <div>
+                      <label className="text-xs font-bold uppercase tracking-wider text-muted-foreground mb-1.5 block">
+                        {t('profile.opinion_links')}
+                      </label>
+                      <div className="space-y-2">
+                        {newOpinionLinks.map((link, i) => (
+                          <div key={i} className="flex items-center gap-2">
+                            <Input
+                              value={link.label || ''}
+                              onChange={(e) => {
+                                const updated = [...newOpinionLinks];
+                                updated[i] = { ...updated[i], label: e.target.value };
+                                setNewOpinionLinks(updated);
+                              }}
+                              placeholder={t('profile.opinion_link_label_placeholder')}
+                              className="rounded-lg h-8 text-xs flex-[1]"
+                            />
+                            <Input
+                              value={link.url}
+                              onChange={(e) => {
+                                const updated = [...newOpinionLinks];
+                                updated[i] = { ...updated[i], url: e.target.value };
+                                setNewOpinionLinks(updated);
+                              }}
+                              placeholder="https://..."
+                              className="rounded-lg h-8 text-xs flex-[2]"
+                            />
+                            <Button
+                              size="sm" variant="ghost"
+                              className="h-8 w-8 p-0 shrink-0 text-muted-foreground hover:text-destructive"
+                              onClick={() => setNewOpinionLinks(prev => prev.filter((_, idx) => idx !== i))}
+                            >
+                              <X className="w-3.5 h-3.5" />
+                            </Button>
+                          </div>
+                        ))}
+                        <Button
+                          size="sm" variant="outline"
+                          className="rounded-lg h-7 text-xs"
+                          onClick={() => setNewOpinionLinks(prev => [...prev, { url: '', label: '' }])}
+                        >
+                          <Plus className="w-3 h-3 mr-1" />{t('profile.opinion_add_link')}
+                        </Button>
+                      </div>
+                    </div>
+
+                    {/* Actions */}
+                    <div className="flex items-center gap-2 justify-end pt-1">
+                      {scoutOpinions.length > 0 && (
+                        <Button size="sm" variant="outline" className="rounded-xl" onClick={() => setShowOpinionForm(false)}>
+                          {t('common.cancel')}
+                        </Button>
+                      )}
+                      <Button
+                        size="sm"
+                        className="rounded-xl"
+                        disabled={submittingOpinion || !newOpinionNotes.trim()}
+                        onClick={async () => {
+                          if (!currentOrg || !id) return;
+                          setSubmittingOpinion(true);
+                          try {
+                            const validLinks = newOpinionLinks.filter(l => l.url.trim());
+                            await addScoutOpinion.mutateAsync({
+                              player_id: id,
+                              organization_id: currentOrg.id,
+                              current_level: newOpinionLevel,
+                              potential: newOpinionPotential,
+                              opinion: newOpinionType,
+                              notes: newOpinionNotes.trim(),
+                              links: validLinks.length > 0 ? validLinks : undefined,
+                              match_observed: newOpinionMatch.trim() || undefined,
+                              observed_at: newOpinionDate || undefined,
+                            });
+                            setNewOpinionLevel(5);
+                            setNewOpinionPotential(5);
+                            setNewOpinionType('À revoir');
+                            setNewOpinionNotes('');
+                            setNewOpinionLinks([]);
+                            setNewOpinionMatch('');
+                            setNewOpinionDate(new Date().toISOString().slice(0, 10));
+                            setShowOpinionForm(false);
+                            toast.success(t('profile.opinion_added'));
+                          } catch (err) {
+                            console.error('add_scout_opinion error:', err);
+                            toast.error(t('profile.opinion_add_error'));
+                          } finally {
+                            setSubmittingOpinion(false);
+                          }
+                        }}
+                      >
+                        {submittingOpinion ? <RefreshCw className="w-3.5 h-3.5 animate-spin mr-1.5" /> : <Check className="w-3.5 h-3.5 mr-1.5" />}
+                        {t('profile.submit_opinion')}
+                      </Button>
+                    </div>
+                  </CardContent>
+                </Card>
+              )}
+
+              {/* Opinion cards list */}
+              <div className="space-y-3">
+                {scoutOpinions.map((opinion) => (
+                  <Card key={opinion.id} className="card-warm">
+                    <CardContent className="p-5">
+                      {/* Header: scout info + gauges on the right */}
+                      <div className="flex items-start justify-between gap-4">
+                        <div className="flex items-center gap-3 min-w-0">
+                          <div className="w-9 h-9 rounded-full bg-gradient-to-br from-primary/20 to-primary/5 flex items-center justify-center shrink-0 ring-1 ring-primary/10">
+                            <User className="w-4 h-4 text-primary" />
+                          </div>
+                          <div className="min-w-0">
+                            <div className="flex items-center gap-2 flex-wrap">
+                              <span className="font-semibold text-sm">{opinion.scout_name || t('profile.anonymous_scout')}</span>
+                              <OpinionBadge opinion={opinion.opinion} size="sm" />
+                            </div>
+                            <div className="flex items-center gap-2 flex-wrap mt-0.5">
+                              <p className="text-xs text-muted-foreground flex items-center gap-1">
+                                <Clock className="w-3 h-3" />
+                                {new Date(opinion.observed_at || opinion.created_at).toLocaleDateString(locale, { day: 'numeric', month: 'long', year: 'numeric' })}
+                              </p>
+                              {opinion.match_observed && (
+                                <span className="text-xs px-2 py-0.5 rounded-md bg-muted font-medium">{opinion.match_observed}</span>
+                              )}
+                            </div>
+                          </div>
+                        </div>
+                        <div className="flex items-center gap-3 shrink-0">
+                          <CircularGauge value={opinion.current_level} variant="success" label={t('profile.level')} size={52} strokeWidth={4} />
+                          <Tooltip>
+                            <TooltipTrigger asChild>
+                              <div className="cursor-help">
+                                <CircularGauge value={opinion.potential} variant="primary" label={t('profile.potential')} size={52} strokeWidth={4} />
+                              </div>
+                            </TooltipTrigger>
+                            <TooltipContent className="max-w-xs">
+                              <p className="text-sm font-medium">{getPotentialDescription(opinion.potential)}</p>
+                            </TooltipContent>
+                          </Tooltip>
+                          {opinion.user_id === user?.id && (
+                            <Button
+                              size="sm" variant="ghost"
+                              className="h-7 w-7 p-0 text-muted-foreground hover:text-destructive"
+                              onClick={async () => {
+                                if (!currentOrg) return;
+                                try {
+                                  await deleteScoutOpinion.mutateAsync({
+                                    opinion_id: opinion.id,
+                                    player_id: opinion.player_id,
+                                    organization_id: currentOrg.id,
+                                  });
+                                  toast.success(t('profile.opinion_deleted'));
+                                } catch {
+                                  toast.error(t('profile.opinion_delete_error'));
+                                }
+                              }}
+                            >
+                              <Trash2 className="w-3.5 h-3.5" />
+                            </Button>
+                          )}
+                        </div>
+                      </div>
+                      {/* Body: notes */}
+                      {opinion.notes && (
+                        <p className="text-sm text-foreground/80 mt-3 leading-relaxed whitespace-pre-wrap">{opinion.notes}</p>
+                      )}
+                      {/* Links */}
+                      {opinion.links && opinion.links.length > 0 && (
+                        <div className="flex flex-wrap gap-2 mt-3">
+                          {opinion.links.map((link, i) => (
+                            <a
+                              key={i}
+                              href={link.url}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-muted/50 hover:bg-muted text-xs font-medium text-primary hover:underline transition-colors"
+                            >
+                              <ExternalLink className="w-3 h-3" />
+                              {link.label || link.url.replace(/^https?:\/\//, '').slice(0, 30)}
+                            </a>
+                          ))}
+                        </div>
+                      )}
+                    </CardContent>
+                  </Card>
+                ))}
+              </div>
+
+              {scoutOpinions.length === 0 && !showOpinionForm && (
+                <div className="text-center py-12">
+                  <ClipboardList className="w-10 h-10 text-muted-foreground/20 mx-auto mb-3" />
+                  <p className="text-sm text-muted-foreground">{t('profile.no_scout_opinions')}</p>
+                  <p className="text-xs text-muted-foreground/60 mt-1">{t('profile.no_scout_opinions_desc')}</p>
+                </div>
+              )}
+            </>
+          ) : (
+            /* ── Personal view: editable scouting notes ── */
+            <>
+              {editMode && (
+                <div className="flex items-center gap-3 px-4 py-3 rounded-xl bg-primary/10 border border-primary/20">
+                  <LayoutDashboard className="w-4 h-4 text-primary shrink-0" />
+                  <p className="text-sm text-primary font-medium flex-1">{t('profile.edit_mode_hint')}</p>
+                  <Button size="sm" className="rounded-xl" onClick={() => setEditMode(false)}>
+                    <Check className="w-3.5 h-3.5 mr-1.5" />{t('profile.edit_mode_done')}
+                  </Button>
+                </div>
+              )}
+
+              {(() => {
+                const scoutCards = new Set<CardId>(['evaluation', 'physique', 'avec_ballon', 'sans_ballon', 'mental', 'personnelles']);
+                const scoutOrder = visibleOrder.filter(id => scoutCards.has(id));
+                return (
+                  <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={handleDragEnd}>
+                    <SortableContext items={scoutOrder} strategy={rectSortingStrategy}>
+                      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                        {scoutOrder.map(cardId => (
+                          <SortableCard key={cardId} id={cardId} size={layout.sizes[cardId]} onToggleSize={() => toggleSize(cardId)} editMode={editMode}>
+                            {cardRenderers[cardId]()}
+                          </SortableCard>
+                        ))}
+                      </div>
+                    </SortableContext>
+                  </DndContext>
+                );
+              })()}
+            </>
+          )}
         </TabsContent>
 
         {/* ── Tab: Vidéos ── */}
@@ -1101,12 +1460,109 @@ export default function PlayerProfile() {
           </Card>
         </TabsContent>
 
-        {/* ── Tab: Data (radar + charts) ── */}
+        {/* ── Tab: Data ── */}
         <TabsContent value="data" className="mt-4 space-y-4">
           {(() => {
-            const { physical: physScore, technical: techScore, tactical: tacticScore, mental: mentalScore } = perfScores;
+            const ps = ext.performance_stats;
+            const s = ps?.stats;
+            const p90 = ps?.per90 || {};
+            const isGK = player.position === 'GK';
+            const hasPerfStats = !!s;
 
-            const radarData = [
+            // ── Compare player logic ──
+            const comparePlayer = comparePlayerId ? allPlayers.find(p => p.id === comparePlayerId) : null;
+            const compareExt = (comparePlayer?.external_data || {}) as Record<string, any>;
+            const comparePs = compareExt.performance_stats;
+            const compareS = comparePs?.stats;
+
+            // ── Radar axes builder ──
+            const buildRadarValue = (st: any) => {
+              if (!st) return null;
+              return isGK ? [
+                { axis: t('profile.perf_duels'), value: st.duels_total > 0 ? Math.round((st.duels_won / st.duels_total) * 100) : 0 },
+                { axis: t('profile.perf_passes'), value: st.passes_accuracy || 0 },
+                { axis: t('profile.perf_discipline'), value: Math.max(0, 100 - (st.cards_yellow * 15 + st.cards_red * 40)) },
+                { axis: 'Saves', value: Math.min(100, (st.saves || 0) * 4) },
+              ] : [
+                { axis: t('profile.perf_shooting'), value: st.shots_total > 0 ? Math.min(100, Math.round((st.shots_on / st.shots_total) * 100)) : 0 },
+                { axis: t('profile.perf_creativity'), value: Math.min(100, (st.passes_key || 0) * 2.5) },
+                { axis: t('profile.perf_passes'), value: st.passes_accuracy || 0 },
+                { axis: t('profile.perf_defending'), value: Math.min(100, ((st.tackles || 0) + (st.interceptions || 0) + (st.blocks || 0)) * 2) },
+                { axis: t('profile.perf_duels'), value: st.duels_total > 0 ? Math.round((st.duels_won / st.duels_total) * 100) : 0 },
+                { axis: t('profile.perf_dribbling'), value: st.dribbles_attempts > 0 ? Math.round((st.dribbles_success / st.dribbles_attempts) * 100) : 0 },
+              ];
+            };
+
+            const radarPerfData = buildRadarValue(s);
+            const radarCompare = buildRadarValue(compareS);
+            // Merge for dual radar
+            const mergedRadar = radarPerfData?.map((d, i) => ({
+              axis: d.axis,
+              [player.name]: d.value,
+              ...(radarCompare ? { [comparePlayer?.name || '']: radarCompare[i]?.value || 0 } : {}),
+            }));
+
+            // ── Stats table rows ──
+            type StatRow = { key: string; label: string; cat: 'attack' | 'passing' | 'defending' | 'physical'; raw: number | null; per90v: number | null; compareRaw?: number | null; comparePer90?: number | null };
+            const statRows: StatRow[] = [];
+            if (s) {
+              const cp90 = comparePs?.per90 || {};
+              const addRow = (key: string, label: string, cat: StatRow['cat'], raw: number | null, per90v: number | null) => {
+                statRows.push({ key, label, cat, raw, per90v, compareRaw: compareS?.[key] ?? null, comparePer90: cp90[key] ?? null });
+              };
+              if (!isGK) {
+                addRow('goals', t('profile.perf_goals'), 'attack', s.goals, p90.goals);
+                addRow('assists', t('profile.perf_assists'), 'attack', s.assists, p90.assists);
+                addRow('shots_total', t('profile.perf_shots'), 'attack', s.shots_total, p90.shots);
+                addRow('shots_on', t('profile.perf_shooting'), 'attack', s.shots_on, null);
+                if (s.expected_goals) addRow('expected_goals', 'xG', 'attack', parseFloat(s.expected_goals), p90.expected_goals);
+                if (s.expected_assists) addRow('expected_assists', 'xA', 'attack', parseFloat(s.expected_assists), null);
+                addRow('big_chances_created', t('profile.perf_creativity'), 'attack', s.big_chances_created, null);
+              }
+              addRow('passes_accuracy', t('profile.perf_passes_accuracy'), 'passing', s.passes_accuracy, null);
+              addRow('passes_key', t('profile.perf_key_passes'), 'passing', s.passes_key, p90.key_passes);
+              addRow('passes_total', t('profile.perf_passes'), 'passing', s.passes_total, null);
+              addRow('tackles', t('profile.perf_tackles'), 'defending', s.tackles, p90.tackles);
+              addRow('interceptions', t('profile.perf_interceptions'), 'defending', s.interceptions, p90.interceptions);
+              addRow('blocks', 'Blocks', 'defending', s.blocks, null);
+              addRow('duels_won', t('profile.perf_duels_won'), 'physical', s.duels_won, p90.duels_won);
+              addRow('duels_total', t('profile.perf_duels'), 'physical', s.duels_total, null);
+              addRow('aerial_duels_won', t('profile.perf_aerial'), 'physical', s.aerial_duels_won, null);
+              if (!isGK) addRow('dribbles_success', t('profile.perf_dribbles'), 'physical', s.dribbles_success, p90.dribbles);
+              addRow('fouls_drawn', t('profile.perf_fouls_drawn'), 'physical', s.fouls_drawn, null);
+              addRow('fouls_committed', t('profile.perf_fouls_committed'), 'physical', s.fouls_committed, null);
+            }
+            const filteredRows = statsFilter === 'all' ? statRows : statRows.filter(r => r.cat === statsFilter);
+            const sortedRows = statsSortKey ? [...filteredRows].sort((a, b) => {
+              const aVal = showPer90 ? (a.per90v ?? a.raw ?? 0) : (a.raw ?? 0);
+              const bVal = showPer90 ? (b.per90v ?? b.raw ?? 0) : (b.raw ?? 0);
+              return statsSortDir === 'asc' ? aVal - bVal : bVal - aVal;
+            }) : filteredRows;
+
+            // ── Positional benchmark (avg of same-position enriched players) ──
+            const positionPeers = allPlayers.filter(p => p.id !== player.id && p.position === player.position && (p.external_data as any)?.performance_stats?.stats);
+            // Compute benchmarks for ALL stat keys (radar + bars will both filter by radarSelectedStats)
+            const allStatKeys = statRows.map(r => r.key);
+            const benchmarks: Record<string, { avg: number; playerVal: number; rank: number; total: number }> = {};
+            if (s && positionPeers.length > 0) {
+              for (const bk of allStatKeys) {
+                const peerVals = positionPeers.map(p => { const v = (p.external_data as any)?.performance_stats?.stats?.[bk]; return v != null ? parseFloat(String(v)) : 0; }).filter(v => !isNaN(v) && v > 0);
+                const playerVal = (() => { const v = (s as any)[bk]; return v != null ? parseFloat(String(v)) : 0; })();
+                if (peerVals.length > 0 && !isNaN(playerVal)) {
+                  const avg = peerVals.reduce((a, b) => a + b, 0) / peerVals.length;
+                  const allVals = [...peerVals, playerVal].sort((a, b) => b - a);
+                  const rank = allVals.indexOf(playerVal) + 1;
+                  benchmarks[bk] = { avg: Math.round(avg * 10) / 10, playerVal, rank, total: allVals.length };
+                }
+              }
+            }
+
+            // ── Candidates for compare (enriched + same zone) ──
+            const compareCandidates = allPlayers.filter(p => p.id !== player.id && (p.external_data as any)?.performance_stats?.stats);
+
+            // ── Scout evaluation data ──
+            const { physical: physScore, technical: techScore, tactical: tacticScore, mental: mentalScore } = perfScores;
+            const scoutRadarData = [
               { attr: t('profile.perf_physical'), value: physScore, full: 10 },
               { attr: t('profile.perf_technical'), value: techScore, full: 10 },
               { attr: t('profile.perf_tactical'), value: tacticScore, full: 10 },
@@ -1114,21 +1570,13 @@ export default function PlayerProfile() {
               { attr: t('profile.perf_potential'), value: player.potential, full: 10 },
               { attr: t('profile.perf_level'), value: player.current_level, full: 10 },
             ];
-
             const overallScore = Math.round((physScore + techScore + tacticScore + mentalScore + player.current_level + player.potential) / 6 * 10) / 10;
-
-            // History chart data from reports
-            const historyData = reports.slice().reverse().map((r, i) => {
-              const opinionValue = r.opinion === 'À suivre' ? 8 : r.opinion === 'À revoir' ? 5 : 3;
-              return {
-                date: new Date(r.report_date).toLocaleDateString(locale, { month: 'short', year: '2-digit' }),
-                level: player.current_level,
-                potential: player.potential,
-                opinion: opinionValue,
-                index: i + 1,
-              };
-            });
-
+            const historyData = reports.slice().reverse().map((r, i) => ({
+              date: new Date(r.report_date).toLocaleDateString(locale, { month: 'short', year: '2-digit' }),
+              level: player.current_level, potential: player.potential,
+              opinion: r.opinion === 'À suivre' ? 8 : r.opinion === 'À revoir' ? 5 : 3,
+              index: i + 1,
+            }));
             const attrSliders: { key: keyof typeof perfScores; label: string; color: string }[] = [
               { key: 'physical', label: t('profile.perf_physical'), color: 'hsl(var(--chart-1))' },
               { key: 'technical', label: t('profile.perf_technical'), color: 'hsl(var(--chart-2))' },
@@ -1137,198 +1585,503 @@ export default function PlayerProfile() {
             ];
 
             return (
-              <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-                {/* Overall score */}
-                <Card className="card-warm lg:col-span-2">
-                  <CardContent className="p-5">
-                    <div className="flex items-center justify-between flex-wrap gap-4">
-                      <div>
-                        <h3 className="text-xs font-bold uppercase tracking-wider text-muted-foreground">{t('profile.perf_overview')}</h3>
-                        <p className="text-sm text-muted-foreground mt-1">{t('profile.perf_overview_desc')}</p>
-                      </div>
-                      <div className="flex items-center gap-6">
-                        <div className="text-center">
-                          <div className="text-4xl font-black text-primary">{overallScore}</div>
-                          <p className="text-[10px] text-muted-foreground font-medium uppercase tracking-wider">{t('profile.perf_overall')}</p>
-                        </div>
-                        <div className="text-center">
-                          <div className="text-4xl font-black text-green-500">{player.current_level}</div>
-                          <p className="text-[10px] text-muted-foreground font-medium uppercase tracking-wider">{t('profile.level')}</p>
-                        </div>
-                        <div className="text-center">
-                          <div className="text-4xl font-black text-blue-500">{player.potential}</div>
-                          <p className="text-[10px] text-muted-foreground font-medium uppercase tracking-wider">{t('profile.potential')}</p>
-                        </div>
-                      </div>
-                    </div>
-                  </CardContent>
-                </Card>
-
-                {/* Radar chart */}
-                <Card className="card-warm">
-                  <CardContent className="p-5">
-                    <h3 className="text-xs font-bold uppercase tracking-wider text-muted-foreground mb-4">{t('profile.perf_radar_title')}</h3>
-                    <ResponsiveContainer width="100%" height={300}>
-                      <RadarChart data={radarData} cx="50%" cy="50%" outerRadius="75%">
-                        <PolarGrid stroke="hsl(var(--border))" />
-                        <PolarAngleAxis
-                          dataKey="attr"
-                          tick={{ fontSize: 11, fill: 'hsl(var(--muted-foreground))' }}
-                        />
-                        <PolarRadiusAxis
-                          angle={90}
-                          domain={[0, 10]}
-                          tick={{ fontSize: 9, fill: 'hsl(var(--muted-foreground))' }}
-                          axisLine={false}
-                        />
-                        <Radar
-                          name={player.name}
-                          dataKey="value"
-                          stroke="hsl(var(--primary))"
-                          fill="hsl(var(--primary))"
-                          fillOpacity={0.2}
-                          strokeWidth={2}
-                          dot={{ r: 4, fill: 'hsl(var(--primary))' }}
-                        />
-                      </RadarChart>
-                    </ResponsiveContainer>
-                  </CardContent>
-                </Card>
-
-                {/* Editable attribute sliders */}
-                <Card className="card-warm">
-                  <CardContent className="p-5">
-                    <h3 className="text-xs font-bold uppercase tracking-wider text-muted-foreground mb-1">{t('profile.perf_attributes_title')}</h3>
-                    <p className="text-[11px] text-muted-foreground mb-4">{t('profile.perf_adjust_hint')}</p>
-                    <div className="space-y-5">
-                      {attrSliders.map(attr => (
-                        <div key={attr.key} className="space-y-1.5">
-                          <div className="flex items-center justify-between">
-                            <span className="text-sm font-medium">{attr.label}</span>
-                            <span className="text-sm font-bold tabular-nums min-w-[40px] text-right" style={{ color: attr.color }}>{perfScores[attr.key]}/10</span>
+              <div className="space-y-4">
+                {/* ═══════════════ SECTION 1: PERFORMANCE STATS (SofaScore) ═══════════════ */}
+                {hasPerfStats ? (
+                  <>
+                    {/* Header + rating + compare selector */}
+                    <Card className="card-warm">
+                      <CardContent className="p-5">
+                        <div className="flex items-center justify-between flex-wrap gap-3 mb-4">
+                          <div>
+                            <h3 className="text-base font-bold flex items-center gap-2">
+                              <Activity className="w-4 h-4" />{t('profile.perf_title')}
+                              {ps.season && <span className="text-xs bg-blue-500/10 text-blue-600 dark:text-blue-400 px-1.5 py-0.5 rounded font-bold">{ps.season}</span>}
+                            </h3>
+                            {ps.league && <p className="text-xs text-muted-foreground mt-0.5">{ps.league} {ps.team ? `— ${ps.team}` : ''}</p>}
                           </div>
                           <div className="flex items-center gap-3">
-                            <input
-                              type="range"
-                              min={0}
-                              max={10}
-                              step={1}
-                              value={perfScores[attr.key]}
-                              onChange={e => updatePerfScore(attr.key, Number(e.target.value))}
-                              className="flex-1 h-2 rounded-full appearance-none cursor-pointer bg-muted accent-primary [&::-webkit-slider-thumb]:w-4 [&::-webkit-slider-thumb]:h-4 [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:bg-primary [&::-webkit-slider-thumb]:shadow-md"
-                              style={{ accentColor: attr.color }}
-                            />
-                          </div>
-                          <div className="h-2.5 rounded-full bg-muted overflow-hidden">
-                            <div
-                              className="h-full rounded-full transition-all duration-300 ease-out"
-                              style={{ width: `${perfScores[attr.key] * 10}%`, background: attr.color }}
-                            />
+                            {s.rating && (
+                              <div className={`text-3xl font-black px-4 py-2 rounded-xl ${parseFloat(s.rating) >= 7.5 ? 'bg-emerald-500/15 text-emerald-600 dark:text-emerald-400' : parseFloat(s.rating) >= 7.0 ? 'bg-blue-500/15 text-blue-600 dark:text-blue-400' : parseFloat(s.rating) >= 6.5 ? 'bg-amber-500/15 text-amber-600 dark:text-amber-400' : 'bg-muted text-muted-foreground'}`}>
+                                {s.rating}
+                              </div>
+                            )}
                           </div>
                         </div>
-                      ))}
 
-                      {/* Gap indicator */}
-                      <div className="pt-3 border-t border-border space-y-1.5">
-                        <div className="flex items-center justify-between">
-                          <span className="text-sm font-medium">{t('profile.perf_gap')}</span>
-                          <span className="text-sm font-bold text-amber-500">{Math.max(0, player.potential - player.current_level)}</span>
+                        {/* KPI strip */}
+                        <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-6 gap-2 mb-4">
+                          <div className="p-2.5 rounded-lg bg-muted/40 text-center">
+                            <p className="text-2xl font-black">{s.appearances}</p>
+                            <p className="text-[10px] uppercase tracking-wider text-muted-foreground font-semibold">{t('profile.perf_appearances')}</p>
+                          </div>
+                          <div className="p-2.5 rounded-lg bg-muted/40 text-center">
+                            <p className="text-2xl font-black">{s.minutes?.toLocaleString()}</p>
+                            <p className="text-[10px] uppercase tracking-wider text-muted-foreground font-semibold">{t('profile.perf_minutes')}</p>
+                          </div>
+                          {!isGK && <>
+                            <div className="p-2.5 rounded-lg bg-muted/40 text-center">
+                              <p className="text-2xl font-black">{s.goals}</p>
+                              <p className="text-[10px] uppercase tracking-wider text-muted-foreground font-semibold">{t('profile.perf_goals')}{s.expected_goals ? <span className="text-muted-foreground/60 ml-1">(xG: {s.expected_goals})</span> : ''}</p>
+                            </div>
+                            <div className="p-2.5 rounded-lg bg-muted/40 text-center">
+                              <p className="text-2xl font-black">{s.assists}</p>
+                              <p className="text-[10px] uppercase tracking-wider text-muted-foreground font-semibold">{t('profile.perf_assists')}{s.expected_assists ? <span className="text-muted-foreground/60 ml-1">(xA: {s.expected_assists})</span> : ''}</p>
+                            </div>
+                          </>}
+                          <div className="p-2.5 rounded-lg bg-muted/40 text-center">
+                            <p className="text-2xl font-black">{s.passes_accuracy != null ? `${Math.round(s.passes_accuracy * 100) / 100}%` : '—'}</p>
+                            <p className="text-[10px] uppercase tracking-wider text-muted-foreground font-semibold">{t('profile.perf_passes')}</p>
+                          </div>
+                          <div className="p-2.5 rounded-lg bg-muted/40 text-center">
+                            <p className="text-2xl font-black">{s.duels_total > 0 ? `${Math.round((s.duels_won / s.duels_total) * 100)}%` : '—'}</p>
+                            <p className="text-[10px] uppercase tracking-wider text-muted-foreground font-semibold">{t('profile.perf_duels')}</p>
+                          </div>
                         </div>
-                        <div className="h-2.5 rounded-full bg-muted overflow-hidden relative">
-                          <div
-                            className="h-full rounded-full bg-green-500 absolute left-0 top-0"
-                            style={{ width: `${player.current_level * 10}%` }}
-                          />
-                          <div
-                            className="h-full rounded-full bg-amber-500/30 absolute top-0"
-                            style={{ left: `${player.current_level * 10}%`, width: `${Math.max(0, player.potential - player.current_level) * 10}%` }}
-                          />
-                        </div>
-                        <p className="text-[10px] text-muted-foreground">{t('profile.perf_gap_desc')}</p>
-                      </div>
-                    </div>
-                  </CardContent>
-                </Card>
+                        <p className="text-[10px] text-muted-foreground/40 text-right">Source: SofaScore</p>
+                      </CardContent>
+                    </Card>
 
-                {/* Evolution chart */}
-                {historyData.length >= 2 && (
-                  <Card className="card-warm lg:col-span-2">
-                    <CardContent className="p-5">
-                      <h3 className="text-xs font-bold uppercase tracking-wider text-muted-foreground mb-4">{t('profile.perf_evolution_title')}</h3>
-                      <ResponsiveContainer width="100%" height={280}>
-                        <AreaChart data={historyData}>
-                          <defs>
-                            <linearGradient id="gradLevel" x1="0" y1="0" x2="0" y2="1">
-                              <stop offset="5%" stopColor="hsl(var(--success))" stopOpacity={0.3} />
-                              <stop offset="95%" stopColor="hsl(var(--success))" stopOpacity={0} />
-                            </linearGradient>
-                            <linearGradient id="gradPotential" x1="0" y1="0" x2="0" y2="1">
-                              <stop offset="5%" stopColor="hsl(var(--primary))" stopOpacity={0.3} />
-                              <stop offset="95%" stopColor="hsl(var(--primary))" stopOpacity={0} />
-                            </linearGradient>
-                          </defs>
-                          <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" />
-                          <XAxis dataKey="date" tick={{ fontSize: 11 }} stroke="hsl(var(--muted-foreground))" />
-                          <YAxis domain={[0, 10]} tick={{ fontSize: 11 }} stroke="hsl(var(--muted-foreground))" />
-                          <RechartsTooltip
-                            contentStyle={{
-                              background: 'hsl(var(--card))',
-                              border: '1px solid hsl(var(--border))',
-                              borderRadius: '0.75rem',
-                              fontSize: '12px',
-                            }}
-                          />
-                          <Legend />
-                          <Area type="monotone" dataKey="level" stroke="hsl(var(--success))" fill="url(#gradLevel)" strokeWidth={2.5} name={t('profile.level')} dot={{ r: 4, fill: 'hsl(var(--success))' }} />
-                          <Area type="monotone" dataKey="potential" stroke="hsl(var(--primary))" fill="url(#gradPotential)" strokeWidth={2.5} name={t('profile.potential')} dot={{ r: 4, fill: 'hsl(var(--primary))' }} />
-                          <Line type="monotone" dataKey="opinion" stroke="hsl(var(--warning, 45 93% 47%))" strokeWidth={2} strokeDasharray="5 5" name={t('profile.perf_opinion_score')} dot={{ r: 3 }} />
-                        </AreaChart>
-                      </ResponsiveContainer>
-                      <div className="flex items-center gap-4 mt-3 text-[10px] text-muted-foreground">
-                        <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-green-500" /> {t('profile.level')}</span>
-                        <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-primary" /> {t('profile.potential')}</span>
-                        <span className="flex items-center gap-1"><span className="w-3 h-0.5 border-t-2 border-dashed border-amber-500" /> {t('profile.perf_opinion_score')}</span>
-                      </div>
+                    {/* ── Radar + Benchmark (single card) ── */}
+                    <Card className="card-warm">
+                      <CardContent className="p-5">
+                        {/* Header row: title + compare selector */}
+                        <div className="flex items-center justify-between flex-wrap gap-2 mb-3">
+                          <div>
+                            <h3 className="text-xs font-bold uppercase tracking-wider text-muted-foreground">{t('profile.perf_radar_title')}</h3>
+                            <p className="text-[11px] text-muted-foreground mt-0.5">{t('profile.data_benchmark_desc', { position: player.position, count: positionPeers.length })}</p>
+                          </div>
+                          <Select value={comparePlayerId || '__none__'} onValueChange={v => setComparePlayerId(v === '__none__' ? null : v)}>
+                            <SelectTrigger className="w-[170px] h-7 text-xs rounded-lg">
+                              <SelectValue placeholder={t('profile.data_compare_placeholder')} />
+                            </SelectTrigger>
+                            <SelectContent>
+                              <SelectItem value="__none__">{t('profile.data_compare_none')}</SelectItem>
+                              {compareCandidates.map(cp => (
+                                <SelectItem key={cp.id} value={cp.id}>{cp.name} ({cp.position})</SelectItem>
+                              ))}
+                            </SelectContent>
+                          </Select>
+                        </div>
+
+                        {/* Stat selector chips */}
+                        <div className="flex flex-wrap gap-1.5 mb-4">
+                          {statRows.map(row => {
+                            const isSelected = radarSelectedStats.includes(row.key);
+                            return (
+                              <button key={row.key} onClick={() => {
+                                setRadarSelectedStats(prev =>
+                                  isSelected ? prev.filter(k => k !== row.key) : prev.length < 10 ? [...prev, row.key] : prev
+                                );
+                              }}
+                                className={`px-2.5 py-1 rounded-full text-[10px] font-semibold border transition-colors ${isSelected
+                                  ? 'bg-primary text-primary-foreground border-primary'
+                                  : 'border-border text-muted-foreground hover:bg-muted'}`}>
+                                {row.label}
+                              </button>
+                            );
+                          })}
+                        </div>
+
+                        {(() => {
+                          // Build radar data from selected stats
+                          const selectedWithData = radarSelectedStats
+                            .map(key => {
+                              const row = statRows.find(r => r.key === key);
+                              const bm = benchmarks[key];
+                              if (!row) return null;
+                              const playerVal = row.raw ?? 0;
+                              const avgVal = bm?.avg ?? 0;
+                              const cmpRow = compareS ? (compareS as any)[key] ?? 0 : 0;
+                              const maxVal = Math.max(playerVal, avgVal * 1.5, cmpRow * 1.2, 1);
+                              return { key, label: row.label, playerVal, avgVal, cmpVal: cmpRow, playerNorm: Math.round((playerVal / maxVal) * 100), avgNorm: Math.round((avgVal / maxVal) * 100), cmpNorm: Math.round((cmpRow / maxVal) * 100), rank: bm?.rank, total: bm?.total };
+                            })
+                            .filter(Boolean) as { key: string; label: string; playerVal: number; avgVal: number; cmpVal: number; playerNorm: number; avgNorm: number; cmpNorm: number; rank?: number; total?: number }[];
+
+                          if (selectedWithData.length < 3) {
+                            return <div className="text-center py-8"><p className="text-sm text-muted-foreground">{t('profile.data_radar_select_min')}</p></div>;
+                          }
+
+                          const fmt = (v: number) => Number.isInteger(v) ? v : Math.round(v * 100) / 100;
+
+                          // Short label + value on one line
+                          const shortLabel = (l: string) => l.length > 8 ? l.slice(0, 7) + '…' : l;
+
+                          const radarCustomData = selectedWithData.map(d => ({
+                            axis: `${shortLabel(d.label)} (${fmt(d.playerVal)})`,
+                            [player.name]: d.playerNorm,
+                            ...(positionPeers.length > 0 ? { [t('profile.data_avg')]: d.avgNorm } : {}),
+                            ...(comparePlayer ? { [comparePlayer.name]: d.cmpNorm } : {}),
+                          }));
+
+                          return (
+                            <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+                              {/* Radar (left) */}
+                              <div>
+                                <ResponsiveContainer width="100%" height={350}>
+                                <RadarChart data={radarCustomData} cx="50%" cy="48%" outerRadius="55%">
+                                    <PolarGrid stroke="hsl(var(--border))" />
+                                    <PolarAngleAxis dataKey="axis" tick={{ fontSize: 8, fill: 'hsl(var(--muted-foreground))' }} />
+                                    <PolarRadiusAxis domain={[0, 100]} tick={false} axisLine={false} />
+                                    <Radar name={player.name} dataKey={player.name} stroke="hsl(var(--primary))" fill="hsl(var(--primary))" fillOpacity={0.2} strokeWidth={2} dot={{ r: 3, fill: 'hsl(var(--primary))' }} />
+                                    {positionPeers.length > 0 && (
+                                      <Radar name={t('profile.data_avg')} dataKey={t('profile.data_avg')} stroke="hsl(var(--muted-foreground))" fill="hsl(var(--muted-foreground))" fillOpacity={0.05} strokeWidth={1.5} strokeDasharray="4 4" dot={{ r: 2 }} />
+                                    )}
+                                    {comparePlayer && (
+                                      <Radar name={comparePlayer.name} dataKey={comparePlayer.name} stroke="hsl(var(--destructive, 0 84% 60%))" fill="hsl(var(--destructive, 0 84% 60%))" fillOpacity={0.1} strokeWidth={2} strokeDasharray="4 4" dot={{ r: 2 }} />
+                                    )}
+                                    <Legend wrapperStyle={{ fontSize: 10 }} />
+                                  </RadarChart>
+                                </ResponsiveContainer>
+                              </div>
+
+                              {/* Benchmark bars (right) */}
+                              <div>
+                                <h4 className="text-xs font-bold uppercase tracking-wider text-muted-foreground mb-3">{t('profile.data_benchmark_title')}</h4>
+                                {selectedWithData.filter(d => d.avgVal > 0).length > 0 ? (
+                                  <div className="space-y-2.5">
+                                    {selectedWithData.map(d => {
+                                      if (d.avgVal <= 0) return null;
+                                      const pct = Math.min(100, Math.round((d.playerVal / (d.avgVal * 2)) * 100));
+                                      const isAbove = d.playerVal >= d.avgVal;
+                                      return (
+                                        <div key={d.key}>
+                                          <div className="flex items-center justify-between text-xs mb-0.5">
+                                            <span className="font-medium truncate">{d.label}</span>
+                                            <span className="tabular-nums shrink-0 ml-2">
+                                              <span className={`font-bold ${isAbove ? 'text-emerald-600 dark:text-emerald-400' : 'text-amber-600 dark:text-amber-400'}`}>{fmt(d.playerVal)}</span>
+                                              <span className="text-muted-foreground ml-1">/ {fmt(d.avgVal)}</span>
+                                              {d.rank && <span className="text-muted-foreground/60 ml-1">#{d.rank}/{d.total}</span>}
+                                            </span>
+                                          </div>
+                                          <div className="h-1.5 rounded-full bg-muted overflow-hidden relative">
+                                            <div className="h-full bg-muted-foreground/15 absolute" style={{ width: `${Math.min(100, Math.round((d.avgVal / (d.avgVal * 2)) * 100))}%` }} />
+                                            <div className={`h-full rounded-full ${isAbove ? 'bg-emerald-500' : 'bg-amber-500'}`} style={{ width: `${pct}%` }} />
+                                          </div>
+                                        </div>
+                                      );
+                                    })}
+                                  </div>
+                                ) : (
+                                  <p className="text-sm text-muted-foreground text-center py-6">{t('profile.data_benchmark_empty')}</p>
+                                )}
+                              </div>
+                            </div>
+                          );
+                        })()}
+                      </CardContent>
+                    </Card>
+
+                    {/* ── Sortable / filterable stats table ── */}
+                    <Card className="card-warm">
+                      <CardContent className="p-5">
+                        <div className="flex items-center justify-between flex-wrap gap-2 mb-3">
+                          <h3 className="text-xs font-bold uppercase tracking-wider text-muted-foreground">{t('profile.data_detailed_stats')}</h3>
+                          <div className="flex items-center gap-2">
+                            {/* Category filter */}
+                            <div className="flex rounded-lg border border-border overflow-hidden text-[10px]">
+                              {(['all', 'attack', 'passing', 'defending', 'physical'] as const).map(cat => (
+                                <button key={cat} onClick={() => setStatsFilter(cat)}
+                                  className={`px-2.5 py-1 font-semibold transition-colors ${statsFilter === cat ? 'bg-primary text-primary-foreground' : 'hover:bg-muted'}`}>
+                                  {t(`profile.data_cat_${cat}`)}
+                                </button>
+                              ))}
+                            </div>
+                            {/* Per90 toggle */}
+                            <button onClick={() => setShowPer90(!showPer90)}
+                              className={`px-2.5 py-1 rounded-lg border text-[10px] font-semibold transition-colors ${showPer90 ? 'bg-primary text-primary-foreground border-primary' : 'border-border hover:bg-muted'}`}>
+                              /90
+                            </button>
+                          </div>
+                        </div>
+                        <div className="overflow-x-auto rounded-lg border border-border/50">
+                          <table className="w-full text-xs">
+                            <thead>
+                              <tr className="bg-muted/50 text-muted-foreground">
+                                <th className="text-left px-3 py-2 font-semibold">{t('profile.data_stat')}</th>
+                                <th className="text-center px-3 py-2 font-semibold cursor-pointer hover:text-foreground select-none"
+                                  onClick={() => { setStatsSortKey('value'); setStatsSortDir(statsSortDir === 'asc' ? 'desc' : 'asc'); }}>
+                                  {player.name.split(' ').pop()} {statsSortKey === 'value' ? (statsSortDir === 'desc' ? '↓' : '↑') : ''}
+                                </th>
+                                {comparePlayer && (
+                                  <th className="text-center px-3 py-2 font-semibold text-destructive">{comparePlayer.name.split(' ').pop()}</th>
+                                )}
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {(() => {
+                                const fmt = (v: number | null | undefined) => v == null ? '—' : (Number.isInteger(v) ? v : Math.round(v * 100) / 100);
+                                return sortedRows.map(row => {
+                                  const val = showPer90 && row.per90v != null ? row.per90v : row.raw;
+                                  const cmpVal = showPer90 && row.comparePer90 != null ? row.comparePer90 : row.compareRaw;
+                                  const isBetter = comparePlayer && val != null && cmpVal != null && val > cmpVal;
+                                  const isWorse = comparePlayer && val != null && cmpVal != null && val < cmpVal;
+                                  return (
+                                    <tr key={row.key} className="border-t border-border/30 hover:bg-muted/30 transition-colors">
+                                      <td className="px-3 py-2 font-medium">
+                                        <span className={`inline-block w-1.5 h-1.5 rounded-full mr-2 ${row.cat === 'attack' ? 'bg-red-400' : row.cat === 'passing' ? 'bg-blue-400' : row.cat === 'defending' ? 'bg-amber-400' : 'bg-green-400'}`} />
+                                        {row.label}{showPer90 && row.per90v != null ? ' /90' : ''}
+                                      </td>
+                                      <td className={`text-center px-3 py-2 font-bold tabular-nums ${isBetter ? 'text-emerald-600 dark:text-emerald-400' : isWorse ? 'text-amber-600 dark:text-amber-400' : ''}`}>
+                                        {fmt(val)}{showPer90 && row.per90v != null && row.raw != null ? <span className="text-muted-foreground font-normal ml-1">({fmt(row.raw)})</span> : ''}
+                                      </td>
+                                      {comparePlayer && (
+                                        <td className="text-center px-3 py-2 tabular-nums text-muted-foreground">{fmt(cmpVal)}</td>
+                                      )}
+                                    </tr>
+                                  );
+                                });
+                              })()}
+                            </tbody>
+                          </table>
+                        </div>
+                      </CardContent>
+                    </Card>
+
+                    {/* All competitions */}
+                    {ps.all_competitions?.length > 1 && (
+                      <Card className="card-warm">
+                        <CardContent className="p-5">
+                          <h3 className="text-xs font-bold uppercase tracking-wider text-muted-foreground mb-3">{t('profile.data_all_comps')}</h3>
+                          <div className="overflow-x-auto rounded-lg border border-border/50">
+                            <table className="w-full text-xs">
+                              <thead><tr className="bg-muted/50 text-muted-foreground">
+                                <th className="text-left px-3 py-2 font-semibold">{t('profile.stats_competition')}</th>
+                                <th className="text-center px-2 py-2 font-semibold">{t('profile.stats_appearances')}</th>
+                                <th className="text-center px-2 py-2 font-semibold">{t('profile.perf_rating')}</th>
+                                <th className="text-center px-2 py-2 font-semibold">{t('profile.stats_goals')}</th>
+                                <th className="text-center px-2 py-2 font-semibold">{t('profile.stats_assists')}</th>
+                              </tr></thead>
+                              <tbody>
+                                {ps.all_competitions.map((c: any, ci: number) => (
+                                  <tr key={ci} className="border-t border-border/30"><td className="px-3 py-2 font-medium">{c.league}</td>
+                                    <td className="text-center px-2 py-2">{c.appearances}</td>
+                                    <td className="text-center px-2 py-2 font-bold">{c.rating || '—'}</td>
+                                    <td className="text-center px-2 py-2">{c.goals || '—'}</td>
+                                    <td className="text-center px-2 py-2">{c.assists || '—'}</td>
+                                  </tr>
+                                ))}
+                              </tbody>
+                            </table>
+                          </div>
+                        </CardContent>
+                      </Card>
+                    )}
+                  </>
+                ) : (
+                  <Card className="card-warm">
+                    <CardContent className="p-5 text-center">
+                      <Activity className="w-8 h-8 text-muted-foreground/20 mx-auto mb-2" />
+                      <p className="text-sm text-muted-foreground">{t('profile.perf_no_data')}</p>
+                      <p className="text-xs text-muted-foreground/60 mt-1">{t('profile.perf_no_data_desc')}</p>
+                      {!player.external_data_fetched_at && isPremium && (
+                        <Button size="sm" variant="outline" className="rounded-xl mt-3" onClick={() => handleEnrich()} disabled={enriching}>
+                          <RefreshCw className={`w-3.5 h-3.5 mr-1.5 ${enriching ? 'animate-spin' : ''}`} />{t('profile.enrich')}
+                        </Button>
+                      )}
                     </CardContent>
                   </Card>
                 )}
 
-                {/* Opinion distribution */}
-                <Card className="card-warm lg:col-span-2">
-                  <CardContent className="p-5">
-                    <h3 className="text-xs font-bold uppercase tracking-wider text-muted-foreground mb-4">{t('profile.perf_opinion_dist')}</h3>
-                    {reports.length === 0 ? (
-                      <div className="text-center py-8">
-                        <Activity className="w-8 h-8 text-muted-foreground/20 mx-auto mb-2" />
-                        <p className="text-sm text-muted-foreground">{t('profile.perf_no_reports')}</p>
-                        <p className="text-xs text-muted-foreground/60 mt-1">{t('profile.perf_no_reports_desc')}</p>
+                {/* ═══════════════ SECTION 1b: SEASON STATS (Transfermarkt) ═══════════════ */}
+                {Array.isArray(ext.season_stats) && ext.season_stats.length > 0 && (
+                  <Card className="card-warm">
+                    <CardContent className="p-5">
+                      <h3 className="text-xs font-bold uppercase tracking-wider text-muted-foreground mb-3 flex items-center gap-1.5">
+                        <BarChart3 className="w-3.5 h-3.5" />{t('profile.season_stats')}
+                      </h3>
+                      {(ext.season_stats as { season: string; rows: { competition: string; club?: string; appearances: number; goals: number; assists: number; yellow_cards: number; second_yellow: number; red_cards: number; minutes: number; starts?: number; sub_in?: number }[]; totals: { appearances: number; goals: number; assists: number; yellow_cards: number; second_yellow: number; red_cards: number; minutes: number; starts?: number; sub_in?: number } }[]).map((seasonData, si) => (
+                        <div key={si} className={si > 0 ? 'mt-3' : ''}>
+                          <div className="flex items-center gap-2 mb-1.5">
+                            <span className="text-xs bg-primary/10 text-primary px-1.5 py-0.5 rounded font-bold">{seasonData.season}</span>
+                            <span className="text-xs text-muted-foreground">{seasonData.totals.appearances} {t('profile.stats_appearances').toLowerCase()}, {seasonData.totals.goals}G {seasonData.totals.assists}A</span>
+                          </div>
+                          <div className="overflow-x-auto rounded-lg border border-border/50">
+                            <table className="w-full text-xs">
+                              <thead>
+                                <tr className="bg-muted/50 text-muted-foreground">
+                                  <th className="text-left px-3 py-2 font-semibold">{t('profile.stats_competition')}</th>
+                                  <th className="text-left px-2 py-2 font-semibold">{t('profile.stats_club')}</th>
+                                  <th className="text-center px-2 py-2 font-semibold">{t('profile.stats_appearances')}</th>
+                                  <th className="text-center px-2 py-2 font-semibold">{t('profile.stats_goals')}</th>
+                                  <th className="text-center px-2 py-2 font-semibold">{t('profile.stats_assists')}</th>
+                                  <th className="text-center px-2 py-2 font-semibold">{t('profile.stats_yellow')}</th>
+                                  <th className="text-center px-2 py-2 font-semibold">{t('profile.stats_second_yellow')}</th>
+                                  <th className="text-center px-2 py-2 font-semibold">{t('profile.stats_red')}</th>
+                                  <th className="text-center px-2 py-2 font-semibold">{t('profile.stats_minutes')}</th>
+                                </tr>
+                              </thead>
+                              <tbody>
+                                {seasonData.rows.map((row, i) => (
+                                  <tr key={i} className="border-t border-border/30 hover:bg-muted/30 transition-colors">
+                                    <td className="px-3 py-2 font-medium truncate max-w-[160px]">{row.competition}</td>
+                                    <td className="px-2 py-2 truncate max-w-[120px] text-muted-foreground">{row.club || '-'}</td>
+                                    <td className="text-center px-2 py-2 font-bold">{row.appearances || '-'}</td>
+                                    <td className="text-center px-2 py-2 font-bold">{row.goals || '-'}</td>
+                                    <td className="text-center px-2 py-2 font-bold">{row.assists || '-'}</td>
+                                    <td className="text-center px-2 py-2">{row.yellow_cards || '-'}</td>
+                                    <td className="text-center px-2 py-2">{row.second_yellow || '-'}</td>
+                                    <td className="text-center px-2 py-2">{row.red_cards || '-'}</td>
+                                    <td className="text-center px-2 py-2">{row.minutes ? row.minutes.toLocaleString() : '-'}</td>
+                                  </tr>
+                                ))}
+                              </tbody>
+                              <tfoot>
+                                <tr className="border-t-2 border-border bg-muted/40 font-bold">
+                                  <td className="px-3 py-2" colSpan={2}>{t('profile.stats_total')}</td>
+                                  <td className="text-center px-2 py-2">{seasonData.totals.appearances}</td>
+                                  <td className="text-center px-2 py-2">{seasonData.totals.goals || '-'}</td>
+                                  <td className="text-center px-2 py-2">{seasonData.totals.assists || '-'}</td>
+                                  <td className="text-center px-2 py-2">{seasonData.totals.yellow_cards || '-'}</td>
+                                  <td className="text-center px-2 py-2">{seasonData.totals.second_yellow || '-'}</td>
+                                  <td className="text-center px-2 py-2">{seasonData.totals.red_cards || '-'}</td>
+                                  <td className="text-center px-2 py-2">{seasonData.totals.minutes ? seasonData.totals.minutes.toLocaleString() : '-'}</td>
+                                </tr>
+                              </tfoot>
+                            </table>
+                          </div>
+                        </div>
+                      ))}
+                      <p className="text-[10px] text-muted-foreground/40 mt-2 text-right">Source: Transfermarkt</p>
+                    </CardContent>
+                  </Card>
+                )}
+
+                {/* ═══════════════ SECTION 2: SCOUT EVALUATION ═══════════════ */}
+                <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+                  {/* Overview */}
+                  <Card className="card-warm lg:col-span-2">
+                    <CardContent className="p-5">
+                      <div className="flex items-center justify-between flex-wrap gap-4">
+                        <div>
+                          <h3 className="text-xs font-bold uppercase tracking-wider text-muted-foreground">{t('profile.perf_overview')}</h3>
+                          <p className="text-sm text-muted-foreground mt-1">{t('profile.perf_overview_desc')}</p>
+                        </div>
+                        <div className="flex items-center gap-6">
+                          <div className="text-center">
+                            <div className="text-4xl font-black text-primary">{overallScore}</div>
+                            <p className="text-[10px] text-muted-foreground font-medium uppercase tracking-wider">{t('profile.perf_overall')}</p>
+                          </div>
+                          <div className="text-center">
+                            <div className="text-4xl font-black text-green-500">{player.current_level}</div>
+                            <p className="text-[10px] text-muted-foreground font-medium uppercase tracking-wider">{t('profile.level')}</p>
+                          </div>
+                          <div className="text-center">
+                            <div className="text-4xl font-black text-blue-500">{player.potential}</div>
+                            <p className="text-[10px] text-muted-foreground font-medium uppercase tracking-wider">{t('profile.potential')}</p>
+                          </div>
+                        </div>
                       </div>
-                    ) : (
-                      <div className="grid grid-cols-3 gap-4">
-                        {(['À suivre', 'À revoir', 'Défavorable'] as const).map(opinion => {
-                          const count = reports.filter(r => r.opinion === opinion).length;
-                          const pct = reports.length > 0 ? Math.round(count / reports.length * 100) : 0;
-                          const colors = {
-                            'À suivre': { bg: 'bg-green-500', text: 'text-green-600', light: 'bg-green-500/10' },
-                            'À revoir': { bg: 'bg-amber-500', text: 'text-amber-600', light: 'bg-amber-500/10' },
-                            'Défavorable': { bg: 'bg-red-500', text: 'text-red-600', light: 'bg-red-500/10' },
-                          };
-                          const c = colors[opinion];
-                          return (
-                            <div key={opinion} className={`rounded-xl p-4 ${c.light} text-center`}>
-                              <div className={`text-3xl font-black ${c.text}`}>{count}</div>
-                              <p className="text-xs font-medium mt-1">{opinion}</p>
-                              <div className="mt-2 h-2 rounded-full bg-muted/50 overflow-hidden">
-                                <div className={`h-full rounded-full ${c.bg}`} style={{ width: `${pct}%` }} />
-                              </div>
-                              <p className="text-[10px] text-muted-foreground mt-1">{pct}%</p>
+                    </CardContent>
+                  </Card>
+
+                  {/* Scout radar */}
+                  <Card className="card-warm">
+                    <CardContent className="p-5">
+                      <h3 className="text-xs font-bold uppercase tracking-wider text-muted-foreground mb-4">{t('profile.perf_radar_title')}</h3>
+                      <ResponsiveContainer width="100%" height={300}>
+                        <RadarChart data={scoutRadarData} cx="50%" cy="50%" outerRadius="75%">
+                          <PolarGrid stroke="hsl(var(--border))" />
+                          <PolarAngleAxis dataKey="attr" tick={{ fontSize: 11, fill: 'hsl(var(--muted-foreground))' }} />
+                          <PolarRadiusAxis angle={90} domain={[0, 10]} tick={{ fontSize: 9, fill: 'hsl(var(--muted-foreground))' }} axisLine={false} />
+                          <Radar name={player.name} dataKey="value" stroke="hsl(var(--primary))" fill="hsl(var(--primary))" fillOpacity={0.2} strokeWidth={2} dot={{ r: 4, fill: 'hsl(var(--primary))' }} />
+                        </RadarChart>
+                      </ResponsiveContainer>
+                    </CardContent>
+                  </Card>
+
+                  {/* Editable attribute sliders */}
+                  <Card className="card-warm">
+                    <CardContent className="p-5">
+                      <h3 className="text-xs font-bold uppercase tracking-wider text-muted-foreground mb-1">{t('profile.perf_attributes_title')}</h3>
+                      <p className="text-[11px] text-muted-foreground mb-4">{t('profile.perf_adjust_hint')}</p>
+                      <div className="space-y-5">
+                        {attrSliders.map(attr => (
+                          <div key={attr.key} className="space-y-1.5">
+                            <div className="flex items-center justify-between">
+                              <span className="text-sm font-medium">{attr.label}</span>
+                              <span className="text-sm font-bold tabular-nums min-w-[40px] text-right" style={{ color: attr.color }}>{perfScores[attr.key]}/10</span>
                             </div>
-                          );
-                        })}
+                            <input type="range" min={0} max={10} step={1} value={perfScores[attr.key]}
+                              onChange={e => updatePerfScore(attr.key, Number(e.target.value))}
+                              className="w-full h-2 rounded-full appearance-none cursor-pointer bg-muted accent-primary [&::-webkit-slider-thumb]:w-4 [&::-webkit-slider-thumb]:h-4 [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:bg-primary [&::-webkit-slider-thumb]:shadow-md"
+                              style={{ accentColor: attr.color }} />
+                            <div className="h-2.5 rounded-full bg-muted overflow-hidden">
+                              <div className="h-full rounded-full transition-all duration-300 ease-out" style={{ width: `${perfScores[attr.key] * 10}%`, background: attr.color }} />
+                            </div>
+                          </div>
+                        ))}
+                        <div className="pt-3 border-t border-border space-y-1.5">
+                          <div className="flex items-center justify-between">
+                            <span className="text-sm font-medium">{t('profile.perf_gap')}</span>
+                            <span className="text-sm font-bold text-amber-500">{Math.max(0, player.potential - player.current_level)}</span>
+                          </div>
+                          <div className="h-2.5 rounded-full bg-muted overflow-hidden relative">
+                            <div className="h-full rounded-full bg-green-500 absolute left-0 top-0" style={{ width: `${player.current_level * 10}%` }} />
+                            <div className="h-full rounded-full bg-amber-500/30 absolute top-0" style={{ left: `${player.current_level * 10}%`, width: `${Math.max(0, player.potential - player.current_level) * 10}%` }} />
+                          </div>
+                          <p className="text-[10px] text-muted-foreground">{t('profile.perf_gap_desc')}</p>
+                        </div>
                       </div>
-                    )}
-                  </CardContent>
-                </Card>
+                    </CardContent>
+                  </Card>
+
+                  {/* Evolution chart */}
+                  {historyData.length >= 2 && (
+                    <Card className="card-warm lg:col-span-2">
+                      <CardContent className="p-5">
+                        <h3 className="text-xs font-bold uppercase tracking-wider text-muted-foreground mb-4">{t('profile.perf_evolution_title')}</h3>
+                        <ResponsiveContainer width="100%" height={280}>
+                          <AreaChart data={historyData}>
+                            <defs>
+                              <linearGradient id="gradLevel" x1="0" y1="0" x2="0" y2="1"><stop offset="5%" stopColor="hsl(var(--success))" stopOpacity={0.3} /><stop offset="95%" stopColor="hsl(var(--success))" stopOpacity={0} /></linearGradient>
+                              <linearGradient id="gradPotential" x1="0" y1="0" x2="0" y2="1"><stop offset="5%" stopColor="hsl(var(--primary))" stopOpacity={0.3} /><stop offset="95%" stopColor="hsl(var(--primary))" stopOpacity={0} /></linearGradient>
+                            </defs>
+                            <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" />
+                            <XAxis dataKey="date" tick={{ fontSize: 11 }} stroke="hsl(var(--muted-foreground))" />
+                            <YAxis domain={[0, 10]} tick={{ fontSize: 11 }} stroke="hsl(var(--muted-foreground))" />
+                            <RechartsTooltip contentStyle={{ background: 'hsl(var(--card))', border: '1px solid hsl(var(--border))', borderRadius: '0.75rem', fontSize: '12px' }} />
+                            <Legend />
+                            <Area type="monotone" dataKey="level" stroke="hsl(var(--success))" fill="url(#gradLevel)" strokeWidth={2.5} name={t('profile.level')} dot={{ r: 4, fill: 'hsl(var(--success))' }} />
+                            <Area type="monotone" dataKey="potential" stroke="hsl(var(--primary))" fill="url(#gradPotential)" strokeWidth={2.5} name={t('profile.potential')} dot={{ r: 4, fill: 'hsl(var(--primary))' }} />
+                            <Line type="monotone" dataKey="opinion" stroke="hsl(var(--warning, 45 93% 47%))" strokeWidth={2} strokeDasharray="5 5" name={t('profile.perf_opinion_score')} dot={{ r: 3 }} />
+                          </AreaChart>
+                        </ResponsiveContainer>
+                      </CardContent>
+                    </Card>
+                  )}
+
+                  {/* Opinion distribution */}
+                  <Card className="card-warm lg:col-span-2">
+                    <CardContent className="p-5">
+                      <h3 className="text-xs font-bold uppercase tracking-wider text-muted-foreground mb-4">{t('profile.perf_opinion_dist')}</h3>
+                      {reports.length === 0 ? (
+                        <div className="text-center py-8">
+                          <Activity className="w-8 h-8 text-muted-foreground/20 mx-auto mb-2" />
+                          <p className="text-sm text-muted-foreground">{t('profile.perf_no_reports')}</p>
+                          <p className="text-xs text-muted-foreground/60 mt-1">{t('profile.perf_no_reports_desc')}</p>
+                        </div>
+                      ) : (
+                        <div className="grid grid-cols-3 gap-4">
+                          {ALL_OPINIONS.map(opinion => {
+                            const count = reports.filter(r => r.opinion === opinion).length;
+                            const pct = reports.length > 0 ? Math.round(count / reports.length * 100) : 0;
+                            const colors = { 'À suivre': { bg: 'bg-green-500', text: 'text-green-600', light: 'bg-green-500/10' }, 'À revoir': { bg: 'bg-amber-500', text: 'text-amber-600', light: 'bg-amber-500/10' }, 'Défavorable': { bg: 'bg-red-500', text: 'text-red-600', light: 'bg-red-500/10' } };
+                            const c = colors[opinion];
+                            return (
+                              <div key={opinion} className={`rounded-xl p-4 ${c.light} text-center`}>
+                                <div className={`text-3xl font-black ${c.text}`}>{count}</div>
+                                <p className="text-xs font-medium mt-1">{t(getOpinionTranslationKey(opinion))}</p>
+                                <div className="mt-2 h-2 rounded-full bg-muted/50 overflow-hidden"><div className={`h-full rounded-full ${c.bg}`} style={{ width: `${pct}%` }} /></div>
+                                <p className="text-[10px] text-muted-foreground mt-1">{pct}%</p>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      )}
+                    </CardContent>
+                  </Card>
+                </div>
               </div>
             );
           })()}
@@ -1575,8 +2328,8 @@ export default function PlayerProfile() {
             <div className="space-y-2">
               <label className="text-sm font-medium">{t('player_form.report_opinion')}</label>
               <div className="flex gap-2">
-                {(['À suivre', 'À revoir', 'Défavorable'] as Opinion[]).map(o => (
-                  <Button key={o} type="button" size="sm" variant={newReportOpinion === o ? 'default' : 'outline'} className="rounded-xl" onClick={() => setNewReportOpinion(o)}>{o}</Button>
+                {ALL_OPINIONS.map(o => (
+                  <Button key={o} type="button" size="sm" variant={newReportOpinion === o ? 'default' : 'outline'} className="rounded-xl" onClick={() => setNewReportOpinion(o)}>{t(getOpinionTranslationKey(o))}</Button>
                 ))}
               </div>
             </div>

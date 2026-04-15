@@ -44,34 +44,26 @@ interface ParsedPlayer {
   errors: string[];
 }
 
-// All known target fields
-const TARGET_FIELDS: { key: string; label: string }[] = [
-  { key: 'name', label: 'Nom du joueur' },
-  { key: 'generation', label: 'Génération / Année' },
-  { key: 'nationality', label: 'Nationalité' },
-  { key: 'foot', label: 'Pied' },
-  { key: 'club', label: 'Club' },
-  { key: 'league', label: 'Championnat' },
-  { key: 'zone', label: 'Zone' },
-  { key: 'position', label: 'Poste' },
-  { key: 'role', label: 'Type de joueur' },
-  { key: 'current_level', label: 'Niveau' },
-  { key: 'potential', label: 'Potentiel' },
-  { key: 'general_opinion', label: 'Avis général' },
-  { key: 'contract_end', label: 'Fin de contrat' },
-  { key: 'notes', label: 'Notes' },
-  { key: 'ts_report_published', label: 'TS Report publié' },
-  { key: 'position_secondaire', label: 'Poste secondaire' },
-  { key: 'opinion_1', label: 'Avis rapport 1' },
-  { key: 'opinion_2', label: 'Avis rapport 2' },
-  { key: 'opinion_3', label: 'Avis rapport 3' },
-  { key: 'opinion_4', label: 'Avis rapport 4' },
-  { key: 'opinion_5', label: 'Avis rapport 5' },
-  { key: 'report_1', label: 'Rapport 1' },
-  { key: 'report_2', label: 'Rapport 2' },
-  { key: 'report_3', label: 'Rapport 3' },
-  { key: 'report_4', label: 'Rapport 4' },
-  { key: 'report_5', label: 'Rapport 5' },
+// All known target field keys (labels are resolved via i18n)
+const TARGET_FIELD_KEYS: { key: string; i18nKey: string }[] = [
+  { key: 'name', i18nKey: 'import.field_name' },
+  { key: 'generation', i18nKey: 'import.field_generation' },
+  { key: 'nationality', i18nKey: 'import.field_nationality' },
+  { key: 'foot', i18nKey: 'import.field_foot' },
+  { key: 'club', i18nKey: 'import.field_club' },
+  { key: 'league', i18nKey: 'import.field_league' },
+  { key: 'zone', i18nKey: 'import.field_zone' },
+  { key: 'position', i18nKey: 'import.field_position' },
+  { key: 'role', i18nKey: 'import.field_role' },
+  { key: 'current_level', i18nKey: 'import.field_level' },
+  { key: 'potential', i18nKey: 'import.field_potential' },
+  { key: 'general_opinion', i18nKey: 'import.field_opinion' },
+  { key: 'contract_end', i18nKey: 'import.field_contract_end' },
+  { key: 'notes', i18nKey: 'import.field_notes' },
+  { key: 'ts_report_published', i18nKey: 'import.field_ts_published' },
+  { key: 'position_secondaire', i18nKey: 'import.field_position_secondary' },
+  ...Array.from({ length: 5 }, (_, i) => ({ key: `opinion_${i + 1}`, i18nKey: `import.field_opinion_n` })),
+  ...Array.from({ length: 5 }, (_, i) => ({ key: `report_${i + 1}`, i18nKey: `import.field_report_n` })),
 ];
 
 // Keywords that suggest a mapping to a target field (fuzzy matching)
@@ -313,7 +305,7 @@ function parseDate(val: string | number | undefined): string | undefined {
 function parseRow(row: Record<string, string | number | undefined>, customValues?: Record<string, string>): ParsedPlayer {
   const errors: string[] = [];
   const name = String(row.name ?? '').trim();
-  if (!name) errors.push('Nom manquant');
+  if (!name) errors.push('import.name_missing');
   const position = parsePosition(row.position);
   const generalOpinion = parseOpinion(row.general_opinion) ?? parseOpinion(row.opinion_1) ?? 'À revoir';
 
@@ -386,12 +378,17 @@ export function ImportPlayersDialog() {
 
   // Dynamic target fields including custom fields
   const allTargetFields = useMemo(() => {
-    const base = [...TARGET_FIELDS];
+    const base: { key: string; label: string }[] = TARGET_FIELD_KEYS.map(f => {
+      // For opinion_N and report_N, extract the number for interpolation
+      const nMatch = f.key.match(/_(\d+)$/);
+      const label = nMatch ? t(f.i18nKey, { n: nMatch[1] }) : t(f.i18nKey);
+      return { key: f.key, label };
+    });
     customFields.forEach(cf => {
       base.push({ key: `custom_${cf.id}`, label: `⭐ ${cf.field_name}` });
     });
     return base;
-  }, [customFields]);
+  }, [customFields, t]);
 
   const reset = () => {
     setStep('upload');
@@ -461,10 +458,10 @@ export function ImportPlayersDialog() {
         }
         return next;
       });
-      toast({ title: `${toCreate.length} champ${toCreate.length > 1 ? 's' : ''} personnalise${toCreate.length > 1 ? 's' : ''} cree${toCreate.length > 1 ? 's' : ''}` });
+      toast({ title: t('import.custom_fields_created', { count: toCreate.length }) });
       setFieldsToCreate({});
     } catch (err: any) {
-      toast({ title: 'Erreur', description: err?.message, variant: 'destructive' });
+      toast({ title: t('common.error'), description: err?.message, variant: 'destructive' });
     } finally {
       setCreatingFields(false);
     }
@@ -671,7 +668,7 @@ export function ImportPlayersDialog() {
         return epName === pName && epClub === pClub;
       });
       if (duplicate) {
-        p.errors.push(`Joueur déjà existant en base (${duplicate.name}, ${duplicate.club})`);
+        p.errors.push(t('import.duplicate_player', { name: duplicate.name, club: duplicate.club }));
         p.valid = false;
       }
     }
@@ -936,7 +933,7 @@ export function ImportPlayersDialog() {
                   <div className="flex items-center gap-2 mb-3">
                     <Plus className="w-4 h-4 text-amber-600" />
                     <p className="text-sm font-medium text-amber-700">
-                      {unmappedHeaders.length} colonne{unmappedHeaders.length > 1 ? 's' : ''} non reconnue{unmappedHeaders.length > 1 ? 's' : ''} — Creer comme champs personnalises ?
+                      {t('import.unmapped_columns', { count: unmappedHeaders.length })}
                     </p>
                   </div>
                   <div className="space-y-1.5">
@@ -969,10 +966,10 @@ export function ImportPlayersDialog() {
                               <SelectValue />
                             </SelectTrigger>
                             <SelectContent>
-                              <SelectItem value="text">Texte</SelectItem>
-                              <SelectItem value="number">Nombre</SelectItem>
-                              <SelectItem value="link">Lien</SelectItem>
-                              <SelectItem value="boolean">Oui / Non</SelectItem>
+                              <SelectItem value="text">{t('import.type_text')}</SelectItem>
+                              <SelectItem value="number">{t('import.type_number')}</SelectItem>
+                              <SelectItem value="link">{t('import.type_link')}</SelectItem>
+                              <SelectItem value="boolean">{t('import.type_boolean')}</SelectItem>
                             </SelectContent>
                           </Select>
                         </div>
@@ -987,7 +984,7 @@ export function ImportPlayersDialog() {
                       disabled={creatingFields}
                     >
                       <Plus className="w-3.5 h-3.5 mr-1.5" />
-                      {creatingFields ? 'Creation...' : `Creer ${Object.values(fieldsToCreate).filter(v => v.checked).length} champ${Object.values(fieldsToCreate).filter(v => v.checked).length > 1 ? 's' : ''}`}
+                      {creatingFields ? t('import.creating_fields') : t('import.create_fields_btn', { count: Object.values(fieldsToCreate).filter(v => v.checked).length })}
                     </Button>
                   )}
                 </div>
@@ -1102,7 +1099,7 @@ export function ImportPlayersDialog() {
                                   <X className="w-3.5 h-3.5 text-destructive" />
                                 </TooltipTrigger>
                                 <TooltipContent side="right" className="max-w-xs">
-                                  <p className="text-xs">{p.errors.join(', ')}</p>
+                                  <p className="text-xs">{p.errors.map(e => t(e, e)).join(', ')}</p>
                                 </TooltipContent>
                               </Tooltip>
                             )}
@@ -1164,7 +1161,7 @@ export function ImportPlayersDialog() {
                                 )}
                                 {!p.valid && (
                                   <div className="pt-2 border-t border-destructive/20">
-                                    <p className="text-destructive font-medium">{t('import.errors_label')} {p.errors.join(', ')}</p>
+                                    <p className="text-destructive font-medium">{t('import.errors_label')} {p.errors.map(e => t(e, e)).join(', ')}</p>
                                   </div>
                                 )}
                               </div>
