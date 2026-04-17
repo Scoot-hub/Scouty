@@ -10,7 +10,7 @@ import { ScrollArea } from '@/components/ui/scroll-area';
 import { useImportPlayers, usePlayers } from '@/hooks/use-players';
 import { useOperationBanner } from '@/contexts/OperationBannerContext';
 import { supabase } from '@/integrations/supabase/client';
-import { NATIONALITIES, type Position, type Zone } from '@/types/player';
+import { NATIONALITIES, type Position, type Zone, type Foot } from '@/types/player';
 import { Building2, Loader2, Sparkles, Search } from 'lucide-react';
 import { useToast } from '@/hooks/use-toast';
 
@@ -140,8 +140,8 @@ export function ImportTmClubDialog({ externalOpen, onExternalOpenChange }: { ext
       if (!data.players?.length) {
         toast({ title: t('player_form.tm_club_no_players'), variant: 'destructive' });
       }
-    } catch (err: any) {
-      toast({ title: t('common.error'), description: err.message || t('player_form.tm_club_load_failed'), variant: 'destructive' });
+    } catch (err: unknown) {
+      toast({ title: t('common.error'), description: err instanceof Error ? err.message : t('player_form.tm_club_load_failed'), variant: 'destructive' });
     } finally {
       setLoading(false);
     }
@@ -184,7 +184,7 @@ export function ImportTmClubDialog({ externalOpen, onExternalOpenChange }: { ext
               photo_url: p.photoUrl || undefined,
               generation: p.generation || 2000,
               nationality,
-              foot: '' as any,
+              foot: '' as Foot,
               club: clubName,
               league,
               zone,

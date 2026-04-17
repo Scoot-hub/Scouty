@@ -72,9 +72,8 @@ function getRoleIcon(role: string) {
   return Users;
 }
 
-async function getAuthHeaders() {
-  const session = (await supabase.auth.getSession()).data.session;
-  return { Authorization: `Bearer ${session?.access_token}`, 'Content-Type': 'application/json' };
+function authFetchInit(): RequestInit {
+  return { credentials: 'include', headers: { 'Content-Type': 'application/json' } };
 }
 
 export default function AdminRoles() {
@@ -96,7 +95,7 @@ export default function AdminRoles() {
   const { data: users = [], isLoading: usersLoading } = useQuery<AdminUser[]>({
     queryKey: ['admin-users'],
     queryFn: async () => {
-      const res = await fetch(`${API_BASE}/admin/users`, { headers: await getAuthHeaders() });
+      const res = await fetch(`${API_BASE}/admin/users`, { ...authFetchInit() });
       if (!res.ok) throw new Error('Failed');
       return res.json();
     },
@@ -106,7 +105,7 @@ export default function AdminRoles() {
   const { data: roles = [] } = useQuery<string[]>({
     queryKey: ['admin-roles'],
     queryFn: async () => {
-      const res = await fetch(`${API_BASE}/admin/roles`, { headers: await getAuthHeaders() });
+      const res = await fetch(`${API_BASE}/admin/roles`, { ...authFetchInit() });
       if (!res.ok) throw new Error('Failed');
       return res.json();
     },
@@ -116,7 +115,7 @@ export default function AdminRoles() {
   const { data: permissions = [] } = useQuery<PagePermission[]>({
     queryKey: ['admin-page-permissions'],
     queryFn: async () => {
-      const res = await fetch(`${API_BASE}/admin/page-permissions`, { headers: await getAuthHeaders() });
+      const res = await fetch(`${API_BASE}/admin/page-permissions`, { ...authFetchInit() });
       if (!res.ok) throw new Error('Failed');
       return res.json();
     },
@@ -126,7 +125,7 @@ export default function AdminRoles() {
   const { data: roleColors = {} } = useQuery<Record<string, string>>({
     queryKey: ['admin-role-metadata'],
     queryFn: async () => {
-      const res = await fetch(`${API_BASE}/admin/role-metadata`, { headers: await getAuthHeaders() });
+      const res = await fetch(`${API_BASE}/admin/role-metadata`, { ...authFetchInit() });
       if (!res.ok) return {};
       return res.json();
     },
@@ -171,7 +170,7 @@ export default function AdminRoles() {
     try {
       const res = await fetch(`${API_BASE}/admin/page-permissions`, {
         method: 'POST',
-        headers: await getAuthHeaders(),
+        ...authFetchInit(),
         body: JSON.stringify({ role, page_key: pageKey, action, allowed: !current }),
       });
       if (!res.ok) throw new Error();
@@ -184,7 +183,7 @@ export default function AdminRoles() {
     try {
       const res = await fetch(`${API_BASE}/admin/role-metadata`, {
         method: 'POST',
-        headers: await getAuthHeaders(),
+        ...authFetchInit(),
         body: JSON.stringify({ role, color }),
       });
       if (!res.ok) throw new Error();
@@ -204,7 +203,7 @@ export default function AdminRoles() {
           const allowed = page === 'admin' && action !== 'view' ? false : true;
           await fetch(`${API_BASE}/admin/page-permissions`, {
             method: 'POST',
-            headers: await getAuthHeaders(),
+            ...authFetchInit(),
             body: JSON.stringify({ role: name, page_key: page, action, allowed }),
           });
         }
@@ -220,7 +219,7 @@ export default function AdminRoles() {
     if (role === 'admin' || role === 'user') return;
     try {
       const res = await fetch(`${API_BASE}/admin/roles/delete`, {
-        method: 'POST', headers: await getAuthHeaders(), body: JSON.stringify({ role }),
+        method: 'POST', ...authFetchInit(), body: JSON.stringify({ role }),
       });
       if (!res.ok) throw new Error();
       toast.success(t('roles.role_deleted'));
@@ -235,7 +234,7 @@ export default function AdminRoles() {
     setUpdatingUser(userId);
     try {
       const res = await fetch(`${API_BASE}/admin/roles/add`, {
-        method: 'POST', headers: await getAuthHeaders(), body: JSON.stringify({ userId, role }),
+        method: 'POST', ...authFetchInit(), body: JSON.stringify({ userId, role }),
       });
       if (!res.ok) throw new Error();
       toast.success(t('roles.role_updated'));
@@ -249,7 +248,7 @@ export default function AdminRoles() {
     setUpdatingUser(userId);
     try {
       const res = await fetch(`${API_BASE}/admin/roles/remove`, {
-        method: 'POST', headers: await getAuthHeaders(), body: JSON.stringify({ userId, role }),
+        method: 'POST', ...authFetchInit(), body: JSON.stringify({ userId, role }),
       });
       if (!res.ok) throw new Error();
       toast.success(t('roles.role_updated'));

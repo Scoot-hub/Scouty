@@ -70,7 +70,7 @@ function OrgListView() {
       {/* Org cards */}
       {orgs.length > 0 && (
         <div className="space-y-2">
-          {orgs.map((org: any) => {
+          {orgs.map((org: Record<string, unknown>) => {
             const typeLabel = ORG_TYPES.find(ot => ot.value === org.type);
             return (
               <Link
@@ -184,9 +184,10 @@ function CreateJoinSection() {
       const org = await joinOrg.mutateAsync(inviteCode);
       toast.success(t('org.joined'));
       navigate(`/organization/${slugify(org.name)}`);
-    } catch (err: any) {
-      if (err.message === 'INVALID_CODE') toast.error(t('org.invalid_code'));
-      else if (err.message === 'ALREADY_MEMBER') toast.error(t('org.already_member'));
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : '';
+      if (message === 'INVALID_CODE') toast.error(t('org.invalid_code'));
+      else if (message === 'ALREADY_MEMBER') toast.error(t('org.already_member'));
       else toast.error(t('common.error'));
     }
   };
@@ -302,7 +303,7 @@ function CreateJoinSection() {
 
 // ─── Organization dashboard ────────────────────────────────────────────────────
 
-function OrganizationDashboard({ org, userId }: { org: any; userId: string | undefined }) {
+function OrganizationDashboard({ org, userId }: { org: Record<string, unknown>; userId: string | undefined }) {
   const { t } = useTranslation();
   const navigate = useNavigate();
   const { data: members = [], isLoading: membersLoading } = useOrganizationMembers(org.id);
@@ -313,7 +314,7 @@ function OrganizationDashboard({ org, userId }: { org: any; userId: string | und
 
   const isOwner = org.myRole === 'owner';
   const isAdmin = org.myRole === 'owner' || org.myRole === 'admin';
-  const [selectedMember, setSelectedMember] = useState<any>(null);
+  const [selectedMember, setSelectedMember] = useState<Record<string, unknown> | null>(null);
 
   const handleLogoChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -476,7 +477,7 @@ function OrganizationDashboard({ org, userId }: { org: any; userId: string | und
             </div>
           ) : (<>
             <div className="space-y-2">
-              {members.map((member: any) => {
+              {members.map((member: Record<string, unknown>) => {
                 const isMe = member.user_id === userId;
                 const memberIsOwner = member.role === 'owner';
                 const displayName = member.profile?.full_name?.trim() || member.email || t('org.unknown_user');

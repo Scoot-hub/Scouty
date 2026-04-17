@@ -62,13 +62,10 @@ export default function FeedbackPopup() {
 
     setSending(true);
     try {
-      const session = JSON.parse(localStorage.getItem('scouthub_session') || '{}');
       const res = await fetch(`${API_BASE}/feedback`, {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          ...(session.access_token ? { Authorization: `Bearer ${session.access_token}` } : {}),
-        },
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
         body: JSON.stringify({
           rating,
           message: message.trim() || null,

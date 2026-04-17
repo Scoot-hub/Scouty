@@ -11,6 +11,7 @@ import ProtectedRoute from "@/components/layout/ProtectedRoute";
 import AppLayout from "@/components/layout/AppLayout";
 import CookieBanner from "@/components/CookieBanner";
 import { ThemeProvider } from "@/components/ThemeProvider";
+import ErrorBoundary from "@/components/ErrorBoundary";
 
 const Landing = lazy(() => import("@/pages/Landing"));
 const Auth = lazy(() => import("@/pages/Auth"));
@@ -70,6 +71,7 @@ const queryClient = new QueryClient({
 
 const App = () => (
   <ThemeProvider>
+  <ErrorBoundary>
   <UiPreferencesProvider>
   <QueryClientProvider client={queryClient}>
     <TooltipProvider>
@@ -144,6 +146,7 @@ const App = () => (
     </TooltipProvider>
   </QueryClientProvider>
   </UiPreferencesProvider>
+  </ErrorBoundary>
   </ThemeProvider>
 );
 

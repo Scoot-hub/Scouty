@@ -31,7 +31,7 @@ export function useFixtures() {
         .select('*')
         .order('match_date', { ascending: true });
       if (error) throw error;
-      return ((data ?? []) as any[]).map(row => ({
+      return (data ?? []).map(row => ({
         ...row,
         is_favorite: !!row.is_favorite,
       })) as Fixture[];
@@ -61,7 +61,7 @@ export function useCreateFixture() {
           competition: fixture.competition ?? '',
           venue: fixture.venue ?? '',
           notes: fixture.notes ?? null,
-        } as any)
+        })
         .select()
         .single();
       if (error) throw error;
@@ -88,7 +88,7 @@ export function useUpdateFixture() {
       notes: string | null;
       is_favorite: boolean;
     }>) => {
-      const payload: any = { ...fields };
+      const payload: Record<string, unknown> = { ...fields };
       if ('is_favorite' in payload) {
         payload.is_favorite = payload.is_favorite ? 1 : 0;
       }
@@ -129,7 +129,7 @@ export function useToggleFavorite() {
     mutationFn: async ({ id, is_favorite }: { id: string; is_favorite: boolean }) => {
       const { error } = await supabase
         .from('fixtures')
-        .update({ is_favorite: is_favorite ? 1 : 0 } as any)
+        .update({ is_favorite: is_favorite ? 1 : 0 })
         .eq('id', id);
       if (error) throw error;
     },

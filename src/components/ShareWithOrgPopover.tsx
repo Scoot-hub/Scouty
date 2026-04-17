@@ -46,9 +46,9 @@ export function ShareWithOrgPopover({ playerId, compact = false, className }: Sh
       } else {
         await shareMutation.mutateAsync({ playerId, organizationId: orgId });
       }
-    } catch (err: any) {
+    } catch (err: unknown) {
       console.error('ShareWithOrgPopover toggle error:', err);
-      toast.error(err?.message || t('common.error'));
+      toast.error(err instanceof Error ? err.message : t('common.error'));
     }
   };
 
@@ -153,9 +153,9 @@ export function BulkShareDialog({ playerIds, open, onOpenChange, onDone }: BulkS
       toast.success(t('players.added_to_org', { count: playerIds.length }));
       onOpenChange(false);
       onDone?.();
-    } catch (err: any) {
+    } catch (err: unknown) {
       console.error('BulkShareDialog error:', err);
-      toast.error(err?.message || t('common.error'));
+      toast.error(err instanceof Error ? err.message : t('common.error'));
     } finally {
       setSharing(false);
     }

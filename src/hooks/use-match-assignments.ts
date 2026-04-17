@@ -36,7 +36,7 @@ export function useMyMatches() {
         .from('match_assignments')
         .select('*')
         .eq('user_id', user!.id)
-        .eq('organization_id', null as any)
+        .is('organization_id', null)
         .order('match_date', { ascending: true });
       if (error) throw error;
       return (data ?? []) as MatchAssignment[];
@@ -93,7 +93,7 @@ export function useSaveMatch() {
           home_badge: match.home_badge ?? null,
           away_badge: match.away_badge ?? null,
           notes: match.notes ?? null,
-        } as any)
+        })
         .select()
         .single();
       if (error) throw error;
@@ -128,7 +128,7 @@ export function useUpdateMatchStatus() {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: async ({ id, status, notes }: { id: string; status?: string; notes?: string | null }) => {
-      const payload: any = {};
+      const payload: Record<string, unknown> = {};
       if (status !== undefined) payload.status = status;
       if (notes !== undefined) payload.notes = notes;
       const { data, error } = await supabase
@@ -181,7 +181,7 @@ export function useAssignMatch() {
           assigned_to: params.assigned_to,
           assigned_by: user!.id,
           notes: params.notes ?? null,
-        } as any)
+        })
         .select()
         .single();
       if (error) throw error;
@@ -199,7 +199,7 @@ export function useUpdateAssignment() {
   const { user } = useAuth();
   return useMutation({
     mutationFn: async ({ id, assigned_to }: { id: string; assigned_to: string | null }) => {
-      const payload: any = {
+      const payload: Record<string, unknown> = {
         assigned_to,
         assigned_by: assigned_to ? user!.id : null,
       };

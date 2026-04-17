@@ -26,13 +26,15 @@ export default defineConfig(({ mode }) => ({
       output: {
         manualChunks(id) {
           if (id.includes("node_modules")) {
-            if (id.includes("recharts") || id.includes("d3-")) return "charts";
+            // recharts/d3 and @dnd-kit are NOT in manualChunks — they are
+            // code-split via React.lazy wrappers (CompareRadarChart,
+            // ProfileDataTab, EvolutionChart, SortableCardGrid) so Vite
+            // naturally places them in each lazy chunk's dependency graph.
             if (id.includes("xlsx")) return "xlsx";
             if (id.includes("@radix-ui")) return "ui";
             if (id.includes("@supabase")) return "supabase";
             if (id.includes("@tanstack")) return "tanstack";
             if (id.includes("lucide-react")) return "icons";
-            if (id.includes("@dnd-kit")) return "dnd";
             if (id.includes("date-fns") || id.includes("i18next") || id.includes("react-i18next")) return "utils";
             if (id.includes("react-dom") || id.includes("react-router")) return "vendor";
           }

@@ -25,7 +25,7 @@ export function useUpsertSquadPlayer() {
   const currentOrg = useCurrentOrg();
   return useMutation({
     mutationFn: async (player: Partial<SquadPlayer> & { name: string }) => {
-      const payload = { ...player, org_id: currentOrg.data?.id } as any;
+      const payload = { ...player, org_id: currentOrg.data?.id };
       const { data, error } = await supabase.rpc('upsert_squad_player', payload);
       if (error) throw error;
       return data;

@@ -1,4 +1,14 @@
-﻿// MySQL-backed client compatible with the subset of Supabase APIs used by this app.
+// MySQL-backed client compatible with the subset of Supabase APIs used by this app.
+// JWT tokens are stored in httpOnly cookies (set by the server), NOT in localStorage.
+
+import type { Database, Tables, TablesInsert, TablesUpdate } from './types';
+
+// ── Helper types ──────────────────────────────────────────────────────────────
+
+type TableName = keyof Database['public']['Tables'];
+type FunctionName = keyof Database['public']['Functions'];
+type FunctionArgs<F extends FunctionName> = Database['public']['Functions'][F]['Args'];
+type FunctionReturns<F extends FunctionName> = Database['public']['Functions'][F]['Returns'];
 
 type AuthUser = {
   id: string;
@@ -9,18 +19,17 @@ type AuthUser = {
 };
 
 type AuthSession = {
-  access_token: string;
   token_type: string;
   expires_in: number;
   user: AuthUser;
 };
 
-type SupabaseLikeResult<T = any> = {
+type SupabaseLikeResult<T = unknown> = {
   data: T | null;
-  error: any;
+  error: Error | null;
 };
 
-type QueryFilter = { col: string; op?: string; value: any };
+type QueryFilter = { col: string; op?: string; value: unknown };
 
 const API_BASE = (import.meta.env.API_URL || '/api').replace(/\/$/, '');
 const PUBLIC_BASE = (import.meta.env.API_PUBLIC_URL || '').replace(/\/$/, '');
@@ -52,22 +61,33 @@ function notify(event: 'SIGNED_IN' | 'SIGNED_OUT' | 'TOKEN_REFRESHED' | 'USER_UP
   for (const cb of listeners) cb(event, session);
 }
 
-async function apiRequest<T = any>(path: string, init: RequestInit = {}, auth = true): Promise<SupabaseLikeResult<T>> {
+// ── Auth response types ───────────────────────────────────────────────────────
+
+type LoginResponse = {
+  user: AuthUser;
+  session: AuthSession;
+  requires2FA?: boolean;
+  userId?: string;
+};
+
+type SessionResponse = { session: AuthSession | null };
+type UserResponse = { user: AuthUser | null };
+
+// ── API request ───────────────────────────────────────────────────────────────
+
+async function apiRequest<T = unknown>(path: string, init: RequestInit = {}, _auth = true): Promise<SupabaseLikeResult<T>> {
   try {
-    const session = getStoredSession();
     const headers = new Headers(init.headers || {});
 
     if (!headers.has('Content-Type') && !(init.body instanceof FormData)) {
       headers.set('Content-Type', 'application/json');
     }
 
-    if (auth && session?.access_token) {
-      headers.set('Authorization', `Bearer ${session.access_token}`);
-    }
-
+    // Auth is handled by httpOnly cookies — no Authorization header needed
     const response = await fetch(`${API_BASE}${path}`, {
       ...init,
       headers,
+      credentials: 'include',
     });
 
     const contentType = response.headers.get('content-type') || '';
@@ -87,12 +107,14 @@ async function apiRequest<T = any>(path: string, init: RequestInit = {}, auth = 
   }
 }
 
-class QueryBuilder {
-  private table: string;
+// ── QueryBuilder ──────────────────────────────────────────────────────────────
+
+class QueryBuilder<T extends TableName> {
+  private table: T;
   private mode: 'select' | 'insert' | 'update' | 'delete' | 'upsert' = 'select';
   private filters: QueryFilter[] = [];
   private selected = '*';
-  private values: any = null;
+  private values: TablesInsert<T> | TablesUpdate<T> | Array<TablesInsert<T>> | null = null;
   private orderBy: { column: string; ascending: boolean } | null = null;
   private limitRange: { from: number; to: number } | null = null;
   private expectSingle = false;
@@ -100,7 +122,7 @@ class QueryBuilder {
   private wantsReturning = false;
   private onConflictColumn: string | undefined;
 
-  constructor(table: string) {
+  constructor(table: T) {
     this.table = table;
   }
 
@@ -111,12 +133,17 @@ class QueryBuilder {
     return this;
   }
 
-  eq(col: string, value: any) {
+  eq(col: string, value: unknown) {
     this.filters.push({ col, value });
     return this;
   }
 
-  in(col: string, values: any[]) {
+  is(col: string, value: null) {
+    this.filters.push({ col, value });
+    return this;
+  }
+
+  in(col: string, values: unknown[]) {
     this.filters.push({ col, op: 'in', value: values });
     return this;
   }
@@ -136,19 +163,19 @@ class QueryBuilder {
     return this;
   }
 
-  insert(values: any) {
+  insert(values: TablesInsert<T> | Array<TablesInsert<T>>) {
     this.mode = 'insert';
     this.values = values;
     return this;
   }
 
-  update(values: any) {
+  update(values: TablesUpdate<T>) {
     this.mode = 'update';
     this.values = values;
     return this;
   }
 
-  upsert(values: any, options?: { onConflict?: string }) {
+  upsert(values: TablesInsert<T> | Array<TablesInsert<T>>, options?: { onConflict?: string }) {
     this.mode = 'upsert';
     this.values = values;
     this.onConflictColumn = options?.onConflict;
@@ -162,16 +189,16 @@ class QueryBuilder {
 
   single() {
     this.expectSingle = true;
-    return this.execute();
+    return this.execute() as Promise<SupabaseLikeResult<Tables<T>>>;
   }
 
   maybeSingle() {
     this.expectMaybeSingle = true;
-    return this.execute();
+    return this.execute() as Promise<SupabaseLikeResult<Tables<T> | null>>;
   }
 
-  async execute(): Promise<SupabaseLikeResult<any>> {
-    const { data, error } = await apiRequest<any>('/query', {
+  async execute(): Promise<SupabaseLikeResult<Tables<T>[]>> {
+    const { data, error } = await apiRequest<{ data?: Tables<T>[] } | Tables<T>[]>('/query', {
       method: 'POST',
       body: JSON.stringify({
         table: this.table,
@@ -190,23 +217,25 @@ class QueryBuilder {
 
     if (error) return { data: null, error };
 
-    if (data && Object.prototype.hasOwnProperty.call(data, 'data')) {
-      return { data: data.data, error: null };
+    if (data && typeof data === 'object' && 'data' in data) {
+      return { data: (data as { data: Tables<T>[] }).data, error: null };
     }
 
-    return { data, error: null };
+    return { data: data as Tables<T>[], error: null };
   }
 
-  then(resolve: (value: SupabaseLikeResult<any>) => void, reject?: (reason: any) => void) {
+  then(resolve: (value: SupabaseLikeResult<Tables<T>[]>) => void, reject?: (reason: unknown) => void) {
     return this.execute().then(resolve, reject);
   }
 }
 
+// ── Exported client ───────────────────────────────────────────────────────────
+
 export const supabase = {
   auth: {
-    async signUp({ email, password, options }: { email: string; password: string; options?: any }) {
+    async signUp({ email, password, options }: { email: string; password: string; options?: { data?: Record<string, string> } }) {
       const meta = options?.data || {};
-      const { data, error } = await apiRequest<any>('/auth/signup', {
+      const { data, error } = await apiRequest<LoginResponse>('/auth/signup', {
         method: 'POST',
         body: JSON.stringify({
           email,
@@ -229,7 +258,7 @@ export const supabase = {
     },
 
     async signInWithPassword({ email, password }: { email: string; password: string }) {
-      const { data, error } = await apiRequest<any>('/auth/login', {
+      const { data, error } = await apiRequest<LoginResponse>('/auth/login', {
         method: 'POST',
         body: JSON.stringify({ email, password }),
       }, false);
@@ -249,7 +278,7 @@ export const supabase = {
     },
 
     async validate2FA(userId: string, code: string) {
-      const { data, error } = await apiRequest<any>('/auth/2fa/validate', {
+      const { data, error } = await apiRequest<LoginResponse>('/auth/2fa/validate', {
         method: 'POST',
         body: JSON.stringify({ userId, code }),
       }, false);
@@ -270,9 +299,9 @@ export const supabase = {
 
     async getSession() {
       const current = getStoredSession();
-      if (!current?.access_token) return { data: { session: null }, error: null };
+      if (!current) return { data: { session: null }, error: null };
 
-      const { data, error } = await apiRequest<any>('/auth/session', { method: 'GET' });
+      const { data, error } = await apiRequest<SessionResponse>('/auth/session', { method: 'GET' });
       if (error) return { data: { session: null }, error };
 
       const session = data?.session || null;
@@ -287,7 +316,7 @@ export const supabase = {
     },
 
     async getUser() {
-      const { data, error } = await apiRequest<any>('/auth/user', { method: 'GET' });
+      const { data, error } = await apiRequest<UserResponse>('/auth/user', { method: 'GET' });
       if (error) return { data: { user: null }, error };
       return { data: { user: data?.user || null }, error: null };
     },
@@ -304,7 +333,7 @@ export const supabase = {
     },
 
     async resetPasswordForEmail(email: string, options?: { redirectTo?: string }) {
-      const { error } = await apiRequest<any>('/auth/forgot-password', {
+      const { error } = await apiRequest('/auth/forgot-password', {
         method: 'POST',
         body: JSON.stringify({ email, redirectTo: options?.redirectTo }),
       }, false);
@@ -312,7 +341,7 @@ export const supabase = {
     },
 
     async resetPasswordWithToken(token: string, password: string) {
-      const { data, error } = await apiRequest<any>('/auth/reset-password', {
+      const { data, error } = await apiRequest<LoginResponse>('/auth/reset-password', {
         method: 'POST',
         body: JSON.stringify({ token, password }),
       }, false);
@@ -325,7 +354,7 @@ export const supabase = {
     },
 
     async updateUser(updates: { email?: string; password?: string }) {
-      const { data, error } = await apiRequest<any>('/auth/user', {
+      const { data, error } = await apiRequest<LoginResponse>('/auth/user', {
         method: 'PATCH',
         body: JSON.stringify(updates),
       });
@@ -341,23 +370,26 @@ export const supabase = {
     },
   },
 
-  from(table: string) {
+  from<T extends TableName>(table: T) {
     return new QueryBuilder(table);
   },
 
-  async rpc(name: string, args: Record<string, any>) {
-    const { data, error } = await apiRequest<any>(`/rpc/${name}`, {
+  async rpc<F extends FunctionName>(name: F, args: FunctionArgs<F>) {
+    const { data, error } = await apiRequest<{ data?: FunctionReturns<F> } | FunctionReturns<F>>(`/rpc/${name}`, {
       method: 'POST',
       body: JSON.stringify(args || {}),
     });
 
     if (error) return { data: null, error };
-    return { data: data?.data ?? data, error: null };
+    const result = (data && typeof data === 'object' && 'data' in data)
+      ? (data as { data: FunctionReturns<F> }).data
+      : data as FunctionReturns<F>;
+    return { data: result ?? null, error: null } as SupabaseLikeResult<FunctionReturns<F>>;
   },
 
   functions: {
-    async invoke(name: string, options?: { body?: any }) {
-      const { data, error } = await apiRequest<any>(`/functions/${name}`, {
+    async invoke(name: string, options?: { body?: Record<string, unknown> }) {
+      const { data, error } = await apiRequest<unknown>(`/functions/${name}`, {
         method: 'POST',
         body: JSON.stringify(options?.body || {}),
       });
@@ -369,12 +401,12 @@ export const supabase = {
   storage: {
     from(bucket: string) {
       return {
-        async upload(_fileName: string, file: File, _options?: any) {
+        async upload(_fileName: string, file: File, _options?: Record<string, unknown>) {
           const form = new FormData();
           form.append('file', file);
           form.append('fileName', _fileName);
 
-          const { data, error } = await apiRequest<any>(`/storage/${bucket}/upload`, {
+          const { data, error } = await apiRequest<{ path: string }>(`/storage/${bucket}/upload`, {
             method: 'POST',
             body: form,
           });
@@ -398,4 +430,3 @@ export const supabase = {
     },
   },
 };
-

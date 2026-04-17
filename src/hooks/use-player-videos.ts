@@ -2,11 +2,6 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 
 const API_BASE = (import.meta.env.API_URL || '/api').replace(/\/$/, '');
 
-function getAuthHeader() {
-  const session = JSON.parse(localStorage.getItem('scouthub_session') || '{}');
-  return session.access_token ? { Authorization: `Bearer ${session.access_token}` } : {};
-}
-
 export interface VideoItem {
   id: string;
   user_id: string;
@@ -23,7 +18,7 @@ export function usePlayerVideos(playerId: string | undefined) {
     queryKey: ['player-videos', playerId],
     queryFn: async () => {
       if (!playerId) return [];
-      const res = await fetch(`${API_BASE}/player-videos/${playerId}`, { headers: getAuthHeader() });
+      const res = await fetch(`${API_BASE}/player-videos/${playerId}`, { credentials: 'include' });
       if (!res.ok) throw new Error('Failed to fetch videos');
       return res.json();
     },
@@ -37,7 +32,8 @@ export function useAddVideo() {
     mutationFn: async (item: { player_id: string; title: string; url?: string; file_url?: string; description?: string }) => {
       const res = await fetch(`${API_BASE}/player-videos`, {
         method: 'POST',
-        headers: { ...getAuthHeader(), 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
         body: JSON.stringify(item),
       });
       if (!res.ok) throw new Error('Failed to add video');
@@ -55,7 +51,7 @@ export function useDeleteVideo() {
     mutationFn: async ({ id, playerId }: { id: string; playerId: string }) => {
       const res = await fetch(`${API_BASE}/player-videos/${id}`, {
         method: 'DELETE',
-        headers: getAuthHeader(),
+        credentials: 'include',
       });
       if (!res.ok) throw new Error('Failed to delete video');
       return { playerId };

@@ -54,17 +54,15 @@ export default function Affiliate() {
   const [affiliateStats, setAffiliateStats] = useState({ totalReferrals: 0, activeReferrals: 0, conversion: 0 });
   const [referrer, setReferrer] = useState<{ user_id: string; full_name: string; club: string | null; role: string | null; photo_url: string | null } | null>(null);
 
-  const apiBase = (import.meta as any).env.VITE_API_URL || '/api';
+  const apiBase = import.meta.env.VITE_API_URL || '/api';
 
   useEffect(() => {
     if (!user?.id) return;
-    const token = JSON.parse(localStorage.getItem('scouthub_session') || '{}').access_token;
-    const headers = { Authorization: `Bearer ${token}` };
-    fetch(`${apiBase}/affiliate/stats`, { headers })
+    fetch(`${apiBase}/affiliate/stats`, { credentials: 'include' })
       .then(r => r.json())
       .then(data => { if (data && typeof data.totalReferrals === 'number') setAffiliateStats(data); })
       .catch(() => {});
-    fetch(`${apiBase}/affiliate/referrer`, { headers })
+    fetch(`${apiBase}/affiliate/referrer`, { credentials: 'include' })
       .then(r => r.json())
       .then(data => { if (data?.referrer) setReferrer(data.referrer); })
       .catch(() => {});

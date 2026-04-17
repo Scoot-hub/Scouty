@@ -87,7 +87,7 @@ export function useFollowLeague() {
           league_country: league.league_country,
           league_logo: league.league_logo ?? null,
           season: getCurrentSeason(),
-        } as any)
+        })
         .select()
         .single();
       if (error) throw error;

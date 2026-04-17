@@ -217,25 +217,25 @@ export default function Squad() {
     try {
       const toAdd = availablePlayers.filter(p => pickerSelected.has(p.id));
       for (const p of toAdd) {
-        const dob = (p as any).date_of_birth;
-        const ext = (p as any).external_data || {};
+        const dob = p.date_of_birth;
+        const ext = (p.external_data ?? {}) as Record<string, unknown>;
         await upsert.mutateAsync({
           name: p.name,
           photo_url: p.photo_url ?? null,
           date_of_birth: dob ? String(dob).slice(0, 10) : null,
           nationality: p.nationality ?? '',
           club: p.club ?? '',
-          league: (p as any).league ?? '',
-          foot: (p as any).foot ?? '',
-          market_value: ext.market_value || (p as any).market_value || null,
+          league: p.league ?? '',
+          foot: p.foot ?? '',
+          market_value: (ext.market_value ? String(ext.market_value) : null) || p.market_value || null,
           position: p.position ?? 'MC',
-          position_secondaire: (p as any).position_secondaire || null,
+          position_secondaire: p.position_secondaire || null,
           contract_end: p.contract_end ? String(p.contract_end).slice(0, 10) : null,
           status: 'active' as SquadPlayerStatus,
           agent_name: '',
           agent_phone: '',
           agent_email: '',
-        } as any);
+        });
       }
       toast.success(t('squad.bulk_added', { count: toAdd.length }));
       setPickerOpen(false);
@@ -248,8 +248,8 @@ export default function Squad() {
   };
 
   const selectFromPicker = (p: typeof availablePlayers[0]) => {
-    const dob = (p as any).date_of_birth;
-    const ext = (p as any).external_data || {};
+    const dob = p.date_of_birth;
+    const ext = (p.external_data ?? {}) as Record<string, unknown>;
     setForm({
       ...emptyForm,
       name: p.name,
@@ -257,11 +257,11 @@ export default function Squad() {
       date_of_birth: dob ? String(dob).slice(0, 10) : '',
       nationality: p.nationality ?? '',
       club: p.club ?? '',
-      league: (p as any).league ?? '',
-      foot: (p as any).foot ?? '',
-      market_value: ext.market_value || (p as any).market_value || '',
+      league: p.league ?? '',
+      foot: p.foot ?? '',
+      market_value: (ext.market_value ? String(ext.market_value) : '') || p.market_value || '',
       position: p.position ?? 'MC',
-      position_secondaire: (p as any).position_secondaire ?? '',
+      position_secondaire: p.position_secondaire ?? '',
       contract_end: p.contract_end ? String(p.contract_end).slice(0, 10) : '',
     });
     setPickerOpen(false);
@@ -327,7 +327,7 @@ export default function Squad() {
         agent_phone: form.agent_phone,
         agent_email: form.agent_email,
         notes: form.notes || null,
-      } as any);
+      });
       toast.success(editingId ? t('squad.updated') : t('squad.created'));
       setDialogOpen(false);
     } catch {
@@ -816,7 +816,7 @@ export default function Squad() {
               <p className="text-sm text-muted-foreground text-center py-8">{t('squad.pick_no_results')}</p>
             ) : (
               pickerFiltered.map(p => {
-                const age = getPlayerAge(p.generation, (p as any).date_of_birth);
+                const age = getPlayerAge(p.generation, p.date_of_birth);
                 const checked = pickerSelected.has(p.id);
                 return (
                   <button

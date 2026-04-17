@@ -44,13 +44,10 @@ export default function ReportIssueDialog({ open, onOpenChange }: ReportIssueDia
 
     setSending(true);
     try {
-      const session = JSON.parse(localStorage.getItem('scouthub_session') || '{}');
       const res = await fetch(`${API_BASE}/report-issue`, {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          ...(session.access_token ? { Authorization: `Bearer ${session.access_token}` } : {}),
-        },
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
         body: JSON.stringify({
           category,
           subject: subject.trim(),
@@ -68,7 +65,7 @@ export default function ReportIssueDialog({ open, onOpenChange }: ReportIssueDia
       toast.success(t('report_issue.success'));
       reset();
       onOpenChange(false);
-    } catch (err: any) {
+    } catch (err: unknown) {
       console.error('Report issue error:', err);
       toast.error(t('report_issue.error'));
     } finally {

@@ -187,7 +187,7 @@ function MatchCard({ match, onCycleStatus, onRemove, t, utcOffset }: {
   match: MatchAssignment;
   onCycleStatus: () => void;
   onRemove: () => void;
-  t: (key: string, opts?: any) => string;
+  t: (key: string, opts?: Record<string, unknown>) => string;
   utcOffset: number;
 }) {
   const StatusIcon = STATUS_ICONS[match.status] ?? Circle;

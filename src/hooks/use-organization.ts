@@ -29,7 +29,7 @@ export function useMyOrganizations() {
 
       // Fetch each org individually (.in() not supported by custom MySQL backend)
       const orgs = await Promise.all(
-        memberships.map(async (m: any) => {
+        memberships.map(async (m) => {
           const { data: org } = await supabase
             .from('organizations')
             .select('*')
@@ -68,9 +68,9 @@ export function useOrganizationMembers(organizationId: string | undefined) {
     queryKey: ['organization-members', organizationId],
     queryFn: async () => {
       if (!organizationId) return [];
-      const { data, error } = await supabase.rpc('get_org_members' as any, { organization_id: organizationId });
+      const { data, error } = await supabase.rpc('get_org_members', { organization_id: organizationId });
       if (error) throw error;
-      return (data || []) as any[];
+      return (data || []) as Record<string, unknown>[];
     },
     enabled: !!organizationId,
     staleTime: 30 * 1000,
@@ -104,12 +104,11 @@ export function useCreateOrganization() {
 
       // Upload logo if provided
       if (logoFile) {
-        const session = (await supabase.auth.getSession()).data.session;
         const form = new FormData();
         form.append('file', logoFile);
         await fetch(`${API_BASE}/organizations/${org.id}/logo`, {
           method: 'PATCH',
-          headers: { Authorization: `Bearer ${session?.access_token}` },
+          credentials: 'include',
           body: form,
         });
       }
@@ -232,13 +231,10 @@ export function useDeleteOrganization() {
 
   return useMutation({
     mutationFn: async ({ organizationId, message }: { organizationId: string; message: string }) => {
-      const session = (await supabase.auth.getSession()).data.session;
       const res = await fetch(`${(import.meta.env.API_URL || '/api').replace(/\/$/, '')}/organizations/${organizationId}`, {
         method: 'DELETE',
-        headers: {
-          Authorization: `Bearer ${session?.access_token}`,
-          'Content-Type': 'application/json',
-        },
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
         body: JSON.stringify({ message }),
       });
       if (!res.ok) {
@@ -262,12 +258,11 @@ export function useUpdateOrgLogo(orgId: string | undefined) {
   const upload = useMutation({
     mutationFn: async (file: File) => {
       if (!orgId) throw new Error('No org id');
-      const session = (await supabase.auth.getSession()).data.session;
       const form = new FormData();
       form.append('file', file);
       const res = await fetch(`${API_BASE}/organizations/${orgId}/logo`, {
         method: 'PATCH',
-        headers: { Authorization: `Bearer ${session?.access_token}` },
+        credentials: 'include',
         body: form,
       });
       if (!res.ok) {
@@ -284,10 +279,9 @@ export function useUpdateOrgLogo(orgId: string | undefined) {
   const remove = useMutation({
     mutationFn: async () => {
       if (!orgId) throw new Error('No org id');
-      const session = (await supabase.auth.getSession()).data.session;
       const res = await fetch(`${API_BASE}/organizations/${orgId}/logo`, {
         method: 'DELETE',
-        headers: { Authorization: `Bearer ${session?.access_token}` },
+        credentials: 'include',
       });
       if (!res.ok) throw new Error('Delete failed');
     },
@@ -309,7 +303,7 @@ export function useOrgPlayers(orgId?: string) {
     queryFn: async (): Promise<(Player & { owner_name?: string })[]> => {
       const { data, error } = await supabase.rpc('get_org_players', { org_id: resolvedOrgId });
       if (error) throw error;
-      return ((data as any[]) || []).map(row => ({
+      return ((data as Record<string, unknown>[]) || []).map(row => ({
         ...row,
         current_level: Number(row.current_level),
         potential: Number(row.potential),

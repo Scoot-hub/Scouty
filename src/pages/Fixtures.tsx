@@ -557,7 +557,10 @@ export default function Fixtures() {
 }
 
 /* ── Competition Group ── */
-function CompetitionGroup({ competition, t, onSave, onSaveToOrg, orgs, savedMatchKeys, selectedDate, utcOffset }: { competition: LivescoreCompetition; t: (key: string) => string; onSave: (ev: LivescoreEvent, competition: string) => void; onSaveToOrg: (ev: LivescoreEvent, competition: string, orgId: string, userId?: string) => void; orgs: any[]; savedMatchKeys: Set<string>; selectedDate: string; utcOffset: number }) {
+interface OrgItem { id: string; name: string; [key: string]: unknown }
+interface OrgMember { user_id: string; role?: string; profile?: { full_name?: string } }
+
+function CompetitionGroup({ competition, t, onSave, onSaveToOrg, orgs, savedMatchKeys, selectedDate, utcOffset }: { competition: LivescoreCompetition; t: (key: string) => string; onSave: (ev: LivescoreEvent, competition: string) => void; onSaveToOrg: (ev: LivescoreEvent, competition: string, orgId: string, userId?: string) => void; orgs: OrgItem[]; savedMatchKeys: Set<string>; selectedDate: string; utcOffset: number }) {
   const flag = countryFlag(competition.country_code);
   return (
     <div>
@@ -583,7 +586,7 @@ function CompetitionGroup({ competition, t, onSave, onSaveToOrg, orgs, savedMatc
 }
 
 /* ── My Player Event Card (highlighted) ── */
-function MyPlayerEventCard({ match, t, onSave, onSaveToOrg, orgs, isSaved, utcOffset, selectedDate }: { match: MyPlayerMatch; t: (key: string) => string; onSave: (ev: LivescoreEvent, competition: string) => void; onSaveToOrg: (ev: LivescoreEvent, competition: string, orgId: string, userId?: string) => void; orgs: any[]; isSaved: boolean; utcOffset: number; selectedDate: string }) {
+function MyPlayerEventCard({ match, t, onSave, onSaveToOrg, orgs, isSaved, utcOffset, selectedDate }: { match: MyPlayerMatch; t: (key: string) => string; onSave: (ev: LivescoreEvent, competition: string) => void; onSaveToOrg: (ev: LivescoreEvent, competition: string, orgId: string, userId?: string) => void; orgs: OrgItem[]; isSaved: boolean; utcOffset: number; selectedDate: string }) {
   const navigate = useNavigate();
   const { event, competition, players } = match;
   const hasScore = event.score_home !== null && event.score_away !== null;
@@ -699,7 +702,7 @@ function MyPlayerEventCard({ match, t, onSave, onSaveToOrg, orgs, isSaved, utcOf
 
 /* ── Org row with hover flyout showing members ── */
 function OrgRowWithMembers({ org, onSaveToOrg, t }: {
-  org: any;
+  org: OrgItem;
   onSaveToOrg: (orgId: string, userId?: string) => void;
   t: (key: string) => string;
 }) {
@@ -741,19 +744,22 @@ function OrgRowWithMembers({ org, onSaveToOrg, t }: {
               <Loader2 className="w-3.5 h-3.5 animate-spin text-muted-foreground" />
             </div>
           )}
-          {members?.map((m: any) => (
+          {members?.map((m) => {
+            const member = m as OrgMember;
+            return (
             <button
-              key={m.user_id}
-              onClick={() => onSaveToOrg(org.id, m.user_id)}
+              key={member.user_id}
+              onClick={() => onSaveToOrg(org.id, member.user_id)}
               className="w-full flex items-center gap-2 px-2.5 py-1.5 rounded-md text-xs font-medium hover:bg-muted transition-colors text-left"
             >
               <UserCircle className="w-3.5 h-3.5 text-primary shrink-0" />
-              <span className="truncate">{m.profile?.full_name || m.user_id.slice(0, 8)}</span>
-              {m.role && (
-                <span className="text-[10px] text-muted-foreground ml-auto shrink-0">{m.role}</span>
+              <span className="truncate">{member.profile?.full_name || member.user_id.slice(0, 8)}</span>
+              {member.role && (
+                <span className="text-[10px] text-muted-foreground ml-auto shrink-0">{member.role}</span>
               )}
             </button>
-          ))}
+            );
+          })}
         </div>
       )}
     </div>
@@ -765,7 +771,7 @@ function SaveMatchButton({ isSaved, onSave, onSaveToOrg, orgs, t }: {
   isSaved: boolean;
   onSave: () => void;
   onSaveToOrg: (orgId: string, userId?: string) => void;
-  orgs: any[];
+  orgs: OrgItem[];
   t: (key: string) => string;
 }) {
   // No orgs → simple button (no popover)
@@ -808,7 +814,7 @@ function SaveMatchButton({ isSaved, onSave, onSaveToOrg, orgs, t }: {
               {t('my_matches.save')}
             </button>
           )}
-          {orgs.map((org: any) => (
+          {orgs.map((org) => (
             <OrgRowWithMembers key={org.id} org={org} onSaveToOrg={onSaveToOrg} t={t} />
           ))}
         </div>
@@ -818,7 +824,7 @@ function SaveMatchButton({ isSaved, onSave, onSaveToOrg, orgs, t }: {
 }
 
 /* ── Event Card ── */
-function EventCard({ event, onSave, onSaveToOrg, orgs, isSaved, utcOffset, selectedDate, competition }: { event: LivescoreEvent; onSave: () => void; onSaveToOrg: (orgId: string, userId?: string) => void; orgs: any[]; isSaved: boolean; utcOffset: number; selectedDate: string; competition: string }) {
+function EventCard({ event, onSave, onSaveToOrg, orgs, isSaved, utcOffset, selectedDate, competition }: { event: LivescoreEvent; onSave: () => void; onSaveToOrg: (orgId: string, userId?: string) => void; orgs: OrgItem[]; isSaved: boolean; utcOffset: number; selectedDate: string; competition: string }) {
   const { t } = useTranslation();
   const navigate = useNavigate();
   const hasScore = event.score_home !== null && event.score_away !== null;

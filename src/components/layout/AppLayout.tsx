@@ -5,7 +5,7 @@ import { useAuth } from '@/contexts/AuthContext';
 import { X, AlertTriangle } from 'lucide-react';
 import AppSidebar from './AppSidebar';
 import NotificationCenter from '@/components/NotificationCenter';
-import ChatBot from '@/components/ChatBot';
+import HelpCenter from '@/components/HelpCenter';
 import FeedbackPopup from '@/components/FeedbackPopup';
 import ScrollRestoration from '@/components/ScrollRestoration';
 import { OperationBannerProvider } from '@/contexts/OperationBannerContext';
@@ -64,7 +64,7 @@ export default function AppLayout() {
         </div>
         <ScrollRestoration />
         <OperationBanner />
-        {showChatbot && <ChatBot />}
+        {showChatbot && <HelpCenter />}
         <FeedbackPopup />
       </div>
     </OperationBannerProvider>

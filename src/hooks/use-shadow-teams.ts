@@ -61,7 +61,7 @@ export function useCreateShadowTeam() {
       if (team.logo_url) payload.logo_url = team.logo_url;
       const { data, error } = await supabase
         .from('shadow_teams')
-        .insert(payload as any)
+        .insert(payload)
         .select()
         .single();
       if (error) throw error;
@@ -82,7 +82,7 @@ export function useUpdateShadowTeam() {
       if (logo_url !== undefined) payload.logo_url = logo_url;
       const { data, error } = await supabase
         .from('shadow_teams')
-        .update(payload as any)
+        .update(payload)
         .eq('id', id)
         .select()
         .single();
@@ -130,7 +130,7 @@ export function useAssignPlayer() {
 
       const { data, error } = await supabase
         .from('shadow_team_players')
-        .insert({ shadow_team_id: shadowTeamId, player_id: playerId, position_slot: positionSlot, rank: nextRank } as any)
+        .insert({ shadow_team_id: shadowTeamId, player_id: playerId, position_slot: positionSlot, rank: nextRank })
         .select()
         .single();
       if (error) throw error;
@@ -172,7 +172,7 @@ export function useRemapFormation() {
       for (const { id, newSlot } of remaps) {
         const { error } = await supabase
           .from('shadow_team_players')
-          .update({ position_slot: newSlot } as any)
+          .update({ position_slot: newSlot })
           .eq('id', id);
         if (error) throw error;
       }
@@ -195,7 +195,7 @@ export function useReorderSlot() {
         if (a.rank !== i) {
           await supabase
             .from('shadow_team_players')
-            .update({ rank: i } as any)
+            .update({ rank: i })
             .eq('id', a.id);
         }
       }

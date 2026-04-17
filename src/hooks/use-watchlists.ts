@@ -56,7 +56,7 @@ export function useCreateWatchlist() {
     mutationFn: async (watchlist: { name: string; description?: string }) => {
       const { data, error } = await supabase
         .from('watchlists')
-        .insert({ name: watchlist.name, description: watchlist.description ?? '' } as any)
+        .insert({ name: watchlist.name, description: watchlist.description ?? '' })
         .select()
         .single();
       if (error) throw error;
@@ -74,7 +74,7 @@ export function useUpdateWatchlist() {
     mutationFn: async ({ id, name, description }: { id: string; name: string; description?: string }) => {
       const { data, error } = await supabase
         .from('watchlists')
-        .update({ name, description: description ?? '' } as any)
+        .update({ name, description: description ?? '' })
         .eq('id', id)
         .select()
         .single();
@@ -118,14 +118,14 @@ export function useAddPlayersToWatchlist() {
         .from('watchlist_players')
         .select('player_id')
         .eq('watchlist_id', watchlistId);
-      const existingIds = new Set((existing ?? []).map((e: any) => e.player_id));
+      const existingIds = new Set((existing ?? []).map((e) => e.player_id));
       const newIds = playerIds.filter(id => !existingIds.has(id));
       if (newIds.length === 0) return { added: 0 };
 
       for (const playerId of newIds) {
         const { error } = await supabase
           .from('watchlist_players')
-          .insert({ watchlist_id: watchlistId, player_id: playerId } as any);
+          .insert({ watchlist_id: watchlistId, player_id: playerId });
         if (error) throw error;
       }
       return { added: newIds.length };

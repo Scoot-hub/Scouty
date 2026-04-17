@@ -17,13 +17,6 @@ const sizeMap = {
 
 const API_BASE = (import.meta.env.API_URL || '/api').replace(/\/$/, '');
 
-function getAuthToken(): string | null {
-  try {
-    const raw = localStorage.getItem('scouthub_session');
-    if (!raw) return null;
-    return JSON.parse(raw)?.access_token ?? null;
-  } catch { return null; }
-}
 
 // In-memory cache (populated from DB on first load)
 const logoCache = new Map<string, string | null>();
@@ -64,12 +57,11 @@ function getParentClubName(name: string): string | null {
 }
 
 async function saveLogoToDb(club: string, url: string) {
-  const token = getAuthToken();
-  if (!token) return;
   try {
     await fetch(`${API_BASE}/club-logos`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+      headers: { 'Content-Type': 'application/json' },
+      credentials: 'include',
       body: JSON.stringify({ club_name: club, logo_url: url }),
     });
   } catch { /* ignore */ }

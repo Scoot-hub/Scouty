@@ -209,7 +209,7 @@ export default function OrgRoadmap() {
             <SelectContent>
               <SelectItem value="all">{t('roadmap.all_scouts')}</SelectItem>
               <SelectItem value="unassigned">{t('roadmap.unassigned')}</SelectItem>
-              {(members ?? []).map((m: any) => (
+              {(members ?? []).map((m: Record<string, unknown>) => (
                 <SelectItem key={m.user_id} value={m.user_id}>
                   {m.profile?.full_name || t('org.unknown_user')}
                 </SelectItem>
@@ -350,12 +350,12 @@ export default function OrgRoadmap() {
 function OrgMatchCard({ match, membersMap, members, isAdminOrOwner, onAssign, onCycleStatus, onRemove, t, utcOffset }: {
   match: MatchAssignment;
   membersMap: Map<string, string>;
-  members: any[];
+  members: Record<string, unknown>[];
   isAdminOrOwner: boolean;
   onAssign: (id: string, userId: string | null) => void;
   onCycleStatus: () => void;
   onRemove: () => void;
-  t: (key: string, opts?: any) => string;
+  t: (key: string, opts?: Record<string, unknown>) => string;
   utcOffset: number;
 }) {
   const assignedName = match.assigned_to ? membersMap.get(match.assigned_to) : null;
@@ -424,7 +424,7 @@ function OrgMatchCard({ match, membersMap, members, isAdminOrOwner, onAssign, on
                 </SelectTrigger>
                 <SelectContent>
                   <SelectItem value="none">{t('roadmap.unassigned')}</SelectItem>
-                  {members.map((m: any) => (
+                  {members.map((m: Record<string, unknown>) => (
                     <SelectItem key={m.user_id} value={m.user_id}>
                       {m.full_name || m.email || t('org.unknown_user')}
                     </SelectItem>

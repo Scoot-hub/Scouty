@@ -239,8 +239,8 @@ export default function AddPlayer() {
       // Auto-advance to evaluation step (steps 0-1 are auto-filled)
       setStep(2);
       toast({ title: t('player_form.tm_import_success'), description: data.name || '' });
-    } catch (err: any) {
-      toast({ title: t('common.error'), description: err.message || t('player_form.tm_import_failed'), variant: 'destructive' });
+    } catch (err: unknown) {
+      toast({ title: t('common.error'), description: err instanceof Error ? err.message : t('player_form.tm_import_failed'), variant: 'destructive' });
     } finally {
       setTmLoading(false);
     }
@@ -274,7 +274,7 @@ export default function AddPlayer() {
         task: task || null,
         notes: notes || undefined, ts_report_published: tsPublished,
         ...(createAsArchived ? { is_archived: true } : {}),
-      } as any);
+      });
       if (addReportFlag && result?.id) {
         await addReport.mutateAsync({ player_id: result.id, report_date: reportDate, opinion: reportOpinion, drive_link: driveLink || undefined });
       }
@@ -293,7 +293,7 @@ export default function AddPlayer() {
         }).then(() => {
           queryClient.invalidateQueries({ queryKey: ['players'] });
           queryClient.invalidateQueries({ queryKey: ['player', result.id] });
-        }).catch((e: any) => console.warn('[enrich] background enrich failed:', e));
+        }).catch((e: unknown) => console.warn('[enrich] background enrich failed:', e));
       }
       toast({ title: t('player_form.player_added'), description: `${name} ${t('player_form.player_added_desc')}` });
       navigate(createAsArchived ? '/players?view=archived' : '/players');

@@ -67,8 +67,8 @@ export default function Account() {
   const { data: twoFAStatus, refetch: refetch2FA } = useQuery({
     queryKey: ['2fa-status', user?.id],
     queryFn: async () => {
-      const res = await fetch(`${(import.meta as any).env.API_URL || '/api'}/auth/2fa/status`, {
-        headers: { Authorization: `Bearer ${JSON.parse(localStorage.getItem('scouthub_session') || '{}').access_token}` },
+      const res = await fetch(`${import.meta.env.API_URL || '/api'}/auth/2fa/status`, {
+        credentials: 'include',
       });
       return res.json() as Promise<{ enabled: boolean; method: 'totp' | 'email' | null }>;
     },
@@ -116,16 +116,16 @@ export default function Account() {
     if (profile) {
       setFullName(profile.full_name || '');
       setClub(profile.club || '');
-      setFirstName((profile as any).first_name || '');
-      setLastName((profile as any).last_name || '');
-      setCompany((profile as any).company || '');
-      setSiret((profile as any).siret || '');
-      setPhone((profile as any).phone || '');
-      setCivility((profile as any).civility || '');
-      setAddress((profile as any).address || '');
-      setDob((profile as any).date_of_birth ? (profile as any).date_of_birth.slice(0, 10) : '');
-      setReferenceClub((profile as any).reference_club || '');
-      setPhotoUrl((profile as any).photo_url || '');
+      setFirstName(profile.first_name || '');
+      setLastName(profile.last_name || '');
+      setCompany(profile.company || '');
+      setSiret(profile.siret || '');
+      setPhone(profile.phone || '');
+      setCivility(profile.civility || '');
+      setAddress(profile.address || '');
+      setDob(profile.date_of_birth ? profile.date_of_birth.slice(0, 10) : '');
+      setReferenceClub(profile.reference_club || '');
+      setPhotoUrl(profile.photo_url || '');
       setSocialX(profile.social_x || '');
       setSocialInstagram(profile.social_instagram || '');
       setSocialLinkedin(profile.social_linkedin || '');
@@ -153,7 +153,7 @@ export default function Account() {
         social_instagram: socialInstagram.trim() || null,
         social_linkedin: socialLinkedin.trim() || null,
         social_public: socialPublic ? 1 : 0,
-      } as any).eq('user_id', user.id);
+      }).eq('user_id', user.id);
       if (error) throw error;
       queryClient.invalidateQueries({ queryKey: ['profile', user.id] });
       toast.success(t('account.profile_updated'));
@@ -171,10 +171,9 @@ export default function Account() {
     try {
       const formData = new FormData();
       formData.append('photo', file);
-      const token = JSON.parse(localStorage.getItem('scouthub_session') || '{}').access_token;
       const res = await fetch(`${apiBase}/account/upload-photo`, {
         method: 'POST',
-        headers: { Authorization: `Bearer ${token}` },
+        credentials: 'include',
         body: formData,
       });
       const data = await res.json();
@@ -182,8 +181,8 @@ export default function Account() {
       setPhotoUrl(data.photo_url);
       queryClient.invalidateQueries({ queryKey: ['profile', user!.id] });
       toast.success(t('account.photo_updated'));
-    } catch (err: any) {
-      toast.error(err.message || t('common.error'));
+    } catch (err: unknown) {
+      toast.error(err instanceof Error ? err.message : String(err));
     } finally {
       setPhotoUploading(false);
       e.target.value = '';
@@ -198,8 +197,8 @@ export default function Account() {
       if (error) throw error;
       toast.success(t('account.email_confirmation_sent'));
       setNewEmail('');
-    } catch (err: any) {
-      toast.error(err.message || t('common.error'));
+    } catch (err: unknown) {
+      toast.error(err instanceof Error ? err.message : String(err));
     } finally {
       setEmailLoading(false);
     }
@@ -217,8 +216,8 @@ export default function Account() {
       toast.success(t('account.password_updated'));
       setNewPassword('');
       setCurrentPassword('');
-    } catch (err: any) {
-      toast.error(err.message || t('common.error'));
+    } catch (err: unknown) {
+      toast.error(err instanceof Error ? err.message : String(err));
     } finally {
       setPasswordLoading(false);
     }
@@ -230,26 +229,25 @@ export default function Account() {
       const { data, error } = await supabase.functions.invoke('customer-portal');
       if (error) throw error;
       if (data?.url) window.open(data.url, '_blank');
-    } catch (err: any) {
-      toast.error(err.message || t('common.error'));
+    } catch (err: unknown) {
+      toast.error(err instanceof Error ? err.message : String(err));
     } finally {
       setPortalLoading(false);
     }
   };
 
-  const apiBase = (import.meta as any).env.API_URL || '/api';
+  const apiBase = import.meta.env.API_URL || '/api';
   const apiOrigin = apiBase.replace(/\/api$/, '');
-  const authHeader = { Authorization: `Bearer ${JSON.parse(localStorage.getItem('scouthub_session') || '{}').access_token}` };
 
   const handleSetup2FA = async () => {
     setTwoFALoading(true);
     try {
-      const res = await fetch(`${apiBase}/auth/2fa/setup`, { method: 'POST', headers: { ...authHeader, 'Content-Type': 'application/json' } });
+      const res = await fetch(`${apiBase}/auth/2fa/setup`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'include' as const });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error);
       setTwoFASetup(data);
-    } catch (err: any) {
-      toast.error(err.message || t('common.error'));
+    } catch (err: unknown) {
+      toast.error(err instanceof Error ? err.message : String(err));
     } finally {
       setTwoFALoading(false);
     }
@@ -260,7 +258,7 @@ export default function Account() {
     try {
       const res = await fetch(`${apiBase}/auth/2fa/verify`, {
         method: 'POST',
-        headers: { ...authHeader, 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json' }, credentials: 'include' as const,
         body: JSON.stringify({ code: twoFACode }),
       });
       const data = await res.json();
@@ -269,8 +267,8 @@ export default function Account() {
       setTwoFASetup(null);
       setTwoFACode('');
       refetch2FA();
-    } catch (err: any) {
-      toast.error(err.message || t('common.error'));
+    } catch (err: unknown) {
+      toast.error(err instanceof Error ? err.message : String(err));
       setTwoFACode('');
     } finally {
       setTwoFALoading(false);
@@ -282,7 +280,7 @@ export default function Account() {
     try {
       const res = await fetch(`${apiBase}/auth/2fa/disable`, {
         method: 'POST',
-        headers: { ...authHeader, 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json' }, credentials: 'include' as const,
         body: JSON.stringify({ code: disableCode }),
       });
       const data = await res.json();
@@ -290,8 +288,8 @@ export default function Account() {
       toast.success(t('account.2fa_disabled_success'));
       setDisableCode('');
       refetch2FA();
-    } catch (err: any) {
-      toast.error(err.message || t('common.error'));
+    } catch (err: unknown) {
+      toast.error(err instanceof Error ? err.message : String(err));
       setDisableCode('');
     } finally {
       setTwoFALoading(false);
@@ -303,14 +301,14 @@ export default function Account() {
     try {
       const res = await fetch(`${apiBase}/auth/2fa/email/enable`, {
         method: 'POST',
-        headers: { ...authHeader, 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json' }, credentials: 'include' as const,
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error);
       setEmail2FACodeSent(true);
       toast.success(t('account.email_2fa_code_sent'));
-    } catch (err: any) {
-      toast.error(err.message || t('common.error'));
+    } catch (err: unknown) {
+      toast.error(err instanceof Error ? err.message : String(err));
     } finally {
       setTwoFALoading(false);
     }
@@ -321,7 +319,7 @@ export default function Account() {
     try {
       const res = await fetch(`${apiBase}/auth/2fa/email/verify`, {
         method: 'POST',
-        headers: { ...authHeader, 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json' }, credentials: 'include' as const,
         body: JSON.stringify({ code: email2FACode }),
       });
       const data = await res.json();
@@ -330,8 +328,8 @@ export default function Account() {
       setEmail2FACodeSent(false);
       setEmail2FACode('');
       refetch2FA();
-    } catch (err: any) {
-      toast.error(err.message || t('common.error'));
+    } catch (err: unknown) {
+      toast.error(err instanceof Error ? err.message : String(err));
       setEmail2FACode('');
     } finally {
       setTwoFALoading(false);
@@ -343,14 +341,14 @@ export default function Account() {
     try {
       const res = await fetch(`${apiBase}/auth/2fa/email/disable`, {
         method: 'POST',
-        headers: { ...authHeader, 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json' }, credentials: 'include' as const,
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error);
       toast.success(t('account.email_2fa_disabled_success'));
       refetch2FA();
-    } catch (err: any) {
-      toast.error(err.message || t('common.error'));
+    } catch (err: unknown) {
+      toast.error(err instanceof Error ? err.message : String(err));
     } finally {
       setTwoFALoading(false);
     }
@@ -367,7 +365,7 @@ export default function Account() {
     try {
       const res = await fetch(`${apiBase}/account/export-data`, {
         method: 'POST',
-        headers: authHeader,
+        credentials: 'include' as const,
       });
       if (!res.ok) throw new Error('Export failed');
       const blob = await res.blob();
@@ -391,7 +389,7 @@ export default function Account() {
     try {
       const res = await fetch(`${apiBase}/account/delete`, {
         method: 'POST',
-        headers: { ...authHeader, 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json' }, credentials: 'include' as const,
         body: JSON.stringify({ confirmation: 'DELETE' }),
       });
       if (!res.ok) {
@@ -401,8 +399,8 @@ export default function Account() {
       setDeleteDialogOpen(false);
       localStorage.removeItem('scouthub_session');
       window.location.href = '/';
-    } catch (err: any) {
-      toast.error(err.message || t('common.error'));
+    } catch (err: unknown) {
+      toast.error(err instanceof Error ? err.message : String(err));
     } finally {
       setDeleteLoading(false);
     }

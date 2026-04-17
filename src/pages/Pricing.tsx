@@ -77,8 +77,8 @@ export default function Pricing() {
       if (data?.url) {
         window.open(data.url, '_blank');
       }
-    } catch (err: any) {
-      toast.error(err.message || t('common.error'));
+    } catch (err: unknown) {
+      toast.error(err instanceof Error ? err.message : t('common.error'));
     } finally {
       setPortalLoading(false);
     }
@@ -260,9 +260,9 @@ export default function Pricing() {
                           {t('pricing.billed_annually', { amount: plan.price.annual })}
                         </p>
                       )}
-                      {(plan as any).perUser && (
+                      {'perUser' in plan && plan.perUser && (
                         <p className="text-xs text-primary font-medium mt-2">
-                          + {billing === 'annual' ? `${Math.round((plan as any).perUser.annual / 12)}€` : `${(plan as any).perUser.monthly}€`}/{t('pricing.per_user')}
+                          + {billing === 'annual' ? `${Math.round(plan.perUser.annual / 12)}€` : `${plan.perUser.monthly}€`}/{t('pricing.per_user')}
                         </p>
                       )}
                     </div>

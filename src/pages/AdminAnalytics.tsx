@@ -45,9 +45,8 @@ function useAnalytics(range: Range) {
   return useQuery<Analytics>({
     queryKey: ['admin-analytics', range],
     queryFn: async () => {
-      const session = JSON.parse(localStorage.getItem('scouthub_session') || '{}');
       const res = await fetch(`${API_BASE}/admin/analytics?range=${range}`, {
-        headers: session.access_token ? { Authorization: `Bearer ${session.access_token}` } : {},
+        credentials: 'include',
       });
       if (!res.ok) throw new Error('Failed to fetch analytics');
       return res.json();

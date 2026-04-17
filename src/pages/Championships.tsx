@@ -13,7 +13,7 @@ import {
 } from '@/hooks/use-championships';
 import { usePlayers } from '@/hooks/use-players';
 import { useIsAdmin } from '@/hooks/use-admin';
-import { getFlag } from '@/types/player';
+import { getFlag, type Player } from '@/types/player';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -93,9 +93,9 @@ function ChampionshipDetail({
   const [selectedClub, setSelectedClub] = useState<string | null>(null);
 
   // Effective league: prefer enriched value (survives manual edits), fallback to raw field
-  const getEffectiveLeague = (p: any): string =>
+  const getEffectiveLeague = (p: Player): string =>
     ((p.external_data?.enriched_league ?? p.league) ?? '').trim();
-  const getEffectiveClub = (p: any): string =>
+  const getEffectiveClub = (p: Player): string =>
     ((p.external_data?.enriched_club ?? p.club) ?? '').trim();
 
   // Players whose effective league matches this championship (auto-detected)

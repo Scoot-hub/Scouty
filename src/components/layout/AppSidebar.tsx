@@ -201,7 +201,7 @@ export default function AppSidebar({ collapsed, onToggle }: AppSidebarProps) {
         {/* Sub-items per organization — hidden when collapsed */}
         {!collapsed && canView('organization') && myOrgs && myOrgs.length > 0 && (
           <div className="pl-7 space-y-0.5">
-            {myOrgs.map((org: any) => {
+            {myOrgs.map((org) => {
               const slug = slugify(org.name);
               const orgBase = `/organization/${slug}`;
               const isOrgActive = location.pathname === orgBase || location.pathname.startsWith(orgBase + '/');

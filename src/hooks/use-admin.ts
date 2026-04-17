@@ -27,9 +27,8 @@ export function useMyPermissions() {
   return useQuery<{ roles: string[]; role: string; permissions: Record<string, boolean> }>({
     queryKey: ['my-permissions', user?.id],
     queryFn: async () => {
-      const session = (await supabase.auth.getSession()).data.session;
       const res = await fetch(`${API_BASE}/my-permissions`, {
-        headers: { Authorization: `Bearer ${session?.access_token}` },
+        credentials: 'include',
       });
       if (!res.ok) return { role: 'user', permissions: {} };
       return res.json();

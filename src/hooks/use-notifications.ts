@@ -2,11 +2,6 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 
 const API_BASE = (import.meta.env.API_URL || '/api').replace(/\/$/, '');
 
-function getAuthHeader() {
-  const session = JSON.parse(localStorage.getItem('scouthub_session') || '{}');
-  return session.access_token ? { Authorization: `Bearer ${session.access_token}` } : {};
-}
-
 export interface Notification {
   id: string;
   user_id: string;
@@ -24,9 +19,7 @@ export function useNotifications() {
   return useQuery<Notification[]>({
     queryKey: ['notifications'],
     queryFn: async () => {
-      const res = await fetch(`${API_BASE}/notifications`, {
-        headers: getAuthHeader(),
-      });
+      const res = await fetch(`${API_BASE}/notifications`, { credentials: 'include' });
       if (!res.ok) throw new Error('Failed to fetch notifications');
       return res.json();
     },
@@ -46,7 +39,7 @@ export function useMarkAsRead() {
     mutationFn: async (id: string) => {
       await fetch(`${API_BASE}/notifications/${id}/read`, {
         method: 'PATCH',
-        headers: getAuthHeader(),
+        credentials: 'include',
       });
     },
     onSuccess: () => {
@@ -61,7 +54,7 @@ export function useMarkAllAsRead() {
     mutationFn: async () => {
       await fetch(`${API_BASE}/notifications/read-all`, {
         method: 'POST',
-        headers: getAuthHeader(),
+        credentials: 'include',
       });
     },
     onSuccess: () => {
@@ -76,7 +69,7 @@ export function useDeleteNotification() {
     mutationFn: async (id: string) => {
       await fetch(`${API_BASE}/notifications/${id}`, {
         method: 'DELETE',
-        headers: getAuthHeader(),
+        credentials: 'include',
       });
     },
     onSuccess: () => {

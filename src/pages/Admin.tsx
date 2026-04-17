@@ -89,12 +89,8 @@ interface AdminOrg {
   members: OrgMember[];
 }
 
-async function getAuthHeaders() {
-  const session = (await supabase.auth.getSession()).data.session;
-  return {
-    Authorization: `Bearer ${session?.access_token}`,
-    'Content-Type': 'application/json',
-  };
+function authFetchInit(): RequestInit {
+  return { credentials: 'include', headers: { 'Content-Type': 'application/json' } };
 }
 
 export default function Admin() {
@@ -136,7 +132,7 @@ export default function Admin() {
   const { data: users = [], isLoading: usersLoading } = useQuery<AdminUser[]>({
     queryKey: ['admin-users'],
     queryFn: async () => {
-      const res = await fetch(`${API_BASE}/admin/users`, { headers: await getAuthHeaders() });
+      const res = await fetch(`${API_BASE}/admin/users`, { ...authFetchInit() });
       if (!res.ok) throw new Error('Failed');
       return res.json();
     },
@@ -147,7 +143,7 @@ export default function Admin() {
   const { data: roles = [] } = useQuery<string[]>({
     queryKey: ['admin-roles'],
     queryFn: async () => {
-      const res = await fetch(`${API_BASE}/admin/roles`, { headers: await getAuthHeaders() });
+      const res = await fetch(`${API_BASE}/admin/roles`, { ...authFetchInit() });
       if (!res.ok) throw new Error('Failed');
       return res.json();
     },
@@ -157,7 +153,7 @@ export default function Admin() {
   const { data: permissions = [] } = useQuery<PagePermission[]>({
     queryKey: ['admin-page-permissions'],
     queryFn: async () => {
-      const res = await fetch(`${API_BASE}/admin/page-permissions`, { headers: await getAuthHeaders() });
+      const res = await fetch(`${API_BASE}/admin/page-permissions`, { ...authFetchInit() });
       if (!res.ok) throw new Error('Failed');
       return res.json();
     },
@@ -167,7 +163,7 @@ export default function Admin() {
   const { data: roleColors = {} } = useQuery<Record<string, string>>({
     queryKey: ['admin-role-metadata'],
     queryFn: async () => {
-      const res = await fetch(`${API_BASE}/admin/role-metadata`, { headers: await getAuthHeaders() });
+      const res = await fetch(`${API_BASE}/admin/role-metadata`, { ...authFetchInit() });
       if (!res.ok) return {};
       return res.json();
     },
@@ -178,7 +174,7 @@ export default function Admin() {
   const { data: orgs = [], isLoading: orgsLoading } = useQuery<AdminOrg[]>({
     queryKey: ['admin-organizations'],
     queryFn: async () => {
-      const res = await fetch(`${API_BASE}/admin/organizations`, { headers: await getAuthHeaders() });
+      const res = await fetch(`${API_BASE}/admin/organizations`, { ...authFetchInit() });
       if (!res.ok) throw new Error('Failed');
       return res.json();
     },
@@ -222,7 +218,7 @@ export default function Admin() {
     try {
       const response = await fetch(`${API_BASE}/admin/users/toggle-premium`, {
         method: 'POST',
-        headers: await getAuthHeaders(),
+        ...authFetchInit(),
         body: JSON.stringify({ userId, isPremium: !current }),
       });
       if (!response.ok) throw new Error();
@@ -240,7 +236,7 @@ export default function Admin() {
     try {
       const response = await fetch(`${API_BASE}/admin/users/reset-password`, {
         method: 'POST',
-        headers: await getAuthHeaders(),
+        ...authFetchInit(),
         body: JSON.stringify({ email }),
       });
       if (!response.ok) throw new Error();
@@ -256,10 +252,9 @@ export default function Admin() {
     if (!deletingUser) return;
     setDeletingId(deletingUser.id);
     try {
-      const token = (await supabase.auth.getSession()).data.session?.access_token;
       const response = await fetch(`${API_BASE}/admin/users/${deletingUser.id}`, {
         method: 'DELETE',
-        headers: { Authorization: `Bearer ${token}` },
+        credentials: 'include',
       });
       if (!response.ok) {
         const err = await response.json().catch(() => ({}));
@@ -267,8 +262,9 @@ export default function Admin() {
       }
       toast.success(t('admin.delete_user_success', { email: deletingUser.email }));
       queryClient.invalidateQueries({ queryKey: ['admin-users'] });
-    } catch (err: any) {
-      const msg = err?.message?.includes('administrateur')
+    } catch (err: unknown) {
+      const errMsg = err instanceof Error ? err.message : String(err);
+      const msg = errMsg.includes('administrateur')
         ? t('admin.delete_user_admin_error')
         : t('admin.delete_user_error');
       toast.error(msg);
@@ -281,13 +277,10 @@ export default function Admin() {
   const impersonate = async (userId: string, email: string) => {
     setImpersonatingId(userId);
     try {
-      const session = (await supabase.auth.getSession()).data.session;
       const response = await fetch(`${API_BASE}/admin/impersonate`, {
         method: 'POST',
-        headers: {
-          Authorization: `Bearer ${session?.access_token}`,
-          'Content-Type': 'application/json',
-        },
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
         body: JSON.stringify({ userId }),
       });
       if (!response.ok) {
@@ -310,7 +303,7 @@ export default function Admin() {
     setUpdatingUser(userId);
     try {
       const res = await fetch(`${API_BASE}/admin/roles/add`, {
-        method: 'POST', headers: await getAuthHeaders(), body: JSON.stringify({ userId, role }),
+        method: 'POST', ...authFetchInit(), body: JSON.stringify({ userId, role }),
       });
       if (!res.ok) throw new Error();
       toast.success(t('roles.role_updated'));
@@ -324,7 +317,7 @@ export default function Admin() {
     setUpdatingUser(userId);
     try {
       const res = await fetch(`${API_BASE}/admin/roles/remove`, {
-        method: 'POST', headers: await getAuthHeaders(), body: JSON.stringify({ userId, role }),
+        method: 'POST', ...authFetchInit(), body: JSON.stringify({ userId, role }),
       });
       if (!res.ok) throw new Error();
       toast.success(t('roles.role_updated'));
@@ -339,7 +332,7 @@ export default function Admin() {
     try {
       const res = await fetch(`${API_BASE}/admin/page-permissions`, {
         method: 'POST',
-        headers: await getAuthHeaders(),
+        ...authFetchInit(),
         body: JSON.stringify({ role, page_key: pageKey, action, allowed: !currentlyAllowed }),
       });
       if (!res.ok) throw new Error();
@@ -362,7 +355,7 @@ export default function Admin() {
           const allowed = page === 'admin' && action !== 'view' ? false : true;
           await fetch(`${API_BASE}/admin/page-permissions`, {
             method: 'POST',
-            headers: await getAuthHeaders(),
+            ...authFetchInit(),
             body: JSON.stringify({ role: name, page_key: page, action, allowed }),
           });
         }
@@ -382,7 +375,7 @@ export default function Admin() {
     if (PROTECTED_ROLES.includes(role)) return;
     try {
       const res = await fetch(`${API_BASE}/admin/roles/delete`, {
-        method: 'POST', headers: await getAuthHeaders(), body: JSON.stringify({ role }),
+        method: 'POST', ...authFetchInit(), body: JSON.stringify({ role }),
       });
       if (!res.ok) throw new Error();
       toast.success(t('roles.role_deleted'));
@@ -425,7 +418,7 @@ export default function Admin() {
       }
       const res = await fetch(`${API_BASE}/admin/organizations/add-member`, {
         method: 'POST',
-        headers: await getAuthHeaders(),
+        ...authFetchInit(),
         body: JSON.stringify({ organizationId: orgId, userId: target.id, role: addMemberRole }),
       });
       if (!res.ok) throw new Error();
@@ -446,7 +439,7 @@ export default function Admin() {
     try {
       const res = await fetch(`${API_BASE}/admin/organizations/remove-member`, {
         method: 'POST',
-        headers: await getAuthHeaders(),
+        ...authFetchInit(),
         body: JSON.stringify({ organizationId: orgId, userId }),
       });
       if (!res.ok) throw new Error();
@@ -464,7 +457,7 @@ export default function Admin() {
     try {
       const res = await fetch(`${API_BASE}/admin/organizations/update-member-role`, {
         method: 'POST',
-        headers: await getAuthHeaders(),
+        ...authFetchInit(),
         body: JSON.stringify({ organizationId: orgId, userId, role }),
       });
       if (!res.ok) throw new Error();
@@ -483,7 +476,7 @@ export default function Admin() {
     try {
       const res = await fetch(`${API_BASE}/admin/organizations/${deletingOrg.id}`, {
         method: 'DELETE',
-        headers: await getAuthHeaders(),
+        ...authFetchInit(),
         body: JSON.stringify({ message: deleteOrgReason.trim() }),
       });
       if (!res.ok) {
@@ -494,8 +487,8 @@ export default function Admin() {
       queryClient.invalidateQueries({ queryKey: ['admin-organizations'] });
       setDeletingOrg(null);
       setDeleteOrgReason('');
-    } catch (err: any) {
-      toast.error(err?.message || t('common.error'));
+    } catch (err: unknown) {
+      toast.error(err instanceof Error ? err.message : t('common.error'));
     } finally {
       setOrgActionLoading(null);
     }

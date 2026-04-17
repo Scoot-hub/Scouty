@@ -2,7 +2,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { supabase } from '@/integrations/supabase/client';
 import { LEAGUE_CLUBS } from '@/data/league-clubs';
 import { SOFASCORE_TOURNAMENT_IDS, getLeagueLogoUrl, getTeamLogoUrl } from '@/data/sofascore-ids';
-import { useAuth } from '@/contexts/AuthContext';
+
 
 // ── Static championship list (from league-clubs.ts + international competitions) ──
 
@@ -229,7 +229,7 @@ export function useChampionships() {
           .order('name');
         if (data) {
           const staticNames = new Set([...Object.keys(LEAGUE_CLUBS), ...INTERNATIONAL_COMPETITIONS]);
-          customEntries = (data as any[])
+          customEntries = data
             .filter(c => !staticNames.has(c.name))
             .map(c => ({
               name: c.name,
@@ -276,7 +276,7 @@ export function useAddCustomChampionship() {
       const userId = await getCurrentUserId();
       const { data, error } = await supabase
         .from('custom_championships')
-        .insert({ name: champ.name, country: champ.country, created_by: userId } as any)
+        .insert({ name: champ.name, country: champ.country, created_by: userId })
         .select()
         .single();
       if (error) throw error;
@@ -313,7 +313,7 @@ export function useLinkPlayer() {
       const userId = await getCurrentUserId();
       const { data, error } = await supabase
         .from('championship_players')
-        .insert({ championship_name: championshipName, player_id: playerId, user_id: userId } as any)
+        .insert({ championship_name: championshipName, player_id: playerId, user_id: userId })
         .select()
         .single();
       if (error) throw error;
@@ -349,25 +349,22 @@ export function getChampionshipCountry(name: string): string {
 
 /** Fetch live team data from SofaScore (standings, team IDs for logos) */
 export function useSofascoreLeague(sofascoreId: number | null) {
-  const { session } = useAuth();
   return useQuery({
     queryKey: ['sofascore-league', sofascoreId],
     enabled: !!sofascoreId,
     staleTime: 30 * 60 * 1000, // 30 min
-    queryFn: async (): Promise<{ season: any; teams: SofascoreTeam[] }> => {
+    queryFn: async (): Promise<{ season: unknown; teams: SofascoreTeam[] }> => {
       const resp = await fetch('/api/functions/sofascore-league', {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${session?.access_token}`,
-        },
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
         body: JSON.stringify({ tournamentId: sofascoreId }),
       });
       if (!resp.ok) throw new Error(`SofaScore ${resp.status}`);
       const data = await resp.json();
       return {
         season: data.season,
-        teams: (data.teams ?? []).map((t: any) => ({
+        teams: (data.teams ?? []).map((t: Record<string, unknown>) => ({
           ...t,
           logoUrl: t.id ? getTeamLogoUrl(t.id) : '',
         })),

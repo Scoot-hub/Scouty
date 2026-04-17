@@ -123,8 +123,8 @@ export default function Discover() {
         toast(t('discover.no_results'));
       }
     },
-    onError: (err: any) => {
-      toast.error(err.message || t('common.error'));
+    onError: (err: unknown) => {
+      toast.error(err instanceof Error ? err.message : t('common.error'));
     },
   });
 
@@ -139,7 +139,7 @@ export default function Discover() {
       if (ageMin) params.set('ageMin', ageMin);
       if (ageMax) params.set('ageMax', ageMax);
       const resp = await fetch(`${API_BASE}/community-players/search?${params}`, {
-        headers: { Authorization: `Bearer ${session?.access_token}` },
+        credentials: 'include',
       });
       if (!resp.ok) throw new Error('Erreur recherche');
       return resp.json() as Promise<{ players: CommunityPlayer[] }>;
@@ -148,7 +148,7 @@ export default function Discover() {
       setCommunityResults(data.players || []);
       if ((data.players || []).length === 0) toast(t('discover.no_results'));
     },
-    onError: (err: any) => { toast.error(err.message || t('common.error')); },
+    onError: (err: unknown) => { toast.error(err instanceof Error ? err.message : t('common.error')); },
   });
 
   const handleSearch = (e: React.FormEvent) => {
@@ -174,11 +174,11 @@ export default function Discover() {
         market_value: player.marketValue,
         transfermarkt_id: player.tmId,
         photo_url: player.photo,
-      } as any);
+      });
       if (error) throw error;
       toast.success(t('discover.player_added', { name: player.name }));
-    } catch (err: any) {
-      toast.error(err.message || t('common.error'));
+    } catch (err: unknown) {
+      toast.error(err instanceof Error ? err.message : t('common.error'));
     } finally {
       setAddingPlayer(null);
     }
@@ -201,11 +201,11 @@ export default function Discover() {
         current_level: player.current_level,
         potential: player.potential,
         general_opinion: player.general_opinion,
-      } as any);
+      });
       if (error) throw error;
       toast.success(t('discover.player_added', { name: player.name }));
-    } catch (err: any) {
-      toast.error(err.message || t('common.error'));
+    } catch (err: unknown) {
+      toast.error(err instanceof Error ? err.message : t('common.error'));
     } finally {
       setAddingPlayer(null);
     }

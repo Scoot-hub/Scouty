@@ -620,6 +620,21 @@ CREATE TABLE IF NOT EXISTS uploaded_images (
   created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
+-- ── Nightly enrichment logs (cron) ────────────────────────────────────────
+
+CREATE TABLE IF NOT EXISTS cron_enrichment_logs (
+  id CHAR(36) PRIMARY KEY,
+  user_id CHAR(36) NOT NULL,
+  started_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  finished_at DATETIME NULL,
+  total_players INT NOT NULL DEFAULT 0,
+  enriched INT NOT NULL DEFAULT 0,
+  errors INT NOT NULL DEFAULT 0,
+  status ENUM('running', 'done', 'failed') NOT NULL DEFAULT 'running',
+  error_detail TEXT NULL,
+  FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+);
+
 -- ── Feature flags (admin toggles) ──────────────────────────────────────────
 
 CREATE TABLE IF NOT EXISTS app_settings (

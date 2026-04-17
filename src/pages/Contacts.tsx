@@ -138,7 +138,7 @@ export default function Contacts() {
         linkedin_url: form.linkedin_url || undefined,
         notes: form.notes || undefined,
         id: editingId,
-      } as any);
+      });
       toast.success(editingId ? t('contacts.updated') : t('contacts.added'));
       setDialogOpen(false);
     } catch {
