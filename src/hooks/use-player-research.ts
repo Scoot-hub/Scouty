@@ -2,11 +2,6 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 
 const API_BASE = (import.meta.env.API_URL || '/api').replace(/\/$/, '');
 
-function getAuthHeader() {
-  const session = JSON.parse(localStorage.getItem('scouthub_session') || '{}');
-  return session.access_token ? { Authorization: `Bearer ${session.access_token}` } : {};
-}
-
 export interface ResearchItem {
   id: string;
   user_id: string;
@@ -23,7 +18,7 @@ export function usePlayerResearch(playerId: string | undefined) {
     queryKey: ['player-research', playerId],
     queryFn: async () => {
       if (!playerId) return [];
-      const res = await fetch(`${API_BASE}/player-research/${playerId}`, { headers: getAuthHeader() });
+      const res = await fetch(`${API_BASE}/player-research/${playerId}`, { credentials: 'include' });
       if (!res.ok) throw new Error('Failed to fetch research');
       return res.json();
     },
@@ -37,7 +32,8 @@ export function useAddResearch() {
     mutationFn: async (item: { player_id: string; type: string; title: string; url?: string; content?: string }) => {
       const res = await fetch(`${API_BASE}/player-research`, {
         method: 'POST',
-        headers: { ...getAuthHeader(), 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
         body: JSON.stringify(item),
       });
       if (!res.ok) throw new Error('Failed to add research');
@@ -55,7 +51,7 @@ export function useDeleteResearch() {
     mutationFn: async ({ id, playerId }: { id: string; playerId: string }) => {
       const res = await fetch(`${API_BASE}/player-research/${id}`, {
         method: 'DELETE',
-        headers: getAuthHeader(),
+        credentials: 'include',
       });
       if (!res.ok) throw new Error('Failed to delete research');
       return { playerId };

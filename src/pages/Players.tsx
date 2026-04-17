@@ -1,13 +1,14 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Link, useSearchParams } from 'react-router-dom';
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { Link, useSearchParams, useNavigate } from 'react-router-dom';
 import { useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import * as XLSX from 'xlsx';
-import { usePlayers, isSamePlayer, useToggleArchive } from '@/hooks/use-players';
+import { usePlayers, usePlayersPaginated, usePlayerFacets, isSamePlayer, useToggleArchive, fetchAllPlayerIds, type PlayersFilters, type PaginatedResponse } from '@/hooks/use-players';
 import { useMyOrganizations } from '@/hooks/use-organization';
 import { ShareWithOrgPopover, BulkShareDialog } from '@/components/ShareWithOrgPopover';
 import { useIsPremium, useIsAdmin } from '@/hooks/use-admin';
-import { getPlayerAge, getOpinionBgClass, getOpinionEmoji, getOpinionTranslationKey, ALL_OPINIONS, getTaskBgClass, getTaskEmoji, getTaskTranslationKey, translateFoot, PLAYER_TASKS, resolveLeagueName, translateCountry, type Opinion, type Position, type Foot, type PlayerTask } from '@/types/player';
+import { getPlayerAge, getOpinionBgClass, getOpinionEmoji, getOpinionTranslationKey, ALL_OPINIONS, getTaskBgClass, getTaskEmoji, getTaskTranslationKey, translateFoot, PLAYER_TASKS, resolveLeagueName, translateCountry, type Opinion, type Position, type Foot, type PlayerTask, type Player } from '@/types/player';
+import type { PerfStats } from '@/lib/player-stats';
 import { usePositions } from '@/hooks/use-positions';
 import { FlagIcon } from '@/components/ui/flag-icon';
 import { useCustomFields } from '@/hooks/use-custom-fields';
@@ -28,21 +29,23 @@ import { ImportTmMatchDialog } from '@/components/ImportTmMatchDialog';
 import { AddToWatchlistDialog } from '@/components/AddToWatchlistDialog';
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from '@/components/ui/dropdown-menu';
 import { supabase } from '@/integrations/supabase/client';
-import { Search, RotateCcw, Users, RefreshCw, ChevronDown, ChevronUp, SlidersHorizontal, Download, X, LayoutGrid, List, Building2, Swords, Eye, Zap, Check, Sparkles, Copy, Trash2, FileText, Upload, FilePlus, ClipboardList } from 'lucide-react';
+import { Search, RotateCcw, Users, RefreshCw, ChevronDown, ChevronUp, SlidersHorizontal, Download, X, LayoutGrid, List, Table2, Building2, Swords, Eye, Zap, Check, Sparkles, Copy, Trash2, FileText, Upload, FilePlus, ClipboardList, Trophy, TrendingUp, BarChart3 } from 'lucide-react';
+import { getPlayerPerfStats, CHART_COLORS } from '@/lib/player-stats';
+const LazyCompareRadar = lazy(() => import('@/components/charts/CompareRadarChart'));
 import { toast } from 'sonner';
 import { useOperationBanner } from '@/contexts/OperationBannerContext';
 
-type SortOption = 'name' | 'age-asc' | 'age-desc' | 'level' | 'potential' | 'recent' | 'contract';
-
-const PAGE_SIZE = 24;
+type SortOption = 'name' | 'age-asc' | 'age-desc' | 'level' | 'potential' | 'recent' | 'contract' | 'rating' | 'goals' | 'assists' | 'minutes' | 'xg' | 'pass-accuracy';
 
 const FILTER_KEY = 'players_filters';
 function loadFilters() {
   try { return JSON.parse(sessionStorage.getItem(FILTER_KEY) ?? '{}'); } catch { return {}; }
 }
 
+
 export default function Players() {
   const [searchParams] = useSearchParams();
+  const navigate = useNavigate();
   const { t, i18n } = useTranslation();
   const { positions: posLabels, positionShort: posShort } = usePositions();
   const [search, setSearch] = useState<string>(() => loadFilters().search ?? '');
@@ -59,6 +62,17 @@ export default function Players() {
   const [potMax, setPotMax] = useState<string>(() => loadFilters().potMax ?? '');
   const [selectedContractRanges, setSelectedContractRanges] = useState<string[]>(() => loadFilters().selectedContractRanges ?? []);
   const [selectedTasks, setSelectedTasks] = useState<PlayerTask[]>(() => loadFilters().selectedTasks ?? []);
+  const [ratingMin, setRatingMin] = useState<string>(() => loadFilters().ratingMin ?? '');
+  const [ratingMax, setRatingMax] = useState<string>(() => loadFilters().ratingMax ?? '');
+  const [goalsMin, setGoalsMin] = useState<string>(() => loadFilters().goalsMin ?? '');
+  const [assistsMin, setAssistsMin] = useState<string>(() => loadFilters().assistsMin ?? '');
+  const [minutesMin, setMinutesMin] = useState<string>(() => loadFilters().minutesMin ?? '');
+  const [xgMin, setXgMin] = useState<string>(() => loadFilters().xgMin ?? '');
+  const [xaMin, setXaMin] = useState<string>(() => loadFilters().xaMin ?? '');
+  const [duelsWonPctMin, setDuelsWonPctMin] = useState<string>(() => loadFilters().duelsWonPctMin ?? '');
+  const [shotsOnMin, setShotsOnMin] = useState<string>(() => loadFilters().shotsOnMin ?? '');
+  const [interceptionsMin, setInterceptionsMin] = useState<string>(() => loadFilters().interceptionsMin ?? '');
+  const [dribblesSuccessPctMin, setDribblesSuccessPctMin] = useState<string>(() => loadFilters().dribblesSuccessPctMin ?? '');
   const [taskDropdownOpen, setTaskDropdownOpen] = useState(false);
   const [posDropdownOpen, setPosDropdownOpen] = useState(false);
   const [leagueSearch, setLeagueSearch] = useState('');
@@ -72,16 +86,21 @@ export default function Players() {
   const sortRef = useRef<HTMLDivElement>(null);
   const [extraFiltersOpen] = useState<boolean>(() => loadFilters().extraFiltersOpen ?? false);
   const [sort, setSort] = useState<SortOption>(() => loadFilters().sort ?? 'name');
+  const [tableSortKey, setTableSortKey] = useState<string>('name');
+  const [tableSortDir, setTableSortDir] = useState<'asc' | 'desc'>('asc');
+  const [leaderboardOpen, setLeaderboardOpen] = useState(false);
+  const [leaderboardTab, setLeaderboardTab] = useState<string>('rating');
+  const [compareDialogOpen, setCompareDialogOpen] = useState(false);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [enriching, setEnriching] = useState(false);
   const [enrichProgress, setEnrichProgress] = useState({ current: 0, total: 0 });
-  const [duplicateGroups, setDuplicateGroups] = useState<{ keep: any; duplicates: any[] }[]>([]);
+  const [duplicateGroups, setDuplicateGroups] = useState<{ keep: Player; duplicates: Player[] }[]>([]);
   const [duplicateDialogOpen, setDuplicateDialogOpen] = useState(false);
   const [deletingDuplicates, setDeletingDuplicates] = useState(false);
   const [filtersOpen, setFiltersOpen] = useState<boolean>(() => loadFilters().filtersOpen ?? false);
-  const [viewMode, setViewMode] = useState<'compact' | 'detailed'>(() => loadFilters().viewMode ?? 'compact');
-  const [visibleCount, setVisibleCount] = useState(PAGE_SIZE);
+  const [viewMode, setViewMode] = useState<'compact' | 'detailed' | 'table'>(() => loadFilters().viewMode ?? 'compact');
   const [debouncedSearch, setDebouncedSearch] = useState(search);
+  const sentinelRef = useRef<HTMLDivElement>(null);
 
   // Close sort dropdown on outside click
   useEffect(() => {
@@ -100,21 +119,68 @@ export default function Players() {
     return () => clearTimeout(timer);
   }, [search]);
 
-  // Reset visible count when filters change
-  useEffect(() => {
-    setVisibleCount(PAGE_SIZE);
-  }, [debouncedSearch, opinions, positions, selectedLeagues, selectedClubs, selectedRoles, ageMin, ageMax, levelMin, levelMax, potMin, potMax, selectedContractRanges, selectedTasks, sort]);
-
   useEffect(() => {
     sessionStorage.setItem(FILTER_KEY, JSON.stringify({
       search, opinions, positions, selectedLeagues, selectedClubs, selectedRoles,
       ageMin, ageMax, levelMin, levelMax, potMin, potMax,
       selectedContractRanges, selectedTasks, sort, filtersOpen, extraFiltersOpen, viewMode,
+      ratingMin, ratingMax, goalsMin, assistsMin, minutesMin,
+      xgMin, xaMin, duelsWonPctMin, shotsOnMin, interceptionsMin, dribblesSuccessPctMin,
     }));
-  }, [search, opinions, positions, selectedLeagues, selectedClubs, selectedRoles, ageMin, ageMax, levelMin, levelMax, potMin, potMax, selectedContractRanges, selectedTasks, sort, filtersOpen, extraFiltersOpen, viewMode]);
+  }, [search, opinions, positions, selectedLeagues, selectedClubs, selectedRoles, ageMin, ageMax, levelMin, levelMax, potMin, potMax, selectedContractRanges, selectedTasks, sort, filtersOpen, extraFiltersOpen, viewMode, ratingMin, ratingMax, goalsMin, assistsMin, minutesMin, xgMin, xaMin, duelsWonPctMin, shotsOnMin, interceptionsMin, dribblesSuccessPctMin]);
 
   const queryClient = useQueryClient();
-  const { data: players = [], isLoading, refetch } = usePlayers();
+
+  // Build server-side filter params from all filter state
+  const leagueParam = searchParams.get('league');
+  const positionParam = searchParams.get('position');
+  const opinionParam = searchParams.get('opinion');
+
+  const paginatedFilters: PlayersFilters = useMemo(() => ({
+    search: debouncedSearch || undefined,
+    archived: showArchived,
+    opinions: opinionParam ? [opinionParam] : opinions.length ? opinions : undefined,
+    positions: positionParam ? [positionParam] : positions.length ? positions : undefined,
+    leagues: leagueParam ? [leagueParam] : selectedLeagues.length ? selectedLeagues : undefined,
+    clubs: selectedClubs.length ? selectedClubs : undefined,
+    roles: selectedRoles.length ? selectedRoles : undefined,
+    tasks: selectedTasks.length ? selectedTasks : undefined,
+    levelMin: levelMin || undefined,
+    levelMax: levelMax || undefined,
+    potMin: potMin || undefined,
+    potMax: potMax || undefined,
+    ageMin: ageMin || undefined,
+    ageMax: ageMax || undefined,
+    contractRanges: selectedContractRanges.length ? selectedContractRanges : undefined,
+    ratingMin: ratingMin || undefined,
+    ratingMax: ratingMax || undefined,
+    goalsMin: goalsMin || undefined,
+    assistsMin: assistsMin || undefined,
+    minutesMin: minutesMin || undefined,
+    sort: sort || undefined,
+  }), [debouncedSearch, showArchived, opinions, positions, selectedLeagues, selectedClubs, selectedRoles, selectedTasks, levelMin, levelMax, potMin, potMax, ageMin, ageMax, selectedContractRanges, ratingMin, ratingMax, goalsMin, assistsMin, minutesMin, sort, leagueParam, positionParam, opinionParam]);
+
+  const {
+    data: paginatedData,
+    isLoading,
+    fetchNextPage,
+    hasNextPage,
+    isFetchingNextPage,
+    refetch,
+  } = usePlayersPaginated(paginatedFilters);
+
+  // Flatten all loaded pages into a single array
+  const filtered = useMemo(
+    () => paginatedData?.pages.flatMap(page => page.data) ?? [],
+    [paginatedData],
+  );
+  const totalFiltered = paginatedData?.pages[0]?.total ?? 0;
+
+  // Legacy: usePlayers() is still needed for features that need the full list (enrichment, duplicates, export, import)
+  const { data: players = [] } = usePlayers();
+
+  const { data: facets } = usePlayerFacets(showArchived);
+
   const toggleArchive = useToggleArchive();
   const { data: customFields = [] } = useCustomFields();
   const { data: isPremium } = useIsPremium();
@@ -123,13 +189,63 @@ export default function Players() {
   const { data: myOrgs = [] } = useMyOrganizations();
   const hasOrg = myOrgs.length > 0;
 
+  // IntersectionObserver for infinite scroll
+  const hasNextPageRef = useRef(hasNextPage);
+  const isFetchingRef = useRef(isFetchingNextPage);
+  hasNextPageRef.current = hasNextPage;
+  isFetchingRef.current = isFetchingNextPage;
+
+  const observerRef = useRef<IntersectionObserver | null>(null);
+
+  // Callback ref: sets up / tears down the observer whenever the sentinel mounts or unmounts
+  const sentinelCallbackRef = useCallback((node: HTMLDivElement | null) => {
+    // Disconnect previous observer
+    if (observerRef.current) {
+      observerRef.current.disconnect();
+      observerRef.current = null;
+    }
+    if (!node) return;
+    sentinelRef.current = node;
+    const observer = new IntersectionObserver(
+      (entries) => {
+        if (entries[0].isIntersecting && hasNextPageRef.current && !isFetchingRef.current) {
+          fetchNextPage();
+        }
+      },
+      { rootMargin: '400px' },
+    );
+    observer.observe(node);
+    observerRef.current = observer;
+  }, [fetchNextPage]);
+
+  // When a fetch completes and the sentinel is still visible, trigger the next fetch.
+  // Handles the case where content doesn't fill the viewport.
+  useEffect(() => {
+    if (!isFetchingNextPage && hasNextPage && sentinelRef.current) {
+      const rect = sentinelRef.current.getBoundingClientRect();
+      if (rect.top < window.innerHeight + 400) {
+        fetchNextPage();
+      }
+    }
+  }, [isFetchingNextPage, hasNextPage, fetchNextPage]);
+
   const dismissNews = useCallback((playerId: string) => {
-    // Optimistically update cache immediately
-    queryClient.setQueryData<any[]>(['players'], (old) =>
+    // Optimistically update paginated cache
+    queryClient.setQueriesData<{ pages: PaginatedResponse[]; pageParams: number[] }>({ queryKey: ['players-paginated'] }, (old) => {
+      if (!old?.pages) return old;
+      return {
+        ...old,
+        pages: old.pages.map((page) => ({
+          ...page,
+          data: page.data.map((p) => p.id === playerId ? { ...p, has_news: null } : p),
+        })),
+      };
+    });
+    // Also update legacy cache
+    queryClient.setQueryData<Player[]>(['players'], (old) =>
       old?.map(p => p.id === playerId ? { ...p, has_news: null } : p)
     );
-    // Persist to DB — .then() is required to actually trigger the Supabase request
-    supabase.from('players').update({ has_news: null } as any).eq('id', playerId).then();
+    supabase.from('players').update({ has_news: null }).eq('id', playerId).then();
   }, [queryClient]);
 
   const [exporting, setExporting] = useState(false);
@@ -176,15 +292,16 @@ export default function Players() {
   const resolveLeague = useCallback((p: { club: string; league: string }) =>
     resolveLeagueName(p.club, p.league), []);
 
+  // Dropdown options from server-side facets (avoids loading all players)
   const availableLeagues = useMemo(() => {
-    // Dédupliquer insensible à la casse — garde la forme canonique (première rencontrée)
+    const raw = facets?.leagues ?? [];
     const seen = new Map<string, string>();
-    for (const p of players) {
-      const l = resolveLeague(p);
-      if (l && !/^\d+$/.test(l) && !seen.has(l.toLowerCase())) seen.set(l.toLowerCase(), l);
+    for (const l of raw) {
+      const resolved = l; // already from DB; resolveLeagueName can refine later if needed
+      if (resolved && !/^\d+$/.test(resolved) && !seen.has(resolved.toLowerCase())) seen.set(resolved.toLowerCase(), resolved);
     }
     return Array.from(seen.values()).sort((a, b) => a.localeCompare(b, 'fr'));
-  }, [players, resolveLeague]);
+  }, [facets]);
 
   const resolveClub = useCallback((club: string) => resolveClubName(club), []);
 
@@ -192,32 +309,30 @@ export default function Players() {
   const EXCLUDED_CLUB_RE = /^_?retired.*|without club|sans club|free agent|no club|unknown|inconnu|\d+$/i;
 
   const availableClubs = useMemo(() => {
+    const raw = facets?.clubs ?? [];
     const seen = new Map<string, string>();
     let hasNoClub = false;
-    for (const p of players) {
-      const raw = p.club?.trim();
-      if (!raw || EXCLUDED_CLUB_RE.test(raw)) { hasNoClub = true; continue; }
-      const canonical = resolveClub(raw);
+    for (const c of raw) {
+      const trimmed = c?.trim();
+      if (!trimmed || EXCLUDED_CLUB_RE.test(trimmed)) { hasNoClub = true; continue; }
+      const canonical = resolveClub(trimmed);
       const key = canonical.toLowerCase();
       if (!seen.has(key)) seen.set(key, canonical);
     }
     const sorted = Array.from(seen.values()).sort((a, b) => a.localeCompare(b, 'fr'));
     if (hasNoClub) sorted.unshift(NO_CLUB);
     return sorted;
-  }, [players, resolveClub, NO_CLUB]);
+  }, [facets, resolveClub, NO_CLUB]);
 
-  const availableRoles = useMemo(() => {
-    const roles = new Set(players.filter(p => p.role).map(p => p.role!));
-    return Array.from(roles).sort((a, b) => a.localeCompare(b, 'fr'));
-  }, [players]);
+  const availableRoles = useMemo(() => (facets?.roles ?? []).sort((a, b) => a.localeCompare(b, 'fr')), [facets]);
 
   const handleFindDuplicates = () => {
-    const groups: { keep: any; duplicates: any[] }[] = [];
+    const groups: { keep: Player; duplicates: Player[] }[] = [];
     const processed = new Set<string>();
 
     for (let i = 0; i < players.length; i++) {
       if (processed.has(players[i].id)) continue;
-      const dupes: any[] = [];
+      const dupes: Player[] = [];
 
       for (let j = i + 1; j < players.length; j++) {
         if (processed.has(players[j].id)) continue;
@@ -265,20 +380,27 @@ export default function Players() {
       // Server-side background enrichment — returns immediately
       const { data, error } = await supabase.functions.invoke('enrich-all-players');
       if (error) { toast.error(t('common.error')); return; }
-      const total = (data as any)?.total ?? players.length;
+      const enrichResult = data as { alreadyRunning?: boolean; total?: number } | null;
+      if (enrichResult?.alreadyRunning) { toast(t('players.enrichment_already_running') || 'Enrichissement déjà en cours'); return; }
+      const total = enrichResult?.total ?? players.length;
       const opId = `enrich-all-${Date.now()}`;
       addOperation({ id: opId, type: 'enrichment', label: t('banner.enrichment_label', { count: total }), current: 0, total });
-      // Server-side: estimate progress based on ~1.5s per player
-      const interval = setInterval(() => {
-        updateOperation(opId, { current: Math.min(total, Math.round((Date.now() - startTime) / 1500)) });
-      }, 2000);
-      const startTime = Date.now();
-      const estimatedMs = Math.min(total * 1500 + 5000, 120000);
-      setTimeout(() => {
-        clearInterval(interval);
-        completeOperation(opId, { newCount: total });
-        refetch();
-      }, estimatedMs);
+      // Poll server for real progress instead of estimating
+      const pollInterval = setInterval(async () => {
+        try {
+          const { data: progress } = await supabase.functions.invoke('enrich-all-progress');
+          if (!progress) return;
+          const current = (progress.done ?? 0) + (progress.errors ?? 0);
+          updateOperation(opId, { current });
+          if (!progress.running) {
+            clearInterval(pollInterval);
+            completeOperation(opId, { newCount: progress.done ?? 0, errorCount: progress.errors > 0 ? progress.errors : undefined });
+            refetch();
+          }
+        } catch {
+          // Ignore polling errors
+        }
+      }, 3000);
       return;
     }
 
@@ -300,7 +422,7 @@ export default function Players() {
     for (const p of targets) {
       try {
         await supabase.functions.invoke('enrich-player', {
-          body: { playerName: p.name, club: p.club, playerId: p.id, nationality: (p as any).nationality, generation: (p as any).generation, position: (p as any).position },
+          body: { playerName: p.name, club: p.club, playerId: p.id, nationality: p.nationality, generation: p.generation, position: p.position },
         });
         success++;
       } catch (e) { console.error('Enrich failed for', p.name, e); errors++; }
@@ -339,7 +461,7 @@ export default function Players() {
       // Insert one by one (same as useAddReport) to respect RLS policies
       let successCount = 0;
       for (const pid of playerIds) {
-        const reportData: Record<string, any> = {
+        const reportData: { player_id: string; report_date: string; opinion: Opinion; user_id: string; title?: string; drive_link?: string; file_url?: string } = {
           player_id: pid,
           report_date: bulkReportDate,
           opinion: bulkReportOpinion,
@@ -349,7 +471,7 @@ export default function Players() {
         if (bulkReportLink) reportData.drive_link = bulkReportLink;
         if (fileUrl) reportData.file_url = fileUrl;
 
-        const { error } = await supabase.from('reports').insert(reportData as any);
+        const { error } = await supabase.from('reports').insert(reportData);
         if (error) { console.error('Bulk report insert error for player', pid, error); }
         else successCount++;
       }
@@ -380,7 +502,7 @@ export default function Players() {
       const taskValue = bulkTaskValue || null;
       let successCount = 0;
       for (const pid of playerIds) {
-        const { error } = await supabase.from('players').update({ task: taskValue } as any).eq('id', pid);
+        const { error } = await supabase.from('players').update({ task: taskValue }).eq('id', pid);
         if (error) console.error('Bulk task update error for player', pid, error);
         else successCount++;
       }
@@ -402,9 +524,17 @@ export default function Players() {
     setSelectedIds(prev => { const next = new Set(prev); if (next.has(id)) next.delete(id); else next.add(id); return next; });
   };
 
-  const toggleSelectAll = () => {
-    if (selectedIds.size === filtered.length) setSelectedIds(new Set());
-    else setSelectedIds(new Set(filtered.map(p => p.id)));
+  const toggleSelectAll = async () => {
+    if (totalFiltered > 0 && selectedIds.size >= totalFiltered) {
+      setSelectedIds(new Set());
+    } else {
+      try {
+        const allIds = await fetchAllPlayerIds(paginatedFilters);
+        setSelectedIds(new Set(allIds));
+      } catch (err) {
+        console.error('Failed to fetch all player IDs:', err);
+      }
+    }
   };
 
   const toggleInList = <T,>(list: T[], item: T, setter: (v: T[]) => void) => {
@@ -421,91 +551,35 @@ export default function Players() {
     return '2y+';
   }
 
-  const archivedCount = useMemo(() => players.filter(p => p.is_archived).length, [players]);
-  const activeCount = useMemo(() => players.filter(p => !p.is_archived).length, [players]);
-
-  const filtered = useMemo(() => {
-    let result = [...players];
-    // Filter by archive status
-    result = result.filter(p => showArchived ? !!p.is_archived : !p.is_archived);
-    if (debouncedSearch) {
-      const s = debouncedSearch.toLowerCase();
-      result = result.filter(p => p.name.toLowerCase().includes(s) || p.club.toLowerCase().includes(s) || resolveLeague(p).toLowerCase().includes(s));
-    }
-    if (opinions.length) result = result.filter(p => opinions.includes(p.general_opinion));
-    if (positions.length) result = result.filter(p => positions.includes(p.position));
-    if (selectedLeagues.length) result = result.filter(p => selectedLeagues.includes(resolveLeague(p)));
-    if (selectedClubs.length) {
-      const wantsNoClub = selectedClubs.includes(NO_CLUB);
-      const selectedSet = new Set(selectedClubs.filter(c => c !== NO_CLUB).map(c => c.toLowerCase()));
-      result = result.filter(p => {
-        const raw = p.club?.trim();
-        if (!raw || EXCLUDED_CLUB_RE.test(raw)) return wantsNoClub;
-        return selectedSet.has(resolveClub(raw).toLowerCase());
-      });
-    }
-    if (selectedRoles.length) result = result.filter(p => p.role && selectedRoles.includes(p.role));
-    const ageMinN = ageMin !== '' ? parseInt(ageMin) : null;
-    const ageMaxN = ageMax !== '' ? parseInt(ageMax) : null;
-    if (ageMinN !== null || ageMaxN !== null) {
-      result = result.filter(p => {
-        const age = getPlayerAge(p.generation, p.date_of_birth);
-        if (ageMinN !== null && age < ageMinN) return false;
-        if (ageMaxN !== null && age > ageMaxN) return false;
-        return true;
-      });
-    }
-    const levelMinN = levelMin !== '' ? parseFloat(levelMin) : null;
-    const levelMaxN = levelMax !== '' ? parseFloat(levelMax) : null;
-    if (levelMinN !== null || levelMaxN !== null) {
-      result = result.filter(p => {
-        if (levelMinN !== null && p.current_level < levelMinN) return false;
-        if (levelMaxN !== null && p.current_level > levelMaxN) return false;
-        return true;
-      });
-    }
-    const potMinN = potMin !== '' ? parseFloat(potMin) : null;
-    const potMaxN = potMax !== '' ? parseFloat(potMax) : null;
-    if (potMinN !== null || potMaxN !== null) {
-      result = result.filter(p => {
-        if (potMinN !== null && p.potential < potMinN) return false;
-        if (potMaxN !== null && p.potential > potMaxN) return false;
-        return true;
-      });
-    }
-    if (selectedContractRanges.length) result = result.filter(p => selectedContractRanges.includes(getContractKey(p.contract_end)));
-    if (selectedTasks.length) result = result.filter(p => p.task && selectedTasks.includes(p.task as PlayerTask));
-    const leagueParam = searchParams.get('league');
-    const positionParam = searchParams.get('position');
-    const opinionParam = searchParams.get('opinion');
-    if (leagueParam) result = result.filter(p => resolveLeague(p) === leagueParam);
-    if (positionParam) result = result.filter(p => p.position === positionParam);
-    if (opinionParam) result = result.filter(p => p.general_opinion === opinionParam);
-    switch (sort) {
-      case 'name': result.sort((a, b) => a.name.localeCompare(b.name)); break;
-      case 'age-asc': result.sort((a, b) => b.generation - a.generation); break;
-      case 'age-desc': result.sort((a, b) => a.generation - b.generation); break;
-      case 'level': result.sort((a, b) => b.current_level - a.current_level); break;
-      case 'potential': result.sort((a, b) => b.potential - a.potential); break;
-      case 'recent': result.sort((a, b) => new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime()); break;
-      case 'contract': result.sort((a, b) => { const aDate = a.contract_end ? new Date(a.contract_end).getTime() : Infinity; const bDate = b.contract_end ? new Date(b.contract_end).getTime() : Infinity; return aDate - bDate; }); break;
-    }
-    // Players with news (non-null has_news) always on top
-    result.sort((a, b) => (b.has_news ? 1 : 0) - (a.has_news ? 1 : 0));
-    return result;
-  }, [players, showArchived, debouncedSearch, opinions, positions, selectedLeagues, selectedClubs, selectedRoles, ageMin, ageMax, levelMin, levelMax, potMin, potMax, selectedContractRanges, selectedTasks, sort, searchParams]);
+  // Counts from server-side facets
+  const archivedCount = facets?.archivedCount ?? 0;
+  const activeCount = facets?.activeCount ?? 0;
 
   const newsCount = useMemo(() => filtered.filter(p => p.has_news).length, [filtered]);
+
+  const leaderboards = useMemo(() => {
+    const withStats = filtered.map(p => ({ ...p, perf: getPlayerPerfStats(p) })).filter(p => p.perf.rating != null || p.perf.goals != null);
+    return {
+      rating: [...withStats].sort((a, b) => (b.perf.rating ?? -1) - (a.perf.rating ?? -1)).slice(0, 10),
+      goals: [...withStats].sort((a, b) => (b.perf.goals ?? -1) - (a.perf.goals ?? -1)).slice(0, 10),
+      assists: [...withStats].sort((a, b) => (b.perf.assists ?? -1) - (a.perf.assists ?? -1)).slice(0, 10),
+      xg: [...withStats].sort((a, b) => (b.perf.xg ?? -1) - (a.perf.xg ?? -1)).slice(0, 10),
+      minutes: [...withStats].sort((a, b) => (b.perf.minutes ?? -1) - (a.perf.minutes ?? -1)).slice(0, 10),
+    };
+  }, [filtered]);
 
   const dismissAllNews = useCallback(() => {
     const idsWithNews = filtered.filter(p => p.has_news).map(p => p.id);
     if (idsWithNews.length === 0) return;
-    // Optimistic update
-    queryClient.setQueryData<any[]>(['players'], (old) =>
+    // Optimistic update (paginated cache)
+    queryClient.setQueriesData<{ pages: PaginatedResponse[]; pageParams: number[] }>({ queryKey: ['players-paginated'] }, (old) => {
+      if (!old?.pages) return old;
+      return { ...old, pages: old.pages.map((page) => ({ ...page, data: page.data.map((p) => idsWithNews.includes(p.id) ? { ...p, has_news: null } : p) })) };
+    });
+    queryClient.setQueryData<Player[]>(['players'], (old) =>
       old?.map(p => idsWithNews.includes(p.id) ? { ...p, has_news: null } : p)
     );
-    // Persist to DB
-    supabase.from('players').update({ has_news: null } as any).in('id', idsWithNews).then();
+    supabase.from('players').update({ has_news: null }).in('id', idsWithNews).then();
   }, [filtered, queryClient]);
 
   const playersToExport = selectedIds.size > 0 ? filtered.filter(p => selectedIds.has(p.id)) : filtered;
@@ -520,7 +594,7 @@ export default function Players() {
         .select('*')
         .in('player_id', playerIds);
       const valuesMap = new Map<string, Map<string, string>>();
-      (allValues ?? []).forEach((v: any) => {
+      (allValues ?? []).forEach((v) => {
         if (!valuesMap.has(v.player_id)) valuesMap.set(v.player_id, new Map());
         valuesMap.get(v.player_id)!.set(v.custom_field_id, v.value ?? '');
       });
@@ -531,8 +605,9 @@ export default function Players() {
         .select('*')
         .in('player_id', playerIds)
         .order('created_at', { ascending: true });
-      const reportsMap = new Map<string, any[]>();
-      (allReports ?? []).forEach((r: any) => {
+      type ReportRow = NonNullable<typeof allReports>[number];
+      const reportsMap = new Map<string, ReportRow[]>();
+      (allReports ?? []).forEach((r) => {
         if (!reportsMap.has(r.player_id)) reportsMap.set(r.player_id, []);
         reportsMap.get(r.player_id)!.push(r);
       });
@@ -540,7 +615,7 @@ export default function Players() {
       // Build headers in TARGET_FIELDS order (matching import suggestions)
       const rows = playersToExport.map(p => {
         const playerReports = reportsMap.get(p.id) ?? [];
-        const row: Record<string, any> = {
+        const row: Record<string, string | number | null | undefined> = {
           'Nom du joueur': p.name,
           'Génération / Année': p.generation,
           'Nationalité': translateCountry(p.nationality, i18n.language),
@@ -594,13 +669,27 @@ export default function Players() {
     setLevelMin(''); setLevelMax('');
     setPotMin(''); setPotMax('');
     setSelectedContractRanges([]); setSelectedTasks([]); setSort('name');
+    setRatingMin(''); setRatingMax('');
+    setGoalsMin(''); setAssistsMin(''); setMinutesMin('');
+    setXgMin(''); setXaMin(''); setDuelsWonPctMin('');
+    setShotsOnMin(''); setInterceptionsMin(''); setDribblesSuccessPctMin('');
   };
 
   const activeFilterCount =
     [opinions, positions, selectedLeagues, selectedClubs, selectedRoles, selectedContractRanges, selectedTasks].reduce((acc, arr) => acc + arr.length, 0)
     + (ageMin || ageMax ? 1 : 0)
     + (levelMin || levelMax ? 1 : 0)
-    + (potMin || potMax ? 1 : 0);
+    + (potMin || potMax ? 1 : 0)
+    + (ratingMin || ratingMax ? 1 : 0)
+    + (goalsMin ? 1 : 0)
+    + (assistsMin ? 1 : 0)
+    + (minutesMin ? 1 : 0)
+    + (xgMin ? 1 : 0)
+    + (xaMin ? 1 : 0)
+    + (duelsWonPctMin ? 1 : 0)
+    + (shotsOnMin ? 1 : 0)
+    + (interceptionsMin ? 1 : 0)
+    + (dribblesSuccessPctMin ? 1 : 0);
 
   const allOpinions = ALL_OPINIONS;
   const allPositions = Object.entries(posLabels) as [Position, string][];
@@ -623,7 +712,7 @@ export default function Players() {
               {showArchived ? t('players.archived_title') : t('players.title')}
             </h1>
             <p className="text-sm text-muted-foreground">
-              {filtered.length > 1 ? t('players.found_plural', { count: filtered.length }) : t('players.found', { count: filtered.length })}
+              {totalFiltered > 1 ? t('players.found_plural', { count: totalFiltered }) : t('players.found', { count: totalFiltered })}
             </p>
           </div>
         </div>
@@ -685,6 +774,12 @@ export default function Players() {
                     <DropdownMenuItem onClick={() => setOrgDialogOpen(true)}>
                       <Building2 className="w-4 h-4 mr-2" />
                       {t('players.add_to_org')} ({selectedIds.size})
+                    </DropdownMenuItem>
+                  )}
+                  {selectedIds.size >= 2 && selectedIds.size <= 4 && (
+                    <DropdownMenuItem onClick={() => setCompareDialogOpen(true)}>
+                      <BarChart3 className="w-4 h-4 mr-2" />
+                      {t('players.compare_button')} ({selectedIds.size})
                     </DropdownMenuItem>
                   )}
                   <DropdownMenuItem
@@ -923,12 +1018,13 @@ export default function Players() {
                   className="flex items-center justify-between w-36 sm:w-44 h-9 sm:h-10 px-2.5 sm:px-3 py-2 rounded-xl text-xs sm:text-sm border border-input bg-background hover:bg-muted transition-colors"
                 >
                   <span className="truncate">
-                    {{ name: t('players.sort_name'), 'age-asc': t('players.sort_age_asc'), 'age-desc': t('players.sort_age_desc'), level: t('players.sort_level'), potential: t('players.sort_potential'), contract: t('players.sort_contract'), recent: t('players.sort_recent') }[sort]}
+                    {{ name: t('players.sort_name'), 'age-asc': t('players.sort_age_asc'), 'age-desc': t('players.sort_age_desc'), level: t('players.sort_level'), potential: t('players.sort_potential'), contract: t('players.sort_contract'), recent: t('players.sort_recent'), rating: t('players.sort_rating'), goals: t('players.sort_goals'), assists: t('players.sort_assists'), minutes: t('players.sort_minutes'), xg: t('players.sort_xg'), 'pass-accuracy': t('players.sort_pass_accuracy') }[sort]}
                   </span>
                   <ChevronDown className={`w-4 h-4 opacity-50 shrink-0 ml-1 transition-transform ${sortDropdownOpen ? 'rotate-180' : ''}`} />
                 </button>
                 {sortDropdownOpen && (
-                  <div className="absolute top-full left-0 mt-1 z-20 bg-popover border border-border rounded-lg shadow-lg w-36 sm:w-44 p-1">
+                  <div className="absolute top-full left-0 mt-1 z-20 bg-popover border border-border rounded-lg shadow-lg w-44 sm:w-52 p-1 max-h-80 overflow-y-auto">
+                    <p className="text-[9px] font-black uppercase tracking-wider text-muted-foreground px-2 py-1">{t('players.sort_general')}</p>
                     {([
                       { value: 'name', label: t('players.sort_name') },
                       { value: 'age-asc', label: t('players.sort_age_asc') },
@@ -937,6 +1033,25 @@ export default function Players() {
                       { value: 'potential', label: t('players.sort_potential') },
                       { value: 'contract', label: t('players.sort_contract') },
                       { value: 'recent', label: t('players.sort_recent') },
+                    ] as { value: SortOption; label: string }[]).map(opt => (
+                      <button
+                        key={opt.value}
+                        type="button"
+                        onClick={() => { setSort(opt.value); setSortDropdownOpen(false); }}
+                        className={`flex items-center w-full px-2 py-1.5 rounded-md text-xs transition-colors ${sort === opt.value ? 'bg-primary/10 text-primary font-semibold' : 'text-foreground hover:bg-muted'}`}
+                      >
+                        {opt.label}
+                      </button>
+                    ))}
+                    <div className="border-t border-border/40 my-1" />
+                    <p className="text-[9px] font-black uppercase tracking-wider text-muted-foreground px-2 py-1">{t('players.sort_performance')}</p>
+                    {([
+                      { value: 'rating', label: t('players.sort_rating') },
+                      { value: 'goals', label: t('players.sort_goals') },
+                      { value: 'assists', label: t('players.sort_assists') },
+                      { value: 'minutes', label: t('players.sort_minutes') },
+                      { value: 'xg', label: t('players.sort_xg') },
+                      { value: 'pass-accuracy', label: t('players.sort_pass_accuracy') },
                     ] as { value: SortOption; label: string }[]).map(opt => (
                       <button
                         key={opt.value}
@@ -982,9 +1097,16 @@ export default function Players() {
                   >
                     <List className="w-4 h-4" />
                   </button>
+                  <button
+                    onClick={() => setViewMode('table')}
+                    className={`p-1.5 transition-colors ${viewMode === 'table' ? 'bg-primary text-primary-foreground' : 'hover:bg-muted text-muted-foreground'}`}
+                    title={t('players.view_table')}
+                  >
+                    <Table2 className="w-4 h-4" />
+                  </button>
                 </div>
                 <label className="flex items-center gap-1.5 sm:gap-2.5 cursor-pointer">
-                  <Checkbox checked={filtered.length > 0 && selectedIds.size === filtered.length} onCheckedChange={toggleSelectAll} />
+                  <Checkbox checked={totalFiltered > 0 && selectedIds.size >= totalFiltered} onCheckedChange={toggleSelectAll} />
                   <span className="text-xs sm:text-sm hidden sm:inline">{t('players.select_all')}</span>
                 </label>
               </div>
@@ -1023,6 +1145,24 @@ export default function Players() {
                 {selectedTasks.map(tk => (
                   <FilterChip key={tk} label={`${getTaskEmoji(tk)} ${t(getTaskTranslationKey(tk))}`} onRemove={() => toggleInList(selectedTasks, tk, setSelectedTasks)} />
                 ))}
+                {(ratingMin || ratingMax) && (
+                  <FilterChip label={`Rating : ${ratingMin || '?'} – ${ratingMax || '?'}`} onRemove={() => { setRatingMin(''); setRatingMax(''); }} />
+                )}
+                {goalsMin && (
+                  <FilterChip label={`${t('players.filter_goals')} ≥ ${goalsMin}`} onRemove={() => setGoalsMin('')} />
+                )}
+                {assistsMin && (
+                  <FilterChip label={`${t('players.filter_assists')} ≥ ${assistsMin}`} onRemove={() => setAssistsMin('')} />
+                )}
+                {minutesMin && (
+                  <FilterChip label={`${t('players.filter_minutes')} ≥ ${minutesMin}`} onRemove={() => setMinutesMin('')} />
+                )}
+                {xgMin && <FilterChip label={`xG ≥ ${xgMin}`} onRemove={() => setXgMin('')} />}
+                {xaMin && <FilterChip label={`xA ≥ ${xaMin}`} onRemove={() => setXaMin('')} />}
+                {duelsWonPctMin && <FilterChip label={`${t('players.filter_duels_pct')} ≥ ${duelsWonPctMin}%`} onRemove={() => setDuelsWonPctMin('')} />}
+                {shotsOnMin && <FilterChip label={`${t('players.filter_shots_on')} ≥ ${shotsOnMin}`} onRemove={() => setShotsOnMin('')} />}
+                {interceptionsMin && <FilterChip label={`${t('players.filter_interceptions')} ≥ ${interceptionsMin}`} onRemove={() => setInterceptionsMin('')} />}
+                {dribblesSuccessPctMin && <FilterChip label={`${t('players.filter_dribbles_pct')} ≥ ${dribblesSuccessPctMin}%`} onRemove={() => setDribblesSuccessPctMin('')} />}
               </div>
             )}
 
@@ -1344,16 +1484,195 @@ export default function Players() {
 
                 </div>
 
+                {/* Ligne 4 : Filtres data / performance */}
+                <div className="border-t border-border/40 pt-4">
+                  <p className="text-[10px] font-black uppercase tracking-wider text-muted-foreground mb-3">{t('players.filter_data_section')}</p>
+                  <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
+                    <FilterSection title="Rating">
+                      <div className="flex items-center gap-1.5">
+                        <input type="number" min="0" max="10" step="0.1" placeholder="Min" value={ratingMin} onChange={e => setRatingMin(e.target.value)}
+                          className="w-full px-2 py-1.5 text-xs rounded-lg border border-border bg-background text-foreground text-center focus:outline-none focus:ring-1 focus:ring-primary" />
+                        <span className="text-muted-foreground text-xs shrink-0">–</span>
+                        <input type="number" min="0" max="10" step="0.1" placeholder="Max" value={ratingMax} onChange={e => setRatingMax(e.target.value)}
+                          className="w-full px-2 py-1.5 text-xs rounded-lg border border-border bg-background text-foreground text-center focus:outline-none focus:ring-1 focus:ring-primary" />
+                      </div>
+                    </FilterSection>
+                    <FilterSection title={t('players.filter_goals')}>
+                      <input type="number" min="0" placeholder="Min" value={goalsMin} onChange={e => setGoalsMin(e.target.value)}
+                        className="w-full px-2 py-1.5 text-xs rounded-lg border border-border bg-background text-foreground text-center focus:outline-none focus:ring-1 focus:ring-primary" />
+                    </FilterSection>
+                    <FilterSection title={t('players.filter_assists')}>
+                      <input type="number" min="0" placeholder="Min" value={assistsMin} onChange={e => setAssistsMin(e.target.value)}
+                        className="w-full px-2 py-1.5 text-xs rounded-lg border border-border bg-background text-foreground text-center focus:outline-none focus:ring-1 focus:ring-primary" />
+                    </FilterSection>
+                    <FilterSection title={t('players.filter_minutes')}>
+                      <input type="number" min="0" placeholder="Min" value={minutesMin} onChange={e => setMinutesMin(e.target.value)}
+                        className="w-full px-2 py-1.5 text-xs rounded-lg border border-border bg-background text-foreground text-center focus:outline-none focus:ring-1 focus:ring-primary" />
+                    </FilterSection>
+                  </div>
+                  <div className="grid grid-cols-2 md:grid-cols-6 gap-4 mt-3">
+                    <FilterSection title="xG">
+                      <input type="number" min="0" step="0.1" placeholder="Min" value={xgMin} onChange={e => setXgMin(e.target.value)}
+                        className="w-full px-2 py-1.5 text-xs rounded-lg border border-border bg-background text-foreground text-center focus:outline-none focus:ring-1 focus:ring-primary" />
+                    </FilterSection>
+                    <FilterSection title="xA">
+                      <input type="number" min="0" step="0.1" placeholder="Min" value={xaMin} onChange={e => setXaMin(e.target.value)}
+                        className="w-full px-2 py-1.5 text-xs rounded-lg border border-border bg-background text-foreground text-center focus:outline-none focus:ring-1 focus:ring-primary" />
+                    </FilterSection>
+                    <FilterSection title={t('players.filter_duels_pct')}>
+                      <input type="number" min="0" max="100" placeholder="Min %" value={duelsWonPctMin} onChange={e => setDuelsWonPctMin(e.target.value)}
+                        className="w-full px-2 py-1.5 text-xs rounded-lg border border-border bg-background text-foreground text-center focus:outline-none focus:ring-1 focus:ring-primary" />
+                    </FilterSection>
+                    <FilterSection title={t('players.filter_shots_on')}>
+                      <input type="number" min="0" placeholder="Min" value={shotsOnMin} onChange={e => setShotsOnMin(e.target.value)}
+                        className="w-full px-2 py-1.5 text-xs rounded-lg border border-border bg-background text-foreground text-center focus:outline-none focus:ring-1 focus:ring-primary" />
+                    </FilterSection>
+                    <FilterSection title={t('players.filter_interceptions')}>
+                      <input type="number" min="0" placeholder="Min" value={interceptionsMin} onChange={e => setInterceptionsMin(e.target.value)}
+                        className="w-full px-2 py-1.5 text-xs rounded-lg border border-border bg-background text-foreground text-center focus:outline-none focus:ring-1 focus:ring-primary" />
+                    </FilterSection>
+                    <FilterSection title={t('players.filter_dribbles_pct')}>
+                      <input type="number" min="0" max="100" placeholder="Min %" value={dribblesSuccessPctMin} onChange={e => setDribblesSuccessPctMin(e.target.value)}
+                        className="w-full px-2 py-1.5 text-xs rounded-lg border border-border bg-background text-foreground text-center focus:outline-none focus:ring-1 focus:ring-primary" />
+                    </FilterSection>
+                  </div>
+                </div>
+
               </div>
             )}
           </CardContent>
         </Card>
 
-        {/* Results Grid */}
+        {/* Leaderboards */}
+        {leaderboards.rating.length > 0 && (
+          <div>
+            <button onClick={() => setLeaderboardOpen(!leaderboardOpen)}
+              className="flex items-center gap-2 text-xs font-bold uppercase tracking-wider text-muted-foreground hover:text-foreground transition-colors mb-2">
+              <Trophy className="w-3.5 h-3.5" />
+              {t('players.leaderboard_title')}
+              {leaderboardOpen ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
+            </button>
+            {leaderboardOpen && (
+              <Card className="card-warm mb-4">
+                <CardContent className="p-4">
+                  <div className="flex gap-1.5 mb-3 overflow-x-auto">
+                    {([
+                      { key: 'rating', label: t('players.top_rating') },
+                      { key: 'goals', label: t('players.top_scorers') },
+                      { key: 'assists', label: t('players.top_assists') },
+                      { key: 'xg', label: t('players.top_xg') },
+                      { key: 'minutes', label: t('players.top_minutes') },
+                    ] as const).map(tab => (
+                      <button key={tab.key} onClick={() => setLeaderboardTab(tab.key)}
+                        className={`px-3 py-1.5 rounded-lg text-xs font-semibold whitespace-nowrap transition-colors ${leaderboardTab === tab.key ? 'bg-primary text-primary-foreground' : 'bg-muted hover:bg-muted/80'}`}>
+                        {tab.label}
+                      </button>
+                    ))}
+                  </div>
+                  <div className="space-y-1">
+                    {(leaderboards[leaderboardTab as keyof typeof leaderboards] ?? []).map((p, i) => {
+                      const val = leaderboardTab === 'rating' ? p.perf.rating?.toFixed(2) : leaderboardTab === 'xg' ? p.perf.xg?.toFixed(1) : p.perf[leaderboardTab];
+                      return (
+                        <Link key={p.id} to={`/player/${p.id}`}
+                          className="flex items-center gap-2.5 px-2 py-1.5 rounded-lg hover:bg-muted/50 transition-colors group">
+                          <span className={`w-5 text-center text-xs font-bold ${i < 3 ? 'text-primary' : 'text-muted-foreground'}`}>{i + 1}</span>
+                          <PlayerAvatar name={p.name} photoUrl={p.photo_url} size="sm" />
+                          <span className="text-xs font-medium truncate flex-1 group-hover:text-primary transition-colors">{p.name}</span>
+                          <span className="text-[10px] text-muted-foreground truncate max-w-[100px]">{p.club}</span>
+                          <span className="text-xs font-bold tabular-nums ml-auto">{val ?? '—'}</span>
+                        </Link>
+                      );
+                    })}
+                  </div>
+                </CardContent>
+              </Card>
+            )}
+          </div>
+        )}
+
+        {/* Results */}
         <div className="flex-1">
+          {/* Table View */}
+          {viewMode === 'table' ? (
+            <div className="overflow-x-auto rounded-xl border border-border bg-card">
+              <table className="w-full text-xs">
+                <thead>
+                  <tr className="bg-muted/50 text-muted-foreground">
+                    <th className="px-2 py-2 w-8"><Checkbox checked={totalFiltered > 0 && selectedIds.size >= totalFiltered} onCheckedChange={toggleSelectAll} /></th>
+                    {([
+                      { key: 'name', label: t('players.col_name'), align: 'left' },
+                      { key: 'age', label: t('players.age'), align: 'center' },
+                      { key: 'position', label: t('players.col_position'), align: 'center' },
+                      { key: 'club', label: t('players.col_club'), align: 'left' },
+                      { key: 'rating', label: 'Rating', align: 'center' },
+                      { key: 'goals', label: t('players.stat_goals'), align: 'center' },
+                      { key: 'assists', label: t('players.stat_assists'), align: 'center' },
+                      { key: 'xg', label: 'xG', align: 'center' },
+                      { key: 'xa', label: 'xA', align: 'center' },
+                      { key: 'minutes', label: 'Min', align: 'center' },
+                      { key: 'pass_accuracy', label: 'Pass%', align: 'center' },
+                      { key: 'duels_won_pct', label: 'Duels%', align: 'center' },
+                      { key: 'level', label: t('players.level'), align: 'center' },
+                      { key: 'potential', label: t('players.potential'), align: 'center' },
+                    ] as { key: string; label: string; align: string }[]).map(col => (
+                      <th key={col.key}
+                        className={`px-2 py-2 font-semibold cursor-pointer hover:text-foreground select-none whitespace-nowrap ${col.align === 'left' ? 'text-left' : 'text-center'}`}
+                        onClick={() => { if (tableSortKey === col.key) setTableSortDir(d => d === 'asc' ? 'desc' : 'asc'); else { setTableSortKey(col.key); setTableSortDir('desc'); } }}>
+                        {col.label} {tableSortKey === col.key ? (tableSortDir === 'desc' ? '↓' : '↑') : ''}
+                      </th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {(() => {
+                    const rows = filtered.map(p => ({ ...p, perf: getPlayerPerfStats(p) }));
+                    const sorted = [...rows].sort((a, b) => {
+                      const dir = tableSortDir === 'asc' ? 1 : -1;
+                      if (tableSortKey === 'name') return dir * a.name.localeCompare(b.name);
+                      if (tableSortKey === 'age') return dir * (getPlayerAge(a.generation, a.date_of_birth) - getPlayerAge(b.generation, b.date_of_birth));
+                      if (tableSortKey === 'position') return dir * a.position.localeCompare(b.position);
+                      if (tableSortKey === 'club') return dir * a.club.localeCompare(b.club);
+                      if (tableSortKey === 'level') return dir * (a.current_level - b.current_level);
+                      if (tableSortKey === 'potential') return dir * (a.potential - b.potential);
+                      const aVal = a.perf[tableSortKey as keyof PerfStats] ?? -Infinity;
+                      const bVal = b.perf[tableSortKey as keyof PerfStats] ?? -Infinity;
+                      return dir * (aVal - bVal);
+                    });
+                    return sorted.map(p => {
+                      const ratingColor = (p.perf.rating ?? 0) >= 7.5 ? 'text-emerald-600 dark:text-emerald-400' : (p.perf.rating ?? 0) >= 7.0 ? 'text-blue-600 dark:text-blue-400' : (p.perf.rating ?? 0) >= 6.5 ? 'text-amber-600 dark:text-amber-400' : '';
+                      return (
+                        <tr key={p.id} className="border-t border-border/30 hover:bg-muted/30 transition-colors cursor-pointer" onClick={() => navigate(`/player/${p.id}`)}>
+                          <td className="px-2 py-2" onClick={e => { e.stopPropagation(); toggleSelect(p.id); }}><Checkbox checked={selectedIds.has(p.id)} /></td>
+                          <td className="px-2 py-2 font-medium">
+                            <div className="flex items-center gap-2">
+                              <PlayerAvatar name={p.name} photoUrl={p.photo_url} size="sm" />
+                              <span className="truncate max-w-[140px]">{p.name}</span>
+                            </div>
+                          </td>
+                          <td className="text-center px-2 py-2">{getPlayerAge(p.generation, p.date_of_birth)}</td>
+                          <td className="text-center px-2 py-2">{posShort[p.position]}</td>
+                          <td className="px-2 py-2"><span className="truncate block max-w-[120px]">{p.club}</span></td>
+                          <td className={`text-center px-2 py-2 font-bold ${ratingColor}`}>{p.perf.rating?.toFixed(2) ?? '—'}</td>
+                          <td className="text-center px-2 py-2 font-bold">{p.perf.goals ?? '—'}</td>
+                          <td className="text-center px-2 py-2 font-bold">{p.perf.assists ?? '—'}</td>
+                          <td className="text-center px-2 py-2">{p.perf.xg?.toFixed(1) ?? '—'}</td>
+                          <td className="text-center px-2 py-2">{p.perf.xa?.toFixed(1) ?? '—'}</td>
+                          <td className="text-center px-2 py-2">{p.perf.minutes ?? '—'}</td>
+                          <td className="text-center px-2 py-2">{p.perf.pass_accuracy != null ? `${Math.round(p.perf.pass_accuracy)}%` : '—'}</td>
+                          <td className="text-center px-2 py-2">{p.perf.duels_won_pct != null ? `${p.perf.duels_won_pct}%` : '—'}</td>
+                          <td className="text-center px-2 py-2 font-bold">{p.current_level}</td>
+                          <td className="text-center px-2 py-2 font-bold text-primary">{p.potential}</td>
+                        </tr>
+                      );
+                    });
+                  })()}
+                </tbody>
+              </table>
+            </div>
+          ) : (
           <div className="grid gap-3 grid-cols-1 md:grid-cols-2 xl:grid-cols-3">
-            {filtered.slice(0, visibleCount).map(player => {
-              const ext = (player.external_data as Record<string, any>) ?? {};
+            {filtered.map(player => {
+              const ext = (player.external_data ?? {}) as Record<string, unknown>;
               return (
                 <div key={player.id} className="relative">
                   <div className="absolute top-2 right-2 z-10 flex items-center gap-1.5" onClick={(e) => e.stopPropagation()}>
@@ -1373,14 +1692,14 @@ export default function Players() {
                             <div className="flex items-center gap-1.5 sm:gap-2 flex-wrap">
                               <h3 className="font-bold text-sm sm:text-base truncate max-w-[140px] sm:max-w-none group-hover:text-primary transition-colors">{player.name}</h3>
                               {player.task && (
-                                <span className={`shrink-0 flex items-center gap-0.5 sm:gap-1 px-1 sm:px-1.5 py-0.5 rounded-full text-[9px] sm:text-[10px] font-bold uppercase tracking-wide ${getTaskBgClass(player.task as any)}`}>
-                                  {getTaskEmoji(player.task as any)} <span className="hidden sm:inline">{t(getTaskTranslationKey(player.task as any))}</span>
+                                <span className={`shrink-0 flex items-center gap-0.5 sm:gap-1 px-1 sm:px-1.5 py-0.5 rounded-full text-[9px] sm:text-[10px] font-bold uppercase tracking-wide ${getTaskBgClass(player.task as PlayerTask)}`}>
+                                  {getTaskEmoji(player.task as PlayerTask)} <span className="hidden sm:inline">{t(getTaskTranslationKey(player.task as PlayerTask))}</span>
                                 </span>
                               )}
                               {player.has_news && (
                                 <span className="shrink-0 flex items-center gap-0.5 sm:gap-1 px-1 sm:px-1.5 py-0.5 rounded-full bg-amber-100 dark:bg-amber-900/40 text-amber-700 dark:text-amber-300 text-[9px] sm:text-[10px] font-bold uppercase tracking-wide">
                                   <Sparkles className="w-3 h-3" />
-                                  <span className="hidden sm:inline">{t('players.new_badge')}: {t(`players.news_${player.has_news}` as any)}</span>
+                                  <span className="hidden sm:inline">{t('players.new_badge')}: {t(`players.news_${player.has_news}`)}</span>
                                 </span>
                               )}
                             </div>
@@ -1410,6 +1729,7 @@ export default function Players() {
                           </div>
                         </div>
                         {viewMode === 'detailed' && (
+                          <>
                           <div className="grid grid-cols-4 gap-2 mt-3 pt-3 border-t border-border/30">
                             <div className="rounded-lg bg-muted/50 py-2 px-1 text-center">
                               <p className="text-[10px] text-muted-foreground mb-0.5">{t('players.foot')}</p>
@@ -1433,6 +1753,36 @@ export default function Players() {
                               )}
                             </div>
                           </div>
+                          {(() => {
+                            const perf = getPlayerPerfStats(player);
+                            if (perf.rating == null && perf.goals == null) return null;
+                            const ratingColor = (perf.rating ?? 0) >= 7.5 ? 'text-emerald-600 dark:text-emerald-400' : (perf.rating ?? 0) >= 7.0 ? 'text-blue-600 dark:text-blue-400' : (perf.rating ?? 0) >= 6.5 ? 'text-amber-600 dark:text-amber-400' : 'text-muted-foreground';
+                            return (
+                              <div className="grid grid-cols-5 gap-1.5 mt-2">
+                                <div className="rounded-lg bg-muted/50 py-1.5 px-1 text-center">
+                                  <p className="text-[9px] text-muted-foreground mb-0.5">Rating</p>
+                                  <p className={`text-xs font-bold ${ratingColor}`}>{perf.rating != null ? perf.rating.toFixed(1) : '—'}</p>
+                                </div>
+                                <div className="rounded-lg bg-muted/50 py-1.5 px-1 text-center">
+                                  <p className="text-[9px] text-muted-foreground mb-0.5">{t('players.stat_goals')}</p>
+                                  <p className="text-xs font-bold">{perf.goals ?? '—'}</p>
+                                </div>
+                                <div className="rounded-lg bg-muted/50 py-1.5 px-1 text-center">
+                                  <p className="text-[9px] text-muted-foreground mb-0.5">{t('players.stat_assists')}</p>
+                                  <p className="text-xs font-bold">{perf.assists ?? '—'}</p>
+                                </div>
+                                <div className="rounded-lg bg-muted/50 py-1.5 px-1 text-center">
+                                  <p className="text-[9px] text-muted-foreground mb-0.5">{t('players.stat_apps')}</p>
+                                  <p className="text-xs font-bold">{perf.appearances ?? '—'}</p>
+                                </div>
+                                <div className="rounded-lg bg-muted/50 py-1.5 px-1 text-center">
+                                  <p className="text-[9px] text-muted-foreground mb-0.5">Min.</p>
+                                  <p className="text-xs font-bold">{perf.minutes != null ? (perf.minutes > 999 ? `${(perf.minutes / 1000).toFixed(1)}k` : perf.minutes) : '—'}</p>
+                                </div>
+                              </div>
+                            );
+                          })()}
+                          </>
                         )}
                       </div>
                     </Link>
@@ -1441,17 +1791,18 @@ export default function Players() {
               );
             })}
           </div>
+          )}
 
           {filtered.length > 0 && (
             <div className="flex flex-col items-center gap-3 mt-6">
               <p className="text-xs text-muted-foreground">
-                {Math.min(visibleCount, filtered.length)} / {filtered.length} {t('players.displayed')}
+                {filtered.length} / {totalFiltered} {t('players.displayed')}
               </p>
-              {visibleCount < filtered.length && (
-                <Button variant="outline" className="rounded-xl" onClick={() => setVisibleCount(prev => prev + PAGE_SIZE)}>
-                  {t('common.show_more')} (+{Math.min(PAGE_SIZE, filtered.length - visibleCount)})
-                </Button>
+              {isFetchingNextPage && (
+                <RefreshCw className="h-5 w-5 animate-spin text-muted-foreground" />
               )}
+              {/* Sentinel for IntersectionObserver infinite scroll */}
+              <div ref={sentinelCallbackRef} className="h-1" />
             </div>
           )}
 
@@ -1464,6 +1815,69 @@ export default function Players() {
           )}
         </div>
       </div>
+
+      {/* Compare Dialog */}
+      <Dialog open={compareDialogOpen} onOpenChange={setCompareDialogOpen}>
+        <DialogContent className="max-w-4xl max-h-[85vh] overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle>{t('players.compare_dialog_title')} ({selectedIds.size})</DialogTitle>
+          </DialogHeader>
+          {(() => {
+            const comparePlayers = filtered.filter(p => selectedIds.has(p.id)).map(p => ({ ...p, perf: getPlayerPerfStats(p) }));
+            if (comparePlayers.length < 2) return null;
+            const statKeys = [
+              { key: 'rating', label: 'Rating' }, { key: 'goals', label: t('players.stat_goals') },
+              { key: 'assists', label: t('players.stat_assists') }, { key: 'xg', label: 'xG' },
+              { key: 'xa', label: 'xA' }, { key: 'minutes', label: 'Min' },
+              { key: 'pass_accuracy', label: 'Pass%' }, { key: 'duels_won_pct', label: 'Duels%' },
+              { key: 'tackles', label: t('players.filter_interceptions') }, { key: 'interceptions', label: 'Int.' },
+              { key: 'shots_on', label: t('players.filter_shots_on') }, { key: 'dribbles_success_pct', label: 'Drib%' },
+            ];
+            const radarAxes = ['rating', 'goals', 'assists', 'pass_accuracy', 'duels_won_pct', 'dribbles_success_pct'];
+            const maxVals: Record<string, number> = {};
+            radarAxes.forEach(k => { maxVals[k] = Math.max(1, ...comparePlayers.map(p => p.perf[k as keyof PerfStats] ?? 0)); });
+            const radarData = radarAxes.map(k => {
+              const entry: Record<string, string | number> = { axis: statKeys.find(s => s.key === k)?.label || k };
+              comparePlayers.forEach((p, i) => { entry[p.name] = maxVals[k] > 0 ? Math.round((p.perf[k as keyof PerfStats] ?? 0) / maxVals[k] * 100) : 0; });
+              return entry;
+            });
+            return (
+              <div className="space-y-4">
+                <Suspense fallback={<div className="flex justify-center py-8"><div className="animate-spin w-6 h-6 border-2 border-primary border-t-transparent rounded-full" /></div>}>
+                  <LazyCompareRadar radarData={radarData} players={comparePlayers} />
+                </Suspense>
+                <div className="overflow-x-auto rounded-lg border border-border/50">
+                  <table className="w-full text-xs">
+                    <thead><tr className="bg-muted/50 text-muted-foreground">
+                      <th className="text-left px-3 py-2 font-semibold">{t('profile.data_stat')}</th>
+                      {comparePlayers.map((p, i) => (
+                        <th key={p.id} className="text-center px-3 py-2 font-semibold" style={{ color: CHART_COLORS[i % CHART_COLORS.length] }}>{p.name.split(' ').pop()}</th>
+                      ))}
+                    </tr></thead>
+                    <tbody>
+                      {statKeys.map(sk => {
+                        const vals = comparePlayers.map(p => p.perf[sk.key as keyof PerfStats] ?? null);
+                        const validVals = vals.filter(v => v != null) as number[];
+                        const best = validVals.length > 0 ? Math.max(...validVals) : null;
+                        return (
+                          <tr key={sk.key} className="border-t border-border/30">
+                            <td className="px-3 py-2 font-medium">{sk.label}</td>
+                            {vals.map((v, i) => (
+                              <td key={i} className={`text-center px-3 py-2 font-bold tabular-nums ${v != null && v === best && validVals.length > 1 ? 'text-emerald-600 dark:text-emerald-400' : ''}`}>
+                                {v != null ? (typeof v === 'number' && !Number.isInteger(v) ? v.toFixed(1) : v) : '—'}
+                              </td>
+                            ))}
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            );
+          })()}
+        </DialogContent>
+      </Dialog>
 
       {/* Bottom banner for new players */}
       {newsCount > 0 && (

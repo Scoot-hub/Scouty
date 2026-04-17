@@ -73,7 +73,7 @@ export function useCreateCustomField() {
           field_type: field.field_type,
           field_options: field.field_options ?? [],
           display_order: field.display_order ?? 0,
-        } as any)
+        })
         .select()
         .single();
       if (error) throw error;
@@ -91,7 +91,7 @@ export function useUpdateCustomField() {
     mutationFn: async ({ id, ...updates }: { id: string; field_name?: string; field_type?: string; field_options?: string[]; display_order?: number }) => {
       const { error } = await supabase
         .from('custom_fields')
-        .update(updates as any)
+        .update(updates)
         .eq('id', id);
       if (error) throw error;
     },
@@ -134,7 +134,7 @@ export function useUpsertCustomFieldValue() {
       if (existing) {
         const { error } = await supabase
           .from('custom_field_values')
-          .update({ value } as any)
+          .update({ value })
           .eq('id', existing.id);
         if (error) throw error;
       } else {
@@ -145,7 +145,7 @@ export function useUpsertCustomFieldValue() {
             player_id: playerId,
             value,
             user_id: userId,
-          } as any);
+          });
         if (error) throw error;
       }
     },
@@ -169,11 +169,11 @@ export function useBulkUpsertCustomFieldValues() {
           .maybeSingle();
 
         if (existing) {
-          await supabase.from('custom_field_values').update({ value } as any).eq('id', existing.id);
+          await supabase.from('custom_field_values').update({ value }).eq('id', existing.id);
         } else {
           await supabase.from('custom_field_values').insert({
             custom_field_id: customFieldId, player_id: playerId, value, user_id: userId,
-          } as any);
+          });
         }
       }
     },

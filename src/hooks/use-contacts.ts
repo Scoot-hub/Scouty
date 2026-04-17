@@ -41,7 +41,7 @@ export function useUpsertContact() {
             email: contact.email,
             linkedin_url: contact.linkedin_url,
             notes: contact.notes,
-          } as any)
+          })
           .eq('id', contact.id)
           .select()
           .single();
@@ -61,7 +61,7 @@ export function useUpsertContact() {
             linkedin_url: contact.linkedin_url,
             notes: contact.notes,
             user_id: userId,
-          } as any)
+          })
           .select()
           .single();
         if (error) throw error;

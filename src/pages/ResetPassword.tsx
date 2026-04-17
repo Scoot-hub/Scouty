@@ -36,15 +36,15 @@ export default function ResetPassword() {
     }
     setLoading(true);
     try {
-      const { error } = await (supabase.auth as any).resetPasswordWithToken(token!, password);
+      const { error } = await supabase.auth.updateUser({ password });
       if (error) throw error;
       setDone(true);
       setTimeout(() => navigate('/players'), 2500);
-    } catch (error: any) {
+    } catch (error: unknown) {
       const message =
         typeof error === 'string'
           ? error
-          : (error && typeof error.message === 'string' && error.message) || 'Une erreur est survenue.';
+          : (error instanceof Error ? error.message : 'Une erreur est survenue.');
       toast({ title: t('auth.toast_error'), description: message, variant: 'destructive' });
     } finally {
       setLoading(false);

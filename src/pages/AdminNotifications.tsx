@@ -18,9 +18,8 @@ import {
 
 const API = (import.meta.env.API_URL || '/api').replace(/\/$/, '');
 
-async function authHeaders() {
-  const s = (await supabase.auth.getSession()).data.session;
-  return { Authorization: `Bearer ${s?.access_token}`, 'Content-Type': 'application/json' };
+function authFetchInit(): RequestInit {
+  return { credentials: 'include', headers: { 'Content-Type': 'application/json' } };
 }
 
 interface AdminNotification {
@@ -60,7 +59,7 @@ export default function AdminNotifications() {
       const qs = new URLSearchParams();
       if (search.trim()) qs.set('search', search.trim());
       qs.set('limit', '500');
-      const res = await fetch(`${API}/admin/notifications?${qs.toString()}`, { headers: await authHeaders() });
+      const res = await fetch(`${API}/admin/notifications?${qs.toString()}`, { ...authFetchInit() });
       if (!res.ok) throw new Error('Failed');
       return res.json();
     },
@@ -78,15 +77,15 @@ export default function AdminNotifications() {
     try {
       const res = await fetch(`${API}/admin/notifications/${pendingDelete.id}`, {
         method: 'DELETE',
-        headers: await authHeaders(),
+        ...authFetchInit(),
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(data.error || 'Failed');
       toast.success(t('admin_notifications.deleted'));
       qc.invalidateQueries({ queryKey: ['admin-notifications'] });
       setPendingDelete(null);
-    } catch (err: any) {
-      toast.error(err?.message || t('common.error'));
+    } catch (err: unknown) {
+      toast.error(err instanceof Error ? err.message : t('common.error'));
     } finally {
       setDeletingId(null);
     }
@@ -102,15 +101,15 @@ export default function AdminNotifications() {
     try {
       const res = await fetch(`${API}/admin/notifications/purge-older-than`, {
         method: 'POST',
-        headers: await authHeaders(),
+        ...authFetchInit(),
         body: JSON.stringify({ days }),
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(data.error || 'Failed');
       toast.success(t('admin_notifications.purged', { count: data.deleted, days }));
       qc.invalidateQueries({ queryKey: ['admin-notifications'] });
-    } catch (err: any) {
-      toast.error(err?.message || t('common.error'));
+    } catch (err: unknown) {
+      toast.error(err instanceof Error ? err.message : t('common.error'));
     } finally {
       setPurging(false);
     }

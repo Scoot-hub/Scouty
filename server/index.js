@@ -1,5 +1,7 @@
 ﻿import express from "express";
 import cors from "cors";
+import cookieParser from "cookie-parser";
+import rateLimit from "express-rate-limit";
 import dotenv from "dotenv";
 import mysql from "mysql2/promise";
 import bcrypt from "bcryptjs";
@@ -13,6 +15,12 @@ import { createRequire } from "module";
 import { createDbPoolConfig } from "./db-config.js";
 const require = createRequire(import.meta.url);
 import { v4 as uuidv4 } from "uuid";
+let cron = null;
+try {
+  cron = (await import("node-cron")).default;
+} catch {
+  console.warn("[warn] node-cron not installed – scheduled enrichment disabled");
+}
 const __dotenv_filename = fileURLToPath(import.meta.url);
 const __dotenv_dirname = path.dirname(__dotenv_filename);
 dotenv.config({ path: path.resolve(__dotenv_dirname, "..", ".env") });
@@ -111,7 +119,44 @@ const jwtSecret = process.env.API_JWT_SECRET || "change-this-secret";
 
 const pool = mysql.createPool(createDbPoolConfig());
 
+// In-memory progress tracker for enrich-all (keyed by userId)
+const enrichAllProgress = new Map();
+
 app.use(cors({ origin: true, credentials: true }));
+app.use(cookieParser());
+
+// ── Global API rate limiter ────────────────────────────────────────────────
+const apiLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 minutes
+  max: 200,                  // 200 requests per window per IP
+  standardHeaders: true,     // Return rate limit info in RateLimit-* headers
+  legacyHeaders: false,      // Disable X-RateLimit-* headers
+  message: { error: "Trop de requêtes, veuillez réessayer plus tard." },
+});
+app.use("/api", apiLimiter);
+
+// ── Cookie-based JWT helpers ─────────────────────────────────────────────
+const AUTH_COOKIE = "scouthub_token";
+const ADMIN_COOKIE = "scouthub_admin_token"; // used during impersonation
+
+function cookieOptions() {
+  return {
+    httpOnly: true,
+    secure: process.env.NODE_ENV === "production",
+    sameSite: "lax",
+    maxAge: 30 * 24 * 60 * 60 * 1000, // 30 days
+    path: "/",
+  };
+}
+
+function setAuthCookie(res, token) {
+  res.cookie(AUTH_COOKIE, token, cookieOptions());
+}
+
+function clearAuthCookie(res) {
+  res.clearCookie(AUTH_COOKIE, { path: "/" });
+  res.clearCookie(ADMIN_COOKIE, { path: "/" });
+}
 
 // ── Stripe webhook (MUST be before express.json to preserve raw body) ────
 app.post("/api/stripe/webhook", express.raw({ type: "application/json" }), async (req, res) => {
@@ -546,10 +591,11 @@ function normalizeUserRow(userRow) {
   };
 }
 
-function buildSession(userRow) {
+function buildSession(userRow, res) {
   const user = normalizeUserRow(userRow);
+  const token = createSessionToken(user);
+  if (res) setAuthCookie(res, token);
   return {
-    access_token: createSessionToken(user),
     token_type: "bearer",
     expires_in: 60 * 60 * 24 * 30,
     user,
@@ -562,8 +608,12 @@ async function getUserById(userId) {
 }
 
 async function authMiddleware(req, res, next) {
-  const authHeader = req.headers.authorization || "";
-  const token = authHeader.startsWith("Bearer ") ? authHeader.slice(7) : null;
+  // Read token from httpOnly cookie first, fallback to Authorization header
+  let token = req.cookies?.[AUTH_COOKIE] || null;
+  if (!token) {
+    const authHeader = req.headers.authorization || "";
+    token = authHeader.startsWith("Bearer ") ? authHeader.slice(7) : null;
+  }
 
   if (!token) {
     return res.status(401).json({ error: "Missing token" });
@@ -667,9 +717,8 @@ function buildWhereClause(table, filters = [], userId) {
   };
 }
 
-// DB schema is managed via schema.sql — no runtime migrations.
-// To apply schema changes, run: mysql -u ... < server/schema.sql
-async function runMigrations() { /* removed — use schema.sql */ }
+// DB schema is managed via schema.sql — runtime migrations ensure columns exist.
+async function runMigrations() { return _legacyRunMigrations(); }
 async function _legacyRunMigrations() {
   // Ensure password_reset_tokens table exists
   try {
@@ -1506,7 +1555,7 @@ app.post("/api/auth/signup", rateLimitAuth, async (req, res) => {
 
     await conn.commit();
     const user = await getUserById(userId);
-    return res.json({ user: normalizeUserRow(user), session: buildSession(user) });
+    return res.json({ user: normalizeUserRow(user), session: buildSession(user, res) });
   } catch (err) {
     console.error(err);
     if (conn) {
@@ -1573,7 +1622,7 @@ app.post("/api/auth/login", rateLimitAuth, async (req, res) => {
     await pool.query("UPDATE users SET last_sign_in_at = NOW(), updated_at = NOW() WHERE id = ?", [user.id]);
     const refreshed = await getUserById(user.id);
 
-    return res.json({ session: buildSession(refreshed), user: normalizeUserRow(refreshed) });
+    return res.json({ session: buildSession(refreshed, res), user: normalizeUserRow(refreshed) });
   } catch (err) {
     console.error(err);
     return res.status(500).json({ error: "Erreur serveur" });
@@ -1581,8 +1630,12 @@ app.post("/api/auth/login", rateLimitAuth, async (req, res) => {
 });
 
 app.get("/api/auth/session", async (req, res) => {
-  const authHeader = req.headers.authorization || "";
-  const token = authHeader.startsWith("Bearer ") ? authHeader.slice(7) : null;
+  // Read token from httpOnly cookie first, fallback to Authorization header
+  let token = req.cookies?.[AUTH_COOKIE] || null;
+  if (!token) {
+    const authHeader = req.headers.authorization || "";
+    token = authHeader.startsWith("Bearer ") ? authHeader.slice(7) : null;
+  }
 
   if (!token) {
     return res.json({ session: null });
@@ -1592,7 +1645,7 @@ app.get("/api/auth/session", async (req, res) => {
     const payload = jwt.verify(token, jwtSecret);
     const user = await getUserById(payload.sub);
     if (!user) return res.json({ session: null });
-    return res.json({ session: buildSession(user) });
+    return res.json({ session: buildSession(user, res) });
   } catch {
     return res.json({ session: null });
   }
@@ -1605,6 +1658,7 @@ app.get("/api/auth/user", authMiddleware, async (req, res) => {
 });
 
 app.post("/api/auth/signout", (_req, res) => {
+  clearAuthCookie(res);
   return res.json({ ok: true });
 });
 
@@ -2512,7 +2566,7 @@ app.post("/api/auth/reset-password", rateLimitAuth, async (req, res) => {
     await pool.query("UPDATE password_reset_tokens SET used_at = NOW() WHERE id = ?", [resetRow.id]);
 
     const user = await getUserById(resetRow.user_id);
-    return res.json({ ok: true, session: buildSession(user), user: normalizeUserRow(user) });
+    return res.json({ ok: true, session: buildSession(user, res), user: normalizeUserRow(user) });
   } catch (err) {
     console.error("reset-password error:", err);
     return res.status(500).json({ error: "Erreur serveur" });
@@ -2542,7 +2596,7 @@ app.patch("/api/auth/user", authMiddleware, async (req, res) => {
     }
 
     const user = await getUserById(req.user.id);
-    return res.json({ user: normalizeUserRow(user), session: buildSession(user) });
+    return res.json({ user: normalizeUserRow(user), session: buildSession(user, res) });
   } catch (err) {
     console.error(err);
     return res.status(500).json({ error: "Erreur serveur" });
@@ -2787,10 +2841,254 @@ app.post("/api/auth/2fa/validate", rateLimitAuth, async (req, res) => {
 
     await pool.query("UPDATE users SET last_sign_in_at = NOW(), updated_at = NOW() WHERE id = ?", [user.id]);
     const refreshed = await getUserById(user.id);
-    return res.json({ session: buildSession(refreshed), user: normalizeUserRow(refreshed) });
+    return res.json({ session: buildSession(refreshed, res), user: normalizeUserRow(refreshed) });
   } catch (err) {
     console.error("2fa validate error:", err);
     return res.status(500).json({ error: "Erreur serveur" });
+  }
+});
+
+// ── Detect optional columns once at first request ──
+// Cache column existence checks (resolved once on first request)
+const _colCache = {};
+async function playersHasColumn(colName) {
+  if (_colCache[colName] !== undefined) return _colCache[colName];
+  try {
+    const [cols] = await pool.query("SHOW COLUMNS FROM `players` LIKE ?", [colName]);
+    _colCache[colName] = cols.length > 0;
+  } catch {
+    _colCache[colName] = false;
+  }
+  return _colCache[colName];
+}
+async function playersHasIsArchived() { return playersHasColumn("is_archived"); }
+
+// ── Paginated players endpoint ──────────────────────────────────────────────
+// Replaces the "fetch all in 1000-row batches" pattern with server-side
+// filtering, sorting, and offset-based pagination.
+app.get("/api/players", authMiddleware, async (req, res) => {
+  try {
+    const userId = req.user.id;
+    const limit = Math.min(Math.max(parseInt(req.query.limit) || 24, 1), 100);
+    const offset = Math.max(parseInt(req.query.offset) || 0, 0);
+    const hasArchivedCol = await playersHasIsArchived();
+
+    // ── Filters ──
+    const search = (req.query.search || "").trim();
+    const archived = req.query.archived === "1";
+    const opinions = req.query.opinions ? req.query.opinions.split(",") : [];
+    const positions = req.query.positions ? req.query.positions.split(",") : [];
+    const leagues = req.query.leagues ? req.query.leagues.split(",") : [];
+    const clubs = req.query.clubs ? req.query.clubs.split(",") : [];
+    const roles = req.query.roles ? req.query.roles.split(",") : [];
+    const tasks = req.query.tasks ? req.query.tasks.split(",") : [];
+    const levelMin = req.query.levelMin ? parseFloat(req.query.levelMin) : null;
+    const levelMax = req.query.levelMax ? parseFloat(req.query.levelMax) : null;
+    const potMin = req.query.potMin ? parseFloat(req.query.potMin) : null;
+    const potMax = req.query.potMax ? parseFloat(req.query.potMax) : null;
+    const ageMin = req.query.ageMin ? parseInt(req.query.ageMin) : null;
+    const ageMax = req.query.ageMax ? parseInt(req.query.ageMax) : null;
+    const contractRanges = req.query.contractRanges ? req.query.contractRanges.split(",") : [];
+    const ratingMin = req.query.ratingMin ? parseFloat(req.query.ratingMin) : null;
+    const ratingMax = req.query.ratingMax ? parseFloat(req.query.ratingMax) : null;
+    const goalsMin = req.query.goalsMin ? parseInt(req.query.goalsMin) : null;
+    const assistsMin = req.query.assistsMin ? parseInt(req.query.assistsMin) : null;
+    const minutesMin = req.query.minutesMin ? parseInt(req.query.minutesMin) : null;
+    const sort = req.query.sort || "name";
+
+    const hasTaskCol = await playersHasColumn("task");
+    const hasNewsCol = await playersHasColumn("has_news");
+
+    const clauses = ["`user_id` = ?"];
+    const params = [userId];
+
+    // Archived (column may not exist on older DBs)
+    if (hasArchivedCol) {
+      clauses.push("`is_archived` = ?");
+      params.push(archived ? 1 : 0);
+    }
+
+    // Text search (name, club, league)
+    if (search) {
+      clauses.push("(LOWER(`name`) LIKE ? OR LOWER(`club`) LIKE ? OR LOWER(`league`) LIKE ?)");
+      const like = `%${search.toLowerCase()}%`;
+      params.push(like, like, like);
+    }
+
+    // Enum filters
+    if (opinions.length) {
+      clauses.push(`\`general_opinion\` IN (${opinions.map(() => "?").join(",")})`);
+      params.push(...opinions);
+    }
+    if (positions.length) {
+      clauses.push(`\`position\` IN (${positions.map(() => "?").join(",")})`);
+      params.push(...positions);
+    }
+    if (leagues.length) {
+      clauses.push(`\`league\` IN (${leagues.map(() => "?").join(",")})`);
+      params.push(...leagues);
+    }
+    if (clubs.length) {
+      clauses.push(`LOWER(\`club\`) IN (${clubs.map(() => "?").join(",")})`);
+      params.push(...clubs.map(c => c.toLowerCase()));
+    }
+    if (roles.length) {
+      clauses.push(`\`role\` IN (${roles.map(() => "?").join(",")})`);
+      params.push(...roles);
+    }
+    if (tasks.length && hasTaskCol) {
+      clauses.push(`\`task\` IN (${tasks.map(() => "?").join(",")})`);
+      params.push(...tasks);
+    }
+
+    // Numeric range filters
+    if (levelMin !== null) { clauses.push("`current_level` >= ?"); params.push(levelMin); }
+    if (levelMax !== null) { clauses.push("`current_level` <= ?"); params.push(levelMax); }
+    if (potMin !== null) { clauses.push("`potential` >= ?"); params.push(potMin); }
+    if (potMax !== null) { clauses.push("`potential` <= ?"); params.push(potMax); }
+
+    // Age filter — derived from generation (YEAR(NOW()) - generation)
+    if (ageMin !== null) {
+      clauses.push("(YEAR(CURDATE()) - `generation`) >= ?");
+      params.push(ageMin);
+    }
+    if (ageMax !== null) {
+      clauses.push("(YEAR(CURDATE()) - `generation`) <= ?");
+      params.push(ageMax);
+    }
+
+    // Contract range filter
+    if (contractRanges.length) {
+      const contractClauses = [];
+      for (const range of contractRanges) {
+        switch (range) {
+          case "none": contractClauses.push("`contract_end` IS NULL"); break;
+          case "expired": contractClauses.push("`contract_end` < CURDATE()"); break;
+          case "6m": contractClauses.push("(`contract_end` >= CURDATE() AND `contract_end` <= DATE_ADD(CURDATE(), INTERVAL 6 MONTH))"); break;
+          case "12m": contractClauses.push("(`contract_end` > DATE_ADD(CURDATE(), INTERVAL 6 MONTH) AND `contract_end` <= DATE_ADD(CURDATE(), INTERVAL 12 MONTH))"); break;
+          case "2y": contractClauses.push("(`contract_end` > DATE_ADD(CURDATE(), INTERVAL 12 MONTH) AND `contract_end` <= DATE_ADD(CURDATE(), INTERVAL 24 MONTH))"); break;
+          case "2y+": contractClauses.push("`contract_end` > DATE_ADD(CURDATE(), INTERVAL 24 MONTH)"); break;
+        }
+      }
+      if (contractClauses.length) {
+        clauses.push(`(${contractClauses.join(" OR ")})`);
+      }
+    }
+
+    // Performance stats filters (JSON_EXTRACT on external_data)
+    if (ratingMin !== null) {
+      clauses.push("CAST(JSON_EXTRACT(`external_data`, '$.performance_stats.stats.rating') AS DECIMAL(5,2)) >= ?");
+      params.push(ratingMin);
+    }
+    if (ratingMax !== null) {
+      clauses.push("CAST(JSON_EXTRACT(`external_data`, '$.performance_stats.stats.rating') AS DECIMAL(5,2)) <= ?");
+      params.push(ratingMax);
+    }
+    if (goalsMin !== null) {
+      clauses.push("CAST(JSON_EXTRACT(`external_data`, '$.performance_stats.stats.goals') AS UNSIGNED) >= ?");
+      params.push(goalsMin);
+    }
+    if (assistsMin !== null) {
+      clauses.push("CAST(JSON_EXTRACT(`external_data`, '$.performance_stats.stats.assists') AS UNSIGNED) >= ?");
+      params.push(assistsMin);
+    }
+    if (minutesMin !== null) {
+      clauses.push("CAST(JSON_EXTRACT(`external_data`, '$.performance_stats.stats.minutes') AS UNSIGNED) >= ?");
+      params.push(minutesMin);
+    }
+
+    const whereSql = `WHERE ${clauses.join(" AND ")}`;
+
+    // ── Sorting ──
+    // has_news players always on top (if column exists), then by chosen sort
+    const orderParts = [];
+    if (hasNewsCol) {
+      orderParts.push("CASE WHEN `has_news` IS NOT NULL AND `has_news` != '' THEN 0 ELSE 1 END ASC");
+    }
+    switch (sort) {
+      case "name": orderParts.push("`name` ASC"); break;
+      case "age-asc": orderParts.push("`generation` DESC"); break;
+      case "age-desc": orderParts.push("`generation` ASC"); break;
+      case "level": orderParts.push("`current_level` DESC"); break;
+      case "potential": orderParts.push("`potential` DESC"); break;
+      case "recent": orderParts.push("`updated_at` DESC"); break;
+      case "contract": orderParts.push("CASE WHEN `contract_end` IS NULL THEN 1 ELSE 0 END ASC, `contract_end` ASC"); break;
+      case "rating": orderParts.push("CAST(JSON_EXTRACT(`external_data`, '$.performance_stats.stats.rating') AS DECIMAL(5,2)) DESC"); break;
+      case "goals": orderParts.push("CAST(JSON_EXTRACT(`external_data`, '$.performance_stats.stats.goals') AS UNSIGNED) DESC"); break;
+      case "assists": orderParts.push("CAST(JSON_EXTRACT(`external_data`, '$.performance_stats.stats.assists') AS UNSIGNED) DESC"); break;
+      case "minutes": orderParts.push("CAST(JSON_EXTRACT(`external_data`, '$.performance_stats.stats.minutes') AS UNSIGNED) DESC"); break;
+      case "xg": orderParts.push("CAST(JSON_EXTRACT(`external_data`, '$.performance_stats.stats.expected_goals') AS DECIMAL(5,2)) DESC"); break;
+      case "pass-accuracy": orderParts.push("CAST(JSON_EXTRACT(`external_data`, '$.performance_stats.stats.passes_accuracy') AS DECIMAL(5,2)) DESC"); break;
+      default: orderParts.push("`name` ASC");
+    }
+    const orderSql = `ORDER BY ${orderParts.join(", ")}`;
+
+    // ── IDs-only mode (for "select all" across all pages) ──
+    if (req.query.idsOnly === "1") {
+      const [idRows] = await pool.query(`SELECT \`id\` FROM \`players\` ${whereSql}`, params);
+      return res.json({ ids: idRows.map(r => r.id) });
+    }
+
+    // ── Count total (for "X / Y displayed") ──
+    const [countRows] = await pool.query(`SELECT COUNT(*) AS total FROM \`players\` ${whereSql}`, params);
+    const total = countRows[0].total;
+
+    // ── Fetch page ──
+    const [rows] = await pool.query(
+      `SELECT * FROM \`players\` ${whereSql} ${orderSql} LIMIT ? OFFSET ?`,
+      [...params, limit, offset]
+    );
+
+    const data = rows.map(parseRowJsonColumns);
+    return res.json({ data, total, hasMore: offset + data.length < total });
+  } catch (err) {
+    console.error("[GET /api/players]", err?.message, err?.sql || "");
+    return res.status(500).json({ error: err?.message || "Server error" });
+  }
+});
+
+// ── Player facets (distinct values for filter dropdowns) ──
+app.get("/api/players/facets", authMiddleware, async (req, res) => {
+  try {
+    const userId = req.user.id;
+    const archived = req.query.archived === "1";
+    const hasArchivedCol = await playersHasIsArchived();
+
+    const archivedFilter = hasArchivedCol ? " AND `is_archived` = ?" : "";
+    const archivedParam = hasArchivedCol ? [archived ? 1 : 0] : [];
+
+    const [leagueRows] = await pool.query(
+      `SELECT DISTINCT \`league\` FROM \`players\` WHERE \`user_id\` = ?${archivedFilter} AND \`league\` IS NOT NULL AND \`league\` != '' ORDER BY \`league\``,
+      [userId, ...archivedParam]
+    );
+    const [clubRows] = await pool.query(
+      `SELECT DISTINCT \`club\` FROM \`players\` WHERE \`user_id\` = ?${archivedFilter} AND \`club\` IS NOT NULL AND \`club\` != '' ORDER BY \`club\``,
+      [userId, ...archivedParam]
+    );
+    const [roleRows] = await pool.query(
+      `SELECT DISTINCT \`role\` FROM \`players\` WHERE \`user_id\` = ?${archivedFilter} AND \`role\` IS NOT NULL AND \`role\` != '' ORDER BY \`role\``,
+      [userId, ...archivedParam]
+    );
+    const [countRows] = hasArchivedCol
+      ? await pool.query(
+          "SELECT SUM(CASE WHEN `is_archived` = 0 THEN 1 ELSE 0 END) AS activeCount, SUM(CASE WHEN `is_archived` = 1 THEN 1 ELSE 0 END) AS archivedCount FROM `players` WHERE `user_id` = ?",
+          [userId]
+        )
+      : await pool.query(
+          "SELECT COUNT(*) AS activeCount, 0 AS archivedCount FROM `players` WHERE `user_id` = ?",
+          [userId]
+        );
+
+    return res.json({
+      leagues: leagueRows.map(r => r.league),
+      clubs: clubRows.map(r => r.club),
+      roles: roleRows.map(r => r.role),
+      activeCount: countRows[0]?.activeCount || 0,
+      archivedCount: countRows[0]?.archivedCount || 0,
+    });
+  } catch (err) {
+    console.error("[GET /api/players/facets]", err);
+    return res.status(500).json({ error: err?.message || "Server error" });
   }
 });
 
@@ -3805,7 +4103,7 @@ app.delete("/api/admin/users/:userId", authMiddleware, ensureAdmin, async (req, 
   }
 });
 
-// Impersonate a user (admin only) — returns a session token for the target user
+// Impersonate a user (admin only) — swaps the auth cookie to the target user
 app.post("/api/admin/impersonate", authMiddleware, ensureAdmin, async (req, res) => {
   const { userId } = req.body || {};
   if (!userId) return res.status(400).json({ error: "Missing userId" });
@@ -3814,11 +4112,40 @@ app.post("/api/admin/impersonate", authMiddleware, ensureAdmin, async (req, res)
     const targetUser = await getUserById(userId);
     if (!targetUser) return res.status(404).json({ error: "User not found" });
 
-    const session = buildSession(targetUser);
+    // Save admin's current token in a separate httpOnly cookie
+    const adminToken = req.cookies?.[AUTH_COOKIE] || null;
+    if (adminToken) {
+      res.cookie(ADMIN_COOKIE, adminToken, cookieOptions());
+    }
+
+    // Set the main cookie to the target user's token
+    const session = buildSession(targetUser, res);
     res.json({ session });
   } catch (err) {
     console.error("[admin/impersonate] error:", err);
     res.status(500).json({ error: "Server error" });
+  }
+});
+
+// Stop impersonation — restores admin's original auth cookie
+app.post("/api/admin/stop-impersonation", async (req, res) => {
+  const adminToken = req.cookies?.[ADMIN_COOKIE] || null;
+  if (!adminToken) {
+    return res.status(400).json({ error: "No admin session found" });
+  }
+
+  try {
+    const payload = jwt.verify(adminToken, jwtSecret);
+    const adminUser = await getUserById(payload.sub);
+    if (!adminUser) return res.status(401).json({ error: "Invalid admin session" });
+
+    // Restore admin cookie and clear impersonation cookie
+    setAuthCookie(res, adminToken);
+    res.clearCookie(ADMIN_COOKIE, { path: "/" });
+
+    res.json({ session: { token_type: "bearer", expires_in: 60 * 60 * 24 * 30, user: normalizeUserRow(adminUser) } });
+  } catch {
+    return res.status(401).json({ error: "Invalid admin session" });
   }
 });
 
@@ -7001,9 +7328,13 @@ app.post("/api/functions/:name", authMiddleware, async (req, res) => {
             // Try full date: "1 juil. 1999 (26)" or "01.07.1999 (26)"
             const dob = parseFrDateAny(cellText);
             if (dob) {
-              dateOfBirth = dob;
-              generation = parseInt(dob.split('-')[0]);
-              break;
+              // Validate year range: must be a plausible birth year (not a contract end date)
+              const dobYear = parseInt(dob.split('-')[0], 10);
+              if (dobYear >= 1970 && dobYear <= new Date().getFullYear() - 10) {
+                dateOfBirth = dob;
+                generation = dobYear;
+                break;
+              }
             }
             // Try age in parentheses: "(26 ans)" or "(26)"
             if (!generation) {
@@ -7015,6 +7346,19 @@ app.post("/api/functions/:name", authMiddleware, async (req, res) => {
           if (!generation) {
             const ageM = outerCells.match(/<td[^>]*class="zentriert"[^>]*>\s*(\d{1,2})\s*<\/td>/);
             if (ageM) generation = new Date().getFullYear() - parseInt(ageM[1]);
+          }
+
+          // Contract end: look for a future date in zentriert cells (not already used as DOB)
+          let contractEnd = null;
+          for (const cellText of cellTexts) {
+            const parsed = parseFrDateAny(cellText);
+            if (parsed && parsed !== dateOfBirth) {
+              const yr = parseInt(parsed.split('-')[0], 10);
+              if (yr >= new Date().getFullYear()) {
+                contractEnd = parsed;
+                break;
+              }
+            }
           }
 
           // Nationality (flag title) — first flag img with class flaggenrahmen
@@ -7041,7 +7385,7 @@ app.post("/api/functions/:name", authMiddleware, async (req, res) => {
             generation,
             nationality,
             marketValue,
-            contractEnd: null,
+            contractEnd,
           });
         }
       }
@@ -7217,7 +7561,19 @@ app.post("/api/functions/:name", authMiddleware, async (req, res) => {
     }
   }
 
+  if (name === "enrich-all-progress") {
+    const progress = enrichAllProgress.get(req.user.id);
+    if (!progress) return res.json({ running: false });
+    return res.json(progress);
+  }
+
   if (name === "enrich-all-players") {
+    // Prevent concurrent runs
+    const existing = enrichAllProgress.get(req.user.id);
+    if (existing && existing.running) {
+      return res.json({ total: existing.total, message: 'Enrichissement déjà en cours', alreadyRunning: true });
+    }
+
     const [players] = await pool.query(
       'SELECT id, name, club, nationality, generation FROM players WHERE user_id = ? ORDER BY name',
       [req.user.id]
@@ -7225,6 +7581,7 @@ app.post("/api/functions/:name", authMiddleware, async (req, res) => {
     if (!players.length) return res.json({ total: 0, message: 'No players to enrich' });
 
     const total = players.length;
+    enrichAllProgress.set(req.user.id, { running: true, total, done: 0, errors: 0 });
     res.json({ total, message: `Enrichissement de ${total} joueurs lancé en arrière-plan` });
 
     (async () => {
@@ -7253,10 +7610,14 @@ app.post("/api/functions/:name", authMiddleware, async (req, res) => {
           errors++;
           console.error(`[enrich-all] Error for ${p.name}:`, e.message);
         }
+        enrichAllProgress.set(req.user.id, { running: true, total, done, errors });
         // Polite delay to avoid TM rate-limit
         await new Promise(r => setTimeout(r, 1500));
       }
+      enrichAllProgress.set(req.user.id, { running: false, total, done, errors });
       console.log(`[enrich-all] Done: ${done} enriched, ${errors} errors`);
+      // Clean up after 5 minutes
+      setTimeout(() => enrichAllProgress.delete(req.user.id), 5 * 60 * 1000);
     })();
 
     return;
@@ -9217,6 +9578,179 @@ async function _legacyEnsureFixtureTables() {
     console.error("[startup] scout_opinions table error:", err?.message);
   }
 })();
+
+// ── Cron: nightly enrichment for premium users ─────────────────────────────
+
+// Auto-create cron_enrichment_logs table
+pool.query(`CREATE TABLE IF NOT EXISTS cron_enrichment_logs (
+  id CHAR(36) PRIMARY KEY,
+  user_id CHAR(36) NOT NULL,
+  started_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  finished_at DATETIME NULL,
+  total_players INT NOT NULL DEFAULT 0,
+  enriched INT NOT NULL DEFAULT 0,
+  errors INT NOT NULL DEFAULT 0,
+  status ENUM('running', 'done', 'failed') NOT NULL DEFAULT 'running',
+  error_detail TEXT NULL,
+  FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+)`).catch(() => {});
+
+/**
+ * Enrich all players for a single user. Writes a log row in cron_enrichment_logs.
+ * Reuses the same enrichOnePlayer() pipeline as the manual "enrich-all" endpoint.
+ */
+async function cronEnrichUser(userId) {
+  const logId = uuidv4();
+  await pool.query(
+    'INSERT INTO cron_enrichment_logs (id, user_id, status) VALUES (?, ?, ?)',
+    [logId, userId, 'running']
+  );
+
+  try {
+    const [players] = await pool.query(
+      'SELECT id, name, club, nationality, generation FROM players WHERE user_id = ? ORDER BY name',
+      [userId]
+    );
+    const total = players.length;
+    await pool.query('UPDATE cron_enrichment_logs SET total_players = ? WHERE id = ?', [total, logId]);
+
+    let enriched = 0, errors = 0;
+    for (const p of players) {
+      try {
+        const [rows] = await pool.query(
+          'SELECT id, name, club, league, nationality, date_of_birth, contract_end, external_data, photo_url, transfermarkt_id, generation, foot FROM players WHERE id = ?',
+          [p.id]
+        );
+        if (!rows[0]) continue;
+        const row = rows[0];
+        const playerInfo = {
+          name: row.name,
+          club: row.club,
+          nationality: row.nationality,
+          generation: row.generation ? parseInt(row.generation) : null,
+        };
+        const result = await enrichOnePlayer(playerInfo, row);
+        if (result.ambiguous) { errors++; continue; }
+        const { setClauses, params } = result;
+        params.push(p.id, userId);
+        await pool.query(`UPDATE players SET ${setClauses.join(', ')} WHERE id = ? AND user_id = ?`, params);
+        enriched++;
+      } catch (e) {
+        errors++;
+        console.error(`[cron-enrich] Error for ${p.name} (user ${userId}):`, e.message);
+      }
+      // Rate-limit: 2s between players to respect external APIs
+      await new Promise(r => setTimeout(r, 2000));
+    }
+
+    await pool.query(
+      'UPDATE cron_enrichment_logs SET finished_at = NOW(), enriched = ?, errors = ?, status = ? WHERE id = ?',
+      [enriched, errors, 'done', logId]
+    );
+    console.log(`[cron-enrich] User ${userId}: ${enriched}/${total} enriched, ${errors} errors`);
+
+    // Notify user
+    await createNotification(userId, {
+      type: 'enrichment',
+      title: 'Enrichissement automatique terminé',
+      message: `${enriched} joueur${enriched > 1 ? 's' : ''} enrichi${enriched > 1 ? 's' : ''}, ${errors} erreur${errors > 1 ? 's' : ''}`,
+      icon: 'Zap',
+    });
+  } catch (err) {
+    await pool.query(
+      'UPDATE cron_enrichment_logs SET finished_at = NOW(), status = ?, error_detail = ? WHERE id = ?',
+      ['failed', err.message, logId]
+    );
+    console.error(`[cron-enrich] Fatal error for user ${userId}:`, err.message);
+  }
+}
+
+/**
+ * Nightly cron: enrich all players for premium/pro users.
+ * Runs at 02:00 every night (server timezone).
+ * Processes users sequentially to avoid hammering external APIs.
+ */
+async function runNightlyEnrichment() {
+  console.log('[cron-enrich] Starting nightly enrichment...');
+  try {
+    // Check feature flag — allow admins to disable via app_settings
+    const [flagRows] = await pool.query(
+      "SELECT setting_value FROM app_settings WHERE setting_key = 'cron_enrichment_enabled'"
+    ).catch(() => [[]]);
+    if (flagRows.length && flagRows[0].setting_value === '0') {
+      console.log('[cron-enrich] Disabled via feature flag, skipping');
+      return;
+    }
+
+    // Select premium users (is_premium = 1 OR plan_type in scout/pro)
+    const [premiumUsers] = await pool.query(`
+      SELECT u.id, u.email, us.plan_type
+      FROM users u
+      JOIN user_subscriptions us ON us.user_id = u.id
+      WHERE us.is_premium = 1
+        OR us.plan_type IN ('scout', 'pro')
+    `);
+
+    if (!premiumUsers.length) {
+      console.log('[cron-enrich] No premium users found, skipping');
+      return;
+    }
+
+    console.log(`[cron-enrich] Found ${premiumUsers.length} premium user(s) to enrich`);
+
+    for (const user of premiumUsers) {
+      console.log(`[cron-enrich] Processing user ${user.email} (plan: ${user.plan_type})`);
+      await cronEnrichUser(user.id);
+      // Pause between users to spread API load
+      if (premiumUsers.length > 1) {
+        await new Promise(r => setTimeout(r, 5000));
+      }
+    }
+
+    console.log('[cron-enrich] Nightly enrichment complete');
+  } catch (err) {
+    console.error('[cron-enrich] Fatal error:', err.message);
+  }
+}
+
+// Schedule: every day at 02:00 (only on local server, not Vercel serverless)
+if (!isVercel && cron) {
+  cron.schedule('0 2 * * *', runNightlyEnrichment, { timezone: 'Europe/Paris' });
+  console.log('[startup] Cron scheduled: nightly enrichment at 02:00 Europe/Paris');
+}
+
+// ── Admin endpoint: cron enrichment logs & manual trigger ───────────────────
+
+app.get("/api/admin/cron-enrichment-logs", authMiddleware, async (req, res) => {
+  try {
+    const [roles] = await pool.query('SELECT role FROM user_roles WHERE user_id = ?', [req.user.id]);
+    if (!roles.some(r => r.role === 'admin')) return res.status(403).json({ error: 'Admin only' });
+
+    const [logs] = await pool.query(`
+      SELECT l.*, u.email AS user_email
+      FROM cron_enrichment_logs l
+      JOIN users u ON u.id = l.user_id
+      ORDER BY l.started_at DESC
+      LIMIT 50
+    `);
+    return res.json({ logs });
+  } catch (err) {
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+app.post("/api/admin/cron-enrichment-trigger", authMiddleware, async (req, res) => {
+  try {
+    const [roles] = await pool.query('SELECT role FROM user_roles WHERE user_id = ?', [req.user.id]);
+    if (!roles.some(r => r.role === 'admin')) return res.status(403).json({ error: 'Admin only' });
+
+    // Run in background
+    runNightlyEnrichment();
+    return res.json({ ok: true, message: 'Enrichissement nocturne lancé manuellement' });
+  } catch (err) {
+    return res.status(500).json({ error: err.message });
+  }
+});
 
 // Export for Vercel serverless
 export default app;

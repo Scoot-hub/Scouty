@@ -22,8 +22,8 @@ import { useGeolocation, distanceKm } from '@/hooks/use-geolocation';
 // ---------------------------------------------------------------------------
 // Fix Leaflet default icon paths broken by bundlers
 // ---------------------------------------------------------------------------
-// @ts-ignore
-delete (L.Icon.Default.prototype as any)._getIconUrl;
+const proto = L.Icon.Default.prototype as L.Icon.Default & { _getIconUrl?: unknown };
+delete proto._getIconUrl;
 L.Icon.Default.mergeOptions({
   iconRetinaUrl: 'https://unpkg.com/leaflet@1.9.4/dist/images/marker-icon-2x.png',
   iconUrl: 'https://unpkg.com/leaflet@1.9.4/dist/images/marker-icon.png',

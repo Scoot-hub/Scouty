@@ -1,6 +1,8 @@
-import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+import { useQuery, useInfiniteQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { supabase } from '@/integrations/supabase/client';
+import type { Tables, TablesInsert, TablesUpdate } from '@/integrations/supabase/types';
 import type { Player, Report } from '@/types/player';
+
 
 async function getCurrentUserId(): Promise<string> {
   const { data: { user } } = await supabase.auth.getUser();
@@ -15,7 +17,7 @@ export function usePlayers() {
     staleTime: 60 * 1000, // 1 min — avoid refetching on every mount
     queryFn: async (): Promise<Player[]> => {
       // Fetch all players (bypass Supabase default 1000 limit)
-      let allData: any[] = [];
+      let allData: Tables<'players'>[] = [];
       let from = 0;
       const pageSize = 1000;
       while (true) {
@@ -35,13 +37,161 @@ export function usePlayers() {
         id: row.id,
         current_level: Number(row.current_level),
         potential: Number(row.potential),
-        position_secondaire: (row as any).position_secondaire ?? undefined,
-        has_news: (row as any).has_news || null,
-        is_archived: !!(row as any).is_archived,
+        position_secondaire: row.position_secondaire ?? undefined,
+        has_news: row.has_news || null,
+        is_archived: !!row.is_archived,
         created_at: row.created_at,
         updated_at: row.updated_at,
       })) as Player[];
     },
+  });
+}
+
+// ── Server-side paginated players (for Players.tsx) ─────────────────────────
+
+export type PlayersFilters = {
+  search?: string;
+  archived?: boolean;
+  opinions?: string[];
+  positions?: string[];
+  leagues?: string[];
+  clubs?: string[];
+  roles?: string[];
+  tasks?: string[];
+  levelMin?: string;
+  levelMax?: string;
+  potMin?: string;
+  potMax?: string;
+  ageMin?: string;
+  ageMax?: string;
+  contractRanges?: string[];
+  ratingMin?: string;
+  ratingMax?: string;
+  goalsMin?: string;
+  assistsMin?: string;
+  minutesMin?: string;
+  sort?: string;
+};
+
+export type PaginatedResponse = {
+  data: Player[];
+  total: number;
+  hasMore: boolean;
+};
+
+const PAGE_SIZE = 24;
+
+async function fetchPlayerPage(filters: PlayersFilters, offset: number): Promise<PaginatedResponse> {
+  const params = new URLSearchParams();
+  params.set('limit', String(PAGE_SIZE));
+  params.set('offset', String(offset));
+  if (filters.search) params.set('search', filters.search);
+  if (filters.archived) params.set('archived', '1');
+  if (filters.opinions?.length) params.set('opinions', filters.opinions.join(','));
+  if (filters.positions?.length) params.set('positions', filters.positions.join(','));
+  if (filters.leagues?.length) params.set('leagues', filters.leagues.join(','));
+  if (filters.clubs?.length) params.set('clubs', filters.clubs.join(','));
+  if (filters.roles?.length) params.set('roles', filters.roles.join(','));
+  if (filters.tasks?.length) params.set('tasks', filters.tasks.join(','));
+  if (filters.levelMin) params.set('levelMin', filters.levelMin);
+  if (filters.levelMax) params.set('levelMax', filters.levelMax);
+  if (filters.potMin) params.set('potMin', filters.potMin);
+  if (filters.potMax) params.set('potMax', filters.potMax);
+  if (filters.ageMin) params.set('ageMin', filters.ageMin);
+  if (filters.ageMax) params.set('ageMax', filters.ageMax);
+  if (filters.contractRanges?.length) params.set('contractRanges', filters.contractRanges.join(','));
+  if (filters.ratingMin) params.set('ratingMin', filters.ratingMin);
+  if (filters.ratingMax) params.set('ratingMax', filters.ratingMax);
+  if (filters.goalsMin) params.set('goalsMin', filters.goalsMin);
+  if (filters.assistsMin) params.set('assistsMin', filters.assistsMin);
+  if (filters.minutesMin) params.set('minutesMin', filters.minutesMin);
+  if (filters.sort) params.set('sort', filters.sort);
+
+  const resp = await fetch(`/api/players?${params.toString()}`, {
+    credentials: 'include',
+  });
+  if (!resp.ok) {
+    const body = await resp.json().catch(() => ({}));
+    throw new Error(body.error || `HTTP ${resp.status}`);
+  }
+  const json = await resp.json();
+  return {
+    data: (json.data ?? []).map((row: Record<string, unknown>) => ({
+      ...row,
+      current_level: Number(row.current_level),
+      potential: Number(row.potential),
+      position_secondaire: row.position_secondaire ?? undefined,
+      has_news: row.has_news || null,
+      is_archived: !!row.is_archived,
+    })) as Player[],
+    total: json.total,
+    hasMore: json.hasMore,
+  };
+}
+
+export function usePlayersPaginated(filters: PlayersFilters) {
+  return useInfiniteQuery({
+    queryKey: ['players-paginated', filters],
+    queryFn: ({ pageParam = 0 }) => fetchPlayerPage(filters, pageParam),
+    getNextPageParam: (lastPage, allPages) => {
+      if (!lastPage.hasMore) return undefined;
+      return allPages.reduce((acc, page) => acc + page.data.length, 0);
+    },
+    initialPageParam: 0,
+    staleTime: 60 * 1000,
+  });
+}
+
+export async function fetchAllPlayerIds(filters: PlayersFilters): Promise<string[]> {
+  const params = new URLSearchParams();
+  params.set('idsOnly', '1');
+  if (filters.search) params.set('search', filters.search);
+  if (filters.archived) params.set('archived', '1');
+  if (filters.opinions?.length) params.set('opinions', filters.opinions.join(','));
+  if (filters.positions?.length) params.set('positions', filters.positions.join(','));
+  if (filters.leagues?.length) params.set('leagues', filters.leagues.join(','));
+  if (filters.clubs?.length) params.set('clubs', filters.clubs.join(','));
+  if (filters.roles?.length) params.set('roles', filters.roles.join(','));
+  if (filters.tasks?.length) params.set('tasks', filters.tasks.join(','));
+  if (filters.levelMin) params.set('levelMin', filters.levelMin);
+  if (filters.levelMax) params.set('levelMax', filters.levelMax);
+  if (filters.potMin) params.set('potMin', filters.potMin);
+  if (filters.potMax) params.set('potMax', filters.potMax);
+  if (filters.ageMin) params.set('ageMin', filters.ageMin);
+  if (filters.ageMax) params.set('ageMax', filters.ageMax);
+  if (filters.contractRanges?.length) params.set('contractRanges', filters.contractRanges.join(','));
+  if (filters.ratingMin) params.set('ratingMin', filters.ratingMin);
+  if (filters.ratingMax) params.set('ratingMax', filters.ratingMax);
+  if (filters.goalsMin) params.set('goalsMin', filters.goalsMin);
+  if (filters.assistsMin) params.set('assistsMin', filters.assistsMin);
+  if (filters.minutesMin) params.set('minutesMin', filters.minutesMin);
+  if (filters.sort) params.set('sort', filters.sort);
+
+  const resp = await fetch(`/api/players?${params.toString()}`, { credentials: 'include' });
+  if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+  const json = await resp.json();
+  return json.ids;
+}
+
+type FacetsResponse = {
+  leagues: string[];
+  clubs: string[];
+  roles: string[];
+  activeCount: number;
+  archivedCount: number;
+};
+
+export function usePlayerFacets(archived: boolean) {
+  return useQuery({
+    queryKey: ['player-facets', archived],
+    queryFn: async (): Promise<FacetsResponse> => {
+      const resp = await fetch(`/api/players/facets?archived=${archived ? '1' : '0'}`, {
+        credentials: 'include',
+      });
+      if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+      return resp.json();
+    },
+    staleTime: 60 * 1000,
   });
 }
 
@@ -63,8 +213,8 @@ export function usePlayer(id: string | undefined) {
         ...data,
         current_level: Number(data.current_level),
         potential: Number(data.potential),
-        position_secondaire: (data as any).position_secondaire ?? undefined,
-        has_news: !!(data as any).has_news,
+        position_secondaire: data.position_secondaire ?? undefined,
+        has_news: !!data.has_news,
       } as Player;
     },
     enabled: !!id,
@@ -133,9 +283,9 @@ export function useUpsertPlayer() {
             notes: player.notes,
             ts_report_published: player.ts_report_published,
             date_of_birth: player.date_of_birth,
-            position_secondaire: (player as any).position_secondaire,
-            task: (player as any).task ?? null,
-          } as any)
+            position_secondaire: player.position_secondaire,
+            task: player.task ?? null,
+          })
           .eq('id', player.id)
           .select()
           .single();
@@ -162,10 +312,10 @@ export function useUpsertPlayer() {
             notes: player.notes,
             ts_report_published: player.ts_report_published,
             date_of_birth: player.date_of_birth,
-            position_secondaire: (player as any).position_secondaire,
-            task: (player as any).task ?? null,
+            position_secondaire: player.position_secondaire,
+            task: player.task ?? null,
             user_id: userId,
-          } as any)
+          })
           .select()
           .single();
         if (error) throw error;
@@ -174,6 +324,8 @@ export function useUpsertPlayer() {
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['players'] });
+      queryClient.invalidateQueries({ queryKey: ['players-paginated'] });
+      queryClient.invalidateQueries({ queryKey: ['player-facets'] });
       queryClient.invalidateQueries({ queryKey: ['player'] });
     },
   });
@@ -196,6 +348,8 @@ export function useSharePlayerWithOrg() {
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['players'] });
+      queryClient.invalidateQueries({ queryKey: ['players-paginated'] });
+      queryClient.invalidateQueries({ queryKey: ['player-facets'] });
       queryClient.invalidateQueries({ queryKey: ['player'] });
       queryClient.invalidateQueries({ queryKey: ['org-players'] });
       queryClient.invalidateQueries({ queryKey: ['player-org-shares'] });
@@ -216,6 +370,8 @@ export function useUnsharePlayerFromOrg() {
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['players'] });
+      queryClient.invalidateQueries({ queryKey: ['players-paginated'] });
+      queryClient.invalidateQueries({ queryKey: ['player-facets'] });
       queryClient.invalidateQueries({ queryKey: ['player'] });
       queryClient.invalidateQueries({ queryKey: ['org-players'] });
       queryClient.invalidateQueries({ queryKey: ['player-org-shares'] });
@@ -230,12 +386,14 @@ export function useToggleArchive() {
     mutationFn: async ({ playerId, archived }: { playerId: string; archived: boolean }) => {
       const { error } = await supabase
         .from('players')
-        .update({ is_archived: archived ? 1 : 0 } as any)
+        .update({ is_archived: !!archived })
         .eq('id', playerId);
       if (error) throw error;
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['players'] });
+      queryClient.invalidateQueries({ queryKey: ['players-paginated'] });
+      queryClient.invalidateQueries({ queryKey: ['player-facets'] });
       queryClient.invalidateQueries({ queryKey: ['player'] });
     },
   });
@@ -249,7 +407,7 @@ export function usePlayerOrgShares(playerIds: string[]) {
       if (playerIds.length === 0) return [];
       const { data, error } = await supabase.rpc('get_player_org_shares', { player_ids: playerIds });
       if (error) throw error;
-      return (data as any[]) || [];
+      return data || [];
     },
     enabled: playerIds.length > 0,
     staleTime: 30 * 1000,
@@ -263,12 +421,14 @@ export function useToggleSharedWithOrg() {
     mutationFn: async ({ playerId, shared }: { playerId: string; shared: boolean }) => {
       const { error } = await supabase
         .from('players')
-        .update({ shared_with_org: shared } as any)
+        .update({ shared_with_org: shared })
         .eq('id', playerId);
       if (error) throw error;
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['players'] });
+      queryClient.invalidateQueries({ queryKey: ['players-paginated'] });
+      queryClient.invalidateQueries({ queryKey: ['player-facets'] });
       queryClient.invalidateQueries({ queryKey: ['player'] });
       queryClient.invalidateQueries({ queryKey: ['org-players'] });
       queryClient.invalidateQueries({ queryKey: ['player-org-shares'] });
@@ -292,7 +452,7 @@ export function useAddReport() {
           drive_link: report.drive_link,
           file_url: report.file_url,
           user_id: userId,
-        } as any)
+        })
         .select()
         .single();
       if (error) throw error;
@@ -393,7 +553,7 @@ export function useImportPlayers() {
         const { player, reports } = players[idx];
         try {
           // Smart duplicate detection (uses transfermarkt_id when available to avoid homonym merges)
-          const importTmId = (player as any).transfermarkt_id;
+          const importTmId = player.transfermarkt_id;
           const match = existingPlayers.find(ep =>
             isSamePlayer(player.name, player.generation, ep.name, ep.generation, player.club, ep.club, importTmId, ep.transfermarkt_id)
           );
@@ -402,7 +562,7 @@ export function useImportPlayers() {
 
           if (match) {
             // Update existing player — only overwrite fields that have meaningful values
-            const updateData: Record<string, any> = {};
+            const updateData: TablesUpdate<'players'> = {};
             if (player.nationality && player.nationality !== 'Inconnu') updateData.nationality = player.nationality;
             if (player.foot) updateData.foot = player.foot;
             if (player.club) updateData.club = player.club;
@@ -417,7 +577,7 @@ export function useImportPlayers() {
             if (player.contract_end) updateData.contract_end = player.contract_end;
             if (player.notes) updateData.notes = player.notes;
             if (player.ts_report_published) updateData.ts_report_published = player.ts_report_published;
-            if ((player as any).position_secondaire) updateData.position_secondaire = (player as any).position_secondaire;
+            if (player.position_secondaire) updateData.position_secondaire = player.position_secondaire;
 
             if (Object.keys(updateData).length > 0) {
               const { error } = await supabase
@@ -430,7 +590,7 @@ export function useImportPlayers() {
             updatedCount++;
           } else {
             // Insert new player — strip undefined/null values to avoid DB type errors
-            const insertData: Record<string, any> = {
+            const insertData: Record<string, unknown> = {
               name: player.name,
               photo_url: player.photo_url,
               generation: player.generation,
@@ -448,8 +608,8 @@ export function useImportPlayers() {
               contract_end: player.contract_end,
               notes: player.notes,
               ts_report_published: player.ts_report_published,
-              position_secondaire: (player as any).position_secondaire,
-              transfermarkt_id: (player as any).transfermarkt_id,
+              position_secondaire: player.position_secondaire,
+              transfermarkt_id: player.transfermarkt_id,
               user_id: userId,
             };
             for (const k of Object.keys(insertData)) {
@@ -460,7 +620,7 @@ export function useImportPlayers() {
 
             const { data: newPlayer, error } = await supabase
               .from('players')
-              .insert(insertData as any)
+              .insert(insertData as TablesInsert<'players'>)
               .select('id')
               .single();
             if (error) throw error;
@@ -493,7 +653,7 @@ export function useImportPlayers() {
                 if (existingReport) continue;
               }
 
-              const reportData: Record<string, any> = {
+              const reportData: Record<string, unknown> = {
                 player_id: playerId,
                 report_date: report.report_date,
                 title: report.title,
@@ -507,7 +667,7 @@ export function useImportPlayers() {
               reportData.player_id = playerId;
               reportData.user_id = userId;
 
-              await supabase.from('reports').insert(reportData as any);
+              await supabase.from('reports').insert(reportData as TablesInsert<'reports'>);
             } catch (reportErr) {
               console.warn(`[import] Skipped report for "${player.name}":`, (reportErr as Error)?.message);
             }
@@ -524,6 +684,8 @@ export function useImportPlayers() {
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['players'] });
+      queryClient.invalidateQueries({ queryKey: ['players-paginated'] });
+      queryClient.invalidateQueries({ queryKey: ['player-facets'] });
       queryClient.invalidateQueries({ queryKey: ['reports'] });
     },
   });

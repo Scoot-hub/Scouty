@@ -2,11 +2,6 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 
 const API_BASE = (import.meta.env.API_URL || '/api').replace(/\/$/, '');
 
-function getAuthHeader() {
-  const session = JSON.parse(localStorage.getItem('scouthub_session') || '{}');
-  return session.access_token ? { Authorization: `Bearer ${session.access_token}` } : {};
-}
-
 export interface FollowedClub {
   id: string;
   user_id: string;
@@ -20,7 +15,7 @@ export function useFollowedClubs() {
     queryKey: ['followed-clubs'],
     staleTime: 3 * 60 * 1000,
     queryFn: async () => {
-      const res = await fetch(`${API_BASE}/followed-clubs`, { headers: getAuthHeader() });
+      const res = await fetch(`${API_BASE}/followed-clubs`, { credentials: 'include' });
       if (!res.ok) throw new Error('Failed to fetch followed clubs');
       return res.json();
     },
@@ -33,7 +28,8 @@ export function useFollowClub() {
     mutationFn: async ({ club_name, notes }: { club_name: string; notes?: string }) => {
       const res = await fetch(`${API_BASE}/followed-clubs`, {
         method: 'POST',
-        headers: { ...getAuthHeader(), 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
         body: JSON.stringify({ club_name, notes }),
       });
       if (!res.ok) throw new Error('Failed to follow club');
@@ -49,7 +45,7 @@ export function useUnfollowClub() {
     mutationFn: async (id: string) => {
       const res = await fetch(`${API_BASE}/followed-clubs/${id}`, {
         method: 'DELETE',
-        headers: getAuthHeader(),
+        credentials: 'include',
       });
       if (!res.ok) throw new Error('Failed to unfollow club');
       return res.json();

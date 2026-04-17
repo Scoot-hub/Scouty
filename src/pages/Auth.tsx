@@ -74,19 +74,20 @@ export default function Auth() {
         const { data, error } = await supabase.auth.signInWithPassword({ email, password });
         if (error) throw error;
         // Check if 2FA is required
-        if ((data as any)?.requires2FA) {
+        const authData = data as { requires2FA?: boolean; method?: 'totp' | 'email'; userId?: string };
+        if (authData?.requires2FA) {
           setRequires2FA(true);
-          setTwoFAMethod((data as any).method || 'totp');
-          setPending2FAUserId((data as any).userId);
+          setTwoFAMethod(authData.method || 'totp');
+          setPending2FAUserId(authData.userId || '');
           return;
         }
         navigate('/players');
       }
-    } catch (error: any) {
+    } catch (error: unknown) {
       const message =
         typeof error === 'string'
           ? error
-          : (error && typeof error.message === 'string' && error.message) || 'Une erreur est survenue.';
+          : (error instanceof Error ? error.message : 'Une erreur est survenue.');
       toast({ title: t('auth.toast_error'), description: message, variant: 'destructive' });
     } finally {
       setLoading(false);
@@ -97,14 +98,14 @@ export default function Auth() {
     e.preventDefault();
     setLoading(true);
     try {
-      const { data, error } = await (supabase.auth as any).validate2FA(pending2FAUserId, otpCode);
+      const { data, error } = await (supabase.auth as unknown as { validate2FA: (userId: string, code: string) => Promise<{ data: unknown; error: Error | null }> }).validate2FA(pending2FAUserId, otpCode);
       if (error) throw error;
       navigate('/players');
-    } catch (error: any) {
+    } catch (error: unknown) {
       const message =
         typeof error === 'string'
           ? error
-          : (error && typeof error.message === 'string' && error.message) || 'Code invalide.';
+          : (error instanceof Error ? error.message : 'Code invalide.');
       toast({ title: t('auth.toast_error'), description: message, variant: 'destructive' });
       setOtpCode('');
     } finally {

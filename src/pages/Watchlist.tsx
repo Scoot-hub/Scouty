@@ -11,7 +11,7 @@ import {
   useRemovePlayerFromWatchlist,
   type Watchlist as WatchlistType,
 } from '@/hooks/use-watchlists';
-import { getPlayerAge, getOpinionEmoji, resolveLeagueName, type Player } from '@/types/player';
+import { getPlayerAge, getOpinionEmoji, resolveLeagueName, type Player, type Opinion } from '@/types/player';
 import { usePositions } from '@/hooks/use-positions';
 import { FlagIcon } from '@/components/ui/flag-icon';
 import { PlayerAvatar } from '@/components/ui/player-avatar';
@@ -422,7 +422,7 @@ function WatchlistDetail({
               <div className="space-y-2">
                 {kpis.opinions.map(([op, count]) => (
                   <div key={op} className="flex items-center justify-between">
-                    <span className="text-sm font-medium">{getOpinionEmoji(op as any)} {op}</span>
+                    <span className="text-sm font-medium">{getOpinionEmoji(op as Opinion)} {op}</span>
                     <div className="flex items-center gap-2">
                       <div className="w-24 h-1.5 rounded-full bg-muted overflow-hidden">
                         <div className="h-full rounded-full bg-primary" style={{ width: `${(count / kpis.total) * 100}%` }} />

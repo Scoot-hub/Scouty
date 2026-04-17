@@ -156,13 +156,6 @@ const sizeMap = {
 
 const API_BASE = (import.meta.env.API_URL || '/api').replace(/\/$/, '');
 
-function getAuthToken(): string | null {
-  try {
-    const raw = localStorage.getItem('scouthub_session');
-    if (!raw) return null;
-    return JSON.parse(raw)?.access_token ?? null;
-  } catch { return null; }
-}
 
 // In-memory cache: league name (lowercase) → logo URL | null
 const logoCache = new Map<string, string | null>();
@@ -204,13 +197,10 @@ function queueResolve(league: string): Promise<string | null> {
   const promise = new Promise<string | null>(resolve => {
     queue.push(async () => {
       try {
-        const token = getAuthToken();
         const resp = await fetch(`${API_BASE}/functions/resolve-league-logo`, {
           method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            ...(token ? { Authorization: `Bearer ${token}` } : {}),
-          },
+          headers: { 'Content-Type': 'application/json' },
+          credentials: 'include',
           body: JSON.stringify({ league }),
         });
         const data = resp.ok ? await resp.json() : null;

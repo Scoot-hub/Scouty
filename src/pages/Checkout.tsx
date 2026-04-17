@@ -24,13 +24,10 @@ export default function Checkout() {
 
     async function createCheckout() {
       try {
-        const session = JSON.parse(localStorage.getItem('scouthub_session') || '{}');
         const res = await fetch(`${API_BASE}/functions/create-checkout`, {
           method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            ...(session.access_token ? { Authorization: `Bearer ${session.access_token}` } : {}),
-          },
+          headers: { 'Content-Type': 'application/json' },
+          credentials: 'include',
           body: JSON.stringify({ plan, billing }),
         });
         const data = await res.json();
@@ -40,8 +37,8 @@ export default function Checkout() {
         } else {
           throw new Error('URL de paiement manquante.');
         }
-      } catch (err: any) {
-        setError(err.message || t('common.error'));
+      } catch (err: unknown) {
+        setError(err instanceof Error ? err.message : t('common.error'));
       }
     }
 

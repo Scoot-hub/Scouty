@@ -11,7 +11,7 @@ function delayMs(ms: number) {
   return new Promise<void>(resolve => setTimeout(resolve, ms));
 }
 
-async function sportsDbFetch(endpoint: string, params: Record<string, string>): Promise<any> {
+async function sportsDbFetch(endpoint: string, params: Record<string, string>): Promise<unknown> {
   // If rate-limited, bail immediately
   if (Date.now() < rateLimitedUntil) {
     throw new Error('TheSportsDB rate limited — cooling down');
@@ -19,14 +19,10 @@ async function sportsDbFetch(endpoint: string, params: Record<string, string>): 
 
   await delayMs(PER_REQUEST_DELAY);
 
-  const session = localStorage.getItem(STORAGE_KEY);
-  const token = session ? JSON.parse(session)?.access_token : null;
-  const headers: Record<string, string> = { 'Content-Type': 'application/json' };
-  if (token) headers['Authorization'] = `Bearer ${token}`;
-
   const response = await fetch(`${API_BASE}/functions/thesportsdb-proxy`, {
     method: 'POST',
-    headers,
+    headers: { 'Content-Type': 'application/json' },
+    credentials: 'include',
     body: JSON.stringify({ endpoint, params }),
   });
   if (response.status === 429 || response.status === 502) {
@@ -982,14 +978,27 @@ export interface ClubInfo {
   league?: string;
 }
 
+interface SportsDbTeam {
+  strTeam: string;
+  strSport: string;
+  strBadge?: string;
+  strTeamBadge?: string;
+  strCountry?: string;
+  strLeague?: string;
+}
+
+interface SportsDbSearchResult {
+  teams?: SportsDbTeam[];
+}
+
 async function trySearch(searchTerm: string): Promise<ClubInfo | null> {
   try {
-    const data = await sportsDbFetch('searchteams', { t: searchTerm });
+    const data = await sportsDbFetch('searchteams', { t: searchTerm }) as SportsDbSearchResult;
 
     if (!data.teams || data.teams.length === 0) return null;
 
     // Prefer soccer teams
-    const soccerTeam = data.teams.find((t: any) => t.strSport === 'Soccer') || data.teams[0];
+    const soccerTeam = data.teams.find(t => t.strSport === 'Soccer') || data.teams[0];
     return {
       name: soccerTeam.strTeam,
       badge_url: soccerTeam.strBadge || soccerTeam.strTeamBadge,

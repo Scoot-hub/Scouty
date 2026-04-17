@@ -460,8 +460,8 @@ export function ImportPlayersDialog() {
       });
       toast({ title: t('import.custom_fields_created', { count: toCreate.length }) });
       setFieldsToCreate({});
-    } catch (err: any) {
-      toast({ title: t('common.error'), description: err?.message, variant: 'destructive' });
+    } catch (err: unknown) {
+      toast({ title: t('common.error'), description: err instanceof Error ? err.message : String(err), variant: 'destructive' });
     } finally {
       setCreatingFields(false);
     }
@@ -812,8 +812,8 @@ export function ImportPlayersDialog() {
     if (previewSort) {
       const { key, dir } = previewSort;
       list.sort((a, b) => {
-        const va = (a as any)[key] ?? '';
-        const vb = (b as any)[key] ?? '';
+        const va = (a as Record<string, unknown>)[key] ?? '';
+        const vb = (b as Record<string, unknown>)[key] ?? '';
         const cmp = typeof va === 'number' && typeof vb === 'number'
           ? va - vb
           : String(va).localeCompare(String(vb), 'fr', { numeric: true });
@@ -844,7 +844,7 @@ export function ImportPlayersDialog() {
       if (key.startsWith('opinion_')) return p.reports[idx]?.opinion ?? '';
       return p.reports[idx]?.drive_link || p.reports[idx]?.title || '';
     }
-    const val = (p as any)[key];
+    const val = (p as Record<string, unknown>)[key];
     if (val === undefined || val === null) return '';
     if (typeof val === 'boolean') return val ? '✓' : '';
     return String(val);

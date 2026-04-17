@@ -1,11 +1,9 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { supabase } from '@/integrations/supabase/client';
 
 const API = (import.meta.env.API_URL || '/api').replace(/\/$/, '');
 
-async function authHeaders() {
-  const s = (await supabase.auth.getSession()).data.session;
-  return { Authorization: `Bearer ${s?.access_token}`, 'Content-Type': 'application/json' };
+function authFetchInit(): RequestInit {
+  return { credentials: 'include', headers: { 'Content-Type': 'application/json' } };
 }
 
 // ── Types ───────────────────────────────────────────────────────────────────
@@ -43,7 +41,7 @@ export function useAdminTickets() {
   return useQuery<Ticket[]>({
     queryKey: ['admin-tickets'],
     queryFn: async () => {
-      const res = await fetch(`${API}/admin/tickets`, { headers: await authHeaders() });
+      const res = await fetch(`${API}/admin/tickets`, { ...authFetchInit() });
       if (!res.ok) throw new Error('Failed');
       return res.json();
     },
@@ -55,7 +53,7 @@ export function useAdminTicketUnreadCount() {
   return useQuery<number>({
     queryKey: ['admin-tickets-unread'],
     queryFn: async () => {
-      const res = await fetch(`${API}/admin/tickets/unread-count`, { headers: await authHeaders() });
+      const res = await fetch(`${API}/admin/tickets/unread-count`, { ...authFetchInit() });
       if (!res.ok) return 0;
       const d = await res.json();
       return d.count ?? 0;
@@ -69,7 +67,7 @@ export function useAdminTicketDetail(id: string | null) {
   return useQuery<{ ticket: Ticket; messages: TicketMessage[] }>({
     queryKey: ['admin-ticket', id],
     queryFn: async () => {
-      const res = await fetch(`${API}/admin/tickets/${id}`, { headers: await authHeaders() });
+      const res = await fetch(`${API}/admin/tickets/${id}`, { ...authFetchInit() });
       if (!res.ok) throw new Error('Failed');
       return res.json();
     },
@@ -83,7 +81,7 @@ export function useAdminReplyTicket() {
   return useMutation({
     mutationFn: async ({ ticketId, body }: { ticketId: string; body: string }) => {
       const res = await fetch(`${API}/admin/tickets/${ticketId}/reply`, {
-        method: 'POST', headers: await authHeaders(), body: JSON.stringify({ body }),
+        method: 'POST', ...authFetchInit(), body: JSON.stringify({ body }),
       });
       if (!res.ok) throw new Error('Failed');
       return res.json();
@@ -100,7 +98,7 @@ export function useAdminSendTicketEmail() {
   return useMutation({
     mutationFn: async (ticketId: string) => {
       const res = await fetch(`${API}/admin/tickets/${ticketId}/email`, {
-        method: 'POST', headers: await authHeaders(),
+        method: 'POST', ...authFetchInit(),
       });
       if (!res.ok) throw new Error('Failed');
       return res.json();
@@ -113,7 +111,7 @@ export function useAdminUpdateTicketStatus() {
   return useMutation({
     mutationFn: async ({ ticketId, status }: { ticketId: string; status: string }) => {
       const res = await fetch(`${API}/admin/tickets/${ticketId}/status`, {
-        method: 'PATCH', headers: await authHeaders(), body: JSON.stringify({ status }),
+        method: 'PATCH', ...authFetchInit(), body: JSON.stringify({ status }),
       });
       if (!res.ok) throw new Error('Failed');
       return res.json();
@@ -132,7 +130,7 @@ export function useMyTickets() {
   return useQuery<Ticket[]>({
     queryKey: ['my-tickets'],
     queryFn: async () => {
-      const res = await fetch(`${API}/my-tickets`, { headers: await authHeaders() });
+      const res = await fetch(`${API}/my-tickets`, { ...authFetchInit() });
       if (!res.ok) throw new Error('Failed');
       return res.json();
     },
@@ -144,7 +142,7 @@ export function useMyTicketDetail(id: string | null) {
   return useQuery<{ ticket: Ticket; messages: TicketMessage[] }>({
     queryKey: ['my-ticket', id],
     queryFn: async () => {
-      const res = await fetch(`${API}/my-tickets/${id}`, { headers: await authHeaders() });
+      const res = await fetch(`${API}/my-tickets/${id}`, { ...authFetchInit() });
       if (!res.ok) throw new Error('Failed');
       return res.json();
     },
@@ -158,7 +156,7 @@ export function useMyTicketReply() {
   return useMutation({
     mutationFn: async ({ ticketId, body }: { ticketId: string; body: string }) => {
       const res = await fetch(`${API}/my-tickets/${ticketId}/reply`, {
-        method: 'POST', headers: await authHeaders(), body: JSON.stringify({ body }),
+        method: 'POST', ...authFetchInit(), body: JSON.stringify({ body }),
       });
       if (!res.ok) throw new Error('Failed');
       return res.json();

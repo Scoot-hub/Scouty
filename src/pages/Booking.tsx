@@ -20,13 +20,19 @@ export default function Booking() {
     if (!CAL_USERNAME || initDone.current) return;
     initDone.current = true;
 
-    const w = window as any;
+    interface CalApi {
+      (...args: unknown[]): void;
+      q: unknown[][];
+      ns: Record<string, CalApi>;
+      loaded: boolean;
+    }
+    const w = window as unknown as Window & { Cal: CalApi };
 
     // Step 1: Bootstrap the Cal queue (same logic as the official snippet, but executed directly)
-    w.Cal = w.Cal || function (...args: any[]) {
+    w.Cal = w.Cal || function (...args: unknown[]) {
       const cal = w.Cal;
       if (!cal.loaded) {
-        cal.ns = {};
+        cal.ns = {} as Record<string, CalApi>;
         cal.q = cal.q || [];
         const s = document.createElement('script');
         s.src = `${CAL_URL}/embed/embed.js`;
@@ -35,12 +41,12 @@ export default function Booking() {
         cal.loaded = true;
       }
       if (args[0] === 'init') {
-        const api = function (...a: any[]) { api.q.push(a); } as any;
+        const api = function (...a: unknown[]) { api.q.push(a); } as unknown as CalApi;
         const namespace = args[1];
         api.q = api.q || [];
         if (typeof namespace === 'string') {
           cal.ns[namespace] = cal.ns[namespace] || api;
-          (cal.ns[namespace] as any).q.push(args);
+          cal.ns[namespace].q.push(args);
           cal.q.push(['initNamespace', namespace]);
         } else {
           cal.q.push(args);
@@ -48,9 +54,9 @@ export default function Booking() {
         return;
       }
       cal.q.push(args);
-    };
+    } as CalApi;
     w.Cal.q = w.Cal.q || [];
-    w.Cal.ns = w.Cal.ns || {};
+    w.Cal.ns = w.Cal.ns || {} as Record<string, CalApi>;
     w.Cal.loaded = w.Cal.loaded || false;
 
     // Step 2: Initialize namespace + inline embed

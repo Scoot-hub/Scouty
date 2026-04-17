@@ -66,12 +66,6 @@ const CATEGORY_COLORS: Record<PostCategory, string> = {
 // Mention link with tooltip on hover + navigate to profile on click
 const API_BASE = (import.meta.env.VITE_API_URL || '/api').replace(/\/$/, '');
 
-function getSessionHeader(): Record<string, string> {
-  try {
-    const session = JSON.parse(localStorage.getItem('scouthub_session') || '{}');
-    return session.access_token ? { Authorization: `Bearer ${session.access_token}` } : {};
-  } catch { return {}; }
-}
 
 // Extracts unique mentioned user IDs from rich-format text
 function extractMentionedUserIds(text: string): string[] {
@@ -88,7 +82,7 @@ async function sendCommunityNotification(targetUserId: string, type: string, tit
   try {
     await fetch(`${API_BASE}/community/notify`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', ...getSessionHeader() },
+      headers: { 'Content-Type': 'application/json' }, credentials: 'include' as const,
       body: JSON.stringify({ target_user_id: targetUserId, type, title, message, link }),
     });
   } catch { /* non-blocking */ }
@@ -99,7 +93,7 @@ async function sendMentionNotifications(mentionedIds: string[], authorName: stri
   try {
     await fetch(`${API_BASE}/community/notify-mention`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', ...getSessionHeader() },
+      headers: { 'Content-Type': 'application/json' }, credentials: 'include' as const,
       body: JSON.stringify({ mentioned_user_ids: mentionedIds, author_name: authorName, context_type: contextType }),
     });
   } catch { /* non-blocking */ }
@@ -184,7 +178,7 @@ function renderContent(text: string): React.ReactNode[] {
 // @[Name](userId) — rich format only (plain @Name is rendered as-is)
 function MentionLink({ name, userId }: { name: string; userId: string }) {
   const navigate = useNavigate();
-  const [profile, setProfile] = useState<any>(null);
+  const [profile, setProfile] = useState<{ photo_url?: string | null; full_name?: string | null; first_name?: string | null; last_name?: string | null; civility?: string | null; role?: string | null; company?: string | null; club?: string | null; reference_club?: string | null } | null>(null);
   const loadingRef = useRef(false);
 
   const fetchProfile = useCallback(async () => {
@@ -329,7 +323,7 @@ export default function Community() {
   const { data: mentionableUsers = [] } = useQuery({
     queryKey: ['community-mentionable-users'],
     queryFn: async () => {
-      const { data, error } = await supabase.rpc('community_mentionable_users' as any, {});
+      const { data, error } = await supabase.rpc('community_mentionable_users', {} as Record<string, never>);
       if (error) throw error;
       return (data || []) as { author_name: string; user_id: string | null; club: string | null; role: string | null }[];
     },
@@ -374,7 +368,7 @@ export default function Community() {
     queryKey: ['community-posts', filter],
     queryFn: async () => {
       let query = supabase
-        .from('community_posts' as any)
+        .from('community_posts')
         .select('*')
         .order('created_at', { ascending: false })
         .limit(50);
@@ -385,7 +379,7 @@ export default function Community() {
       if (error) throw error;
       return ((data || []) as unknown as CommunityPost[]).map(p => ({
         ...p,
-        is_archived: !!(p as any).is_archived,
+        is_archived: !!p.is_archived,
       }));
     },
     enabled: !!isPremium,
@@ -400,11 +394,11 @@ export default function Community() {
     queryFn: async () => {
       if (!user) return [] as string[];
       const { data, error } = await supabase
-        .from('community_likes' as any)
+        .from('community_likes')
         .select('post_id')
         .eq('user_id', user.id);
       if (error) throw error;
-      return (data || []).map((r: any) => r.post_id as string);
+      return (data || []).map((r) => r.post_id);
     },
     enabled: !!user && !!isPremium,
     staleTime: 30 * 1000,
@@ -422,7 +416,7 @@ export default function Community() {
     queryFn: async () => {
       if (!postIds.length) return [];
       const { data, error } = await supabase
-        .from('community_replies' as any)
+        .from('community_replies')
         .select('*')
         .in('post_id', postIds)
         .order('created_at', { ascending: true });
@@ -449,7 +443,7 @@ export default function Community() {
         .single();
       const authorName = profile?.full_name || user!.email?.split('@')[0] || 'Scout';
       const serialized = serializeContent(content.trim());
-      const { error } = await supabase.from('community_posts' as any).insert({
+      const { error } = await supabase.from('community_posts').insert({
         user_id: user!.id,
         author_name: authorName,
         category,
@@ -477,7 +471,7 @@ export default function Community() {
       }, 300);
       setTimeout(() => setJustPosted(null), 1500);
     },
-    onError: (err: any) => toast.error(err.message || t('common.error')),
+    onError: (err: unknown) => toast.error(err instanceof Error ? err.message : String(err)),
   });
 
   // --- Like post ---
@@ -493,7 +487,7 @@ export default function Community() {
         return next;
       });
 
-      const { error } = await supabase.rpc('like_community_post' as any, { post_id: post.id, liker_id: user!.id });
+      const { error } = await supabase.rpc('like_community_post', { post_id: post.id, liker_id: user!.id });
       if (error) throw error;
       return { wasLiked, post };
     },
@@ -507,8 +501,8 @@ export default function Community() {
         );
       }
     },
-    onError: (err: any) => {
-      toast.error(err.message || t('common.error'));
+    onError: (err: unknown) => {
+      toast.error(err instanceof Error ? err.message : String(err));
       queryClient.invalidateQueries({ queryKey: ['community-my-likes'] });
     },
   });
@@ -527,14 +521,14 @@ export default function Community() {
         .single();
       const authorName = profile?.full_name || user!.email?.split('@')[0] || 'Scout';
       const serialized = serializeContent(replyContent.trim());
-      const { error } = await supabase.from('community_replies' as any).insert({
+      const { error } = await supabase.from('community_replies').insert({
         post_id: postId,
         user_id: user!.id,
         author_name: authorName,
         content: serialized,
       });
       if (error) throw error;
-      await supabase.rpc('increment_reply_count' as any, { post_id: postId });
+      await supabase.rpc('increment_reply_count', { post_id: postId });
       return { postId, authorName, mentionedIds: extractMentionedUserIds(serialized) };
     },
     onSuccess: ({ postId, authorName, mentionedIds }) => {
@@ -559,15 +553,15 @@ export default function Community() {
       setJustReplied(postId);
       setTimeout(() => setJustReplied(null), 1200);
     },
-    onError: (err: any) => toast.error(err.message || t('common.error')),
+    onError: (err: unknown) => toast.error(err instanceof Error ? err.message : String(err)),
   });
 
   // --- Archive/unarchive post (admin only) ---
   const toggleArchivePost = useMutation({
     mutationFn: async ({ postId, archived }: { postId: string; archived: boolean }) => {
       const { error } = await supabase
-        .from('community_posts' as any)
-        .update({ is_archived: archived ? 1 : 0 } as any)
+        .from('community_posts')
+        .update({ is_archived: !!archived })
         .eq('id', postId);
       if (error) throw error;
     },
@@ -575,19 +569,19 @@ export default function Community() {
       toast.success(archived ? t('community.post_archived') : t('community.post_unarchived'));
       queryClient.invalidateQueries({ queryKey: ['community-posts'] });
     },
-    onError: (err: any) => toast.error(err.message || t('common.error')),
+    onError: (err: unknown) => toast.error(err instanceof Error ? err.message : String(err)),
   });
 
   // --- Delete post (admin or own post) ---
   const deletePost = useMutation({
     mutationFn: async (postId: string) => {
       const { error: repliesError } = await supabase
-        .from('community_replies' as any)
+        .from('community_replies')
         .delete()
         .eq('post_id', postId);
       if (repliesError) throw repliesError;
       const { error } = await supabase
-        .from('community_posts' as any)
+        .from('community_posts')
         .delete()
         .eq('id', postId);
       if (error) throw error;
@@ -598,18 +592,18 @@ export default function Community() {
       queryClient.invalidateQueries({ queryKey: ['community-posts'] });
       queryClient.invalidateQueries({ queryKey: ['community-replies'] });
     },
-    onError: (err: any) => toast.error(err.message || t('common.error')),
+    onError: (err: unknown) => toast.error(err instanceof Error ? err.message : String(err)),
   });
 
   // --- Delete reply (admin only) ---
   const deleteReply = useMutation({
     mutationFn: async ({ replyId, postId }: { replyId: string; postId: string }) => {
       const { error } = await supabase
-        .from('community_replies' as any)
+        .from('community_replies')
         .delete()
         .eq('id', replyId);
       if (error) throw error;
-      await supabase.rpc('decrement_reply_count' as any, { post_id: postId });
+      await supabase.rpc('decrement_reply_count', { post_id: postId });
     },
     onSuccess: () => {
       toast.success(t('community.delete_reply_success'));
@@ -617,31 +611,31 @@ export default function Community() {
       queryClient.invalidateQueries({ queryKey: ['community-posts'] });
       queryClient.invalidateQueries({ queryKey: ['community-replies'] });
     },
-    onError: (err: any) => toast.error(err.message || t('common.error')),
+    onError: (err: unknown) => toast.error(err instanceof Error ? err.message : String(err)),
   });
 
   // --- Delete all content (admin only) ---
   const deleteAllContent = useMutation({
     mutationFn: async () => {
       const { data: replyRows } = await supabase
-        .from('community_replies' as any)
+        .from('community_replies')
         .select('id');
-      const replyIds = (replyRows || []).map((r: any) => r.id);
+      const replyIds = (replyRows || []).map((r) => r.id);
       if (replyIds.length) {
         const { error: repliesError } = await supabase
-          .from('community_replies' as any)
+          .from('community_replies')
           .delete()
           .in('id', replyIds);
         if (repliesError) throw repliesError;
       }
 
       const { data: postRows } = await supabase
-        .from('community_posts' as any)
+        .from('community_posts')
         .select('id');
-      const postIds = (postRows || []).map((p: any) => p.id);
+      const postIds = (postRows || []).map((p) => p.id);
       if (postIds.length) {
         const { error } = await supabase
-          .from('community_posts' as any)
+          .from('community_posts')
           .delete()
           .in('id', postIds);
         if (error) throw error;
@@ -653,7 +647,7 @@ export default function Community() {
       queryClient.invalidateQueries({ queryKey: ['community-posts'] });
       queryClient.invalidateQueries({ queryKey: ['community-replies'] });
     },
-    onError: (err: any) => toast.error(err.message || t('common.error')),
+    onError: (err: unknown) => toast.error(err instanceof Error ? err.message : String(err)),
   });
 
   // --- Premium gate ---

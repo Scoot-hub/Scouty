@@ -130,15 +130,15 @@ export default function ClubProfile() {
   const resolvedClub = clubName ? resolveClubName(clubName) : '';
 
   // Helper: convert TM profile to TeamData shape
-  const tmToTeam = (p: any): TeamData => ({
-    idTeam: p.clubId, strTeam: p.clubName, strTeamBadge: p.badge || '',
-    strStadium: p.stadium || '', strStadiumThumb: '', intStadiumCapacity: '',
-    strCountry: p.country || '', strLeague: p.league || '', intFormedYear: '',
+  const tmToTeam = (p: Record<string, unknown>): TeamData => ({
+    idTeam: String(p.clubId ?? ''), strTeam: String(p.clubName ?? ''), strTeamBadge: String(p.badge ?? ''),
+    strStadium: String(p.stadium ?? ''), strStadiumThumb: '', intStadiumCapacity: '',
+    strCountry: String(p.country ?? ''), strLeague: String(p.league ?? ''), intFormedYear: '',
     strDescriptionFR: null, strDescriptionEN: null, strDescriptionES: null,
     strWebsite: null, strFacebook: null, strTwitter: null, strInstagram: null,
     strKit: null, strBanner: null, strManager: null, strKeywords: null,
     strColour1: null, strColour2: null,
-    _tmUrl: p.tmUrl, _tmSquadSize: p.squadSize, _tmAvgAge: p.avgAge, _tmMarketValue: p.marketValue,
+    _tmUrl: p.tmUrl ? String(p.tmUrl) : null, _tmSquadSize: p.squadSize ? Number(p.squadSize) : null, _tmAvgAge: p.avgAge ? String(p.avgAge) : null, _tmMarketValue: p.marketValue ? String(p.marketValue) : null,
   });
 
   // Build search term variants for TheSportsDB (which uses non-standard club names)
@@ -219,14 +219,15 @@ export default function ClubProfile() {
           const { data } = await supabase.functions.invoke('thesportsdb-proxy', {
             body: { endpoint: 'searchteams', params: { t: term } },
           });
-          const soccer = (data?.teams || []).filter((t: any) => t.strSport === 'Soccer' || t.strSport === 'Football');
+          const teams = (data?.teams || []) as Record<string, unknown>[];
+          const soccer = teams.filter((t) => t.strSport === 'Soccer' || t.strSport === 'Football');
           if (soccer.length === 0) continue;
 
           // Pick the best match by name similarity instead of blindly taking the first
-          const scored = soccer.map((t: any) => ({
+          const scored = soccer.map((t) => ({
             team: t,
-            score: Math.max(nameMatchScore(t.strTeam, canonical), nameMatchScore(t.strTeam, clubName)),
-          })).sort((a: any, b: any) => b.score - a.score);
+            score: Math.max(nameMatchScore(String(t.strTeam ?? ''), canonical), nameMatchScore(String(t.strTeam ?? ''), clubName)),
+          })).sort((a, b) => b.score - a.score);
 
           if (scored[0]?.score >= 40) {
             const best = scored[0].team as TeamData;
@@ -456,8 +457,8 @@ export default function ClubProfile() {
                       <Button variant="outline" size="sm"><Globe className="w-4 h-4 mr-1" /> {t('club.website')}</Button>
                     </a>
                   )}
-                  {(team as any)._tmUrl && (
-                    <a href={(team as any)._tmUrl} target="_blank" rel="noopener noreferrer">
+                  {team._tmUrl && (
+                    <a href={team._tmUrl} target="_blank" rel="noopener noreferrer">
                       <Button variant="outline" size="sm"><ExternalLink className="w-4 h-4 mr-1" /> Transfermarkt</Button>
                     </a>
                   )}
@@ -470,10 +471,9 @@ export default function ClubProfile() {
                         const name = team.strTeam || clubName;
                         if (!confirm(t('club.confirm_delete', { name }))) return;
                         try {
-                          const s = (await supabase.auth.getSession()).data.session;
                           const resp = await fetch(`${API}/admin/club/${encodeURIComponent(name)}`, {
                             method: 'DELETE',
-                            headers: { Authorization: `Bearer ${s?.access_token}` },
+                            credentials: 'include',
                           });
                           if (resp.ok) {
                             const data = await resp.json();
@@ -554,18 +554,18 @@ export default function ClubProfile() {
               )}
 
               {/* TM stats (if from Transfermarkt) */}
-              {((team as any)._tmSquadSize || (team as any)._tmAvgAge || (team as any)._tmMarketValue) && (
+              {(team._tmSquadSize || team._tmAvgAge || team._tmMarketValue) && (
                 <Card>
                   <CardHeader className="pb-2"><CardTitle className="flex items-center gap-2 text-sm"><Users className="w-4 h-4 text-primary" />{t('club.squad_info')}</CardTitle></CardHeader>
                   <CardContent className="space-y-2 text-xs">
-                    {(team as any)._tmSquadSize && (
-                      <div className="flex justify-between"><span className="text-muted-foreground">{t('club.squad_size')}</span><span className="font-medium">{(team as any)._tmSquadSize}</span></div>
+                    {team._tmSquadSize && (
+                      <div className="flex justify-between"><span className="text-muted-foreground">{t('club.squad_size')}</span><span className="font-medium">{team._tmSquadSize}</span></div>
                     )}
-                    {(team as any)._tmAvgAge && (
-                      <div className="flex justify-between"><span className="text-muted-foreground">{t('club.avg_age')}</span><span className="font-medium">{(team as any)._tmAvgAge}</span></div>
+                    {team._tmAvgAge && (
+                      <div className="flex justify-between"><span className="text-muted-foreground">{t('club.avg_age')}</span><span className="font-medium">{team._tmAvgAge}</span></div>
                     )}
-                    {(team as any)._tmMarketValue && (
-                      <div className="flex justify-between"><span className="text-muted-foreground">{t('club.market_value')}</span><span className="font-medium">{(team as any)._tmMarketValue}</span></div>
+                    {team._tmMarketValue && (
+                      <div className="flex justify-between"><span className="text-muted-foreground">{t('club.market_value')}</span><span className="font-medium">{team._tmMarketValue}</span></div>
                     )}
                   </CardContent>
                 </Card>

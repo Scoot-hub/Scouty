@@ -33,7 +33,7 @@ export function useScoutOpinions(playerId: string | undefined, organizationId: s
         organization_id: organizationId,
       });
       if (error) throw error;
-      return ((data as any[]) || []).map(row => ({
+      return ((data as ScoutOpinion[]) || []).map((row) => ({
         ...row,
         current_level: Number(row.current_level),
         potential: Number(row.potential),

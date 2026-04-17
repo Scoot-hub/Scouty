@@ -10,7 +10,6 @@ interface User {
 }
 
 interface Session {
-  access_token: string;
   token_type: string;
   expires_in: number;
   user: User;
@@ -23,13 +22,13 @@ interface AuthContextType {
   signOut: () => Promise<void>;
   /** true when an admin is viewing as another user */
   isImpersonating: boolean;
-  /** Start impersonating – stores current admin session and switches to target */
+  /** Start impersonating – calls server to swap auth cookie */
   startImpersonation: (targetSession: Session) => void;
-  /** Stop impersonating – restores the original admin session */
+  /** Stop impersonating – calls server to restore admin cookie */
   stopImpersonation: () => void;
 }
 
-const IMPERSONATE_KEY = 'scouthub_admin_session';
+const IMPERSONATE_KEY = 'scouthub_impersonating';
 
 const AuthContext = createContext<AuthContextType>({
   user: null,
@@ -65,13 +64,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const startImpersonation = useCallback((targetSession: Session) => {
-    // Save the current admin session in a separate key
-    const currentRaw = localStorage.getItem('scouthub_session');
-    if (currentRaw) {
-      localStorage.setItem(IMPERSONATE_KEY, currentRaw);
-    }
-    // Switch to the impersonated user's session
-    localStorage.setItem('scouthub_session', JSON.stringify(targetSession));
+    // Mark that we are impersonating (admin cookie is stored server-side)
+    localStorage.setItem(IMPERSONATE_KEY, 'true');
+    // Update local UI state with the impersonated user info
+    const storedSession = { token_type: targetSession.token_type, expires_in: targetSession.expires_in, user: targetSession.user };
+    localStorage.setItem('scouthub_session', JSON.stringify(storedSession));
     setSession(targetSession);
     setUser(targetSession.user);
     setIsImpersonating(true);
@@ -79,18 +76,25 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     window.location.href = '/players';
   }, []);
 
-  const stopImpersonation = useCallback(() => {
-    const adminRaw = localStorage.getItem(IMPERSONATE_KEY);
-    if (adminRaw) {
-      localStorage.setItem('scouthub_session', adminRaw);
-      localStorage.removeItem(IMPERSONATE_KEY);
-      const adminSession = JSON.parse(adminRaw) as Session;
-      setSession(adminSession);
-      setUser(adminSession.user);
-      setIsImpersonating(false);
-      // Force reload to reset all query caches
-      window.location.href = '/admin';
+  const stopImpersonation = useCallback(async () => {
+    try {
+      const res = await fetch('/api/admin/stop-impersonation', {
+        method: 'POST',
+        credentials: 'include',
+      });
+      const data = await res.json();
+      if (data.session) {
+        localStorage.setItem('scouthub_session', JSON.stringify(data.session));
+        setSession(data.session);
+        setUser(data.session.user);
+      }
+    } catch (err) {
+      console.error('Failed to stop impersonation:', err);
     }
+    localStorage.removeItem(IMPERSONATE_KEY);
+    setIsImpersonating(false);
+    // Force reload to reset all query caches
+    window.location.href = '/admin';
   }, []);
 
   const signOut = async () => {

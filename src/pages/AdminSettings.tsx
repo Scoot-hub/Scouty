@@ -21,9 +21,8 @@ import {
 
 const API = (import.meta.env.API_URL || '/api').replace(/\/$/, '');
 
-async function authHeaders() {
-  const s = (await supabase.auth.getSession()).data.session;
-  return { Authorization: `Bearer ${s?.access_token}`, 'Content-Type': 'application/json' };
+function authFetchInit(): RequestInit {
+  return { credentials: 'include', headers: { 'Content-Type': 'application/json' } };
 }
 
 // ── Feature flags config ────────────────────────────────────────────────────
@@ -75,7 +74,7 @@ export default function AdminSettings() {
   const { data: flags = {} } = useQuery<Record<string, boolean>>({
     queryKey: ['feature-flags'],
     queryFn: async () => {
-      const res = await fetch(`${API}/admin/feature-flags`, { headers: await authHeaders() });
+      const res = await fetch(`${API}/admin/feature-flags`, { ...authFetchInit() });
       if (!res.ok) return {};
       return res.json();
     },
@@ -86,7 +85,7 @@ export default function AdminSettings() {
   const toggleFlag = useMutation({
     mutationFn: async ({ key, enabled }: { key: string; enabled: boolean }) => {
       const res = await fetch(`${API}/admin/feature-flags`, {
-        method: 'POST', headers: await authHeaders(), body: JSON.stringify({ key, enabled }),
+        method: 'POST', ...authFetchInit(), body: JSON.stringify({ key, enabled }),
       });
       if (!res.ok) throw new Error('Failed');
     },
@@ -97,14 +96,14 @@ export default function AdminSettings() {
     setSendingEmail(true);
     try {
       const res = await fetch(`${API}/admin/test-email`, {
-        method: 'POST', headers: await authHeaders(),
+        method: 'POST', ...authFetchInit(),
         body: JSON.stringify({ to: testEmail || undefined }),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error);
       toast.success(t('admin_settings.email_sent'));
-    } catch (err: any) {
-      toast.error(err.message || t('common.error'));
+    } catch (err: unknown) {
+      toast.error(err instanceof Error ? err.message : t('common.error'));
     } finally {
       setSendingEmail(false);
     }
@@ -114,14 +113,14 @@ export default function AdminSettings() {
     setPurging(true);
     try {
       const res = await fetch(`${API}/admin/purge`, {
-        method: 'POST', headers: await authHeaders(), body: JSON.stringify({ type }),
+        method: 'POST', ...authFetchInit(), body: JSON.stringify({ type }),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error);
       toast.success(t('admin_settings.purge_success', { count: data.deleted, type }));
       setPurgeConfirm(null);
-    } catch (err: any) {
-      toast.error(err.message || t('common.error'));
+    } catch (err: unknown) {
+      toast.error(err instanceof Error ? err.message : t('common.error'));
     } finally {
       setPurging(false);
     }

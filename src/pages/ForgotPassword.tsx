@@ -26,11 +26,11 @@ export default function ForgotPassword() {
       });
       if (error) throw error;
       setSent(true);
-    } catch (error: any) {
+    } catch (error: unknown) {
       const message =
         typeof error === 'string'
           ? error
-          : (error && typeof error.message === 'string' && error.message) || 'Une erreur est survenue.';
+          : (error instanceof Error ? error.message : 'Une erreur est survenue.');
       toast({ title: t('auth.toast_error'), description: message, variant: 'destructive' });
     } finally {
       setLoading(false);

@@ -245,7 +245,7 @@ export default function EditPlayer() {
                 </Select>
               </div>
               <div><Label>{t('player_form.position_secondary')}</Label>
-                <Select value={positionSecondaire} onValueChange={(v) => setPositionSecondaire(v === 'none' ? '' as any : v as Position)}>
+                <Select value={positionSecondaire} onValueChange={(v) => setPositionSecondaire(v === 'none' ? '' : v as Position)}>
                   <SelectTrigger className="mt-1"><SelectValue placeholder={t('player_form.position_none')} /></SelectTrigger>
                   <SelectContent>
                     <SelectItem value="none">{t('player_form.position_none')}</SelectItem>
