@@ -13,6 +13,7 @@ import crypto from "crypto";
 import { fileURLToPath } from "url";
 import { createRequire } from "module";
 import { createDbPoolConfig } from "./db-config.js";
+import { CLUB_NAME_MAP } from "./club-aliases.js";
 const require = createRequire(import.meta.url);
 import { v4 as uuidv4 } from "uuid";
 let cron = null;
@@ -128,10 +129,11 @@ app.use(cookieParser());
 // ── Global API rate limiter ────────────────────────────────────────────────
 const apiLimiter = rateLimit({
   windowMs: 15 * 60 * 1000, // 15 minutes
-  max: 200,                  // 200 requests per window per IP
+  max: 2000,                 // 2000 requests per window per IP
   standardHeaders: true,     // Return rate limit info in RateLimit-* headers
   legacyHeaders: false,      // Disable X-RateLimit-* headers
   message: { error: "Trop de requêtes, veuillez réessayer plus tard." },
+  skip: () => process.env.NODE_ENV !== "production",
 });
 app.use("/api", apiLimiter);
 
@@ -3048,6 +3050,106 @@ app.get("/api/players", authMiddleware, async (req, res) => {
 });
 
 // ── Player facets (distinct values for filter dropdowns) ──
+// Resolve a list of player display names against the user's own roster.
+// Returns { matches: { [inputName]: { id, name } } }. Unmatched names are omitted.
+// Matching: (1) exact normalized match; (2) "first-initial + last-name" fallback,
+// disambiguated by home/away club when multiple candidates share the key.
+app.post("/api/players/resolve-names", authMiddleware, async (req, res) => {
+  try {
+    const userId = req.user.id;
+    const rawNames = Array.isArray(req.body?.names) ? req.body.names : [];
+    const names = Array.from(new Set(
+      rawNames.filter(n => typeof n === "string" && n.trim()).map(n => n.trim())
+    ));
+    if (names.length === 0) return res.json({ matches: {} });
+
+    const homeClub = typeof req.body?.home === "string" ? req.body.home : "";
+    const awayClub = typeof req.body?.away === "string" ? req.body.away : "";
+
+    const hasArchivedCol = await playersHasIsArchived();
+    const sql = `SELECT \`id\`, \`name\`, \`club\` FROM \`players\` WHERE \`user_id\` = ?${hasArchivedCol ? " AND `is_archived` = 0" : ""}`;
+    const [rows] = await pool.query(sql, [userId]);
+    if (rows.length === 0) return res.json({ matches: {} });
+
+    const normalize = (s) => (s || "")
+      .toLowerCase()
+      .normalize("NFD").replace(/[\u0300-\u036f]/g, "")
+      .replace(/[.,'’`]/g, "")
+      .replace(/-/g, " ")
+      .replace(/\s+/g, " ")
+      .trim();
+
+    const initialLastKey = (s) => {
+      const n = normalize(s);
+      if (!n) return "";
+      const tokens = n.split(" ").filter(Boolean);
+      if (tokens.length < 2) return "";
+      const first = tokens[0];
+      const last = tokens[tokens.length - 1];
+      if (!first[0] || !last) return "";
+      return `${first[0]} ${last}`;
+    };
+
+    const byFull = new Map();
+    const byInitialLast = new Map();
+    for (const p of rows) {
+      const fn = normalize(p.name);
+      if (fn) {
+        if (!byFull.has(fn)) byFull.set(fn, []);
+        byFull.get(fn).push(p);
+      }
+      const il = initialLastKey(p.name);
+      if (il) {
+        if (!byInitialLast.has(il)) byInitialLast.set(il, []);
+        byInitialLast.get(il).push(p);
+      }
+    }
+
+    const homeNorm = normalize(homeClub);
+    const awayNorm = normalize(awayClub);
+    const clubMatches = (pClub, target) => {
+      if (!pClub || !target) return false;
+      const pn = normalize(pClub);
+      return pn === target || pn.includes(target) || target.includes(pn);
+    };
+    const pickByClub = (candidates) => {
+      if (!homeNorm && !awayNorm) return null;
+      return candidates.find(c => clubMatches(c.club, homeNorm) || clubMatches(c.club, awayNorm)) || null;
+    };
+
+    const matches = {};
+    for (const name of names) {
+      const nf = normalize(name);
+
+      // 1) Exact normalized match — always trust; disambiguate by club if needed
+      const exact = byFull.get(nf);
+      if (exact && exact.length > 0) {
+        const chosen = exact.length === 1 ? exact[0] : (pickByClub(exact) || exact[0]);
+        matches[name] = { id: chosen.id, name: chosen.name };
+        continue;
+      }
+
+      // 2) Fallback: first-initial + last-name. Accept a single candidate, or
+      //    the one whose club matches home/away. Otherwise skip to avoid false positives.
+      const il = initialLastKey(name);
+      if (!il) continue;
+      const cands = byInitialLast.get(il);
+      if (!cands || cands.length === 0) continue;
+      if (cands.length === 1) {
+        matches[name] = { id: cands[0].id, name: cands[0].name };
+      } else {
+        const byClub = pickByClub(cands);
+        if (byClub) matches[name] = { id: byClub.id, name: byClub.name };
+      }
+    }
+
+    return res.json({ matches });
+  } catch (err) {
+    console.error("[resolve-names] ERROR:", err.message);
+    return res.status(500).json({ error: err.message });
+  }
+});
+
 app.get("/api/players/facets", authMiddleware, async (req, res) => {
   try {
     const userId = req.user.id;
@@ -5216,6 +5318,152 @@ app.get("/api/club-tm-search", async (req, res) => {
   }
 });
 
+// ── Transfermarkt player injuries scraping ─────────────────────────────────
+app.get("/api/player-tm-injuries/:tmId", async (req, res) => {
+  const { tmId } = req.params;
+  if (!tmId || !/^\d+$/.test(tmId)) return res.status(400).json({ error: "Invalid TM ID" });
+
+  const TM_DOMAIN_BY_LANG = { fr: "transfermarkt.fr", en: "transfermarkt.com", es: "transfermarkt.es" };
+  const langRaw = String(req.query.lang || "fr").toLowerCase().slice(0, 2);
+  const lang = TM_DOMAIN_BY_LANG[langRaw] ? langRaw : "fr";
+  const tmDomain = TM_DOMAIN_BY_LANG[lang];
+
+  const cacheKey = `tm-injuries:${tmId}:${lang}`;
+  try {
+    const [cached] = await pool.query(
+      "SELECT response_json FROM api_football_cache WHERE cache_key = ? AND expires_at > NOW() LIMIT 1",
+      [cacheKey]
+    );
+    if (cached.length > 0) {
+      return res.json(typeof cached[0].response_json === "string" ? JSON.parse(cached[0].response_json) : cached[0].response_json);
+    }
+  } catch {}
+
+  try {
+    const tmUrl = `https://www.${tmDomain}/_/verletzungen/spieler/${tmId}`;
+    const resp = await fetch(tmUrl, { headers: TM_HEADERS, signal: AbortSignal.timeout(15000) });
+    if (!resp.ok) return res.status(502).json({ error: `TM returned ${resp.status}` });
+    const html = await resp.text();
+
+    const injuries = [];
+    // Scope to the first <table class="items">…</table> (the detailed injury list; a second table summarizes per season).
+    const tableM = html.match(/<table class="items">([\s\S]*?)<\/table>/);
+    if (tableM) {
+      const tableHtml = tableM[1];
+      const rowRe = /<tr[^>]*class="(?:odd|even)"[^>]*>([\s\S]*?)<\/tr>/g;
+      let rowMatch;
+      while ((rowMatch = rowRe.exec(tableHtml)) !== null) {
+        const rowHtml = rowMatch[1];
+        const tds = [];
+        const tdRe = /<td[^>]*>([\s\S]*?)<\/td>/g;
+        let tdMatch;
+        while ((tdMatch = tdRe.exec(rowHtml)) !== null) tds.push(tdMatch[1]);
+        if (tds.length < 6) continue;
+        const strip = (s) => decodeHtmlEntities(String(s || "").replace(/<[^>]*>/g, "")).replace(/\s+/g, " ").trim();
+        const gamesSpanM = tds[5].match(/<span[^>]*>([^<]+)<\/span>/);
+        const clubTitleM = tds[5].match(/<a[^>]*title="([^"]+)"[^>]*href="[^"]*\/verein\/\d+/);
+        injuries.push({
+          season: strip(tds[0]),
+          type: strip(tds[1]),
+          from: strip(tds[2]),
+          to: strip(tds[3]),
+          days: strip(tds[4]),
+          gamesMissed: gamesSpanM ? strip(gamesSpanM[1]) : "",
+          club: clubTitleM ? decodeHtmlEntities(clubTitleM[1]) : null,
+        });
+      }
+    }
+
+    const result = { tmId, injuries, tmUrl, source: "transfermarkt", fetchedAt: new Date().toISOString() };
+
+    try {
+      await pool.query(
+        `INSERT INTO api_football_cache (cache_key, response_json, fetched_at, expires_at)
+         VALUES (?, ?, NOW(), DATE_ADD(NOW(), INTERVAL 24 HOUR))
+         ON DUPLICATE KEY UPDATE response_json = VALUES(response_json), fetched_at = NOW(), expires_at = DATE_ADD(NOW(), INTERVAL 24 HOUR)`,
+        [cacheKey, JSON.stringify(result)]
+      );
+    } catch {}
+
+    return res.json(result);
+  } catch (err) {
+    console.error("[player-tm-injuries] Error:", err.message);
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+// ── Transfermarkt player market value history scraping ──────────────────────
+app.get("/api/player-tm-market-value/:tmId", async (req, res) => {
+  const { tmId } = req.params;
+  if (!tmId || !/^\d+$/.test(tmId)) return res.status(400).json({ error: "Invalid TM ID" });
+
+  const TM_DOMAIN_BY_LANG = { fr: "transfermarkt.fr", en: "transfermarkt.com", es: "transfermarkt.es" };
+  const langRaw = String(req.query.lang || "fr").toLowerCase().slice(0, 2);
+  const lang = TM_DOMAIN_BY_LANG[langRaw] ? langRaw : "fr";
+  const tmDomain = TM_DOMAIN_BY_LANG[lang];
+
+  const cacheKey = `tm-marketvalue:v2:${tmId}:${lang}`;
+  try {
+    const [cached] = await pool.query(
+      "SELECT response_json FROM api_football_cache WHERE cache_key = ? AND expires_at > NOW() LIMIT 1",
+      [cacheKey]
+    );
+    if (cached.length > 0) {
+      return res.json(typeof cached[0].response_json === "string" ? JSON.parse(cached[0].response_json) : cached[0].response_json);
+    }
+  } catch {}
+
+  try {
+    // TM exposes the chart series via a dedicated JSON endpoint (the web component
+    // <tm-market-value-development-graph-extended> calls it). Shape: { list: [{x,y,mw,datum_mw,verein,age,wappen},…] }
+    const apiUrl = `https://www.${tmDomain}/ceapi/marketValueDevelopment/graph/${tmId}`;
+    const tmUrl = `https://www.${tmDomain}/_/marktwertverlauf/spieler/${tmId}`;
+    const resp = await fetch(apiUrl, {
+      headers: { ...TM_HEADERS, Accept: "application/json", "X-Requested-With": "XMLHttpRequest" },
+      signal: AbortSignal.timeout(15000),
+    });
+    if (!resp.ok) return res.status(502).json({ error: `TM returned ${resp.status}` });
+    const payload = await resp.json().catch(() => null);
+    const list = Array.isArray(payload?.list) ? payload.list : [];
+
+    const history = list
+      .map(entry => {
+        const x = Number(entry?.x);
+        const y = Number(entry?.y);
+        if (!Number.isFinite(x) || !Number.isFinite(y)) return null;
+        const ageNum = Number(entry?.age);
+        return {
+          value: y,
+          club: entry?.verein ? String(entry.verein) : null,
+          age: Number.isFinite(ageNum) ? ageNum : null,
+          valueLabel: entry?.mw ? String(entry.mw) : null,
+          date: entry?.datum_mw ? String(entry.datum_mw) : null,
+          timestamp: x,
+        };
+      })
+      .filter(Boolean)
+      .sort((a, b) => a.timestamp - b.timestamp);
+    const seen = new Set();
+    const unique = history.filter(e => seen.has(e.timestamp) ? false : (seen.add(e.timestamp), true));
+
+    const result = { tmId, history: unique, tmUrl, source: "transfermarkt", fetchedAt: new Date().toISOString() };
+
+    try {
+      await pool.query(
+        `INSERT INTO api_football_cache (cache_key, response_json, fetched_at, expires_at)
+         VALUES (?, ?, NOW(), DATE_ADD(NOW(), INTERVAL 24 HOUR))
+         ON DUPLICATE KEY UPDATE response_json = VALUES(response_json), fetched_at = NOW(), expires_at = DATE_ADD(NOW(), INTERVAL 24 HOUR)`,
+        [cacheKey, JSON.stringify(result)]
+      );
+    } catch {}
+
+    return res.json(result);
+  } catch (err) {
+    console.error("[player-tm-market-value] Error:", err.message);
+    return res.status(500).json({ error: err.message });
+  }
+});
+
 // ── League logos (from league_name_mappings + user_followed_leagues) ─────────
 app.get("/api/league-logos", async (_req, res) => {
   try {
@@ -5261,6 +5509,52 @@ function normalizeStr(str) {
     .replace(/[^a-z0-9 ]/g, ' ')
     .replace(/\s+/g, ' ')
     .trim();
+}
+
+// Format a Date (or string) as local YYYY-MM-DD — avoids the UTC shift bug of .toISOString().
+function toYMD(d) {
+  if (!d) return null;
+  if (typeof d === 'string') {
+    const m = d.match(/^(\d{4}-\d{2}-\d{2})/);
+    if (m) return m[1];
+    const parsed = new Date(d);
+    if (isNaN(parsed.getTime())) return null;
+    d = parsed;
+  }
+  if (!(d instanceof Date) || isNaN(d.getTime())) return null;
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${y}-${m}-${day}`;
+}
+
+// Build a flat alias → canonical-normalized lookup from CLUB_NAME_MAP.
+// Each alias (and the canonical name itself) maps to the normalized canonical.
+const CLUB_ALIAS_TO_CANONICAL = (() => {
+  const out = new Map();
+  for (const [canonical, aliases] of Object.entries(CLUB_NAME_MAP)) {
+    const canon = normalizeStr(canonical);
+    out.set(canon, canon);
+    for (const alias of aliases) out.set(normalizeStr(alias), canon);
+  }
+  return out;
+})();
+
+function canonicalClub(name) {
+  const norm = normalizeStr(name);
+  return CLUB_ALIAS_TO_CANONICAL.get(norm) || norm;
+}
+
+// Two club strings refer to the same club (handles aliases like "Paris SG" ↔ "Paris Saint-Germain").
+function clubsEquivalent(a, b) {
+  if (!a && !b) return true;
+  if (!a || !b) return false;
+  return canonicalClub(a) === canonicalClub(b);
+}
+
+// Compare two agent strings loosely (case/whitespace/accent-insensitive).
+function agentsEquivalent(a, b) {
+  return normalizeStr(a || '') === normalizeStr(b || '');
 }
 
 function namesMatch(playerName, candidateName) {
@@ -5776,7 +6070,37 @@ function extractBetween(html, before, after) {
  * Scrape player profile from Transfermarkt (fr locale, no API key).
  * Returns { tmId, contract, heightCm, agent, marketValue, currentClub }.
  */
-async function fetchPlayerDataFromTransfermarkt(player, tmPath = null) {
+async function fetchPlayerDataFromTransfermarkt(player, tmPath = null, options = {}) {
+  const forceRefresh = !!options.forceRefresh;
+
+  // Shared cross-user cache by TM player ID (24h). Avoids re-scraping TM when
+  // another user already enriched the same player. Bypassed when forceRefresh is true.
+  async function getCachedByTmId(tmId) {
+    if (forceRefresh || !tmId) return null;
+    try {
+      const [rows] = await pool.query(
+        "SELECT response_json FROM api_football_cache WHERE cache_key = ? AND expires_at > NOW() LIMIT 1",
+        [`tm-player:${tmId}`]
+      );
+      if (rows.length) {
+        const v = rows[0].response_json;
+        return typeof v === 'string' ? JSON.parse(v) : v;
+      }
+    } catch {}
+    return null;
+  }
+  async function setCachedByTmId(tmId, data) {
+    if (!tmId || !data) return;
+    try {
+      await pool.query(
+        `INSERT INTO api_football_cache (cache_key, response_json, fetched_at, expires_at)
+         VALUES (?, ?, NOW(), DATE_ADD(NOW(), INTERVAL 24 HOUR))
+         ON DUPLICATE KEY UPDATE response_json = VALUES(response_json), fetched_at = NOW(), expires_at = DATE_ADD(NOW(), INTERVAL 24 HOUR)`,
+        [`tm-player:${tmId}`, JSON.stringify(data)]
+      );
+    } catch {}
+  }
+
   try {
     const opts = { headers: TM_HEADERS, signal: AbortSignal.timeout(20000) };
 
@@ -5794,6 +6118,12 @@ async function fetchPlayerDataFromTransfermarkt(player, tmPath = null) {
       // Direct path provided by user — skip search entirely
       const idM = tmPath.match(/\/spieler\/(\d+)/);
       if (!idM) return null;
+      // Early cache hit: we know the TM ID upfront (either from stored transfermarkt_id or a user-provided URL).
+      const cached = await getCachedByTmId(idM[1]);
+      if (cached) {
+        console.log(`[TM] ${player.name} → cache hit tm-player:${idM[1]}`);
+        return cached;
+      }
       best = { id: idM[1], path: tmPath, mktVal: null, agent: null };
     } else {
       // Build ordered search queries: full name → first+last only → last name only
@@ -5891,6 +6221,13 @@ async function fetchPlayerDataFromTransfermarkt(player, tmPath = null) {
     }
 
     if (!best) return null;
+
+    // Post-search cache hit: the name-based search resolved a TM ID another user already scraped.
+    const cachedAfterSearch = await getCachedByTmId(best.id);
+    if (cachedAfterSearch) {
+      console.log(`[TM] ${player.name} → cache hit (post-search) tm-player:${best.id}`);
+      return cachedAfterSearch;
+    }
 
     // ── 2. Profile page ────────────────────────────────────────────────────
     await new Promise(r => setTimeout(r, 500));
@@ -6202,7 +6539,10 @@ async function fetchPlayerDataFromTransfermarkt(player, tmPath = null) {
     }
 
     console.log(`[TM] ${player.name} → contract:${contract} agent:${agent} value:${marketValue} height:${heightCm}cm club:${currentClub} onLoan:${onLoan} foot:${footRaw} pos:${positionRaw} nat:${nationalityRaw} photo:${!!photoUrl} logo:${!!clubLogoUrl}`);
-    return { tmId: best.id, contract, heightCm, agent, marketValue, currentClub, onLoan, parentClub, loanEndDate, parentContractEnd, photoUrl, clubLogoUrl, footRaw, positionRaw, nationalityRaw, career, seasonStats };
+    const result = { tmId: best.id, contract, heightCm, agent, marketValue, currentClub, onLoan, parentClub, loanEndDate, parentContractEnd, photoUrl, clubLogoUrl, footRaw, positionRaw, nationalityRaw, career, seasonStats };
+    // Write-through: prime the cross-user cache so the next enrich of the same TM player skips scraping.
+    await setCachedByTmId(best.id, result);
+    return result;
   } catch (e) {
     console.error('[enrich] Transfermarkt scrape error:', e.message);
     return null;
@@ -6472,9 +6812,9 @@ async function fetchPlayerStatsFromSofaScore(playerInfo) {
       });
     }
 
-    // ── Cache result for 24h ──
+    // ── Cache result for 30d (warmed by GitHub Actions, see scripts/warm-sofascore-cache.mjs) ──
     try {
-      const expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString().slice(0, 19).replace('T', ' ');
+      const expiresAt = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString().slice(0, 19).replace('T', ' ');
       await pool.query(
         `INSERT INTO api_football_cache (cache_key, response_json, expires_at) VALUES (?, ?, ?)
          ON DUPLICATE KEY UPDATE response_json = VALUES(response_json), expires_at = VALUES(expires_at), fetched_at = NOW()`,
@@ -6490,11 +6830,11 @@ async function fetchPlayerStatsFromSofaScore(playerInfo) {
 }
 
 // ── Shared enrichment logic (single source of truth for all enrichment paths) ──
-async function enrichOnePlayer(playerInfo, row, tmPath = null) {
+async function enrichOnePlayer(playerInfo, row, tmPath = null, options = {}) {
   const [tsdb, wd, tm, perfStats] = await Promise.all([
     fetchPlayerDataFromSportsDB(playerInfo),
     fetchPlayerDataFromWikidata(playerInfo),
-    fetchPlayerDataFromTransfermarkt(playerInfo, tmPath),
+    fetchPlayerDataFromTransfermarkt(playerInfo, tmPath, { forceRefresh: !!options.forceRefresh }),
     fetchPlayerStatsFromSofaScore(playerInfo),
   ]);
 
@@ -6656,21 +6996,37 @@ async function enrichOnePlayer(playerInfo, row, tmPath = null) {
     }
   }
 
-  // ── Detect meaningful changes for has_news flag ─────────────────────
-  // Only flag when a NEW non-null value is found AND differs from old.
-  // If a source returns nothing (null), we don't flag it as a change.
-  const oldClub = (row.club || '').trim();
-  const oldContract = row.contract_end
-    ? (row.contract_end.toISOString?.()?.slice(0, 10) || String(row.contract_end).slice(0, 10))
-    : null;
-  const clubChanged = newClub && normalizeStr(newClub) !== normalizeStr(oldClub);
-  const contractChanged = contractEnd && contractEnd !== oldContract;
-  const agentChanged = ext.agent && ext.agent !== oldAgent;
-  const newsItems = [];
-  if (clubChanged) newsItems.push('club');
-  if (contractChanged) newsItems.push('contract');
-  if (agentChanged) newsItems.push('agent');
-  const newsLabel = newsItems.length > 1 ? 'multiples' : newsItems[0] || null;
+  // ── Detect meaningful changes ───────────────────────────────────────
+  // Only flag when a NEW value is found AND differs semantically from old:
+  //  - club: alias-aware (Paris SG == Paris Saint-Germain)
+  //  - contract: compared as YYYY-MM-DD in local time (avoids .toISOString() UTC-shift bug)
+  //  - agent: case/accent/whitespace insensitive
+  //  - date_of_birth: YMD compare
+  // Sources returning null don't downgrade existing values.
+  const oldClub = row.club || '';
+  const oldContractYMD = toYMD(row.contract_end);
+  const oldDobYMD = toYMD(row.date_of_birth);
+  const newContractYMD = toYMD(contractEnd);
+  const newDobYMD = toYMD(dateOfBirth);
+
+  const changes = [];
+  if (newClub && !clubsEquivalent(newClub, oldClub)) {
+    changes.push({ field: 'club', old: oldClub || null, new: newClub });
+  }
+  if (newContractYMD && newContractYMD !== oldContractYMD) {
+    changes.push({ field: 'contract', old: oldContractYMD, new: newContractYMD });
+  }
+  if (ext.agent && !agentsEquivalent(ext.agent, oldAgent)) {
+    changes.push({ field: 'agent', old: oldAgent, new: ext.agent });
+  }
+  if (newDobYMD && newDobYMD !== oldDobYMD) {
+    changes.push({ field: 'date_of_birth', old: oldDobYMD, new: newDobYMD });
+  }
+  // news_label drives the existing UI badge — keep contract/club/agent keys for i18n compat.
+  const primaryNewsFields = changes.filter(c => c.field === 'club' || c.field === 'contract' || c.field === 'agent');
+  const newsLabel = primaryNewsFields.length > 1
+    ? 'multiples'
+    : primaryNewsFields[0]?.field || null;
 
   // ── Persist enriched club/league in external_data (survives manual edits) ──
   if (newClub) ext.enriched_club = newClub;
@@ -6778,7 +7134,7 @@ async function enrichOnePlayer(playerInfo, row, tmPath = null) {
     } catch (e) { console.error('[enrich] Failed to save TM club logo:', e.message); }
   }
 
-  return { setClauses, params, tsdb, wd, tm, dateOfBirth, contractEnd, newClub };
+  return { setClauses, params, tsdb, wd, tm, dateOfBirth, contractEnd, newClub, changes };
 }
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -6985,7 +7341,9 @@ app.post("/api/functions/:name", authMiddleware, async (req, res) => {
         tmPath = `/${slug}/profil/spieler/${rec.transfermarkt_id}`;
       }
 
-      const enrichResult = await enrichOnePlayer(playerInfo, rec, tmPath);
+      // When the user manually supplies a TM URL (disambiguation / correction), bypass the cache
+      // so they see truly fresh data; otherwise reuse the 24h cross-user cache.
+      const enrichResult = await enrichOnePlayer(playerInfo, rec, tmPath, { forceRefresh: !!tmUrl });
 
       // If ambiguous candidates found, return them for UI disambiguation instead of proceeding
       if (enrichResult.ambiguous) {
@@ -6996,17 +7354,25 @@ app.post("/api/functions/:name", authMiddleware, async (req, res) => {
         });
       }
 
-      const { setClauses, params, tsdb, wd, tm, contractEnd, newClub, dateOfBirth } = enrichResult;
+      const { setClauses, params, tsdb, wd, tm, changes } = enrichResult;
       params.push(playerId, req.user.id);
       await pool.query(`UPDATE players SET ${setClauses.join(', ')} WHERE id = ? AND user_id = ?`, params);
 
-      // Create notification for successful enrichment
-      const enrichedFields = [dateOfBirth && "date de naissance", contractEnd && "contrat", newClub !== rec.club && "club", tm && "Transfermarkt"].filter(Boolean);
-      if (enrichedFields.length > 0) {
+      // Build a human-readable change summary (only when something actually changed).
+      const FIELD_LABEL_FR = { club: 'club', contract: 'contrat', agent: 'agent', date_of_birth: 'date de naissance' };
+      const changeSummary = changes
+        .map(c => {
+          const label = FIELD_LABEL_FR[c.field] || c.field;
+          if (c.old && c.new) return `${label} : ${c.old} → ${c.new}`;
+          if (c.new) return `${label} : ${c.new}`;
+          return label;
+        });
+
+      if (changes.length > 0) {
         await createNotification(req.user.id, {
           type: "enrichment",
-          title: `${playerName} enrichi`,
-          message: `Données mises à jour : ${enrichedFields.join(", ")}`,
+          title: `${playerName} — ${changes.length > 1 ? 'modifications' : 'modification'}`,
+          message: changeSummary.join(" · "),
           icon: "Zap",
           link: `/player/${playerId}`,
           playerId,
@@ -7017,7 +7383,7 @@ app.post("/api/functions/:name", authMiddleware, async (req, res) => {
         success: true,
         sources: { thesportsdb: !!tsdb, wikidata: !!wd, transfermarkt: !!tm },
         tmNotFound: !tm,
-        updated: { dob: !!dateOfBirth, contract: !!contractEnd, club: newClub !== rec.club, career: !!(wd?.teamMembershipIds?.length) },
+        changes, // [{field, old, new}]
       });
     } catch (err) {
       console.error('[enrich-player] Error:', err);
@@ -8426,7 +8792,7 @@ app.post("/api/functions/:name", authMiddleware, async (req, res) => {
     if (!matchId) return res.status(400).json({ error: "Missing matchId" });
 
     try {
-      const cacheKey = `match-detail:${matchId}`;
+      const cacheKey = `match-detail:v3:${matchId}`;
       try {
         const [cached] = await pool.query(
           "SELECT response_json FROM api_football_cache WHERE cache_key = ? AND expires_at > NOW() LIMIT 1",
@@ -8486,12 +8852,17 @@ app.post("/api/functions/:name", authMiddleware, async (req, res) => {
 
       // ── Match events/incidents ──
       // API format: "Incs-s" → { "1": [group, ...], "2": [group, ...] }
-      // Each group: { Min, Sc, Incs: [ { IT, Pn, Min, MinEx, ... }, ... ] }
-      // IT codes: 36=Goal, 37=OwnGoal, 39=YellowCard, 40=SecondYellow,
-      //   41=RedCard, 42=Substitution, 43/45=PenMissed, 44=PenGoal, 46=VAR, 63=Assist(skip)
+      // Top-level keys are HALVES (1st/2nd half), NOT teams.
+      // Team is on each incident/group as `Nm` (1 = home, 2 = away).
+      // A group is either flat (has `IT` directly) or nested (has `Incs: [...]`).
+      // IT codes (observed): 36=Goal, 37=PenaltyGoal, 39=YellowCard,
+      //   40=SecondYellow, 41=RedCard, 42=Substitution, 43/45=PenMissed,
+      //   44=Goal-variant, 46=VAR, 63=Assist(skip).
+      // Own goals are NOT reliably distinguishable by IT code (37 was previously
+      // assumed to be own_goal but is actually a penalty goal). We classify
+      // own_goals using the cumulative score `Sc` delta vs. the player's team.
       const IT_MAP = {
-        36: 'goal', 44: 'goal',
-        37: 'own_goal',
+        36: 'goal', 37: 'goal', 44: 'goal',
         39: 'yellow_card',
         40: 'second_yellow',
         41: 'red_card',
@@ -8500,32 +8871,56 @@ app.post("/api/functions/:name", authMiddleware, async (req, res) => {
         45: 'penalty_missed',
         46: 'var',
       };
+      const teamFromNm = (nm) => (parseInt(nm, 10) === 2 ? 'away' : 'home');
       const events = [];
       const incsS = raw['Incs-s'];
       if (incsS && typeof incsS === 'object') {
-        for (const [side, groups] of Object.entries(incsS)) {
-          const team = side === '1' ? 'home' : 'away';
+        let runHome = 0, runAway = 0;
+        for (const groups of Object.values(incsS)) {
           if (!Array.isArray(groups)) continue;
           for (const group of groups) {
-            // Incidents are nested inside group.Incs
-            const subIncs = Array.isArray(group.Incs) ? group.Incs : [];
+            const hasNested = Array.isArray(group.Incs) && group.Incs.length > 0;
+            const subIncs = hasNested ? group.Incs : [group];
             for (const inc of subIncs) {
               const itCode = typeof inc.IT === 'number' ? inc.IT : parseInt(inc.IT, 10);
-              const type = IT_MAP[itCode];
+              let type = IT_MAP[itCode];
               if (!type) {
                 if (itCode !== 63) console.log(`[livescore-detail] Unknown IT: ${itCode} (${inc.Pn})`);
                 continue;
               }
+              const playerTeam = teamFromNm(inc.Nm ?? group.Nm);
+
+              // Detect own goals from the score delta: if the goal credited the
+              // OPPOSING team's score, it's an own goal regardless of IT code.
+              if (type === 'goal' && Array.isArray(inc.Sc) && inc.Sc.length === 2) {
+                const newH = parseInt(inc.Sc[0], 10);
+                const newA = parseInt(inc.Sc[1], 10);
+                if (Number.isFinite(newH) && Number.isFinite(newA)) {
+                  const dH = newH - runHome;
+                  const dA = newA - runAway;
+                  if (dH > 0 && dA <= 0) {
+                    type = playerTeam === 'home' ? 'goal' : 'own_goal';
+                    runHome = newH;
+                  } else if (dA > 0 && dH <= 0) {
+                    type = playerTeam === 'away' ? 'goal' : 'own_goal';
+                    runAway = newA;
+                  } else {
+                    runHome = newH;
+                    runAway = newA;
+                  }
+                }
+              }
+
               const event = {
                 type,
                 minute: parseInt(inc.Min || group.Min || 0, 10) || 0,
                 extra_time: parseInt(inc.MinEx || group.MinEx || 0, 10) || 0,
                 player: inc.Pn || `${inc.Fn || ''} ${inc.Ln || ''}`.trim() || "",
                 player_in: null,
-                team,
+                team: playerTeam,
               };
               // For substitutions, pair with the other player in the same group
-              if (type === 'substitution') {
+              if (type === 'substitution' && hasNested) {
                 const other = subIncs.find(i => i !== inc && i.IT !== 63);
                 if (other) {
                   event.player_in = other.Pn || `${other.Fn || ''} ${other.Ln || ''}`.trim() || null;

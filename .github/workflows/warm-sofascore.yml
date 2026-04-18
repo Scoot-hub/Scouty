@@ -1,0 +1,43 @@
+name: Warm SofaScore cache
+
+on:
+  schedule:
+    # Every 6h. Runner IPs rotate across Azure's pool — different from the
+    # Vercel pool that gets 429'd, so SofaScore usually accepts the calls.
+    - cron: '17 */6 * * *'
+  workflow_dispatch:
+    inputs:
+      max_players:
+        description: 'Max unique players to refresh (0 = all)'
+        required: false
+        default: '0'
+      refresh_days:
+        description: 'Re-fetch stats older than N days'
+        required: false
+        default: '7'
+
+concurrency:
+  group: warm-sofascore
+  cancel-in-progress: false
+
+jobs:
+  warm:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - run: npm ci --omit=dev --ignore-scripts
+
+      - name: Run cache warmer
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          MAX_PLAYERS: ${{ github.event.inputs.max_players || '0' }}
+          REFRESH_DAYS: ${{ github.event.inputs.refresh_days || '7' }}
+          DELAY_MS: '2000'
+        run: node scripts/warm-sofascore-cache.mjs

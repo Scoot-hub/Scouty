@@ -99,7 +99,22 @@
       "Bash(grep -o '.\\\\{30\\\\}charts-exCUpK4f.\\\\{30\\\\}' dist/assets/ProfileDataTab-*.js)",
       "Bash(grep 'import.*charts' dist/assets/Players-*.js)",
       "Bash(grep -o 'import\\([^\\)]*generateCategoricalChart[^\\)]*\\)' dist/assets/Players-*.js)",
-      "Bash(grep -o 'import\\([^\\)]*RadarChart[^\\)]*\\)' dist/assets/Players-*.js)"
+      "Bash(grep -o 'import\\([^\\)]*RadarChart[^\\)]*\\)' dist/assets/Players-*.js)",
+      "Bash(curl -s -A \"Mozilla/5.0 \\(Windows NT 10.0; Win64; x64\\) AppleWebKit/537.36 \\(KHTML, like Gecko\\) Chrome/120.0.0.0 Safari/537.36\" -H \"Accept-Language: fr-FR,fr;q=0.9\" -H \"Accept: text/html,application/xhtml+xml\" \"https://www.transfermarkt.fr/kristoffer-olsson/verletzungen/spieler/193592\" -o /tmp/tm_injuries.html)",
+      "Bash(curl -s -o /dev/null -w \"%{http_code}\\\\n\" -A \"Mozilla/5.0 \\(Windows NT 10.0; Win64; x64\\) AppleWebKit/537.36 \\(KHTML, like Gecko\\) Chrome/120.0.0.0 Safari/537.36\" \"https://www.transfermarkt.fr/_/verletzungen/spieler/193592\")",
+      "Bash(curl -s -A \"Mozilla/5.0 \\(Windows NT 10.0; Win64; x64\\) AppleWebKit/537.36 \\(KHTML, like Gecko\\) Chrome/120.0.0.0 Safari/537.36\" -H \"Accept-Language: fr-FR,fr;q=0.9\" \"https://www.transfermarkt.fr/_/verletzungen/spieler/193592\" -o /tmp/tm2.html)",
+      "Bash(node -c c:/Users/commu/Scouty/server/index.js)",
+      "Bash(curl -s -A \"Mozilla/5.0 \\(Windows NT 10.0; Win64; x64\\) AppleWebKit/537.36\" -H \"Accept-Language: fr-FR,fr;q=0.9\" \"https://www.transfermarkt.fr/_/verletzungen/spieler/193592\")",
+      "Bash(curl -s -A \"Mozilla/5.0 \\(Windows NT 10.0; Win64; x64\\) AppleWebKit/537.36\" \"https://prod-public-api.livescore.com/v1/api/app/scoreboard/soccer/1542026?MD=1\")",
+      "Bash(grep -n \"CREATE TABLE.*players\\\\|^  \\\\`name\\\\`\\\\|^  \\\\`club\\\\`\" \"c:\\\\Users\\\\commu\\\\Scouty\\\\server\\\\schema.sql\")",
+      "Bash(curl -s -A \"Mozilla/5.0 \\(Windows NT 10.0; Win64; x64\\) AppleWebKit/537.36 \\(KHTML, like Gecko\\) Chrome/120.0 Safari/537.36\" \"https://www.transfermarkt.fr/kristoffer-olsson/marktwertverlauf/spieler/193592\" -o /tmp/tm_mv.html -w \"HTTP %{http_code} size=%{size_download}\\\\n\")",
+      "Bash(curl -s -A \"Mozilla/5.0\" \"https://www.transfermarkt.fr/ceapi/marketValueDevelopment/graph/193592\")",
+      "Bash(node -e \"console.log\\(require\\('./package.json'\\).dependencies.recharts || require\\('./package.json'\\).devDependencies.recharts || 'MISSING'\\)\")",
+      "Bash(node -c scripts/warm-sofascore-cache.mjs)",
+      "Bash(python -m json.tool)",
+      "Bash(echo \"EXIT=$?\")",
+      "Bash(npx eslint *)",
+      "Bash(node -e \"import\\('./server/club-aliases.js'\\).then\\(m=>console.log\\('keys:',Object.keys\\(m.CLUB_NAME_MAP\\).length\\)\\)\")"
     ],
     "additionalDirectories": [
       "\\tmp"

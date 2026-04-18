@@ -29,14 +29,17 @@ import { Badge } from '@/components/ui/badge';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from '@/components/ui/dialog';
 import { usePlayerResearch, useAddResearch, useDeleteResearch, type ResearchItem } from '@/hooks/use-player-research';
 import { usePlayerVideos, useAddVideo, useDeleteVideo, type VideoItem } from '@/hooks/use-player-videos';
+import { usePlayerInjuries } from '@/hooks/use-player-injuries';
+import { usePlayerMarketValue } from '@/hooks/use-player-market-value';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from '@/components/ui/dropdown-menu';
-import { ArrowLeft, Edit, FileDown, ExternalLink, PlusCircle, Trash2, RefreshCw, Globe, TrendingUp, Calendar, Ruler, User, MapPin, Hash, Pencil, Euro, Briefcase, LayoutDashboard, ListPlus, Check, Building2, AlertCircle, FileText, Upload, X, Clock, Youtube, Newspaper, Link2, StickyNote, Plus, Activity, Info, Video, ClipboardList, BarChart3, Play } from 'lucide-react';
+import { ArrowLeft, Edit, FileDown, ExternalLink, PlusCircle, Trash2, RefreshCw, Globe, TrendingUp, Calendar, Ruler, User, MapPin, Hash, Pencil, Euro, Briefcase, LayoutDashboard, ListPlus, Check, Building2, AlertCircle, FileText, Upload, X, Clock, Youtube, Newspaper, Link2, StickyNote, Plus, Activity, Info, Video, ClipboardList, BarChart3, Play, HeartPulse, ChevronDown } from 'lucide-react';
 import { toast } from 'sonner';
 import { parseScoutingNotes, serializeScoutingNotes, loadLayout, saveLayout, type CardId, type CardSize, type LayoutConfig, type ScoutingNotes } from '@/lib/scouting-notes';
 
 const LazyProfileDataTab = lazy(() => import('@/components/profile/ProfileDataTab'));
 const LazyEvolutionChart = lazy(() => import('@/components/charts/EvolutionChart'));
+const LazyMarketValueChart = lazy(() => import('@/components/charts/MarketValueChart'));
 const LazySortableCardGrid = lazy(() => import('@/components/profile/SortableCardGrid').then(m => ({ default: m.default })));
 
 /* ── Inline array move (avoids @dnd-kit dep in this file) ── */
@@ -93,6 +96,13 @@ export default function PlayerProfile() {
   // UI state
   const [editMode, setEditMode] = useState(false);
   const [activeTab, setActiveTab] = useState('infos');
+  const [careerExpanded, setCareerExpanded] = useState(false);
+  const [nationalCareerExpanded, setNationalCareerExpanded] = useState(false);
+  const playerTmId = (player as unknown as { transfermarkt_id?: string | number } | undefined)?.transfermarkt_id;
+  const { data: injuriesData, isLoading: injuriesLoading, isError: injuriesError } =
+    usePlayerInjuries(playerTmId ? String(playerTmId) : null, activeTab === 'injuries');
+  const { data: marketValueData, isLoading: marketValueLoading, isError: marketValueError } =
+    usePlayerMarketValue(playerTmId ? String(playerTmId) : null, activeTab === 'infos');
   const [researchForm, setResearchForm] = useState({ type: 'note', title: '', url: '', content: '' });
   const [showResearchForm, setShowResearchForm] = useState(false);
   const [videoForm, setVideoForm] = useState({ title: '', url: '', description: '' });
@@ -175,7 +185,26 @@ export default function PlayerProfile() {
         if (tmUrl && data?.tmNotFound) {
           toast.error(t('profile.enrich_tm_url_invalid'));
         } else {
-          toast.success(t('profile.enrich_success'));
+          const changes: Array<{ field: string; old: string | null; new: string | null }> = data?.changes || [];
+          if (changes.length === 0) {
+            toast.success(t('profile.enrich_no_changes'));
+          } else {
+            const fieldLabels: Record<string, string> = {
+              club: t('profile.field_club'),
+              contract: t('profile.field_contract'),
+              agent: t('profile.field_agent'),
+              date_of_birth: t('profile.field_dob'),
+            };
+            const summary = changes
+              .map(c => {
+                const label = fieldLabels[c.field] || c.field;
+                if (c.old && c.new) return `${label}: ${c.old} → ${c.new}`;
+                if (c.new) return `${label}: ${c.new}`;
+                return label;
+              })
+              .join(' · ');
+            toast.success(t('profile.enrich_success_with_changes', { summary }), { duration: 6000 });
+          }
           window.location.reload();
         }
       } else {
@@ -540,48 +569,80 @@ export default function PlayerProfile() {
               </div>
             )}
 
-            {career.length > 0 && (
-              <div className="mt-4">
-                <h4 className="text-xs font-bold uppercase tracking-wider text-muted-foreground mb-3 flex items-center gap-1.5">
-                  <Briefcase className="w-3.5 h-3.5" />{t('profile.career')}
-                </h4>
-                <div className="space-y-1.5">
-                  {career.map((entry, i) => (
-                    <div key={i} className="flex items-center gap-3 p-2.5 rounded-lg bg-muted/30 text-sm">
-                      <ClubBadge club={entry.club} size="sm" />
-                      <ClubLink club={entry.club} className="font-semibold flex-1 truncate">{entry.club}</ClubLink>
-                      <span className="text-xs text-muted-foreground shrink-0">
-                        {fmtCareerDate(entry.from) || '—'} – {entry.to ? fmtCareerDate(entry.to) : t('common.present')}
-                      </span>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            )}
-            {nationalCareer.length > 0 && (
-              <div className="mt-4">
-                <h4 className="text-xs font-bold uppercase tracking-wider text-muted-foreground mb-3 flex items-center gap-1.5">
-                  <Globe className="w-3.5 h-3.5" />Sélection nationale
-                </h4>
-                <div className="space-y-1.5">
-                  {nationalCareer.map((entry, i) => {
-                    const { country, category } = parseNatTeamLabel(entry.club);
-                    return (
-                      <div key={i} className="flex items-center gap-3 p-2.5 rounded-lg bg-muted/30 text-sm">
-                        <FlagIcon nationality={country} size="sm" className="shrink-0" />
-                        <span className="font-semibold flex-1 truncate">{translateCountry(country, i18n.language)}</span>
-                        {category !== 'A' && (
-                          <span className="text-xs bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-300 px-1.5 py-0.5 rounded font-bold shrink-0">{category}</span>
-                        )}
-                        <span className="text-xs text-muted-foreground shrink-0">
+            {career.length > 0 && (() => {
+              const COLLAPSE_AT = 6;
+              const canCollapse = career.length > COLLAPSE_AT;
+              const shown = canCollapse && !careerExpanded ? career.slice(0, COLLAPSE_AT) : career;
+              return (
+                <div className="mt-4">
+                  <h4 className="text-xs font-bold uppercase tracking-wider text-muted-foreground mb-3 flex items-center gap-1.5">
+                    <Briefcase className="w-3.5 h-3.5" />{t('profile.career')}
+                    <span className="ml-1 text-[10px] font-semibold text-muted-foreground/70">({career.length})</span>
+                  </h4>
+                  <div className="space-y-1">
+                    {shown.map((entry, i) => (
+                      <div key={i} className="flex items-center gap-2.5 p-2 rounded-lg bg-muted/30 text-sm min-w-0">
+                        <ClubBadge club={entry.club} size="sm" />
+                        <ClubLink club={entry.club} className="font-semibold flex-1 truncate min-w-0">{entry.club}</ClubLink>
+                        <span className="text-[11px] text-muted-foreground shrink-0 tabular-nums">
                           {fmtCareerDate(entry.from) || '—'} – {entry.to ? fmtCareerDate(entry.to) : t('common.present')}
                         </span>
                       </div>
-                    );
-                  })}
+                    ))}
+                  </div>
+                  {canCollapse && (
+                    <button
+                      type="button"
+                      onClick={() => setCareerExpanded(v => !v)}
+                      className="mt-2 w-full flex items-center justify-center gap-1.5 py-1.5 rounded-lg text-xs font-medium text-muted-foreground hover:text-foreground hover:bg-muted/40 transition-colors"
+                    >
+                      <ChevronDown className={`w-3.5 h-3.5 transition-transform ${careerExpanded ? 'rotate-180' : ''}`} />
+                      {careerExpanded ? t('profile.show_less') : t('profile.show_more_count', { count: career.length - COLLAPSE_AT })}
+                    </button>
+                  )}
                 </div>
-              </div>
-            )}
+              );
+            })()}
+            {nationalCareer.length > 0 && (() => {
+              const COLLAPSE_AT = 6;
+              const canCollapse = nationalCareer.length > COLLAPSE_AT;
+              const shown = canCollapse && !nationalCareerExpanded ? nationalCareer.slice(0, COLLAPSE_AT) : nationalCareer;
+              return (
+                <div className="mt-4">
+                  <h4 className="text-xs font-bold uppercase tracking-wider text-muted-foreground mb-3 flex items-center gap-1.5">
+                    <Globe className="w-3.5 h-3.5" />{t('profile.national_selection')}
+                    <span className="ml-1 text-[10px] font-semibold text-muted-foreground/70">({nationalCareer.length})</span>
+                  </h4>
+                  <div className="space-y-1">
+                    {shown.map((entry, i) => {
+                      const { country, category } = parseNatTeamLabel(entry.club);
+                      return (
+                        <div key={i} className="flex items-center gap-2.5 p-2 rounded-lg bg-muted/30 text-sm min-w-0">
+                          <FlagIcon nationality={country} size="sm" className="shrink-0" />
+                          <span className="font-semibold flex-1 truncate min-w-0">{translateCountry(country, i18n.language)}</span>
+                          {category !== 'A' && (
+                            <span className="text-[10px] bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-300 px-1.5 py-0.5 rounded font-bold shrink-0">{category}</span>
+                          )}
+                          <span className="text-[11px] text-muted-foreground shrink-0 tabular-nums">
+                            {fmtCareerDate(entry.from) || '—'} – {entry.to ? fmtCareerDate(entry.to) : t('common.present')}
+                          </span>
+                        </div>
+                      );
+                    })}
+                  </div>
+                  {canCollapse && (
+                    <button
+                      type="button"
+                      onClick={() => setNationalCareerExpanded(v => !v)}
+                      className="mt-2 w-full flex items-center justify-center gap-1.5 py-1.5 rounded-lg text-xs font-medium text-muted-foreground hover:text-foreground hover:bg-muted/40 transition-colors"
+                    >
+                      <ChevronDown className={`w-3.5 h-3.5 transition-transform ${nationalCareerExpanded ? 'rotate-180' : ''}`} />
+                      {nationalCareerExpanded ? t('profile.show_less') : t('profile.show_more_count', { count: nationalCareer.length - COLLAPSE_AT })}
+                    </button>
+                  )}
+                </div>
+              );
+            })()}
 
             {ext.description && (
               <div className="mt-4">
@@ -811,7 +872,7 @@ export default function PlayerProfile() {
 
       {/* Tabs */}
       <Tabs value={activeTab} onValueChange={setActiveTab} className="w-full">
-        <TabsList className="w-full grid grid-cols-5">
+        <TabsList className="w-full grid grid-cols-6">
           <TabsTrigger value="infos" className="gap-2">
             <Info className="w-4 h-4" />
             <span className="hidden sm:inline">{t('profile.tab_infos')}</span>
@@ -828,6 +889,13 @@ export default function PlayerProfile() {
           <TabsTrigger value="data" className="gap-2">
             <Activity className="w-4 h-4" />
             <span className="hidden sm:inline">{t('profile.tab_data')}</span>
+          </TabsTrigger>
+          <TabsTrigger value="injuries" className="gap-2">
+            <HeartPulse className="w-4 h-4" />
+            <span className="hidden sm:inline">{t('profile.tab_injuries')}</span>
+            {injuriesData?.injuries?.length ? (
+              <Badge variant="secondary" className="ml-1 text-[10px] h-4 px-1">{injuriesData.injuries.length}</Badge>
+            ) : null}
           </TabsTrigger>
           <TabsTrigger value="links" className="gap-2">
             <Link2 className="w-4 h-4" />
@@ -857,6 +925,48 @@ export default function PlayerProfile() {
                 {!isPremium && <TooltipContent>Fonctionnalité réservée aux comptes Premium</TooltipContent>}
               </Tooltip>
             </div>
+          )}
+
+          {/* Market value evolution (Transfermarkt) */}
+          {playerTmId && (
+            <Card className="card-warm">
+              <CardHeader className="pb-2 pt-4 px-5">
+                <CardTitle className="text-base flex items-center gap-2">
+                  <TrendingUp className="w-4 h-4 text-primary" />
+                  {t('profile.market_value_title')}
+                </CardTitle>
+              </CardHeader>
+              <CardContent className="px-5 pb-5">
+                {marketValueLoading ? (
+                  <div className="flex justify-center py-8">
+                    <div className="animate-spin w-5 h-5 border-2 border-primary border-t-transparent rounded-full" />
+                  </div>
+                ) : marketValueError ? (
+                  <div className="text-center py-8">
+                    <AlertCircle className="w-8 h-8 text-muted-foreground/20 mx-auto mb-2" />
+                    <p className="text-sm text-muted-foreground">{t('profile.market_value_error')}</p>
+                  </div>
+                ) : !marketValueData?.history?.length ? (
+                  <div className="text-center py-8">
+                    <TrendingUp className="w-8 h-8 text-muted-foreground/20 mx-auto mb-2" />
+                    <p className="text-sm text-muted-foreground">{t('profile.market_value_empty')}</p>
+                  </div>
+                ) : (
+                  <div>
+                    <Suspense fallback={<div className="h-[280px] flex items-center justify-center"><div className="animate-spin w-5 h-5 border-2 border-primary border-t-transparent rounded-full" /></div>}>
+                      <LazyMarketValueChart
+                        history={marketValueData.history}
+                        locale={locale}
+                        valueLabel={t('profile.market_value_value')}
+                        clubLabel={t('profile.market_value_club')}
+                        ageLabel={t('profile.market_value_age')}
+                      />
+                    </Suspense>
+                    <p className="text-[10px] text-muted-foreground/60 mt-3">{t('profile.market_value_source')}</p>
+                  </div>
+                )}
+              </CardContent>
+            </Card>
           )}
 
           {/* Delete zone */}
@@ -1425,6 +1535,76 @@ export default function PlayerProfile() {
             />
           </Suspense>
         </TabsContent>
+
+        {/* ── Tab: Injuries (Transfermarkt scrape) ── */}
+        <TabsContent value="injuries" className="mt-4 space-y-4">
+          <Card className="card-warm">
+            <CardHeader className="pb-2">
+              <CardTitle className="text-base flex items-center gap-2">
+                <HeartPulse className="w-4 h-4 text-primary" />
+                {t('profile.injuries_title')}
+              </CardTitle>
+            </CardHeader>
+            <CardContent>
+              {!playerTmId ? (
+                <div className="text-center py-12">
+                  <HeartPulse className="w-10 h-10 text-muted-foreground/20 mx-auto mb-3" />
+                  <p className="text-sm text-muted-foreground">{t('profile.injuries_no_tm')}</p>
+                  <p className="text-xs text-muted-foreground/60 mt-1">{t('profile.injuries_no_tm_desc')}</p>
+                </div>
+              ) : injuriesLoading ? (
+                <div className="flex justify-center py-12">
+                  <div className="animate-spin w-6 h-6 border-2 border-primary border-t-transparent rounded-full" />
+                </div>
+              ) : injuriesError ? (
+                <div className="text-center py-12">
+                  <AlertCircle className="w-10 h-10 text-muted-foreground/20 mx-auto mb-3" />
+                  <p className="text-sm text-muted-foreground">{t('profile.injuries_error')}</p>
+                </div>
+              ) : !injuriesData?.injuries?.length ? (
+                <div className="text-center py-12">
+                  <HeartPulse className="w-10 h-10 text-muted-foreground/20 mx-auto mb-3" />
+                  <p className="text-sm text-muted-foreground">{t('profile.injuries_empty')}</p>
+                </div>
+              ) : (
+                <div className="overflow-x-auto">
+                  <table className="w-full text-sm">
+                    <thead>
+                      <tr className="border-b text-xs text-muted-foreground">
+                        <th className="text-left font-medium py-2 pr-3">{t('profile.injuries_season')}</th>
+                        <th className="text-left font-medium py-2 pr-3">{t('profile.injuries_type')}</th>
+                        <th className="text-left font-medium py-2 pr-3">{t('profile.injuries_from')}</th>
+                        <th className="text-left font-medium py-2 pr-3">{t('profile.injuries_to')}</th>
+                        <th className="text-right font-medium py-2 pr-3">{t('profile.injuries_days')}</th>
+                        <th className="text-left font-medium py-2 pr-3">{t('profile.injuries_club')}</th>
+                        <th className="text-right font-medium py-2">{t('profile.injuries_games_missed')}</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {injuriesData.injuries.map((inj, idx) => (
+                        <tr key={idx} className="border-b last:border-0 hover:bg-muted/30 transition-colors">
+                          <td className="py-2 pr-3 font-mono text-xs text-muted-foreground">{inj.season}</td>
+                          <td className="py-2 pr-3 font-medium">{inj.type}</td>
+                          <td className="py-2 pr-3 text-muted-foreground whitespace-nowrap">{inj.from}</td>
+                          <td className="py-2 pr-3 text-muted-foreground whitespace-nowrap">{inj.to}</td>
+                          <td className="py-2 pr-3 text-right whitespace-nowrap">{inj.days}</td>
+                          <td className="py-2 pr-3 text-muted-foreground">{inj.club || '—'}</td>
+                          <td className="py-2 text-right">
+                            {inj.gamesMissed ? <Badge variant="secondary">{inj.gamesMissed}</Badge> : '—'}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                  <p className="text-[10px] text-muted-foreground/60 mt-4">
+                    {t('profile.injuries_source')}
+                  </p>
+                </div>
+              )}
+            </CardContent>
+          </Card>
+        </TabsContent>
+
         {/* ── Tab: Links (personal notes, youtube, articles) ── */}
         <TabsContent value="links" className="mt-4 space-y-4">
           {/* Add research form */}
