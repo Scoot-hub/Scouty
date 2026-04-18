@@ -117,6 +117,48 @@ export function useDeleteShadowTeam() {
   });
 }
 
+export function useCloneShadowTeam() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async ({ source, newName }: { source: ShadowTeam; newName: string }) => {
+      const insertPayload: Record<string, unknown> = {
+        name: newName,
+        formation: source.formation,
+      };
+      if (source.logo_url) insertPayload.logo_url = source.logo_url;
+      const { data: created, error: err1 } = await supabase
+        .from('shadow_teams')
+        .insert(insertPayload)
+        .select()
+        .single();
+      if (err1) throw err1;
+
+      const { data: players, error: err2 } = await supabase
+        .from('shadow_team_players')
+        .select('*')
+        .eq('shadow_team_id', source.id);
+      if (err2) throw err2;
+
+      const rows = (players ?? []) as ShadowTeamPlayer[];
+      for (const p of rows) {
+        const { error: errIns } = await supabase
+          .from('shadow_team_players')
+          .insert({
+            shadow_team_id: (created as ShadowTeam).id,
+            player_id: p.player_id,
+            position_slot: p.position_slot,
+            rank: p.rank ?? 0,
+          });
+        if (errIns) throw errIns;
+      }
+      return created as ShadowTeam;
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['shadow_teams'] });
+    },
+  });
+}
+
 export function useAssignPlayer() {
   const queryClient = useQueryClient();
   return useMutation({

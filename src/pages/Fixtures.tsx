@@ -254,12 +254,15 @@ export default function Fixtures() {
     });
   };
 
-  // Filter by search (team name or competition)
+  // Filter by search (team name or competition).
+  // When searching, use the full day's events (allEventsData) so results aren't limited
+  // to the paginated subset already loaded.
   const filtered = useMemo(() => {
     if (!search.trim()) return competitions;
+    const source = allEventsData?.competitions ?? competitions;
     const q = search.toLowerCase().trim();
     const result: LivescoreCompetition[] = [];
-    for (const comp of competitions) {
+    for (const comp of source) {
       if (comp.name.toLowerCase().includes(q) || comp.country.toLowerCase().includes(q)) {
         result.push(comp);
         continue;
@@ -272,7 +275,7 @@ export default function Fixtures() {
       }
     }
     return result;
-  }, [competitions, search]);
+  }, [competitions, allEventsData, search]);
 
   // ── My players matching ──
   const { data: playersData } = usePlayers();
@@ -516,7 +519,7 @@ export default function Fixtures() {
             <CompetitionGroup key={`${comp.country_code}-${comp.name}`} competition={comp} t={t} onSave={handleSaveMatch} onSaveToOrg={handleSaveToOrg} orgs={myOrgs ?? []} savedMatchKeys={savedMatchKeys} selectedDate={selectedDate} utcOffset={utcOffset} />
           ))}
 
-          {hasMore && (
+          {hasMore && !hasSearch && (
             <div className="text-center pt-2">
               <Button
                 variant="outline"

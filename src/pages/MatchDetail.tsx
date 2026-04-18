@@ -4,9 +4,10 @@ import { useTranslation } from 'react-i18next';
 import { useMatchDetail, type MatchEvent, type MatchStat } from '@/hooks/use-api-football';
 import { Card, CardContent } from '@/components/ui/card';
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs';
-import { Loader2, ChevronLeft, MapPin, User, AlertTriangle } from 'lucide-react';
+import { Loader2, ChevronLeft, MapPin, User, AlertTriangle, ExternalLink } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { useUtcOffset, formatTimeWithOffset } from '@/hooks/use-utc-offset';
+import { useResolvePlayerNames, type PlayerNameMatch } from '@/hooks/use-resolve-player-names';
 
 // ── Helpers ────────────────────────────────────────────────────────────────────
 
@@ -124,12 +125,38 @@ function StatBar({ stat, t }: { stat: MatchStat; t: (k: string, o?: object) => s
 
 // ── Lineup column ─────────────────────────────────────────────────────────────
 
-function LineupColumn({ team, formation, players, subs, side }: {
+function PlayerName({ name, matches, className }: {
+  name: string;
+  matches: Record<string, PlayerNameMatch>;
+  className?: string;
+}) {
+  const match = matches[name];
+  if (match) {
+    return (
+      <Link
+        to={`/player/${match.id}`}
+        target="_blank"
+        rel="noopener noreferrer"
+        className={cn(
+          'inline-flex items-center gap-1 font-semibold text-primary hover:underline underline-offset-2',
+          className,
+        )}
+      >
+        {name}
+        <ExternalLink className="w-3 h-3 shrink-0 opacity-70" />
+      </Link>
+    );
+  }
+  return <span className={className}>{name}</span>;
+}
+
+function LineupColumn({ team, formation, players, subs, side, matches }: {
   team: string;
   formation: string | null;
   players: { name: string; number: number | null; position: string; captain?: boolean; yellow?: boolean; red?: boolean; substituted?: boolean }[];
   subs: { name: string; number: number | null; position: string }[];
   side: 'home' | 'away';
+  matches: Record<string, PlayerNameMatch>;
 }) {
   return (
     <div className={cn('flex-1 min-w-0', side === 'away' && 'text-right')}>
@@ -155,7 +182,7 @@ function LineupColumn({ team, formation, players, subs, side }: {
               <span className="w-5 text-center font-mono text-[10px] text-muted-foreground shrink-0">{p.number}</span>
             )}
             <span className={cn('font-medium truncate', side === 'away' && 'text-right')}>
-              {p.name}
+              <PlayerName name={p.name} matches={matches} />
               {p.captain && <span className="ml-1 text-[9px] text-amber-500 font-black">©</span>}
             </span>
             <span className="flex items-center gap-0.5 shrink-0 ml-auto">
@@ -180,7 +207,7 @@ function LineupColumn({ team, formation, players, subs, side }: {
               {p.number != null && (
                 <span className="w-5 text-center font-mono text-[10px] shrink-0">{p.number}</span>
               )}
-              <span className={cn('truncate', side === 'away' && 'text-right')}>{p.name}</span>
+              <PlayerName name={p.name} matches={matches} className={cn('truncate', side === 'away' && 'text-right')} />
             </div>
           ))}
         </div>
@@ -224,6 +251,22 @@ export default function MatchDetail() {
   const allEventsSorted = data?.events.slice().sort((a, b) => a.minute - b.minute) ?? [];
 
   const [tab, setTab] = useState<'events' | 'stats' | 'lineup'>('events');
+
+  // Resolve lineup names against the user's own roster so matched players become clickable
+  const lineupNames = data?.lineups.available
+    ? [
+        ...data.lineups.home.players.map(p => p.name),
+        ...data.lineups.home.subs.map(p => p.name),
+        ...data.lineups.away.players.map(p => p.name),
+        ...data.lineups.away.subs.map(p => p.name),
+      ].filter(Boolean)
+    : [];
+  const { data: nameMatches } = useResolvePlayerNames(
+    lineupNames,
+    data?.home_team,
+    data?.away_team,
+  );
+  const matches = nameMatches ?? {};
 
   return (
     <div className="max-w-3xl mx-auto">
@@ -473,6 +516,7 @@ export default function MatchDetail() {
                       players={data.lineups.home.players}
                       subs={data.lineups.home.subs}
                       side="home"
+                      matches={matches}
                     />
                     <div className="w-px bg-border shrink-0" />
                     <LineupColumn
@@ -481,6 +525,7 @@ export default function MatchDetail() {
                       players={data.lineups.away.players}
                       subs={data.lineups.away.subs}
                       side="away"
+                      matches={matches}
                     />
                   </div>
                 </CardContent>

@@ -56,6 +56,38 @@ function getParentClubName(name: string): string | null {
   return null;
 }
 
+// Loose comparison between requested name and an external search result.
+// Accepts only if they share at least one meaningful word (>= 4 chars) — prevents
+// Transfermarkt's first result from being silently attributed to the wrong club.
+function normalizeName(s: string): string {
+  return s.normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[^\w\s]/g, ' ').replace(/\s+/g, ' ').trim().toLowerCase();
+}
+function namesMatchLoosely(input: string, candidate: string): boolean {
+  const a = normalizeName(input);
+  const b = normalizeName(candidate);
+  if (!a || !b) return false;
+  if (a === b) return true;
+  const aWords = new Set(a.split(/\s+/).filter(w => w.length >= 4));
+  const bWords = b.split(/\s+/).filter(w => w.length >= 4);
+  return bWords.some(w => aWords.has(w));
+}
+
+// Ask the Transfermarkt scraper for this club. More accurate than TheSportsDB
+// because TM ranks by relevance to the query string. Returns null on miss or
+// when the returned club name doesn't look related to the input.
+async function fetchTmBadge(club: string): Promise<string | null> {
+  try {
+    const resp = await fetch(`${API_BASE}/club-tm-search?q=${encodeURIComponent(club)}`);
+    if (!resp.ok) return null;
+    const data = await resp.json() as { clubName?: string; badge?: string } | null;
+    if (!data?.badge || !data?.clubName) return null;
+    if (!namesMatchLoosely(club, data.clubName)) return null;
+    return data.badge;
+  } catch {
+    return null;
+  }
+}
+
 async function saveLogoToDb(club: string, url: string) {
   try {
     await fetch(`${API_BASE}/club-logos`, {
@@ -92,9 +124,16 @@ function queueFetch(club: string): Promise<string | null> {
 
   const promise = new Promise<string | null>(resolve => {
     queue.push(async () => {
-      const url = await getClubBadgeUrl(club);
+      // Transfermarkt first — its relevance-ranked search is far more reliable
+      // than TheSportsDB's name matching (e.g. "FC Annecy" → NEC). Note: the
+      // server-side /api/club-tm/:id handler already persists the badge to
+      // club_logos on success, so we only call saveLogoToDb for the fallback.
+      let url = await fetchTmBadge(club);
+      if (!url) {
+        url = await getClubBadgeUrl(club);
+        if (url) saveLogoToDb(club, url);
+      }
       logoCache.set(club, url);
-      if (url) saveLogoToDb(club, url); // persist to DB for all future sessions
       pending.delete(club);
       resolve(url);
     });
@@ -160,25 +199,24 @@ export function ClubBadge({ club, size = 'md', className }: ClubBadgeProps) {
     );
   }
 
-  // No logo found: initials badge
-  const abbreviation = resolvedClub
-    .replace(/^(FC|SC|RB|TP|RSC|KAA|KRC|KV|OH|SSD|AS|SS|ACF|SSC|AJ|OGC|RC|US|AZ|PEC|RKC|NAC|ADO|NEC|PFC|FK|NK|HNK|CD|UD|SD|CF|LD|GD) /, '')
-    .split(' ')
-    .map(w => w[0])
-    .join('')
-    .slice(0, 3)
-    .toUpperCase();
-
+  // No logo found: generic gray shield
   return (
     <div
       className={cn(
-        'shrink-0 rounded-lg bg-muted flex items-center justify-center font-bold text-muted-foreground text-[10px]',
+        'shrink-0 flex items-center justify-center text-muted-foreground/60',
         sizeMap[size],
         className
       )}
       title={club}
     >
-      {abbreviation}
+      <svg
+        viewBox="0 0 24 24"
+        fill="currentColor"
+        aria-hidden="true"
+        className="w-full h-full"
+      >
+        <path d="M12 2 4 5v6c0 4.5 3.2 8.6 8 10 4.8-1.4 8-5.5 8-10V5l-8-3Z" />
+      </svg>
     </div>
   );
 }
