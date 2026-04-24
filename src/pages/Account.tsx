@@ -10,7 +10,9 @@ import { Badge } from '@/components/ui/badge';
 import { Input } from '@/components/ui/input';
 import { Separator } from '@/components/ui/separator';
 import { toast } from 'sonner';
-import { Crown, Mail, Lock, Building2, User, CalendarDays, ExternalLink, Loader2, Shield, ShieldCheck, ShieldOff, Download, Trash2, AlertTriangle, CreditCard, Camera, Phone, MapPin, Briefcase } from 'lucide-react';
+import { Crown, Mail, Lock, Building2, User, CalendarDays, ExternalLink, Loader2, Shield, ShieldCheck, ShieldOff, Download, Trash2, AlertTriangle, CreditCard, Camera, Phone, MapPin, Briefcase, Zap } from 'lucide-react';
+import { useCredits } from '@/hooks/use-credits';
+import { Progress } from '@/components/ui/progress';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from '@/components/ui/dialog';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import PasswordStrengthIndicator, { validatePassword } from '@/components/PasswordStrengthIndicator';
@@ -91,6 +93,11 @@ export default function Account() {
   const [socialX, setSocialX] = useState('');
   const [socialInstagram, setSocialInstagram] = useState('');
   const [socialLinkedin, setSocialLinkedin] = useState('');
+  const [socialFacebook, setSocialFacebook] = useState('');
+  const [socialSnapchat, setSocialSnapchat] = useState('');
+  const [socialTiktok, setSocialTiktok] = useState('');
+  const [socialTelegram, setSocialTelegram] = useState('');
+  const [socialWhatsapp, setSocialWhatsapp] = useState('');
   const [socialPublic, setSocialPublic] = useState(false);
   const [saving, setSaving] = useState(false);
 
@@ -129,6 +136,11 @@ export default function Account() {
       setSocialX(profile.social_x || '');
       setSocialInstagram(profile.social_instagram || '');
       setSocialLinkedin(profile.social_linkedin || '');
+      setSocialFacebook((profile as any).social_facebook || '');
+      setSocialSnapchat((profile as any).social_snapchat || '');
+      setSocialTiktok((profile as any).social_tiktok || '');
+      setSocialTelegram((profile as any).social_telegram || '');
+      setSocialWhatsapp((profile as any).social_whatsapp || '');
       setSocialPublic(!!profile.social_public);
     }
   }, [profile]);
@@ -152,6 +164,11 @@ export default function Account() {
         social_x: socialX.trim() || null,
         social_instagram: socialInstagram.trim() || null,
         social_linkedin: socialLinkedin.trim() || null,
+        social_facebook: socialFacebook.trim() || null,
+        social_snapchat: socialSnapchat.trim() || null,
+        social_tiktok: socialTiktok.trim() || null,
+        social_telegram: socialTelegram.trim() || null,
+        social_whatsapp: socialWhatsapp.trim() || null,
         social_public: socialPublic ? 1 : 0,
       }).eq('user_id', user.id);
       if (error) throw error;
@@ -408,6 +425,7 @@ export default function Account() {
 
   const isPremium = subscription?.subscribed;
   const userRoles = myPermissions?.roles?.length ? myPermissions.roles : ['user'];
+  const { data: creditsData } = useCredits();
 
   return (
     <div className="max-w-2xl mx-auto space-y-6">
@@ -578,20 +596,58 @@ export default function Account() {
           {/* Social networks */}
           <div>
             <h3 className="text-sm font-semibold mb-3 flex items-center gap-2">{t('account.social_title')}</h3>
-            <div className="space-y-3">
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
               <div>
-                <label className="text-xs font-medium text-muted-foreground">X (Twitter)</label>
+                <label className="text-xs font-medium text-muted-foreground flex items-center gap-1.5">
+                  <span>𝕏</span> X (Twitter)
+                </label>
                 <Input className="mt-1" value={socialX} onChange={e => setSocialX(e.target.value)} placeholder="@username" />
               </div>
               <div>
-                <label className="text-xs font-medium text-muted-foreground">Instagram</label>
+                <label className="text-xs font-medium text-muted-foreground flex items-center gap-1.5">
+                  <span>📸</span> Instagram
+                </label>
                 <Input className="mt-1" value={socialInstagram} onChange={e => setSocialInstagram(e.target.value)} placeholder="@username" />
               </div>
               <div>
-                <label className="text-xs font-medium text-muted-foreground">LinkedIn</label>
+                <label className="text-xs font-medium text-muted-foreground flex items-center gap-1.5">
+                  <span>💼</span> LinkedIn
+                </label>
                 <Input className="mt-1" value={socialLinkedin} onChange={e => setSocialLinkedin(e.target.value)} placeholder="https://linkedin.com/in/..." />
               </div>
-              <label className="flex items-center gap-3 cursor-pointer pt-1">
+              <div>
+                <label className="text-xs font-medium text-muted-foreground flex items-center gap-1.5">
+                  <span>📘</span> Facebook
+                </label>
+                <Input className="mt-1" value={socialFacebook} onChange={e => setSocialFacebook(e.target.value)} placeholder="https://facebook.com/username" />
+              </div>
+              <div>
+                <label className="text-xs font-medium text-muted-foreground flex items-center gap-1.5">
+                  <span>👻</span> Snapchat
+                </label>
+                <Input className="mt-1" value={socialSnapchat} onChange={e => setSocialSnapchat(e.target.value)} placeholder="@username" />
+              </div>
+              <div>
+                <label className="text-xs font-medium text-muted-foreground flex items-center gap-1.5">
+                  <span>🎵</span> TikTok
+                </label>
+                <Input className="mt-1" value={socialTiktok} onChange={e => setSocialTiktok(e.target.value)} placeholder="@username" />
+              </div>
+              <div>
+                <label className="text-xs font-medium text-muted-foreground flex items-center gap-1.5">
+                  <span>✈️</span> Telegram
+                </label>
+                <Input className="mt-1" value={socialTelegram} onChange={e => setSocialTelegram(e.target.value)} placeholder="@username" />
+              </div>
+              <div>
+                <label className="text-xs font-medium text-muted-foreground flex items-center gap-1.5">
+                  <span>💬</span> WhatsApp
+                </label>
+                <Input className="mt-1" value={socialWhatsapp} onChange={e => setSocialWhatsapp(e.target.value)} placeholder="+33 6 00 00 00 00" />
+              </div>
+            </div>
+            <div className="mt-3 space-y-1">
+              <label className="flex items-center gap-3 cursor-pointer">
                 <input
                   type="checkbox"
                   checked={socialPublic}
@@ -887,6 +943,60 @@ export default function Account() {
         </CardContent>
       </Card>
 
+      {/* Credits */}
+      {creditsData && (
+        <Card>
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2 text-lg">
+              <Zap className="w-5 h-5 text-yellow-500" />
+              {t('credits.title')}
+            </CardTitle>
+            <CardDescription>{t('credits.account_desc')}</CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            <div className="flex items-center gap-2 text-sm">
+              <span className="text-muted-foreground">{t('credits.plan_label', { plan: t(`credits.plan_${creditsData.plan_type}`) })}</span>
+              {creditsData.quotas.daily === -1 && (
+                <span className="text-xs px-2 py-0.5 rounded-full bg-yellow-500/10 text-yellow-600 dark:text-yellow-400 font-medium">{t('credits.unlimited')}</span>
+              )}
+            </div>
+            {creditsData.quotas.daily !== -1 ? (
+              <div className="space-y-3">
+                {(['daily', 'weekly', 'monthly'] as const).map(period => {
+                  const used = creditsData.usage[period];
+                  const quota = creditsData.quotas[period];
+                  const pct = Math.min(100, Math.round((used / quota) * 100));
+                  return (
+                    <div key={period} className="space-y-1">
+                      <div className="flex justify-between text-sm">
+                        <span className="text-muted-foreground">{t(`credits.${period}`)}</span>
+                        <span className="font-medium tabular-nums">{used} / {quota}</span>
+                      </div>
+                      <Progress value={pct} className="h-2" />
+                    </div>
+                  );
+                })}
+                <p className="text-xs text-muted-foreground pt-1">{t('credits.reset_info')}</p>
+                {(creditsData.usage.earned_total ?? 0) > 0 && (
+                  <div className="flex items-center gap-2 text-sm text-yellow-600 dark:text-yellow-400 bg-yellow-50 dark:bg-yellow-950/20 rounded-lg px-3 py-2">
+                    <Zap className="w-4 h-4 shrink-0" />
+                    <span>{t('credits.earned_bonus_account', { count: creditsData.usage.earned_total })}</span>
+                  </div>
+                )}
+              </div>
+            ) : (
+              <p className="text-sm text-muted-foreground">{t('credits.unlimited_desc')}</p>
+            )}
+            {creditsData.plan_type === 'starter' && (
+              <Button size="sm" variant="outline" onClick={() => window.location.href = '/pricing'}>
+                <Crown className="w-4 h-4 mr-2" />
+                {t('credits.upgrade_cta')}
+              </Button>
+            )}
+          </CardContent>
+        </Card>
+      )}
+
       {/* RGPD — Data export & account deletion */}
       <Card className="border-destructive/20">
         <CardHeader>
@@ -897,6 +1007,22 @@ export default function Account() {
           <CardDescription>{t('account.gdpr_desc')}</CardDescription>
         </CardHeader>
         <CardContent className="space-y-6">
+          {/* RGPD info */}
+          <div className="rounded-lg bg-blue-50 dark:bg-blue-950/20 border border-blue-200 dark:border-blue-800/40 p-4 space-y-3">
+            <div className="flex items-start gap-2.5">
+              <Shield className="w-4 h-4 text-blue-600 dark:text-blue-400 mt-0.5 shrink-0" />
+              <p className="text-xs text-blue-700 dark:text-blue-300">{t('account.gdpr_info_servers')}</p>
+            </div>
+            <div className="flex items-start gap-2.5">
+              <Shield className="w-4 h-4 text-blue-600 dark:text-blue-400 mt-0.5 shrink-0" />
+              <p className="text-xs text-blue-700 dark:text-blue-300">{t('account.gdpr_info_retention')}</p>
+            </div>
+            <div className="flex items-start gap-2.5">
+              <Shield className="w-4 h-4 text-blue-600 dark:text-blue-400 mt-0.5 shrink-0" />
+              <p className="text-xs text-blue-700 dark:text-blue-300">{t('account.gdpr_info_self_service')}</p>
+            </div>
+          </div>
+
           {/* Data export */}
           <div className="space-y-2">
             <h3 className="text-sm font-semibold flex items-center gap-2">

@@ -62,6 +62,7 @@ const DEFAULT_SIZES: Record<CardId, CardSize> = {
   sans_ballon: 'half',
   mental: 'half',
   personnelles: 'half',
+  custom_fields: 'full',
   reports: 'full',
   evolution: 'full',
   similar: 'full',
@@ -70,6 +71,7 @@ const DEFAULT_SIZES: Record<CardId, CardSize> = {
 const DEFAULT_ORDER: CardId[] = [
   'evaluation', 'details',
   'physique', 'avec_ballon', 'sans_ballon', 'mental', 'personnelles',
+  'custom_fields',
   'external_data', 'reports', 'evolution', 'similar',
 ];
 

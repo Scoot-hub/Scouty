@@ -9,6 +9,7 @@ import { toast } from 'sonner';
 import LanguageSwitcher from '@/components/LanguageSwitcher';
 import { cn } from '@/lib/utils';
 import logo from '@/assets/logo.png';
+import PageSEO from '@/components/PageSEO';
 
 type BillingCycle = 'monthly' | 'annual';
 
@@ -156,6 +157,11 @@ export default function Pricing() {
 
   return (
     <div className="min-h-screen bg-background text-foreground">
+      <PageSEO
+        path="/pricing"
+        title="Tarifs & Plans | Scouty — Scouting Footballistique"
+        description="Découvrez les offres Scouty : plan gratuit, Scout+ et Pro. Choisissez le plan adapté à votre activité de scouting footballistique. Essai gratuit sans carte bancaire."
+      />
       {/* Nav */}
       <header className="fixed top-0 w-full z-50 border-b border-border/40 bg-background/80 backdrop-blur-md">
         <div className="max-w-7xl mx-auto px-6 h-16 flex items-center justify-between">

@@ -3,12 +3,18 @@ import { useTranslation } from 'react-i18next';
 import { ArrowLeft } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import logo from '@/assets/logo.png';
+import PageSEO from '@/components/PageSEO';
 
 export default function CGV() {
   const { t } = useTranslation();
 
   return (
     <div className="min-h-screen bg-background">
+      <PageSEO
+        path="/cgv"
+        title="Conditions Générales de Vente | Scouty"
+        description="Conditions Générales de Vente de Scouty. Modalités de souscription, tarifs, droit de rétractation, remboursements et résiliation des abonnements à la plateforme de scouting."
+      />
       <header className="border-b border-border px-6 py-4">
         <div className="max-w-4xl mx-auto flex items-center gap-4">
           <Link to="/">

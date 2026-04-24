@@ -41,6 +41,11 @@ CREATE TABLE IF NOT EXISTS profiles (
   social_x VARCHAR(100) NULL,
   social_instagram VARCHAR(100) NULL,
   social_linkedin VARCHAR(255) NULL,
+  social_facebook VARCHAR(255) NULL,
+  social_snapchat VARCHAR(100) NULL,
+  social_tiktok VARCHAR(100) NULL,
+  social_telegram VARCHAR(100) NULL,
+  social_whatsapp VARCHAR(30) NULL,
   social_public TINYINT(1) NOT NULL DEFAULT 0,
   referred_by CHAR(36) NULL,
   created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -81,6 +86,18 @@ CREATE TABLE IF NOT EXISTS user_subscriptions (
   subscription_end DATETIME NULL,
   created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS user_credit_events (
+  id CHAR(36) PRIMARY KEY,
+  user_id CHAR(36) NOT NULL,
+  action_type VARCHAR(50) NOT NULL,
+  direction ENUM('earn','spend') NOT NULL DEFAULT 'spend',
+  amount INT NOT NULL DEFAULT 1,
+  description VARCHAR(255) NULL,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  INDEX idx_uce_user_date (user_id, created_at),
   FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
 );
 
@@ -392,6 +409,8 @@ CREATE TABLE IF NOT EXISTS club_directory (
   country VARCHAR(255) NOT NULL DEFAULT '',
   country_code VARCHAR(10) NOT NULL DEFAULT '',
   logo_url TEXT NULL,
+  lat DECIMAL(9,6) NULL,
+  lng DECIMAL(9,6) NULL,
   updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   INDEX idx_club_dir_competition (competition),
   INDEX idx_club_dir_country (country)
@@ -633,6 +652,29 @@ CREATE TABLE IF NOT EXISTS cron_enrichment_logs (
   status ENUM('running', 'done', 'failed') NOT NULL DEFAULT 'running',
   error_detail TEXT NULL,
   FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+);
+
+-- ── Inactive-user cleanup logs (cron) ────────────────────────────────────────
+
+CREATE TABLE IF NOT EXISTS cron_cleanup_logs (
+  id CHAR(36) PRIMARY KEY,
+  started_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  finished_at DATETIME NULL,
+  users_deleted INT NOT NULL DEFAULT 0,
+  users_warned INT NOT NULL DEFAULT 0,
+  status ENUM('running', 'done', 'failed') NOT NULL DEFAULT 'running',
+  error_detail TEXT NULL
+);
+
+CREATE TABLE IF NOT EXISTS cron_job_logs (
+  id CHAR(36) PRIMARY KEY,
+  job_name VARCHAR(50) NOT NULL,
+  started_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  finished_at DATETIME NULL,
+  status ENUM('running','done','failed') NOT NULL DEFAULT 'running',
+  result_json JSON NULL,
+  error_detail TEXT NULL,
+  INDEX idx_cjl_job_date (job_name, started_at)
 );
 
 -- ── Feature flags (admin toggles) ──────────────────────────────────────────

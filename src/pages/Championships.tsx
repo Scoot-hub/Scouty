@@ -1,5 +1,6 @@
 import { useState, useMemo } from 'react';
 import { useTranslation } from 'react-i18next';
+import { useQuery } from '@tanstack/react-query';
 import {
   useChampionships,
   useChampionshipPlayers,
@@ -36,24 +37,21 @@ import {
 import { toast } from 'sonner';
 import { Link } from 'react-router-dom';
 import {
-  PlusCircle, Search, Trash2, Trophy, Users, X, UserPlus, ChevronLeft, Building2, Table2, ExternalLink,
+  PlusCircle, Search, Trash2, Trophy, Users, X, UserPlus, ChevronLeft,
+  Building2, ExternalLink, MapPin, TrendingUp, Star, CalendarDays,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
+
+const API_BASE = (import.meta.env.API_URL || '/api').replace(/\/$/, '');
+
+// ── Logo components ─────────────────────────────────────────────────────────
 
 function LeagueLogo({ src, name, size = 'md' }: { src: string | null; name: string; size?: 'sm' | 'md' | 'lg' }) {
   const [error, setError] = useState(false);
   const dims = size === 'lg' ? 'w-14 h-14' : size === 'md' ? 'w-10 h-10' : 'w-7 h-7';
   const iconDims = size === 'lg' ? 'w-7 h-7' : size === 'md' ? 'w-5 h-5' : 'w-3.5 h-3.5';
-
   if (src && !error) {
-    return (
-      <img
-        src={src}
-        alt={name}
-        className={cn(dims, 'rounded-lg object-contain shrink-0')}
-        onError={() => setError(true)}
-      />
-    );
+    return <img src={src} alt={name} className={cn(dims, 'rounded-lg object-contain shrink-0')} onError={() => setError(true)} />;
   }
   return (
     <div className={cn(dims, 'rounded-lg bg-primary/10 flex items-center justify-center shrink-0')}>
@@ -62,19 +60,204 @@ function LeagueLogo({ src, name, size = 'md' }: { src: string | null; name: stri
   );
 }
 
-function TeamLogo({ src, name }: { src: string; name: string }) {
+function ClubLogo({ src, name, size = 'md' }: { src?: string | null; name: string; size?: 'sm' | 'md' | 'lg' }) {
   const [error, setError] = useState(false);
-  if (!src || error) {
-    return (
-      <div className="w-7 h-7 rounded bg-muted flex items-center justify-center text-[10px] font-bold text-muted-foreground shrink-0">
-        {name.charAt(0)}
-      </div>
-    );
+  const dims = size === 'lg' ? 'w-16 h-16' : size === 'md' ? 'w-10 h-10' : 'w-7 h-7';
+  const textSize = size === 'lg' ? 'text-xl' : size === 'md' ? 'text-sm' : 'text-[10px]';
+  if (src && !error) {
+    return <img src={src} alt={name} className={cn(dims, 'object-contain shrink-0')} onError={() => setError(true)} />;
   }
-  return <img src={src} alt={name} className="w-7 h-7 rounded object-contain shrink-0" onError={() => setError(true)} />;
+  return (
+    <div className={cn(dims, 'rounded-lg bg-muted flex items-center justify-center font-bold text-muted-foreground shrink-0', textSize)}>
+      {name.charAt(0)}
+    </div>
+  );
 }
 
-// ── Detail sub-page ──
+// ── Data hooks ───────────────────────────────────────────────────────────────
+
+function useClubLogosMap() {
+  return useQuery({
+    queryKey: ['club-logos-map'],
+    staleTime: 10 * 60 * 1000,
+    queryFn: async (): Promise<Record<string, string>> => {
+      const res = await fetch(`${API_BASE}/club-logos`);
+      if (!res.ok) return {};
+      const data: { club_name: string; logo_url: string }[] = await res.json();
+      const map: Record<string, string> = {};
+      for (const item of data) {
+        if (item.club_name && item.logo_url) map[item.club_name.toLowerCase()] = item.logo_url;
+      }
+      return map;
+    },
+  });
+}
+
+interface TmClubData {
+  clubId: string;
+  clubName: string;
+  badge: string | null;
+  league: string | null;
+  country: string | null;
+  stadium: string | null;
+  squadSize: number | null;
+  avgAge: string | null;
+  marketValue: string | null;
+  tmUrl: string | null;
+  founded: string | null;
+}
+
+function useClubTmData(clubName: string | null) {
+  return useQuery<TmClubData | null>({
+    queryKey: ['club-tm-quick', clubName],
+    enabled: !!clubName,
+    staleTime: 24 * 60 * 60 * 1000,
+    retry: false,
+    queryFn: async () => {
+      if (!clubName) return null;
+      try {
+        const searchRes = await fetch(`${API_BASE}/club-tm-search?q=${encodeURIComponent(clubName)}`);
+        if (!searchRes.ok) return null;
+        const matches = await searchRes.json();
+        const match = Array.isArray(matches) ? matches[0] : null;
+        if (!match?.clubId) return null;
+        const detailRes = await fetch(`${API_BASE}/club-tm/${match.clubId}`);
+        if (!detailRes.ok) return null;
+        return detailRes.json();
+      } catch { return null; }
+    },
+  });
+}
+
+// ── Club panel (rich drawer) ─────────────────────────────────────────────────
+
+interface SelectedClub { name: string; logoUrl?: string }
+
+function ClubPanel({
+  club,
+  onClose,
+  getClubPlayers,
+}: {
+  club: SelectedClub;
+  onClose: () => void;
+  getClubPlayers: (name: string) => Player[];
+}) {
+  const { t } = useTranslation();
+  const { data: tmData, isLoading: tmLoading } = useClubTmData(club.name);
+  const myPlayers = getClubPlayers(club.name);
+  const logo = club.logoUrl || tmData?.badge || null;
+
+  const stats = tmData ? [
+    { icon: MapPin,       label: t('championships.stat_stadium'),  value: tmData.stadium },
+    { icon: Users,        label: t('championships.stat_squad'),     value: tmData.squadSize != null ? String(tmData.squadSize) : null },
+    { icon: TrendingUp,   label: t('championships.stat_avg_age'),   value: tmData.avgAge },
+    { icon: Star,         label: t('championships.stat_value'),     value: tmData.marketValue },
+    { icon: CalendarDays, label: t('championships.stat_founded'),   value: tmData.founded },
+  ].filter(s => s.value) : [];
+
+  return (
+    <div className="rounded-xl border bg-card overflow-hidden">
+      {/* Header */}
+      <div className="p-4 md:p-5 bg-gradient-to-r from-primary/5 to-transparent flex items-center justify-between gap-4">
+        <div className="flex items-center gap-4 min-w-0">
+          <ClubLogo src={logo} name={club.name} size="md" />
+          <div className="min-w-0">
+            <h3 className="font-bold text-base truncate">{club.name}</h3>
+            {tmData && (
+              <p className="text-xs text-muted-foreground truncate">
+                {[tmData.league, tmData.country].filter(Boolean).join(' · ')}
+              </p>
+            )}
+            {tmLoading && <p className="text-xs text-muted-foreground animate-pulse">{t('common.loading')}</p>}
+          </div>
+        </div>
+        <div className="flex items-center gap-2 shrink-0">
+          <Link
+            to={`/club?club=${encodeURIComponent(club.name)}`}
+            className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium bg-primary text-primary-foreground hover:bg-primary/90 transition-colors"
+          >
+            <ExternalLink className="w-3 h-3" />
+            {t('championships.view_club_profile')}
+          </Link>
+          {tmData?.tmUrl && (
+            <a
+              href={tmData.tmUrl}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium border hover:bg-muted transition-colors"
+            >
+              TM
+            </a>
+          )}
+          <button onClick={onClose} className="p-1 text-muted-foreground hover:text-foreground transition-colors">
+            <X className="w-4 h-4" />
+          </button>
+        </div>
+      </div>
+
+      {/* TM stats */}
+      {(tmLoading || stats.length > 0) && (
+        <div className="px-4 md:px-5 py-3 border-t">
+          {tmLoading ? (
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+              {[...Array(4)].map((_, i) => <div key={i} className="h-10 rounded bg-muted animate-pulse" />)}
+            </div>
+          ) : (
+            <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3">
+              {stats.map((s, i) => (
+                <div key={i} className="flex items-start gap-2">
+                  <div className="w-6 h-6 rounded bg-primary/10 flex items-center justify-center shrink-0 mt-0.5">
+                    <s.icon className="w-3 h-3 text-primary" />
+                  </div>
+                  <div className="min-w-0">
+                    <p className="text-[10px] text-muted-foreground">{s.label}</p>
+                    <p className="text-xs font-semibold truncate">{s.value}</p>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* My players */}
+      <div className="px-4 md:px-5 pb-4 pt-3 border-t space-y-3">
+        <h4 className="text-sm font-semibold flex items-center gap-2">
+          <Users className="w-4 h-4 text-primary" />
+          {t('championships.my_players_in_club', { count: myPlayers.length })}
+        </h4>
+        {myPlayers.length === 0 ? (
+          <p className="text-sm text-muted-foreground">{t('championships.no_players_in_club')}</p>
+        ) : (
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2">
+            {myPlayers.map(p => (
+              <a
+                key={p.id}
+                href={`/player/${p.id}`}
+                className="flex items-center gap-3 rounded-lg border bg-background p-3 hover:bg-accent/50 transition-colors"
+              >
+                {p.photo_url ? (
+                  <img src={p.photo_url} alt="" className="w-8 h-8 rounded-full object-cover shrink-0" />
+                ) : (
+                  <div className="w-8 h-8 rounded-full bg-primary/10 flex items-center justify-center text-xs font-bold text-primary shrink-0">
+                    {p.name.charAt(0)}
+                  </div>
+                )}
+                <div className="min-w-0">
+                  <p className="text-sm font-medium truncate">{p.name}</p>
+                  <p className="text-xs text-muted-foreground truncate">{p.position} — {p.nationality}</p>
+                </div>
+              </a>
+            ))}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ── Championship detail sub-page ─────────────────────────────────────────────
+
 function ChampionshipDetail({
   champ,
   onBack,
@@ -86,31 +269,27 @@ function ChampionshipDetail({
   const { data: players = [] } = usePlayers();
   const { data: linkedPlayers = [] } = useChampionshipPlayers(champ.name);
   const { data: sofaData, isLoading: sofaLoading } = useSofascoreLeague(champ.sofascoreId);
+  const { data: logosMap = {} } = useClubLogosMap();
   const linkPlayer = useLinkPlayer();
   const unlinkPlayer = useUnlinkPlayer();
   const [playerSearch, setPlayerSearch] = useState('');
   const [tab, setTab] = useState<'clubs' | 'players'>('clubs');
-  const [selectedClub, setSelectedClub] = useState<string | null>(null);
+  const [selectedClub, setSelectedClub] = useState<SelectedClub | null>(null);
 
-  // Effective league: prefer enriched value (survives manual edits), fallback to raw field
   const getEffectiveLeague = (p: Player): string =>
     ((p.external_data?.enriched_league ?? p.league) ?? '').trim();
   const getEffectiveClub = (p: Player): string =>
     ((p.external_data?.enriched_club ?? p.club) ?? '').trim();
 
-  // Players whose effective league matches this championship (auto-detected)
-  const leaguePlayerIds = useMemo(() => {
+  const leaguePlayerIds = useMemo<Set<string>>(() => {
     const champLower = champ.name.toLowerCase();
-    return new Set(
+    return new Set<string>(
       players.filter(p => getEffectiveLeague(p).toLowerCase() === champLower).map(p => p.id),
     );
   }, [players, champ.name]);
 
-  // Players explicitly linked via championship_players table
-  const manualLinkedIds = useMemo(() => new Set(linkedPlayers.map(lp => lp.player_id)), [linkedPlayers]);
-
-  // Combined: auto (by league field) + manual links, deduplicated
-  const allLinkedIds = useMemo(() => new Set([...leaguePlayerIds, ...manualLinkedIds]), [leaguePlayerIds, manualLinkedIds]);
+  const manualLinkedIds = useMemo<Set<string>>(() => new Set<string>(linkedPlayers.map(lp => lp.player_id)), [linkedPlayers]);
+  const allLinkedIds = useMemo<Set<string>>(() => new Set<string>([...Array.from(leaguePlayerIds), ...Array.from(manualLinkedIds)]), [leaguePlayerIds, manualLinkedIds]);
   const allLinkedPlayers = useMemo(() => players.filter(p => allLinkedIds.has(p.id)), [players, allLinkedIds]);
 
   const availablePlayers = useMemo(
@@ -121,7 +300,6 @@ function ChampionshipDetail({
     [players, allLinkedIds, playerSearch],
   );
 
-  // Players grouped by club (prefer enriched club for accurate matching)
   const playersByClub = useMemo(() => {
     const map: Record<string, typeof players> = {};
     for (const p of players) {
@@ -132,7 +310,6 @@ function ChampionshipDetail({
   }, [players]);
 
   const clubPlayerCount = (clubName: string): number => {
-    // Try exact match, then case-insensitive
     if (playersByClub[clubName]) return playersByClub[clubName].length;
     const lower = clubName.toLowerCase();
     for (const [k, v] of Object.entries(playersByClub)) {
@@ -141,7 +318,7 @@ function ChampionshipDetail({
     return 0;
   };
 
-  const getClubPlayers = (clubName: string) => {
+  const getClubPlayers = (clubName: string): Player[] => {
     if (playersByClub[clubName]) return playersByClub[clubName];
     const lower = clubName.toLowerCase();
     for (const [k, v] of Object.entries(playersByClub)) {
@@ -149,6 +326,10 @@ function ChampionshipDetail({
     }
     return [];
   };
+
+  // Resolve logo for a club name (SofaScore already provides logoUrl on team objects)
+  const getStaticClubLogo = (clubName: string): string | undefined =>
+    logosMap[clubName.toLowerCase()];
 
   const handleLink = async (playerId: string) => {
     try {
@@ -163,7 +344,6 @@ function ChampionshipDetail({
     } catch { toast.error(t('common.error')); }
   };
 
-  // Teams: prefer SofaScore live data, fall back to static LEAGUE_CLUBS
   const teams: SofascoreTeam[] = sofaData?.teams ?? [];
   const staticClubs = champ.clubs;
   const hasStandings = teams.length > 0 && teams[0].points !== undefined;
@@ -213,73 +393,28 @@ function ChampionshipDetail({
       {/* Clubs tab */}
       {tab === 'clubs' && (
         <div className="space-y-3">
-          {/* Club detail drawer */}
+          {/* Club panel */}
           {selectedClub && (
-            <div className="rounded-xl border bg-card p-5 space-y-4">
-              <div className="flex items-center justify-between">
-                <h3 className="font-semibold flex items-center gap-2">
-                  <Building2 className="w-4 h-4 text-primary" />
-                  {selectedClub}
-                  <span className="text-xs text-muted-foreground font-normal">
-                    — {t('championships.my_players_in_club', { count: getClubPlayers(selectedClub).length })}
-                  </span>
-                </h3>
-                <div className="flex items-center gap-2">
-                  <Link
-                    to={`/club?club=${encodeURIComponent(selectedClub)}`}
-                    className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium bg-primary text-primary-foreground hover:bg-primary/90 transition-colors"
-                  >
-                    <ExternalLink className="w-3 h-3" />
-                    {t('championships.view_club_profile')}
-                  </Link>
-                  <button onClick={() => setSelectedClub(null)} className="text-muted-foreground hover:text-foreground transition-colors">
-                    <X className="w-4 h-4" />
-                  </button>
-                </div>
-              </div>
-              {getClubPlayers(selectedClub).length === 0 ? (
-                <p className="text-sm text-muted-foreground">{t('championships.no_players_in_club')}</p>
-              ) : (
-                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2">
-                  {getClubPlayers(selectedClub).map(p => (
-                    <a
-                      key={p.id}
-                      href={`/player/${p.id}`}
-                      className="flex items-center gap-3 rounded-lg border bg-background p-3 hover:bg-accent/50 transition-colors"
-                    >
-                      {p.photo_url ? (
-                        <img src={p.photo_url} alt="" className="w-8 h-8 rounded-full object-cover shrink-0" />
-                      ) : (
-                        <div className="w-8 h-8 rounded-full bg-primary/10 flex items-center justify-center text-xs font-bold text-primary shrink-0">
-                          {p.name.charAt(0)}
-                        </div>
-                      )}
-                      <div className="min-w-0">
-                        <p className="text-sm font-medium truncate">{p.name}</p>
-                        <p className="text-xs text-muted-foreground truncate">{p.position} — {p.nationality}</p>
-                      </div>
-                    </a>
-                  ))}
-                </div>
-              )}
-            </div>
+            <ClubPanel
+              club={selectedClub}
+              onClose={() => setSelectedClub(null)}
+              getClubPlayers={getClubPlayers}
+            />
           )}
 
           {sofaLoading ? (
             <div className="space-y-2">
-              {[...Array(8)].map((_, i) => <div key={i} className="h-10 rounded-lg bg-muted animate-pulse" />)}
+              {[...Array(8)].map((_, i) => <div key={i} className="h-12 rounded-lg bg-muted animate-pulse" />)}
             </div>
           ) : hasStandings ? (
-            /* Full standings table from SofaScore */
+            /* Full standings table */
             <div className="overflow-x-auto rounded-lg border">
               <table className="w-full text-sm">
                 <thead>
                   <tr className="bg-muted/50 text-muted-foreground text-xs">
                     <th className="text-left px-3 py-2 w-8">#</th>
                     <th className="text-left px-3 py-2">{t('championships.team')}</th>
-                    <th className="text-center px-2 py-2">
-                      <Users className="w-3 h-3 inline" />
-                    </th>
+                    <th className="text-center px-2 py-2"><Users className="w-3 h-3 inline" /></th>
                     <th className="text-center px-2 py-2">MJ</th>
                     <th className="text-center px-2 py-2">V</th>
                     <th className="text-center px-2 py-2">N</th>
@@ -292,19 +427,20 @@ function ChampionshipDetail({
                 <tbody>
                   {teams.map((team, i) => {
                     const myCount = clubPlayerCount(team.name);
+                    const isSelected = selectedClub?.name === team.name;
                     return (
                       <tr
                         key={team.id ?? i}
-                        onClick={() => setSelectedClub(team.name)}
+                        onClick={() => setSelectedClub(isSelected ? null : { name: team.name, logoUrl: team.logoUrl })}
                         className={cn(
                           'border-t cursor-pointer transition-colors',
-                          selectedClub === team.name ? 'bg-primary/5' : 'hover:bg-muted/30',
+                          isSelected ? 'bg-primary/5' : 'hover:bg-muted/30',
                         )}
                       >
                         <td className="px-3 py-2 text-muted-foreground font-medium">{team.position ?? i + 1}</td>
                         <td className="px-3 py-2">
                           <div className="flex items-center gap-2.5">
-                            <TeamLogo src={team.logoUrl} name={team.name} />
+                            <ClubLogo src={team.logoUrl} name={team.name} size="sm" />
                             <span className="font-medium truncate">{team.name}</span>
                           </div>
                         </td>
@@ -313,9 +449,7 @@ function ChampionshipDetail({
                             <span className="inline-flex items-center justify-center min-w-[20px] h-5 px-1.5 rounded-full bg-primary/15 text-primary text-[11px] font-bold">
                               {myCount}
                             </span>
-                          ) : (
-                            <span className="text-muted-foreground/30">-</span>
-                          )}
+                          ) : <span className="text-muted-foreground/30">-</span>}
                         </td>
                         <td className="text-center px-2 py-2 text-muted-foreground">{team.played ?? '-'}</td>
                         <td className="text-center px-2 py-2 text-muted-foreground">{team.wins ?? '-'}</td>
@@ -331,23 +465,24 @@ function ChampionshipDetail({
               </table>
             </div>
           ) : teams.length > 0 ? (
-            /* SofaScore teams but no standings (e.g. cup competitions) */
-            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2">
+            /* SofaScore teams, no standings */
+            <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-3">
               {teams.map((team, i) => {
                 const myCount = clubPlayerCount(team.name);
+                const isSelected = selectedClub?.name === team.name;
                 return (
                   <button
                     key={team.id ?? i}
-                    onClick={() => setSelectedClub(team.name)}
+                    onClick={() => setSelectedClub(isSelected ? null : { name: team.name, logoUrl: team.logoUrl })}
                     className={cn(
-                      'flex items-center gap-3 rounded-lg border p-3 text-left transition-colors',
-                      selectedClub === team.name ? 'bg-primary/5 border-primary/30' : 'bg-card hover:bg-accent/50',
+                      'flex flex-col items-center gap-2 rounded-xl border p-4 text-center transition-all hover:shadow-sm',
+                      isSelected ? 'bg-primary/5 border-primary/40' : 'bg-card hover:bg-accent/40 hover:border-primary/20',
                     )}
                   >
-                    <TeamLogo src={team.logoUrl} name={team.name} />
-                    <span className="text-sm font-medium truncate flex-1">{team.name}</span>
+                    <ClubLogo src={team.logoUrl} name={team.name} size="md" />
+                    <span className="text-xs font-medium leading-tight line-clamp-2">{team.name}</span>
                     {myCount > 0 && (
-                      <span className="inline-flex items-center justify-center min-w-[20px] h-5 px-1.5 rounded-full bg-primary/15 text-primary text-[11px] font-bold shrink-0">
+                      <span className="inline-flex items-center justify-center min-w-[20px] h-5 px-1.5 rounded-full bg-primary/15 text-primary text-[11px] font-bold">
                         {myCount}
                       </span>
                     )}
@@ -356,25 +491,25 @@ function ChampionshipDetail({
               })}
             </div>
           ) : staticClubs.length > 0 ? (
-            /* Fallback: static club list from LEAGUE_CLUBS */
-            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2">
+            /* Static club list with local DB logos */
+            <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-3">
               {staticClubs.map(club => {
                 const myCount = clubPlayerCount(club);
+                const logo = getStaticClubLogo(club);
+                const isSelected = selectedClub?.name === club;
                 return (
                   <button
                     key={club}
-                    onClick={() => setSelectedClub(club)}
+                    onClick={() => setSelectedClub(isSelected ? null : { name: club, logoUrl: logo })}
                     className={cn(
-                      'flex items-center gap-3 rounded-lg border p-3 text-left transition-colors',
-                      selectedClub === club ? 'bg-primary/5 border-primary/30' : 'bg-card hover:bg-accent/50',
+                      'flex flex-col items-center gap-2 rounded-xl border p-4 text-center transition-all hover:shadow-sm',
+                      isSelected ? 'bg-primary/5 border-primary/40' : 'bg-card hover:bg-accent/40 hover:border-primary/20',
                     )}
                   >
-                    <div className="w-7 h-7 rounded bg-muted flex items-center justify-center text-[10px] font-bold text-muted-foreground shrink-0">
-                      {club.charAt(0)}
-                    </div>
-                    <span className="text-sm font-medium truncate flex-1">{club}</span>
+                    <ClubLogo src={logo} name={club} size="md" />
+                    <span className="text-xs font-medium leading-tight line-clamp-2">{club}</span>
                     {myCount > 0 && (
-                      <span className="inline-flex items-center justify-center min-w-[20px] h-5 px-1.5 rounded-full bg-primary/15 text-primary text-[11px] font-bold shrink-0">
+                      <span className="inline-flex items-center justify-center min-w-[20px] h-5 px-1.5 rounded-full bg-primary/15 text-primary text-[11px] font-bold">
                         {myCount}
                       </span>
                     )}
@@ -391,7 +526,6 @@ function ChampionshipDetail({
       {/* Players tab */}
       {tab === 'players' && (
         <div className="space-y-6">
-          {/* Linked players */}
           {allLinkedPlayers.length === 0 ? (
             <p className="text-sm text-muted-foreground">{t('championships.no_players')}</p>
           ) : (
@@ -446,7 +580,6 @@ function ChampionshipDetail({
             </div>
           )}
 
-          {/* Add player */}
           <div className="space-y-3">
             <h3 className="text-sm font-semibold flex items-center gap-2">
               <UserPlus className="w-4 h-4" />
@@ -496,7 +629,8 @@ function ChampionshipDetail({
   );
 }
 
-// ── Main page ──
+// ── Main page ────────────────────────────────────────────────────────────────
+
 export default function Championships() {
   const { t } = useTranslation();
   const { data: championships = [], isLoading } = useChampionships();
@@ -550,12 +684,10 @@ export default function Championships() {
     setDeleteTarget(null);
   };
 
-  // ── Detail view ──
   if (selectedChamp) {
     return <ChampionshipDetail champ={selectedChamp} onBack={() => setSelectedChamp(null)} />;
   }
 
-  // ── List view ──
   return (
     <div className="max-w-5xl mx-auto py-8 px-4 space-y-6">
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
@@ -607,17 +739,12 @@ export default function Championships() {
                   <LeagueLogo src={c.logoUrl} name={c.name} />
                   <div className="min-w-0 flex-1">
                     <h3 className="font-semibold truncate">{c.name}</h3>
-                    <p className="text-sm text-muted-foreground">
-                      {getFlag(c.country)} {c.country}
-                    </p>
+                    <p className="text-sm text-muted-foreground">{getFlag(c.country)} {c.country}</p>
                   </div>
                 </div>
-
                 <div className="mt-3 flex items-center gap-3 text-xs text-muted-foreground">
                   {c.clubCount > 0 && (
-                    <span className="bg-muted px-2 py-0.5 rounded-full">
-                      {c.clubCount} {t('championships.clubs')}
-                    </span>
+                    <span className="bg-muted px-2 py-0.5 rounded-full">{c.clubCount} {t('championships.clubs')}</span>
                   )}
                   {count > 0 && (
                     <span className="bg-primary/10 text-primary px-2 py-0.5 rounded-full flex items-center gap-1">
@@ -625,7 +752,6 @@ export default function Championships() {
                     </span>
                   )}
                 </div>
-
                 {isAdmin && c.isCustom && (
                   <div className="absolute top-3 right-3 flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
                     <button

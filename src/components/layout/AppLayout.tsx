@@ -5,6 +5,7 @@ import { useAuth } from '@/contexts/AuthContext';
 import { X, AlertTriangle } from 'lucide-react';
 import AppSidebar from './AppSidebar';
 import NotificationCenter from '@/components/NotificationCenter';
+import CreditWidget from '@/components/CreditWidget';
 import HelpCenter from '@/components/HelpCenter';
 import FeedbackPopup from '@/components/FeedbackPopup';
 import ScrollRestoration from '@/components/ScrollRestoration';
@@ -54,7 +55,8 @@ export default function AppLayout() {
         <div className={`${collapsed ? 'lg:ml-[72px]' : 'lg:ml-64'} min-h-screen flex flex-col transition-[margin] duration-300`}>
           {isImpersonating && <ImpersonationBanner />}
           {showNotifications && (
-            <div className="flex items-center justify-end px-4 lg:px-8 pt-3 pb-1">
+            <div className="flex items-center justify-end gap-1 px-4 lg:px-8 pt-3 pb-1">
+              <CreditWidget />
               <NotificationCenter />
             </div>
           )}

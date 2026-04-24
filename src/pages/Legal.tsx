@@ -4,6 +4,7 @@ import { Shield, Eye, Lock, Accessibility, ArrowLeft } from 'lucide-react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import logo from '@/assets/logo.png';
+import PageSEO from '@/components/PageSEO';
 
 export default function Legal() {
   const { t } = useTranslation();
@@ -33,6 +34,11 @@ export default function Legal() {
 
   return (
     <div className="min-h-screen bg-background">
+      <PageSEO
+        path="/legal"
+        title="Mentions légales & Cadre légal | Scouty"
+        description="Mentions légales de Scouty : conformité RGPD, accessibilité RGAA, sécurité des données (ISO 27001) et politique de cookies. Plateforme de scouting footballistique conforme."
+      />
       <header className="border-b border-border px-6 py-4">
         <div className="max-w-4xl mx-auto flex items-center gap-4">
           <Link to="/">

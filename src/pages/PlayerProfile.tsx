@@ -33,7 +33,7 @@ import { usePlayerInjuries } from '@/hooks/use-player-injuries';
 import { usePlayerMarketValue } from '@/hooks/use-player-market-value';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from '@/components/ui/dropdown-menu';
-import { ArrowLeft, Edit, FileDown, ExternalLink, PlusCircle, Trash2, RefreshCw, Globe, TrendingUp, Calendar, Ruler, User, MapPin, Hash, Pencil, Euro, Briefcase, LayoutDashboard, ListPlus, Check, Building2, AlertCircle, FileText, Upload, X, Clock, Youtube, Newspaper, Link2, StickyNote, Plus, Activity, Info, Video, ClipboardList, BarChart3, Play, HeartPulse, ChevronDown } from 'lucide-react';
+import { ArrowLeft, Edit, ExternalLink, PlusCircle, Trash2, RefreshCw, Globe, TrendingUp, Calendar, Ruler, User, MapPin, Hash, Pencil, Euro, Briefcase, LayoutDashboard, ListPlus, Check, Building2, AlertCircle, FileText, Upload, X, Clock, Youtube, Newspaper, Link2, StickyNote, Plus, Activity, Info, Video, ClipboardList, BarChart3, Play, HeartPulse, ChevronDown } from 'lucide-react';
 import { toast } from 'sonner';
 import { parseScoutingNotes, serializeScoutingNotes, loadLayout, saveLayout, type CardId, type CardSize, type LayoutConfig, type ScoutingNotes } from '@/lib/scouting-notes';
 
@@ -210,7 +210,17 @@ export default function PlayerProfile() {
       } else {
         toast.error(data?.error || t('profile.enrich_error'));
       }
-    } catch { toast.error(t('profile.enrich_error')); }
+    } catch (err: any) {
+      const isPremiumErr = err?.message?.includes('premium_required') || (data as any)?.error === 'premium_required';
+      if (isPremiumErr) {
+        toast.error(t('profile.enrich_premium_required'), {
+          action: { label: t('sidebar.upgrade'), onClick: () => window.location.href = '/pricing' },
+          duration: 6000,
+        });
+      } else {
+        toast.error(t('profile.enrich_error'));
+      }
+    }
     finally { setEnriching(false); }
   };
 
@@ -661,6 +671,27 @@ export default function PlayerProfile() {
     mental: () => renderNoteZone('mental', '🧠', 'profile.zone_mental', 'profile.zone_mental_placeholder'),
     personnelles: () => renderNoteZone('personnelles', '📝', 'profile.personal_notes', 'profile.notes_placeholder'),
 
+    custom_fields: () => (
+      <>
+        <CardHeader className="flex flex-row items-center justify-between pb-2 pt-4 px-5">
+          <CardTitle className="text-base flex items-center gap-2">
+            <ListPlus className="w-4 h-4 text-primary" />
+            {t('custom_fields.title')}
+          </CardTitle>
+          <button
+            onClick={() => setManageFieldsOpen(true)}
+            className="text-xs text-muted-foreground hover:text-foreground flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg hover:bg-muted/60 transition-colors"
+          >
+            <Pencil className="w-3 h-3" />
+            {t('custom_fields.manage')}
+          </button>
+        </CardHeader>
+        <CardContent className="px-5 pb-5">
+          <CustomFieldsDisplay playerId={player.id} editable={true} />
+        </CardContent>
+      </>
+    ),
+
     reports: () => (
       <>
         <CardHeader className="flex flex-row items-center justify-between pb-2 pt-4 px-5">
@@ -824,11 +855,6 @@ export default function PlayerProfile() {
                     <ShareWithOrgPopover playerId={player.id} />
                   </DropdownMenuItem>
                 )}
-                <DropdownMenuItem className="flex items-center gap-2.5">
-                  <FileDown className="w-4 h-4" />
-                  {t('profile.pdf')}
-                </DropdownMenuItem>
-                <DropdownMenuSeparator />
                 <DropdownMenuItem
                   onClick={() => setEditMode(true)}
                   className="flex items-center gap-2.5"
@@ -1319,7 +1345,7 @@ export default function PlayerProfile() {
               )}
 
               {(() => {
-                const scoutCards = new Set<CardId>(['evaluation', 'physique', 'avec_ballon', 'sans_ballon', 'mental', 'personnelles']);
+                const scoutCards = new Set<CardId>(['evaluation', 'physique', 'avec_ballon', 'sans_ballon', 'mental', 'personnelles', 'custom_fields']);
                 const scoutOrder = visibleOrder.filter(id => scoutCards.has(id));
                 return (
                   <Suspense fallback={<div className="flex justify-center py-8"><div className="animate-spin w-6 h-6 border-2 border-primary border-t-transparent rounded-full" /></div>}>
@@ -1359,6 +1385,10 @@ export default function PlayerProfile() {
                     if (!videoForm.title.trim() || !id) return;
                     let fileUrl: string | undefined;
                     if (videoFile) {
+                      if (videoFile.size > 10 * 1024 * 1024) {
+                        toast.error(t('profile.videos_too_large'));
+                        return;
+                      }
                       setUploadingVideo(true);
                       try {
                         const ext = videoFile.name.split('.').pop() || 'mp4';
@@ -1371,7 +1401,16 @@ export default function PlayerProfile() {
                           credentials: 'include',
                           body: formData,
                         });
-                        if (!res.ok) throw new Error('Upload failed');
+                        if (!res.ok) {
+                          const errData = await res.json().catch(() => ({}));
+                          if (errData.error === 'video_too_large') {
+                            toast.error(t('profile.videos_too_large'));
+                          } else {
+                            toast.error(t('profile.videos_upload_error'));
+                          }
+                          setUploadingVideo(false);
+                          return;
+                        }
                         const data = await res.json();
                         fileUrl = data.publicUrl || `/uploads/${data.path}`;
                       } catch (err) {
@@ -1430,7 +1469,12 @@ export default function PlayerProfile() {
                       <label className="flex items-center gap-2 p-2 rounded-lg border border-dashed border-border hover:border-primary/50 cursor-pointer transition-colors">
                         <Upload className="w-4 h-4 text-muted-foreground" />
                         <span className="text-xs text-muted-foreground">{t('profile.videos_upload')}</span>
-                        <input type="file" accept="video/*" className="hidden" onChange={e => { if (e.target.files?.[0]) setVideoFile(e.target.files[0]); }} />
+                        <input type="file" accept="video/*" className="hidden" onChange={e => {
+                          const f = e.target.files?.[0];
+                          if (!f) return;
+                          if (f.size > 10 * 1024 * 1024) { toast.error(t('profile.videos_too_large')); e.target.value = ''; return; }
+                          setVideoFile(f);
+                        }} />
                       </label>
                     )}
                   </div>

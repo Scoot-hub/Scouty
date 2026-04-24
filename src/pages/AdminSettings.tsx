@@ -13,6 +13,7 @@ import { toast } from 'sonner';
 import {
   Settings, Mail, Trash2, ToggleLeft, Loader2, ArrowLeft, AlertTriangle,
   Shield, Users, CalendarDays, MessageSquare, Heart, Building2, Globe, Search, Database, Ticket, Bell, Archive,
+  UserX, Play, RefreshCw, CheckCircle2, XCircle, Clock,
 } from 'lucide-react';
 import {
   AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent,
@@ -65,10 +66,54 @@ export default function AdminSettings() {
   // ── Email test ──
   const [testEmail, setTestEmail] = useState('');
   const [sendingEmail, setSendingEmail] = useState(false);
+  const [emailResult, setEmailResult] = useState<{ ok: boolean; message: string } | null>(null);
 
   // ── Purge ──
   const [purgeConfirm, setPurgeConfirm] = useState<string | null>(null);
   const [purging, setPurging] = useState(false);
+
+  // ── Inactive-user cleanup ──
+  const [cleanupConfirm, setCleanupConfirm] = useState(false);
+  const [triggeringCleanup, setTriggeringCleanup] = useState(false);
+
+  interface CleanupLog {
+    id: string;
+    started_at: string;
+    finished_at: string | null;
+    users_deleted: number;
+    users_warned: number;
+    status: 'running' | 'done' | 'failed';
+    error_detail: string | null;
+  }
+
+  const { data: cleanupLogs = [], refetch: refetchCleanupLogs } = useQuery<CleanupLog[]>({
+    queryKey: ['cron-cleanup-logs'],
+    queryFn: async () => {
+      const res = await fetch(`${API}/admin/cron-cleanup-logs`, { ...authFetchInit() });
+      if (!res.ok) return [];
+      const data = await res.json();
+      return data.logs ?? [];
+    },
+    enabled: isAdmin === true,
+    staleTime: 30_000,
+    refetchInterval: triggeringCleanup ? 3000 : false,
+  });
+
+  const handleTriggerCleanup = async (dryRun: boolean) => {
+    setTriggeringCleanup(true);
+    setCleanupConfirm(false);
+    try {
+      const res = await fetch(`${API}/admin/cron-cleanup-trigger`, {
+        method: 'POST', ...authFetchInit(), body: JSON.stringify({ dry_run: dryRun }),
+      });
+      if (!res.ok) throw new Error('Failed');
+      toast.success(dryRun ? t('admin_settings.cleanup_dry_run_started') : t('admin_settings.cleanup_started'));
+      setTimeout(() => { refetchCleanupLogs(); setTriggeringCleanup(false); }, 3000);
+    } catch {
+      toast.error(t('common.error'));
+      setTriggeringCleanup(false);
+    }
+  };
 
   // ── Feature flags ──
   const { data: flags = {} } = useQuery<Record<string, boolean>>({
@@ -94,6 +139,7 @@ export default function AdminSettings() {
 
   const handleTestEmail = async () => {
     setSendingEmail(true);
+    setEmailResult(null);
     try {
       const res = await fetch(`${API}/admin/test-email`, {
         method: 'POST', ...authFetchInit(),
@@ -101,9 +147,12 @@ export default function AdminSettings() {
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error);
+      setEmailResult({ ok: true, message: data.message });
       toast.success(t('admin_settings.email_sent'));
     } catch (err: unknown) {
-      toast.error(err instanceof Error ? err.message : t('common.error'));
+      const msg = err instanceof Error ? err.message : t('common.error');
+      setEmailResult({ ok: false, message: msg });
+      toast.error(msg);
     } finally {
       setSendingEmail(false);
     }
@@ -160,7 +209,7 @@ export default function AdminSettings() {
           </CardTitle>
           <CardDescription>{t('admin_settings.test_email_desc')}</CardDescription>
         </CardHeader>
-        <CardContent>
+        <CardContent className="space-y-3">
           <div className="flex gap-2">
             <Input
               value={testEmail}
@@ -174,6 +223,11 @@ export default function AdminSettings() {
               {t('admin_settings.send_test')}
             </Button>
           </div>
+          {emailResult && (
+            <p className={`text-sm px-3 py-2 rounded-lg ${emailResult.ok ? 'bg-green-50 text-green-700 dark:bg-green-950/30 dark:text-green-400' : 'bg-red-50 text-red-700 dark:bg-red-950/30 dark:text-red-400'}`}>
+              {emailResult.message}
+            </p>
+          )}
         </CardContent>
       </Card>
 
@@ -241,6 +295,104 @@ export default function AdminSettings() {
           </div>
         </CardContent>
       </Card>
+
+      {/* ── 4. Inactive-user cleanup ── */}
+      <Card className="border-amber-500/20">
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2 text-base text-amber-600 dark:text-amber-400">
+            <UserX className="w-4 h-4" />
+            {t('admin_settings.cleanup_title')}
+          </CardTitle>
+          <CardDescription>{t('admin_settings.cleanup_desc')}</CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          <div className="flex flex-wrap gap-2">
+            <Button
+              variant="outline"
+              size="sm"
+              className="gap-2 border-amber-500/30 text-amber-600 hover:bg-amber-50 dark:hover:bg-amber-950/20"
+              onClick={() => handleTriggerCleanup(true)}
+              disabled={triggeringCleanup}
+            >
+              {triggeringCleanup ? <Loader2 className="w-4 h-4 animate-spin" /> : <RefreshCw className="w-4 h-4" />}
+              {t('admin_settings.cleanup_dry_run')}
+            </Button>
+            <Button
+              variant="outline"
+              size="sm"
+              className="gap-2 border-destructive/30 text-destructive hover:bg-destructive/5"
+              onClick={() => setCleanupConfirm(true)}
+              disabled={triggeringCleanup}
+            >
+              <Play className="w-4 h-4" />
+              {t('admin_settings.cleanup_run')}
+            </Button>
+          </div>
+
+          {cleanupLogs.length > 0 && (
+            <div className="space-y-1.5">
+              <p className="text-xs font-medium text-muted-foreground uppercase tracking-wide">{t('admin_settings.cleanup_history')}</p>
+              <div className="rounded-lg border overflow-hidden">
+                {cleanupLogs.slice(0, 5).map(log => (
+                  <div key={log.id} className="flex items-center justify-between px-3 py-2 text-xs border-b last:border-0 hover:bg-muted/30">
+                    <div className="flex items-center gap-2">
+                      {log.status === 'running' && <Clock className="w-3.5 h-3.5 text-blue-500 animate-spin" />}
+                      {log.status === 'done' && <CheckCircle2 className="w-3.5 h-3.5 text-green-500" />}
+                      {log.status === 'failed' && <XCircle className="w-3.5 h-3.5 text-red-500" />}
+                      <span className="text-muted-foreground">{new Date(log.started_at).toLocaleString()}</span>
+                    </div>
+                    <div className="flex items-center gap-3">
+                      {log.status === 'done' && (
+                        <>
+                          <span className="text-red-600 font-medium">
+                            {t('admin_settings.cleanup_deleted', { count: log.users_deleted })}
+                          </span>
+                          <span className="text-amber-600">
+                            {t('admin_settings.cleanup_warned', { count: log.users_warned })}
+                          </span>
+                        </>
+                      )}
+                      {log.status === 'failed' && (
+                        <span className="text-red-500">{log.error_detail?.slice(0, 40)}</span>
+                      )}
+                      {log.status === 'running' && (
+                        <span className="text-blue-500">{t('admin_settings.cleanup_running')}</span>
+                      )}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          <p className="text-[11px] text-muted-foreground">{t('admin_settings.cleanup_schedule_info')}</p>
+        </CardContent>
+      </Card>
+
+      {/* Cleanup confirmation dialog */}
+      <AlertDialog open={cleanupConfirm} onOpenChange={setCleanupConfirm}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle className="flex items-center gap-2">
+              <AlertTriangle className="w-5 h-5 text-destructive" />
+              {t('admin_settings.cleanup_confirm_title')}
+            </AlertDialogTitle>
+            <AlertDialogDescription>
+              {t('admin_settings.cleanup_confirm_desc')}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>{t('common.cancel')}</AlertDialogCancel>
+            <AlertDialogAction
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+              onClick={() => handleTriggerCleanup(false)}
+            >
+              <UserX className="w-4 h-4 mr-2" />
+              {t('admin_settings.cleanup_confirm_btn')}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
 
       {/* Purge confirmation dialog */}
       <AlertDialog open={!!purgeConfirm} onOpenChange={open => !open && setPurgeConfirm(null)}>

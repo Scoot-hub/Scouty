@@ -7,6 +7,7 @@ import stadiumHero from '@/assets/stadium-hero.jpg';
 import { useAuth } from '@/contexts/AuthContext';
 import LanguageSwitcher from '@/components/LanguageSwitcher';
 import logo from '@/assets/logo.png';
+import PageSEO from '@/components/PageSEO';
 
 const featureIcons = [Users, FileSearch, BarChart3, Shield, Zap, Globe];
 
@@ -23,6 +24,11 @@ export default function Landing() {
 
   return (
     <div className="min-h-screen bg-background text-foreground">
+      <PageSEO
+        path="/"
+        title="Scouty — Logiciel de scouting footballistique professionnel"
+        description="Gérez vos fiches joueurs, rédigez vos rapports d'observation et construisez vos shadow teams. La plateforme tout-en-un pour scouts, recruteurs et coachs professionnels."
+      />
       {/* Nav */}
       <header className="fixed top-0 w-full z-50 border-b border-border/40 bg-background/80 backdrop-blur-md">
         <div className="max-w-7xl mx-auto px-6 h-16 flex items-center justify-between">

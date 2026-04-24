@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react';
 import { useNavigate, useSearchParams, Link } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
+import PageSEO from '@/components/PageSEO';
 import { supabase } from '@/integrations/supabase/client';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -39,7 +40,14 @@ export default function Auth() {
   const { t } = useTranslation();
 
   useEffect(() => {
-    if (user) navigate('/players');
+    if (!user) return;
+    const pending = localStorage.getItem('scouthub_onboarding_pending');
+    if (pending === 'new' || pending === user.id) {
+      localStorage.removeItem('scouthub_onboarding_pending');
+      navigate('/welcome');
+    } else {
+      navigate('/players');
+    }
   }, [user, navigate]);
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -68,7 +76,8 @@ export default function Auth() {
           },
         });
         if (error) throw error;
-
+        // Flag so the useEffect redirects the new user to onboarding
+        localStorage.setItem('scouthub_onboarding_pending', 'new');
         toast({ title: t('auth.toast_created'), description: t('auth.toast_created_desc') });
       } else {
         const { data, error } = await supabase.auth.signInWithPassword({ email, password });
@@ -115,6 +124,12 @@ export default function Auth() {
 
   return (
     <div className="min-h-screen bg-background flex items-center justify-center px-4">
+      <PageSEO
+        path="/auth"
+        title="Connexion & Inscription | Scouty"
+        description="Connectez-vous ou créez votre compte Scouty pour accéder à la plateforme de scouting footballistique. Inscription gratuite pour scouts, recruteurs et coachs."
+        noIndex
+      />
       <div className="w-full max-w-sm">
         {/* Logo */}
         <div className="text-center mb-8">

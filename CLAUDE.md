@@ -60,7 +60,7 @@ Users can hold multiple roles simultaneously. Role management UI is at `/admin/r
 
 ### Email (Brevo SMTP)
 
-`sendEmail()` in [server/index.js](server/index.js) uses nodemailer with pooled connections, retry on transient failure, and a `getFromAddress()` that formats `"Scouty <noreply@scouty.app>"`. **The `SMTP_FROM` must be a verified sender in Brevo** or emails queue but silently never deliver. Admin can trigger `POST /api/admin/test-email` to verify.
+`sendEmail()` in [server/index.js](server/index.js) uses nodemailer with pooled connections, retry on transient failure, and a `getFromAddress()` that formats `"Scouty <scouty.professional@gmail.com>"`. **The `SMTP_FROM` must be a verified sender in Brevo** or emails queue but silently never deliver. Admin can trigger `POST /api/admin/test-email` to verify.
 
 ### External enrichment & clubs
 

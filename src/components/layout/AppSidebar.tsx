@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { Link, useLocation, useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import {
-  Users, Menu, X, LogOut, Settings, Shield, UserCircle, Eye, Sparkles, Building2, Bug, CalendarDays, CalendarCheck, Shirt, ClipboardList, ChevronLeft, ChevronRight, ChevronDown, Route, MapPinned, Gift, Search, Globe, Heart, MessageSquare, Info, Trophy
+  Users, Menu, X, LogOut, Settings, Shield, UserCircle, Eye, Sparkles, Building2, Bug, CalendarDays, CalendarCheck, Shirt, ClipboardList, ChevronLeft, ChevronRight, ChevronDown, Route, MapPinned, Gift, Search, Globe, Heart, MessageSquare, Info, Trophy, FileSpreadsheet
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { useAuth } from '@/contexts/AuthContext';
@@ -30,6 +30,22 @@ function SidebarTooltip({ label, collapsed, children }: { label: string; collaps
   );
 }
 
+const subLinkClass = (active: boolean) =>
+  cn(
+    'flex items-center gap-2.5 px-3 py-1.5 rounded-lg text-[13px] transition-all',
+    active
+      ? 'bg-sidebar-accent text-sidebar-accent-foreground'
+      : 'text-sidebar-foreground/60 hover:text-sidebar-foreground hover:bg-sidebar-accent/50'
+  );
+
+const subLinkSmClass = (active: boolean) =>
+  cn(
+    'flex items-center gap-2.5 px-3 py-1 rounded-lg text-[12px] transition-all',
+    active
+      ? 'bg-sidebar-accent text-sidebar-accent-foreground'
+      : 'text-sidebar-foreground/50 hover:text-sidebar-foreground hover:bg-sidebar-accent/50'
+  );
+
 export default function AppSidebar({ collapsed, onToggle }: AppSidebarProps) {
   const location = useLocation();
   const navigate = useNavigate();
@@ -41,17 +57,38 @@ export default function AppSidebar({ collapsed, onToggle }: AppSidebarProps) {
   const { data: myOrgs } = useMyOrganizations();
   const { t } = useTranslation();
 
-  // Returns true if user can view the given page (admins always can, undefined = allowed by default)
+  const WHITELIST_ONLY = new Set(['admin', 'data_import']);
   const canView = (pageKey: string): boolean => {
     if (isAdmin) return true;
-    if (!permsData?.permissions) return true; // permissions not loaded yet — show all
+    if (!permsData?.permissions) return !WHITELIST_ONLY.has(pageKey);
     const val = permsData.permissions[pageKey];
-    if (val === undefined) return pageKey !== 'admin'; // no explicit rule — allow except admin
+    if (val === undefined) return !WHITELIST_ONLY.has(pageKey);
     return val;
   };
+
   const [mobileOpen, setMobileOpen] = useState(false);
   const [reportOpen, setReportOpen] = useState(false);
   const [legalOpen, setLegalOpen] = useState(false);
+
+  // null = auto (based on active child route), true/false = user override
+  const [playersOpenOverride, setPlayersOpenOverride] = useState<boolean | null>(null);
+  const [fixturesOpenOverride, setFixturesOpenOverride] = useState<boolean | null>(null);
+  const [orgOpenOverride, setOrgOpenOverride] = useState<boolean | null>(null);
+
+  const hasActiveChild = (paths: string[]) =>
+    paths.some(p => location.pathname === p || location.pathname.startsWith(p + '/') || location.pathname.startsWith(p + '?'));
+
+  const playersChildPaths = ['/discover', '/watchlist', '/shadow-team'];
+  const fixturesChildPaths = ['/my-matches', '/map'];
+  const clubChildPaths = ['/my-clubs'];
+  const orgChildPaths = myOrgs?.map(o => `/organization/${slugify(o.name)}`) ?? [];
+
+  const [clubOpenOverride, setClubOpenOverride] = useState<boolean | null>(null);
+
+  const playersOpen = playersOpenOverride ?? hasActiveChild(playersChildPaths);
+  const fixturesOpen = fixturesOpenOverride ?? hasActiveChild(fixturesChildPaths);
+  const orgOpen = orgOpenOverride ?? hasActiveChild(orgChildPaths);
+  const clubOpen = clubOpenOverride ?? hasActiveChild(clubChildPaths);
 
   const handleSignOut = async () => {
     await signOut();
@@ -69,7 +106,7 @@ export default function AppSidebar({ collapsed, onToggle }: AppSidebarProps) {
   const linkClass = (path: string, childPaths?: string[]) =>
     cn(
       'flex items-center gap-3 rounded-xl text-sm font-medium transition-all duration-200',
-      collapsed ? 'justify-center px-2 py-2.5' : 'px-4 py-2.5',
+      collapsed ? 'justify-center px-2 py-2' : 'px-4 py-2',
       (childPaths ? isParentActive(path, childPaths) : isActive(path))
         ? 'bg-sidebar-accent text-sidebar-accent-foreground shadow-sm'
         : 'text-sidebar-foreground/70 hover:text-sidebar-foreground hover:bg-sidebar-accent/50'
@@ -89,11 +126,36 @@ export default function AppSidebar({ collapsed, onToggle }: AppSidebarProps) {
     collapsed ? 'justify-center px-2 py-1.5' : 'px-3 py-1.5'
   );
 
+  // Wraps a parent nav item row with an expand/collapse chevron
+  function CollapsibleParent({
+    open,
+    onToggleOpen,
+    children,
+  }: {
+    open: boolean;
+    onToggleOpen: () => void;
+    children: React.ReactNode;
+  }) {
+    if (collapsed) return <>{children}</>;
+    return (
+      <div className="flex items-center group/parent">
+        <div className="flex-1 min-w-0">{children}</div>
+        <button
+          onClick={e => { e.preventDefault(); e.stopPropagation(); onToggleOpen(); }}
+          className="shrink-0 ml-0.5 p-1 rounded-lg text-sidebar-foreground/40 hover:text-sidebar-foreground hover:bg-sidebar-accent/60 transition-all"
+          aria-label={open ? 'Réduire' : 'Développer'}
+        >
+          <ChevronDown className={cn('w-3.5 h-3.5 transition-transform duration-200', open && 'rotate-180')} />
+        </button>
+      </div>
+    );
+  }
+
   const sidebar = (
     <div className="flex flex-col h-full">
       {/* Logo + collapse toggle */}
       {collapsed ? (
-        <div className="py-6 flex flex-col items-center gap-2 px-2">
+        <div className="py-4 flex flex-col items-center gap-2 px-2">
           <button
             onClick={onToggle}
             className="hidden lg:flex items-center justify-center w-7 h-7 rounded-lg text-sidebar-foreground/50 hover:text-sidebar-foreground hover:bg-sidebar-accent/50 transition-all shrink-0"
@@ -103,7 +165,7 @@ export default function AppSidebar({ collapsed, onToggle }: AppSidebarProps) {
           <img src={logo} alt="Scouty" className="w-6 h-6 rounded-xl shrink-0" />
         </div>
       ) : (
-        <div className="py-6 flex items-center justify-between px-5">
+        <div className="py-4 flex items-center justify-between px-5">
           <div className="flex items-center gap-3">
             <img src={logo} alt="Scouty" className="w-10 h-10 rounded-xl shrink-0" />
             <div>
@@ -121,31 +183,25 @@ export default function AppSidebar({ collapsed, onToggle }: AppSidebarProps) {
       )}
 
       {/* Nav */}
-      <nav className={cn('flex-1 space-y-1', collapsed ? 'px-2 overflow-hidden' : 'px-3 overflow-y-auto sidebar-scroll')}>
+      <nav className={cn('flex-1 space-y-0.5', collapsed ? 'px-2 overflow-hidden' : 'px-3 overflow-y-auto sidebar-scroll')}>
+
+        {/* ── Joueurs ── */}
         {canView('players') && (
-          <SidebarTooltip label={t('sidebar.players')} collapsed={collapsed}>
-            <Link to="/players" className={linkClass('/players', ['/discover', '/watchlist', '/shadow-team'])} onClick={() => setMobileOpen(false)}>
-              <Users className="w-4 h-4 shrink-0" />
-              {!collapsed && t('sidebar.players')}
-            </Link>
-          </SidebarTooltip>
+          <CollapsibleParent open={playersOpen} onToggleOpen={() => setPlayersOpenOverride(v => v === null ? !hasActiveChild(playersChildPaths) : !v)}>
+            <SidebarTooltip label={t('sidebar.players')} collapsed={collapsed}>
+              <Link to="/players" className={linkClass('/players', playersChildPaths)} onClick={() => { setMobileOpen(false); setPlayersOpenOverride(true); }}>
+                <Users className="w-4 h-4 shrink-0" />
+                {!collapsed && t('sidebar.players')}
+              </Link>
+            </SidebarTooltip>
+          </CollapsibleParent>
         )}
 
-        {/* Sub-items — hidden when collapsed */}
-        {!collapsed && (
+        {!collapsed && canView('players') && playersOpen && (
           <div className="pl-7 space-y-0.5">
             {canView('discover') && (
               <FeatureGate featureKey="feature_discover" inline>
-                <Link
-                  to="/discover"
-                  className={cn(
-                    'flex items-center gap-2.5 px-3 py-1.5 rounded-lg text-[13px] transition-all',
-                    isActive('/discover')
-                      ? 'bg-sidebar-accent text-sidebar-accent-foreground'
-                      : 'text-sidebar-foreground/60 hover:text-sidebar-foreground hover:bg-sidebar-accent/50'
-                  )}
-                  onClick={() => setMobileOpen(false)}
-                >
+                <Link to="/discover" className={subLinkClass(isActive('/discover'))} onClick={() => setMobileOpen(false)}>
                   <Search className="w-3.5 h-3.5" />
                   <span className="flex items-center gap-2">
                     {t('sidebar.discover')}
@@ -155,32 +211,14 @@ export default function AppSidebar({ collapsed, onToggle }: AppSidebarProps) {
               </FeatureGate>
             )}
             {canView('watchlist') && (
-              <Link
-                to="/watchlist"
-                className={cn(
-                  'flex items-center gap-2.5 px-3 py-1.5 rounded-lg text-[13px] transition-all',
-                  isActive('/watchlist')
-                    ? 'bg-sidebar-accent text-sidebar-accent-foreground'
-                    : 'text-sidebar-foreground/60 hover:text-sidebar-foreground hover:bg-sidebar-accent/50'
-                )}
-                onClick={() => setMobileOpen(false)}
-              >
+              <Link to="/watchlist" className={subLinkClass(isActive('/watchlist'))} onClick={() => setMobileOpen(false)}>
                 <Eye className="w-3.5 h-3.5" />
                 {t('sidebar.watchlist')}
               </Link>
             )}
             {canView('shadow_team') && (
               <FeatureGate featureKey="feature_shadow_team" inline>
-                <Link
-                  to="/shadow-team"
-                  className={cn(
-                    'flex items-center gap-2.5 px-3 py-1.5 rounded-lg text-[13px] transition-all',
-                    isActive('/shadow-team')
-                      ? 'bg-sidebar-accent text-sidebar-accent-foreground'
-                      : 'text-sidebar-foreground/60 hover:text-sidebar-foreground hover:bg-sidebar-accent/50'
-                  )}
-                  onClick={() => setMobileOpen(false)}
-                >
+                <Link to="/shadow-team" className={subLinkClass(isActive('/shadow-team'))} onClick={() => setMobileOpen(false)}>
                   <Shirt className="w-3.5 h-3.5" />
                   {t('sidebar.shadow_team')}
                 </Link>
@@ -189,17 +227,19 @@ export default function AppSidebar({ collapsed, onToggle }: AppSidebarProps) {
           </div>
         )}
 
+        {/* ── Organisation ── */}
         {canView('organization') && (
-          <SidebarTooltip label={t('sidebar.organization')} collapsed={collapsed}>
-            <Link to="/organization" className={linkClass('/organization', myOrgs?.map(o => `/organization/${slugify(o.name)}`) ?? [])} onClick={() => setMobileOpen(false)}>
-              <Building2 className="w-4 h-4 shrink-0" />
-              {!collapsed && t('sidebar.organization')}
-            </Link>
-          </SidebarTooltip>
+          <CollapsibleParent open={orgOpen} onToggleOpen={() => setOrgOpenOverride(v => v === null ? !hasActiveChild(orgChildPaths) : !v)}>
+            <SidebarTooltip label={t('sidebar.organization')} collapsed={collapsed}>
+              <Link to="/organization" className={linkClass('/organization', orgChildPaths)} onClick={() => { setMobileOpen(false); setOrgOpenOverride(true); }}>
+                <Building2 className="w-4 h-4 shrink-0" />
+                {!collapsed && t('sidebar.organization')}
+              </Link>
+            </SidebarTooltip>
+          </CollapsibleParent>
         )}
 
-        {/* Sub-items per organization — hidden when collapsed */}
-        {!collapsed && canView('organization') && myOrgs && myOrgs.length > 0 && (
+        {!collapsed && canView('organization') && orgOpen && myOrgs && myOrgs.length > 0 && (
           <div className="pl-7 space-y-0.5">
             {myOrgs.map((org) => {
               const slug = slugify(org.name);
@@ -209,12 +249,7 @@ export default function AppSidebar({ collapsed, onToggle }: AppSidebarProps) {
                 <div key={org.id}>
                   <Link
                     to={orgBase}
-                    className={cn(
-                      'flex items-center gap-2.5 px-3 py-1.5 rounded-lg text-[13px] transition-all',
-                      isOrgActive
-                        ? 'bg-sidebar-accent text-sidebar-accent-foreground'
-                        : 'text-sidebar-foreground/60 hover:text-sidebar-foreground hover:bg-sidebar-accent/50'
-                    )}
+                    className={subLinkClass(isOrgActive)}
                     onClick={() => setMobileOpen(false)}
                   >
                     <div className="w-3.5 h-3.5 rounded overflow-hidden flex items-center justify-center shrink-0">
@@ -228,42 +263,15 @@ export default function AppSidebar({ collapsed, onToggle }: AppSidebarProps) {
                   </Link>
                   {isOrgActive && (
                     <div className="pl-6 space-y-0.5 mt-0.5">
-                      <Link
-                        to={`${orgBase}/squad`}
-                        className={cn(
-                          'flex items-center gap-2.5 px-3 py-1 rounded-lg text-[12px] transition-all',
-                          isActive(`${orgBase}/squad`)
-                            ? 'bg-sidebar-accent text-sidebar-accent-foreground'
-                            : 'text-sidebar-foreground/50 hover:text-sidebar-foreground hover:bg-sidebar-accent/50'
-                        )}
-                        onClick={() => setMobileOpen(false)}
-                      >
+                      <Link to={`${orgBase}/squad`} className={subLinkSmClass(isActive(`${orgBase}/squad`))} onClick={() => setMobileOpen(false)}>
                         <ClipboardList className="w-3 h-3" />
                         {t('sidebar.squad')}
                       </Link>
-                      <Link
-                        to={`${orgBase}/players`}
-                        className={cn(
-                          'flex items-center gap-2.5 px-3 py-1 rounded-lg text-[12px] transition-all',
-                          isActive(`${orgBase}/players`)
-                            ? 'bg-sidebar-accent text-sidebar-accent-foreground'
-                            : 'text-sidebar-foreground/50 hover:text-sidebar-foreground hover:bg-sidebar-accent/50'
-                        )}
-                        onClick={() => setMobileOpen(false)}
-                      >
+                      <Link to={`${orgBase}/players`} className={subLinkSmClass(isActive(`${orgBase}/players`))} onClick={() => setMobileOpen(false)}>
                         <Users className="w-3 h-3" />
                         {t('sidebar.org_players')}
                       </Link>
-                      <Link
-                        to={`${orgBase}/roadmap`}
-                        className={cn(
-                          'flex items-center gap-2.5 px-3 py-1 rounded-lg text-[12px] transition-all',
-                          isActive(`${orgBase}/roadmap`)
-                            ? 'bg-sidebar-accent text-sidebar-accent-foreground'
-                            : 'text-sidebar-foreground/50 hover:text-sidebar-foreground hover:bg-sidebar-accent/50'
-                        )}
-                        onClick={() => setMobileOpen(false)}
-                      >
+                      <Link to={`${orgBase}/roadmap`} className={subLinkSmClass(isActive(`${orgBase}/roadmap`))} onClick={() => setMobileOpen(false)}>
                         <Route className="w-3 h-3" />
                         {t('sidebar.roadmap')}
                       </Link>
@@ -275,88 +283,40 @@ export default function AppSidebar({ collapsed, onToggle }: AppSidebarProps) {
           </div>
         )}
 
+        {/* ── Calendrier / Fixtures ── */}
         {canView('fixtures') && (
           <FeatureGate featureKey="feature_fixtures" inline>
-            <SidebarTooltip label={t('sidebar.fixtures')} collapsed={collapsed}>
-              <Link to="/fixtures" className={linkClass('/fixtures', ['/my-matches', '/map', '/club', '/my-clubs'])} onClick={() => setMobileOpen(false)}>
-                <CalendarDays className="w-4 h-4 shrink-0" />
-                {!collapsed && t('sidebar.fixtures')}
-              </Link>
-            </SidebarTooltip>
+            <CollapsibleParent open={fixturesOpen} onToggleOpen={() => setFixturesOpenOverride(v => v === null ? !hasActiveChild(fixturesChildPaths) : !v)}>
+              <SidebarTooltip label={t('sidebar.fixtures')} collapsed={collapsed}>
+                <Link to="/fixtures" className={linkClass('/fixtures', fixturesChildPaths)} onClick={() => { setMobileOpen(false); setFixturesOpenOverride(true); }}>
+                  <CalendarDays className="w-4 h-4 shrink-0" />
+                  {!collapsed && t('sidebar.fixtures')}
+                </Link>
+              </SidebarTooltip>
+            </CollapsibleParent>
           </FeatureGate>
         )}
 
-        {!collapsed && (
+        {!collapsed && canView('fixtures') && fixturesOpen && (
           <div className="pl-7 space-y-0.5">
             {canView('my_matches') && (
-              <Link
-                to="/my-matches"
-                className={cn(
-                  'flex items-center gap-2.5 px-3 py-1.5 rounded-lg text-[13px] transition-all',
-                  isActive('/my-matches')
-                    ? 'bg-sidebar-accent text-sidebar-accent-foreground'
-                    : 'text-sidebar-foreground/60 hover:text-sidebar-foreground hover:bg-sidebar-accent/50'
-                )}
-                onClick={() => setMobileOpen(false)}
-              >
+              <Link to="/my-matches" className={subLinkClass(isActive('/my-matches'))} onClick={() => setMobileOpen(false)}>
                 <MapPinned className="w-3.5 h-3.5" />
                 {t('sidebar.my_matches')}
               </Link>
             )}
             {canView('map') && (
               <FeatureGate featureKey="feature_map" inline>
-                <Link
-                  to="/map"
-                  className={cn(
-                    'flex items-center gap-2.5 px-3 py-1.5 rounded-lg text-[13px] transition-all',
-                    isActive('/map')
-                      ? 'bg-sidebar-accent text-sidebar-accent-foreground'
-                      : 'text-sidebar-foreground/60 hover:text-sidebar-foreground hover:bg-sidebar-accent/50'
-                  )}
-                  onClick={() => setMobileOpen(false)}
-                >
+                <Link to="/map" className={subLinkClass(isActive('/map'))} onClick={() => setMobileOpen(false)}>
                   <Globe className="w-3.5 h-3.5" />
                   {t('sidebar.map')}
                 </Link>
               </FeatureGate>
             )}
-            {canView('club_profile') && (
-              <FeatureGate featureKey="feature_club_profile" inline>
-                <Link
-                  to="/club"
-                  className={cn(
-                    'flex items-center gap-2.5 px-3 py-1.5 rounded-lg text-[13px] transition-all',
-                    isActive('/club') || isActive('/my-clubs')
-                      ? 'bg-sidebar-accent text-sidebar-accent-foreground'
-                      : 'text-sidebar-foreground/60 hover:text-sidebar-foreground hover:bg-sidebar-accent/50'
-                  )}
-                  onClick={() => setMobileOpen(false)}
-                >
-                  <Building2 className="w-3.5 h-3.5" />
-                  {t('sidebar.club_profile')}
-                </Link>
-              </FeatureGate>
-            )}
-            {canView('my_clubs') && (isActive('/club') || isActive('/my-clubs')) && (
-              <div className="pl-6 space-y-0.5">
-                <Link
-                  to="/my-clubs"
-                  className={cn(
-                    'flex items-center gap-2.5 px-3 py-1 rounded-lg text-[12px] transition-all',
-                    isActive('/my-clubs')
-                      ? 'bg-sidebar-accent text-sidebar-accent-foreground'
-                      : 'text-sidebar-foreground/50 hover:text-sidebar-foreground hover:bg-sidebar-accent/50'
-                  )}
-                  onClick={() => setMobileOpen(false)}
-                >
-                  <Heart className="w-3 h-3" />
-                  {t('sidebar.my_clubs')}
-                </Link>
-              </div>
-            )}
           </div>
         )}
 
+        {/* ── Championnats ── */}
         <SidebarTooltip label={t('sidebar.championships')} collapsed={collapsed}>
           <Link to="/championships" className={linkClass('/championships')} onClick={() => setMobileOpen(false)}>
             <Trophy className="w-4 h-4 shrink-0" />
@@ -364,6 +324,32 @@ export default function AppSidebar({ collapsed, onToggle }: AppSidebarProps) {
           </Link>
         </SidebarTooltip>
 
+        {/* ── Fiche club ── */}
+        {canView('club_profile') && (
+          <FeatureGate featureKey="feature_club_profile" inline>
+            <CollapsibleParent open={clubOpen} onToggleOpen={() => setClubOpenOverride(v => v === null ? !hasActiveChild(clubChildPaths) : !v)}>
+              <SidebarTooltip label={t('sidebar.club_profile')} collapsed={collapsed}>
+                <Link to="/club" className={linkClass('/club', clubChildPaths)} onClick={() => { setMobileOpen(false); setClubOpenOverride(true); }}>
+                  <Building2 className="w-4 h-4 shrink-0" />
+                  {!collapsed && t('sidebar.club_profile')}
+                </Link>
+              </SidebarTooltip>
+            </CollapsibleParent>
+          </FeatureGate>
+        )}
+
+        {!collapsed && canView('club_profile') && clubOpen && (
+          <div className="pl-7 space-y-0.5">
+            {canView('my_clubs') && (
+              <Link to="/my-clubs" className={subLinkClass(isActive('/my-clubs'))} onClick={() => setMobileOpen(false)}>
+                <Heart className="w-3.5 h-3.5" />
+                {t('sidebar.my_clubs')}
+              </Link>
+            )}
+          </div>
+        )}
+
+        {/* ── Communauté ── */}
         {canView('community') && (
           <FeatureGate featureKey="feature_community" inline>
             <SidebarTooltip label={t('sidebar.community')} collapsed={collapsed}>
@@ -380,6 +366,7 @@ export default function AppSidebar({ collapsed, onToggle }: AppSidebarProps) {
           </FeatureGate>
         )}
 
+        {/* ── Booking ── */}
         {canView('booking') && (
           <FeatureGate featureKey="feature_booking" inline>
             <SidebarTooltip label={t('sidebar.booking')} collapsed={collapsed}>
@@ -391,6 +378,17 @@ export default function AppSidebar({ collapsed, onToggle }: AppSidebarProps) {
           </FeatureGate>
         )}
 
+        {/* ── Import de données ── */}
+        {canView('data_import') && (
+          <SidebarTooltip label={t('sidebar.data_import')} collapsed={collapsed}>
+            <Link to="/data-import" className={linkClass('/data-import')} onClick={() => setMobileOpen(false)}>
+              <FileSpreadsheet className="w-4 h-4 shrink-0" />
+              {!collapsed && t('sidebar.data_import')}
+            </Link>
+          </SidebarTooltip>
+        )}
+
+        {/* ── Affiliation ── */}
         {canView('affiliate') && (
           <FeatureGate featureKey="feature_affiliate" inline>
             <SidebarTooltip label={t('sidebar.affiliate')} collapsed={collapsed}>
@@ -464,10 +462,7 @@ export default function AppSidebar({ collapsed, onToggle }: AppSidebarProps) {
           )}
 
           <SidebarTooltip label={t('sidebar.report_issue')} collapsed={collapsed}>
-            <button
-              onClick={() => { setReportOpen(true); setMobileOpen(false); }}
-              className={footerBtnClass}
-            >
+            <button onClick={() => { setReportOpen(true); setMobileOpen(false); }} className={footerBtnClass}>
               <Bug className="w-3.5 h-3.5 shrink-0" />
               {!collapsed && t('sidebar.report_issue')}
             </button>
@@ -513,7 +508,6 @@ export default function AppSidebar({ collapsed, onToggle }: AppSidebarProps) {
             )}
           </div>
         )}
-
       </div>
     </div>
   );

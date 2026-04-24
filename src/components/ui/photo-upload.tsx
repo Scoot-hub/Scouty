@@ -32,6 +32,12 @@ export function PhotoUpload({ currentUrl, onPhotoChange, label = 'Photo', classN
     const file = e.target.files?.[0];
     if (!file) return;
 
+    if (file.size > 4 * 1024 * 1024) {
+      toast.error('La photo ne doit pas dépasser 4 Mo.');
+      e.target.value = '';
+      return;
+    }
+
     // Preview immediately
     const reader = new FileReader();
     reader.onload = (ev) => setPreview(ev.target?.result as string);

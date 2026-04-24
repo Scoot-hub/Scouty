@@ -431,7 +431,7 @@ app.get("/api/stripe/session-status", async (req, res) => {
 
 const ALLOWED_TABLES = {
   users: ["id", "email", "created_at", "last_sign_in_at"],
-  profiles: ["id", "user_id", "full_name", "club", "role", "social_x", "social_instagram", "social_linkedin", "social_public", "photo_url", "first_name", "last_name", "company", "siret", "phone", "civility", "address", "date_of_birth", "reference_club", "referred_by", "created_at", "updated_at"],
+  profiles: ["id", "user_id", "full_name", "club", "role", "social_x", "social_instagram", "social_linkedin", "social_public", "social_facebook", "social_snapchat", "social_tiktok", "social_telegram", "social_whatsapp", "photo_url", "first_name", "last_name", "company", "siret", "phone", "civility", "address", "date_of_birth", "reference_club", "referred_by", "created_at", "updated_at"],
   players: [
     "id", "name", "photo_url", "generation", "nationality", "foot", "club", "league", "zone", "position", "position_secondaire", "role",
     "current_level", "potential", "general_opinion", "contract_end", "notes", "ts_report_published", "date_of_birth", "market_value",
@@ -1161,7 +1161,17 @@ async function _legacyRunMigrations() {
   }
 
   // Add social columns to profiles
-  for (const col of ['social_x VARCHAR(100) NULL', 'social_instagram VARCHAR(100) NULL', 'social_linkedin VARCHAR(255) NULL', 'social_public TINYINT(1) NOT NULL DEFAULT 0']) {
+  for (const col of [
+    'social_x VARCHAR(100) NULL',
+    'social_instagram VARCHAR(100) NULL',
+    'social_linkedin VARCHAR(255) NULL',
+    'social_public TINYINT(1) NOT NULL DEFAULT 0',
+    'social_facebook VARCHAR(255) NULL',
+    'social_snapchat VARCHAR(100) NULL',
+    'social_tiktok VARCHAR(100) NULL',
+    'social_telegram VARCHAR(100) NULL',
+    'social_whatsapp VARCHAR(30) NULL',
+  ]) {
     try { await pool.query(`ALTER TABLE profiles ADD COLUMN ${col}`); } catch (err) { if (err?.errno !== 1060) console.warn("[warn] profile social migration:", err?.message); }
   }
   // Add extended personal info columns to profiles
@@ -1273,6 +1283,18 @@ async function _legacyRunMigrations() {
   try {
     await pool.query(`ALTER TABLE user_roles MODIFY COLUMN role VARCHAR(50) NOT NULL DEFAULT 'user'`);
   } catch (err) { if (err?.errno !== 1060) console.warn("[warn] user_roles role varchar migration:", err?.message); }
+
+  // Seed default 'importateur' role with data_import permissions
+  try {
+    await pool.query(`CREATE TABLE IF NOT EXISTS role_metadata (role VARCHAR(50) NOT NULL PRIMARY KEY, color VARCHAR(20) NOT NULL DEFAULT '#6366f1', updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP)`).catch(() => {});
+    await pool.query(`INSERT INTO role_metadata (role, color) VALUES ('importateur', '#10b981') ON DUPLICATE KEY UPDATE role = role`);
+    for (const action of ['view', 'import']) {
+      await pool.query(
+        `INSERT INTO page_permissions (id, role, page_key, action, allowed) VALUES (?, 'importateur', 'data_import', ?, 1) ON DUPLICATE KEY UPDATE allowed = 1`,
+        [uuidv4(), action]
+      );
+    }
+  } catch (err) { console.warn('[warn] importateur role seed:', err?.message); }
 
   // Add action column to page_permissions for sub-permission support
   try {
@@ -1556,6 +1578,20 @@ app.post("/api/auth/signup", rateLimitAuth, async (req, res) => {
     );
 
     await conn.commit();
+
+    // Award 100 affiliate credits to the referrer
+    if (referrerId) {
+      try {
+        await ensureCreditTable();
+        await pool.query(
+          "INSERT INTO user_credit_events (id, user_id, action_type, direction, amount, description) VALUES (?, ?, 'affiliate_reward', 'earn', 100, ?)",
+          [uuidv4(), referrerId, `Parrainage de ${normalizedEmail}`]
+        );
+      } catch (e) {
+        console.warn('[signup] affiliate credit award failed:', e.message);
+      }
+    }
+
     const user = await getUserById(userId);
     return res.json({ user: normalizeUserRow(user), session: buildSession(user, res) });
   } catch (err) {
@@ -1664,7 +1700,44 @@ app.post("/api/auth/signout", (_req, res) => {
   return res.json({ ok: true });
 });
 
-// ── Mailer (configured via SMTP_* env vars) ────────────────────────────────
+// ── Email sending — Brevo API (preferred) or SMTP fallback ────────────────
+
+function getFromAddress() {
+  const addr = process.env.SMTP_FROM || process.env.SMTP_USER;
+  if (addr && addr.includes("<")) return addr;
+  return addr ? `Scouty <${addr}>` : null;
+}
+
+// Brevo Transactional Email API (requires BREVO_API_KEY)
+async function sendEmailViaBrevoApi(to, subject, html) {
+  const apiKey = process.env.BREVO_API_KEY;
+  const senderEmail = process.env.SMTP_FROM || "scouty.professional@gmail.com";
+  const senderName = "Scouty";
+
+  const res = await fetch("https://api.brevo.com/v3/smtp/email", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "api-key": apiKey,
+    },
+    body: JSON.stringify({
+      sender: { name: senderName, email: senderEmail },
+      to: [{ email: to }],
+      subject,
+      htmlContent: html,
+    }),
+  });
+
+  if (!res.ok) {
+    const body = await res.text();
+    throw new Error(`Brevo API ${res.status}: ${body}`);
+  }
+  const data = await res.json();
+  console.log(`[email] Brevo API sent to ${to}: ${subject} (messageId: ${data.messageId})`);
+  return true;
+}
+
+// ── SMTP fallback (nodemailer) ─────────────────
 let _mailerInstance = null;
 let _mailerVerified = false;
 
@@ -1679,20 +1752,15 @@ function createMailer() {
     host: process.env.SMTP_HOST,
     port: Number(process.env.SMTP_PORT || 587),
     secure: process.env.SMTP_SECURE === "true",
-    auth: {
-      user: process.env.SMTP_USER,
-      pass: process.env.SMTP_PASS,
-    },
+    auth: { user: process.env.SMTP_USER, pass: process.env.SMTP_PASS },
     pool: true,
     maxConnections: 3,
     maxMessages: 100,
-    // Timeouts to avoid hanging
     connectionTimeout: 10000,
     greetingTimeout: 10000,
     socketTimeout: 15000,
   });
 
-  // Verify connection (non-blocking, does NOT null the transport on failure)
   _mailerInstance.verify().then(() => {
     _mailerVerified = true;
     console.log("[email] SMTP connected to", process.env.SMTP_HOST);
@@ -1703,41 +1771,25 @@ function createMailer() {
   return _mailerInstance;
 }
 
-// Build the "from" field: "Scouty <address>"
-function getFromAddress() {
-  const addr = process.env.SMTP_FROM || process.env.SMTP_USER;
-  // If already formatted like "Name <email>", return as-is
-  if (addr && addr.includes("<")) return addr;
-  return addr ? `Scouty <${addr}>` : null;
-}
+// Initialize SMTP mailer eagerly (only if no Brevo API key)
+if (!process.env.BREVO_API_KEY) createMailer();
 
-// Initialize mailer eagerly
-createMailer();
-
-async function sendEmail(to, subject, html) {
+async function sendEmailViaSMTP(to, subject, html) {
   let mailer = createMailer();
-  if (!mailer) {
-    console.warn(`[email] Mailer not configured — skipping email to ${to}: ${subject}`);
-    return false;
-  }
+  if (!mailer) return false;
 
   const from = getFromAddress();
-  if (!from) {
-    console.warn(`[email] No SMTP_FROM or SMTP_USER set — skipping email to ${to}`);
-    return false;
-  }
+  if (!from) { console.warn(`[email] No SMTP_FROM set — skipping email to ${to}`); return false; }
 
-  // Retry once on transient failure (connection reset, timeout, etc.)
   for (let attempt = 1; attempt <= 2; attempt++) {
     try {
       const info = await mailer.sendMail({ from, to, subject, html });
-      console.log(`[email] Sent to ${to}: ${subject} (messageId: ${info.messageId})`);
+      console.log(`[email] SMTP sent to ${to}: ${subject} (messageId: ${info.messageId})`);
       _mailerVerified = true;
       return true;
     } catch (err) {
-      console.error(`[email] Attempt ${attempt} failed to ${to}:`, err?.message);
+      console.error(`[email] SMTP attempt ${attempt} failed to ${to}:`, err?.message);
       if (attempt === 1) {
-        // Reset transport and retry
         try { mailer.close(); } catch (_) {}
         _mailerInstance = null;
         _mailerVerified = false;
@@ -1749,24 +1801,43 @@ async function sendEmail(to, subject, html) {
   return false;
 }
 
-// ── POST /api/admin/test-email — send a test email to verify SMTP config ──
+async function sendEmail(to, subject, html) {
+  if (process.env.BREVO_API_KEY) {
+    try {
+      return await sendEmailViaBrevoApi(to, subject, html);
+    } catch (err) {
+      console.error("[email] Brevo API failed, falling back to SMTP:", err?.message);
+    }
+  }
+  return sendEmailViaSMTP(to, subject, html);
+}
+
+// ── POST /api/admin/test-email ─────────────────────────────────────────────
 app.post("/api/admin/test-email", authMiddleware, ensureAdmin, async (req, res) => {
   const { to } = req.body || {};
   const recipient = to || req.user.email;
   if (!recipient) return res.status(400).json({ error: "No recipient" });
 
-  const sent = await sendEmail(recipient, "Scouty – Test email", `
-    <div style="font-family:sans-serif;max-width:480px;margin:0 auto;padding:24px">
-      <img src="https://scouty.app/logo.png" alt="Scouty" width="40" style="border-radius:10px;margin-bottom:16px" />
-      <h2 style="color:#1a1a2e;margin:0 0 8px">Test email</h2>
-      <p style="color:#555">Si vous recevez cet email, la configuration SMTP fonctionne correctement.</p>
-      <p style="color:#888;font-size:13px;margin-top:24px">Envoyé le ${new Date().toLocaleString("fr-FR")} depuis ${process.env.SMTP_HOST || "N/A"}</p>
-      <hr style="border:none;border-top:1px solid #eee;margin:24px 0" />
-      <p style="color:#aaa;font-size:11px;text-align:center">Scouty — Scouting footballistique professionnel</p>
-    </div>
-  `);
-  if (sent) return res.json({ ok: true, message: `Email envoyé à ${recipient}` });
-  return res.status(500).json({ error: "Échec de l'envoi. Vérifiez les logs serveur et la configuration SMTP." });
+  const method = process.env.BREVO_API_KEY ? "Brevo API" : `SMTP (${process.env.SMTP_HOST || "N/A"})`;
+  console.log(`[test-email] method=${method} recipient=${recipient} BREVO_KEY_SET=${!!process.env.BREVO_API_KEY}`);
+  try {
+    const sent = await sendEmail(recipient, "Scouty – Test email", `
+      <div style="font-family:sans-serif;max-width:480px;margin:0 auto;padding:24px">
+        <img src="https://scouty.app/logo.png" alt="Scouty" width="40" style="border-radius:10px;margin-bottom:16px" />
+        <h2 style="color:#1a1a2e;margin:0 0 8px">Test email</h2>
+        <p style="color:#555">Si vous recevez cet email, la configuration email fonctionne correctement.</p>
+        <p style="color:#888;font-size:13px;margin-top:24px">Envoyé le ${new Date().toLocaleString("fr-FR")} via ${method}</p>
+        <hr style="border:none;border-top:1px solid #eee;margin:24px 0" />
+        <p style="color:#aaa;font-size:11px;text-align:center">Scouty — Scouting footballistique professionnel</p>
+      </div>
+    `);
+    console.log(`[test-email] sent=${sent}`);
+    if (sent) return res.json({ ok: true, message: `Email envoyé à ${recipient} via ${method}` });
+    return res.status(500).json({ error: "Échec de l'envoi. Vérifiez la clé API Brevo ou la configuration SMTP dans les logs serveur." });
+  } catch (err) {
+    console.error("[test-email] exception:", err?.message, err?.stack);
+    return res.status(500).json({ error: `Erreur: ${err?.message}` });
+  }
 });
 
 // ── POST /api/auth/forgot-password ─────────────────────────────────────────
@@ -1877,6 +1948,10 @@ app.post("/api/account/upload-photo", authMiddleware, upload.single("photo"), as
     if (!allowed.includes(ext)) {
       try { fs.unlinkSync(req.file.path); } catch {}
       return res.status(400).json({ error: "Format non supporté. Utilisez JPG, PNG, WEBP ou GIF." });
+    }
+    if (req.file.size > 4 * 1024 * 1024) {
+      try { fs.unlinkSync(req.file.path); } catch {}
+      return res.status(413).json({ error: "photo_too_large", message: "La photo ne doit pas dépasser 4 Mo." });
     }
     // Delete old photo (best-effort) before replacing
     const [prevRows] = await pool.query("SELECT photo_url FROM profiles WHERE user_id = ? LIMIT 1", [req.user.id]);
@@ -2021,7 +2096,9 @@ app.get("/api/profile/:name", async (req, res) => {
   try {
     const name = decodeURIComponent(req.params.name).trim();
     const [rows] = await pool.query(
-      `SELECT p.user_id, p.full_name, p.club, p.role, p.social_x, p.social_instagram, p.social_linkedin, p.social_public, p.created_at
+      `SELECT p.user_id, p.full_name, p.club, p.role, p.created_at,
+              p.social_public, p.social_x, p.social_instagram, p.social_linkedin,
+              p.social_facebook, p.social_snapchat, p.social_tiktok, p.social_telegram, p.social_whatsapp
        FROM profiles p WHERE LOWER(p.full_name) = LOWER(?) LIMIT 1`,
       [name]
     );
@@ -2038,6 +2115,11 @@ app.get("/api/profile/:name", async (req, res) => {
       social_x: profile.social_public ? profile.social_x : null,
       social_instagram: profile.social_public ? profile.social_instagram : null,
       social_linkedin: profile.social_public ? profile.social_linkedin : null,
+      social_facebook: profile.social_public ? profile.social_facebook : null,
+      social_snapchat: profile.social_public ? profile.social_snapchat : null,
+      social_tiktok: profile.social_public ? profile.social_tiktok : null,
+      social_telegram: profile.social_public ? profile.social_telegram : null,
+      social_whatsapp: profile.social_public ? profile.social_whatsapp : null,
     });
   } catch (err) {
     console.error("[public-profile] Error:", err);
@@ -2052,7 +2134,8 @@ app.get("/api/profile/user/:userId", async (req, res) => {
     const [rows] = await pool.query(
       `SELECT p.user_id, p.full_name, p.first_name, p.last_name, p.civility,
               p.club, p.role, p.photo_url, p.company, p.reference_club, p.created_at,
-              p.social_x, p.social_instagram, p.social_linkedin, p.social_public
+              p.social_public, p.social_x, p.social_instagram, p.social_linkedin,
+              p.social_facebook, p.social_snapchat, p.social_tiktok, p.social_telegram, p.social_whatsapp
        FROM profiles p WHERE p.user_id = ? LIMIT 1`,
       [userId]
     );
@@ -2074,6 +2157,11 @@ app.get("/api/profile/user/:userId", async (req, res) => {
       social_x: profile.social_public ? profile.social_x : null,
       social_instagram: profile.social_public ? profile.social_instagram : null,
       social_linkedin: profile.social_public ? profile.social_linkedin : null,
+      social_facebook: profile.social_public ? profile.social_facebook : null,
+      social_snapchat: profile.social_public ? profile.social_snapchat : null,
+      social_tiktok: profile.social_public ? profile.social_tiktok : null,
+      social_telegram: profile.social_public ? profile.social_telegram : null,
+      social_whatsapp: profile.social_public ? profile.social_whatsapp : null,
     });
   } catch (err) {
     console.error("[public-profile-by-id] Error:", err);
@@ -2113,6 +2201,75 @@ app.get("/api/public/users", async (_req, res) => {
     console.error("[public/users] Error:", err);
     return res.status(500).json({ error: "Erreur serveur." });
   }
+});
+
+// ── Public contact form ───────────────────────────────────────────────────
+// Simple in-memory rate limiter: max 3 submissions per IP per 10 min
+const _contactRateMap = new Map();
+app.post("/api/public/contact", async (req, res) => {
+  const ip = req.headers["x-forwarded-for"]?.split(",")[0]?.trim() || req.socket.remoteAddress || "unknown";
+  const now = Date.now();
+  const WINDOW = 10 * 60 * 1000; // 10 min
+  const MAX = 3;
+  const history = (_contactRateMap.get(ip) || []).filter(t => now - t < WINDOW);
+  if (history.length >= MAX) return res.status(429).json({ error: "Trop de soumissions. Réessayez dans 10 minutes." });
+  _contactRateMap.set(ip, [...history, now]);
+
+  const { name, email, company, role, need, phone, context, honeypot } = req.body || {};
+  if (honeypot) return res.status(200).json({ ok: true }); // silent bot trap
+  if (!name?.trim() || !email?.trim() || !context?.trim()) {
+    return res.status(400).json({ error: "Champs requis manquants (nom, email, message)." });
+  }
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+    return res.status(400).json({ error: "Adresse email invalide." });
+  }
+
+  const dest = "scouty.professional@gmail.com";
+  const subject = `[Contact Scouty] ${need || "Demande"} — ${name}`;
+  const html = `
+    <div style="font-family:sans-serif;max-width:600px;margin:0 auto;padding:24px;background:#f9fafb;border-radius:12px">
+      <h2 style="color:#111;margin-bottom:4px">Nouveau message via le formulaire de contact</h2>
+      <p style="color:#888;font-size:13px;margin-bottom:24px">Reçu le ${new Date().toLocaleString("fr-FR", { timeZone: "Europe/Paris" })}</p>
+      <table style="width:100%;border-collapse:collapse;background:#fff;border-radius:8px;overflow:hidden;box-shadow:0 1px 4px rgba(0,0,0,.06)">
+        ${[
+          ["Nom", name],
+          ["Email", email],
+          ["Entreprise / Club", company || "—"],
+          ["Poste / Rôle", role || "—"],
+          ["Besoin", need || "—"],
+          ["Téléphone", phone || "—"],
+        ].map(([label, val]) => `
+          <tr>
+            <td style="padding:10px 16px;background:#f3f4f6;font-weight:600;font-size:13px;color:#374151;width:180px;border-bottom:1px solid #e5e7eb">${label}</td>
+            <td style="padding:10px 16px;font-size:13px;color:#111;border-bottom:1px solid #e5e7eb">${val}</td>
+          </tr>`).join("")}
+        <tr>
+          <td style="padding:10px 16px;background:#f3f4f6;font-weight:600;font-size:13px;color:#374151;vertical-align:top">Message</td>
+          <td style="padding:10px 16px;font-size:13px;color:#111;white-space:pre-wrap">${context.replace(/</g, "&lt;").replace(/>/g, "&gt;")}</td>
+        </tr>
+      </table>
+      <p style="margin-top:20px;font-size:12px;color:#aaa">Répondez directement à cet email pour contacter ${name} à ${email}.</p>
+    </div>`;
+
+  try {
+    await sendEmail(dest, subject, html);
+  } catch (err) {
+    console.error("[contact] Email failed:", err?.message);
+    return res.status(500).json({ error: "L'envoi a échoué. Veuillez réessayer." });
+  }
+
+  // Confirmation email to sender
+  try {
+    await sendEmail(email, "Scouty – Nous avons bien reçu votre message", `
+      <div style="font-family:sans-serif;max-width:520px;margin:0 auto;padding:24px">
+        <img src="https://scouty.app/logo.png" alt="Scouty" width="40" style="border-radius:10px;margin-bottom:16px" />
+        <h2 style="color:#111">Merci ${name} !</h2>
+        <p style="color:#555;font-size:14px">Nous avons bien reçu votre message et nous vous répondrons dans les meilleurs délais.</p>
+        <p style="color:#888;font-size:12px;margin-top:24px">L'équipe Scouty · <a href="https://scouty.app/about" style="color:#6366f1">scouty.app</a></p>
+      </div>`);
+  } catch (_) { /* confirmation failure is non-blocking */ }
+
+  return res.json({ ok: true });
 });
 
 // ── Community notifications (generic + mention) ──────────────────────────
@@ -4087,6 +4244,16 @@ async function ensureAdmin(req, res, next) {
   next();
 }
 
+async function ensurePremiumOrAdmin(req, res, next) {
+  // Admins are always allowed
+  const [adminRows] = await pool.query("SELECT id FROM user_roles WHERE user_id = ? AND role = 'admin' LIMIT 1", [req.user.id]);
+  if (adminRows.length) return next();
+  // Check premium subscription
+  const [subRows] = await pool.query("SELECT is_premium FROM user_subscriptions WHERE user_id = ? LIMIT 1", [req.user.id]);
+  if (subRows.length && subRows[0].is_premium) return next();
+  return res.status(403).json({ error: "premium_required", message: "Cette fonctionnalité est réservée aux utilisateurs Premium." });
+}
+
 app.get("/api/admin/users", authMiddleware, ensureAdmin, async (_req, res) => {
   const [users] = await pool.query("SELECT id, email, created_at, last_sign_in_at FROM users ORDER BY created_at DESC");
   const [subs] = await pool.query("SELECT user_id, is_premium, premium_since FROM user_subscriptions");
@@ -5032,6 +5199,143 @@ app.get("/api/feature-flags", async (_req, res) => {
   }
 });
 
+// ── Credits ─────────────────────────────────────────────────────────────────
+
+const PLAN_QUOTAS = {
+  starter: { daily: 10, weekly: 50, monthly: 150 },
+  pro:     { daily: 100, weekly: 500, monthly: 2000 },
+  elite:   { daily: -1, weekly: -1, monthly: -1 }, // -1 = unlimited
+};
+
+async function ensureCreditTable() {
+  await pool.query(`CREATE TABLE IF NOT EXISTS user_credit_events (
+    id CHAR(36) PRIMARY KEY,
+    user_id CHAR(36) NOT NULL,
+    action_type VARCHAR(50) NOT NULL,
+    direction ENUM('earn','spend') NOT NULL DEFAULT 'spend',
+    amount INT NOT NULL DEFAULT 1,
+    description VARCHAR(255) NULL,
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    INDEX idx_uce_user_date (user_id, created_at),
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+  )`).catch(() => {});
+  // Add direction column if table existed without it
+  await pool.query(`ALTER TABLE user_credit_events ADD COLUMN IF NOT EXISTS direction ENUM('earn','spend') NOT NULL DEFAULT 'spend'`).catch(() => {});
+}
+
+async function getUserPlanType(userId) {
+  try {
+    const [rows] = await pool.query(
+      "SELECT plan_type FROM user_subscriptions WHERE user_id = ? LIMIT 1",
+      [userId]
+    );
+    return rows[0]?.plan_type || 'starter';
+  } catch { return 'starter'; }
+}
+
+async function getUserCreditUsage(userId) {
+  await ensureCreditTable();
+  const [[dayRow], [weekRow], [monthRow], [earnRow]] = await Promise.all([
+    pool.query(
+      "SELECT COALESCE(SUM(amount),0) AS total FROM user_credit_events WHERE user_id = ? AND direction='spend' AND created_at >= DATE(NOW())",
+      [userId]
+    ),
+    pool.query(
+      "SELECT COALESCE(SUM(amount),0) AS total FROM user_credit_events WHERE user_id = ? AND direction='spend' AND created_at >= DATE_SUB(NOW(), INTERVAL 7 DAY)",
+      [userId]
+    ),
+    pool.query(
+      "SELECT COALESCE(SUM(amount),0) AS total FROM user_credit_events WHERE user_id = ? AND direction='spend' AND created_at >= DATE_FORMAT(NOW(),'%Y-%m-01')",
+      [userId]
+    ),
+    pool.query(
+      "SELECT COALESCE(SUM(amount),0) AS total FROM user_credit_events WHERE user_id = ? AND direction='earn'",
+      [userId]
+    ),
+  ]);
+  return {
+    daily: Number(dayRow[0].total),
+    weekly: Number(weekRow[0].total),
+    monthly: Number(monthRow[0].total),
+    earned_total: Number(earnRow[0].total),
+  };
+}
+
+// GET /api/credits/me — current user usage + quotas
+app.get("/api/credits/me", authMiddleware, async (req, res) => {
+  try {
+    const planType = await getUserPlanType(req.user.id);
+    const quotas = PLAN_QUOTAS[planType] || PLAN_QUOTAS.starter;
+    const usage = await getUserCreditUsage(req.user.id);
+    // Effective monthly quota = plan quota + all-time earned bonus
+    const effectiveQuotas = quotas.monthly === -1 ? quotas : {
+      daily: quotas.daily,
+      weekly: quotas.weekly,
+      monthly: quotas.monthly + (usage.earned_total || 0),
+    };
+    return res.json({ plan_type: planType, quotas: effectiveQuotas, usage });
+  } catch (err) {
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+// POST /api/credits/consume — consume credits, enforce quotas
+app.post("/api/credits/consume", authMiddleware, async (req, res) => {
+  const { action_type, amount = 1, description } = req.body || {};
+  if (!action_type) return res.status(400).json({ error: "action_type required" });
+
+  try {
+    await ensureCreditTable();
+    const planType = await getUserPlanType(req.user.id);
+    const quotas = PLAN_QUOTAS[planType] || PLAN_QUOTAS.starter;
+
+    if (quotas.daily !== -1) {
+      const usage = await getUserCreditUsage(req.user.id);
+      const effectiveMonthly = quotas.monthly + (usage.earned_total || 0);
+      if (usage.daily + amount > quotas.daily)
+        return res.status(429).json({ error: "daily_limit", quota: quotas.daily, used: usage.daily });
+      if (usage.weekly + amount > quotas.weekly)
+        return res.status(429).json({ error: "weekly_limit", quota: quotas.weekly, used: usage.weekly });
+      if (usage.monthly + amount > effectiveMonthly)
+        return res.status(429).json({ error: "monthly_limit", quota: effectiveMonthly, used: usage.monthly });
+    }
+
+    await pool.query(
+      "INSERT INTO user_credit_events (id, user_id, action_type, direction, amount, description) VALUES (?, ?, ?, 'spend', ?, ?)",
+      [uuidv4(), req.user.id, action_type, amount, description || null]
+    );
+    return res.json({ ok: true });
+  } catch (err) {
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+// GET /api/admin/credits — admin overview of all users' usage
+app.get("/api/admin/credits", authMiddleware, ensureAdmin, async (req, res) => {
+  try {
+    await ensureCreditTable();
+    const [rows] = await pool.query(`
+      SELECT
+        u.id, u.email,
+        COALESCE(us.plan_type, 'starter') AS plan_type,
+        COALESCE(SUM(CASE WHEN e.direction='spend' AND e.created_at >= DATE(NOW()) THEN e.amount ELSE 0 END), 0) AS used_today,
+        COALESCE(SUM(CASE WHEN e.direction='spend' AND e.created_at >= DATE_SUB(NOW(), INTERVAL 7 DAY) THEN e.amount ELSE 0 END), 0) AS used_week,
+        COALESCE(SUM(CASE WHEN e.direction='spend' AND e.created_at >= DATE_FORMAT(NOW(),'%Y-%m-01') THEN e.amount ELSE 0 END), 0) AS used_month,
+        COALESCE(SUM(CASE WHEN e.direction='spend' THEN e.amount ELSE 0 END), 0) AS used_total,
+        COALESCE(SUM(CASE WHEN e.direction='earn' THEN e.amount ELSE 0 END), 0) AS earned_total
+      FROM users u
+      LEFT JOIN user_subscriptions us ON us.user_id = u.id
+      LEFT JOIN user_credit_events e ON e.user_id = u.id
+      GROUP BY u.id, u.email, us.plan_type
+      ORDER BY used_month DESC
+      LIMIT 200
+    `);
+    return res.json(rows);
+  } catch (err) {
+    return res.status(500).json({ error: err.message });
+  }
+});
+
 // ── Club logos ──────────────────────────────────────────────────────────────
 
 // Public read — no auth needed (logos are shared across all users)
@@ -5146,6 +5450,88 @@ app.delete("/api/admin/club/:clubName", authMiddleware, async (req, res) => {
   }
 });
 
+// ── Club coordinates (for MapView) ───────────────────────────────────────────
+app.get("/api/club-locations", async (req, res) => {
+  try {
+    await pool.query("ALTER TABLE club_directory ADD COLUMN IF NOT EXISTS lat DECIMAL(9,6) NULL").catch(() => {});
+    await pool.query("ALTER TABLE club_directory ADD COLUMN IF NOT EXISTS lng DECIMAL(9,6) NULL").catch(() => {});
+    const [rows] = await pool.query(
+      "SELECT club_name, country, lat, lng FROM club_directory WHERE lat IS NOT NULL AND lng IS NOT NULL"
+    );
+    res.json(rows);
+    // Background: find player clubs not yet geocoded and geocode up to 5
+    setImmediate(async () => {
+      try {
+        const [missing] = await pool.query(`
+          SELECT p.club, MAX(p.nationality) AS country
+          FROM players p
+          LEFT JOIN club_directory cd ON cd.club_name = p.club AND cd.lat IS NOT NULL
+          WHERE p.club IS NOT NULL AND p.club != '' AND (p.is_archived = 0 OR p.is_archived IS NULL)
+            AND cd.club_name IS NULL
+          GROUP BY p.club
+          LIMIT 5
+        `);
+        for (const pc of missing) {
+          await new Promise(r => setTimeout(r, 1200));
+          const geo = await geocodeClub(pc.club, pc.country || '');
+          if (geo) {
+            await pool.query(
+              `INSERT INTO club_directory (club_name, country, lat, lng) VALUES (?, ?, ?, ?)
+               ON DUPLICATE KEY UPDATE lat = VALUES(lat), lng = VALUES(lng)`,
+              [pc.club, pc.country || '', geo.lat, geo.lng]
+            ).catch(() => {});
+          }
+        }
+      } catch {}
+    });
+  } catch {
+    res.json([]);
+  }
+});
+
+// ── Auto-geocode a club via Nominatim ────────────────────────────────────────
+app.post("/api/club-geocode", authMiddleware, async (req, res) => {
+  const { clubName, country } = req.body || {};
+  if (!clubName) return res.status(400).json({ error: "clubName required" });
+  const geo = await geocodeClub(clubName, country || '');
+  if (!geo) return res.status(404).json({ error: "Club introuvable sur OpenStreetMap. Essayez les coordonnées manuelles." });
+  try {
+    await pool.query("ALTER TABLE club_directory ADD COLUMN IF NOT EXISTS lat DECIMAL(9,6) NULL").catch(() => {});
+    await pool.query("ALTER TABLE club_directory ADD COLUMN IF NOT EXISTS lng DECIMAL(9,6) NULL").catch(() => {});
+    // UPSERT: insert if not exists, update lat/lng if exists
+    await pool.query(
+      `INSERT INTO club_directory (club_name, country, lat, lng)
+       VALUES (?, ?, ?, ?)
+       ON DUPLICATE KEY UPDATE lat = VALUES(lat), lng = VALUES(lng)`,
+      [clubName, country || '', geo.lat, geo.lng]
+    );
+  } catch {}
+  return res.json({ ok: true, lat: geo.lat, lng: geo.lng });
+});
+
+// ── Manual lat/lng override for a club ──────────────────────────────────────
+app.patch("/api/club-geocode-manual", authMiddleware, async (req, res) => {
+  const { clubName, country, lat, lng } = req.body || {};
+  if (!clubName || lat == null || lng == null) return res.status(400).json({ error: "clubName, lat et lng requis" });
+  const latN = parseFloat(lat), lngN = parseFloat(lng);
+  if (isNaN(latN) || isNaN(lngN) || latN < -90 || latN > 90 || lngN < -180 || lngN > 180) {
+    return res.status(400).json({ error: "Coordonnées invalides" });
+  }
+  try {
+    await pool.query("ALTER TABLE club_directory ADD COLUMN IF NOT EXISTS lat DECIMAL(9,6) NULL").catch(() => {});
+    await pool.query("ALTER TABLE club_directory ADD COLUMN IF NOT EXISTS lng DECIMAL(9,6) NULL").catch(() => {});
+    await pool.query(
+      `INSERT INTO club_directory (club_name, country, lat, lng)
+       VALUES (?, ?, ?, ?)
+       ON DUPLICATE KEY UPDATE lat = VALUES(lat), lng = VALUES(lng)`,
+      [clubName, country || '', latN, lngN]
+    );
+    return res.json({ ok: true, lat: latN, lng: lngN });
+  } catch (err) {
+    return res.status(500).json({ error: err?.message });
+  }
+});
+
 // ── Search clubs in local DB (autocomplete) ──────────────────────────────────
 app.get("/api/club-search", async (req, res) => {
   const q = String(req.query.q || "").trim();
@@ -5171,6 +5557,46 @@ app.get("/api/club-search", async (req, res) => {
     return res.json([]);
   }
 });
+
+// ── Nominatim geocoding helper (OpenStreetMap, no API key required) ─────────
+async function geocodeClub(clubName, country) {
+  const HDRS = { 'User-Agent': 'ScoutyApp/1.0 (contact@scouty.app)', 'Accept-Language': 'fr,en' };
+  const query = async (q) => {
+    try {
+      const url = `https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(q)}&format=json&limit=5&addressdetails=1`;
+      const resp = await fetch(url, { headers: HDRS, signal: AbortSignal.timeout(6000) });
+      if (!resp.ok) return null;
+      return await resp.json();
+    } catch { return null; }
+  };
+  const pick = (data) => {
+    if (!data?.length) return null;
+    // Prefer sports facility/stadium → then city/town → then anything
+    const sport = data.find(r => ['leisure', 'amenity', 'sport', 'club'].includes(r.class));
+    const place = data.find(r => r.class === 'place' && ['city', 'town', 'village', 'suburb'].includes(r.type));
+    const best = sport || place || data[0];
+    if (best?.lat && best?.lon) return { lat: parseFloat(best.lat), lng: parseFloat(best.lon) };
+    return null;
+  };
+  // Strip common football prefixes to expose the city name
+  const stripped = clubName
+    .replace(/^(AS|FC|AC|SC|OGC|US|AJ|SM|RC|AO|SL|CF|SD|RB|BV|SV|VfB|VfL|TSG|FSV|SG|FK|SK|NK|HNK|GNK|MFK|TJ|Stade|Sporting|Athletic|Racing|Real|Atlético|Inter|United|City|Town|Rovers|Wanderers|Dynamo|Lokomotiv|Spartak|Zenit|Slavia|Rapid)\s+/i, '')
+    .replace(/\s+/g, ' ').trim();
+  const tries = [
+    // Try with "football" first to hit sports leisure entries
+    country ? `${clubName} football ${country}` : `${clubName} football`,
+    country ? `${clubName} ${country}` : clubName,
+    stripped !== clubName && country ? `${stripped} football ${country}` : null,
+    stripped !== clubName && country ? `${stripped} ${country}` : null,
+    stripped !== clubName ? stripped : null,
+  ].filter(Boolean);
+  for (const q of tries) {
+    const data = await query(q);
+    const r = pick(data);
+    if (r) return r;
+  }
+  return null;
+}
 
 // ── Transfermarkt club profile scraping ────────────────────────────────────
 app.get("/api/club-tm/:clubId", async (req, res) => {
@@ -5260,13 +5686,31 @@ app.get("/api/club-tm/:clubId", async (req, res) => {
       );
     } catch {}
 
-    // Upsert club_directory + club_logos
+    // Upsert club_directory + club_logos + geocoordinates
     if (clubName) {
       try {
+        // Ensure lat/lng columns exist (migration)
+        await pool.query("ALTER TABLE club_directory ADD COLUMN IF NOT EXISTS lat DECIMAL(9,6) NULL").catch(() => {});
+        await pool.query("ALTER TABLE club_directory ADD COLUMN IF NOT EXISTS lng DECIMAL(9,6) NULL").catch(() => {});
+        // Check if coordinates already stored
+        const [existing] = await pool.query("SELECT lat, lng FROM club_directory WHERE club_name = ? LIMIT 1", [clubName]);
+        let lat = existing[0]?.lat ?? null;
+        let lng = existing[0]?.lng ?? null;
+        // Geocode if we don't have coordinates yet
+        if (!lat || !lng) {
+          const geo = await geocodeClub(clubName, country);
+          if (geo) { lat = geo.lat; lng = geo.lng; }
+        }
         await pool.query(
-          `INSERT INTO club_directory (club_name, competition, country, logo_url)
-           VALUES (?, ?, ?, ?) ON DUPLICATE KEY UPDATE competition = COALESCE(NULLIF(VALUES(competition),''), competition), country = COALESCE(NULLIF(VALUES(country),''), country), logo_url = COALESCE(VALUES(logo_url), logo_url)`,
-          [clubName, league, country, badge]
+          `INSERT INTO club_directory (club_name, competition, country, logo_url, lat, lng)
+           VALUES (?, ?, ?, ?, ?, ?)
+           ON DUPLICATE KEY UPDATE
+             competition = COALESCE(NULLIF(VALUES(competition),''), competition),
+             country = COALESCE(NULLIF(VALUES(country),''), country),
+             logo_url = COALESCE(VALUES(logo_url), logo_url),
+             lat = COALESCE(VALUES(lat), lat),
+             lng = COALESCE(VALUES(lng), lng)`,
+          [clubName, league, country, badge, lat, lng]
         );
         if (badge) {
           await pool.query("INSERT INTO club_logos (club_name, logo_url) VALUES (?, ?) ON DUPLICATE KEY UPDATE logo_url = VALUES(logo_url)", [clubName, badge]);
@@ -7308,6 +7752,14 @@ app.post("/api/functions/:name", authMiddleware, async (req, res) => {
   }
 
   if (name === "enrich-player") {
+    // Premium or admin only
+    const [_adminR] = await pool.query("SELECT id FROM user_roles WHERE user_id = ? AND role = 'admin' LIMIT 1", [req.user.id]);
+    if (!_adminR.length) {
+      const [_subR] = await pool.query("SELECT is_premium FROM user_subscriptions WHERE user_id = ? LIMIT 1", [req.user.id]);
+      if (!_subR.length || !_subR[0].is_premium) {
+        return res.status(403).json({ error: "premium_required", message: "L'enrichissement est réservé aux utilisateurs Premium." });
+      }
+    }
     const { playerName, club, playerId, nationality, generation, tmUrl } = req.body || {};
     if (!playerName || !playerId) {
       return res.status(400).json({ error: 'Missing playerName or playerId' });
@@ -7379,6 +7831,12 @@ app.post("/api/functions/:name", authMiddleware, async (req, res) => {
         });
       }
 
+      // Consume 1 credit for enrichment (fire-and-forget — don't fail the request)
+      pool.query(
+        "INSERT INTO user_credit_events (id, user_id, action_type, direction, amount, description) VALUES (?, ?, 'enrichment', 'spend', 1, ?)",
+        [uuidv4(), req.user.id, `Enrichissement: ${playerName}`]
+      ).catch(() => {});
+
       return res.json({
         success: true,
         sources: { thesportsdb: !!tsdb, wikidata: !!wd, transfermarkt: !!tm },
@@ -7392,6 +7850,14 @@ app.post("/api/functions/:name", authMiddleware, async (req, res) => {
   }
 
   if (name === "fetch-tm-profile") {
+    // Premium or admin only
+    const [_adminR4] = await pool.query("SELECT id FROM user_roles WHERE user_id = ? AND role = 'admin' LIMIT 1", [req.user.id]);
+    if (!_adminR4.length) {
+      const [_subR4] = await pool.query("SELECT is_premium FROM user_subscriptions WHERE user_id = ? LIMIT 1", [req.user.id]);
+      if (!_subR4.length || !_subR4[0].is_premium) {
+        return res.status(403).json({ error: "premium_required", message: "L'enrichissement est réservé aux utilisateurs Premium." });
+      }
+    }
     const { tmUrl } = req.body || {};
     if (!tmUrl) return res.status(400).json({ error: 'Missing tmUrl' });
 
@@ -7934,6 +8400,14 @@ app.post("/api/functions/:name", authMiddleware, async (req, res) => {
   }
 
   if (name === "enrich-all-players") {
+    // Premium or admin only
+    const [_adminR2] = await pool.query("SELECT id FROM user_roles WHERE user_id = ? AND role = 'admin' LIMIT 1", [req.user.id]);
+    if (!_adminR2.length) {
+      const [_subR2] = await pool.query("SELECT is_premium FROM user_subscriptions WHERE user_id = ? LIMIT 1", [req.user.id]);
+      if (!_subR2.length || !_subR2[0].is_premium) {
+        return res.status(403).json({ error: "premium_required", message: "L'enrichissement est réservé aux utilisateurs Premium." });
+      }
+    }
     // Prevent concurrent runs
     const existing = enrichAllProgress.get(req.user.id);
     if (existing && existing.running) {
@@ -7972,6 +8446,11 @@ app.post("/api/functions/:name", authMiddleware, async (req, res) => {
           await pool.query(`UPDATE players SET ${setClauses.join(', ')} WHERE id = ?`, params);
           done++;
           console.log(`[enrich-all] ${done}/${total} ${row.name} ✓`);
+          // Consume 1 credit per enriched player
+          pool.query(
+            "INSERT INTO user_credit_events (id, user_id, action_type, direction, amount, description) VALUES (?, ?, 'enrichment', 'spend', 1, ?)",
+            [uuidv4(), req.user.id, `Enrichissement: ${row.name}`]
+          ).catch(() => {});
         } catch (e) {
           errors++;
           console.error(`[enrich-all] Error for ${p.name}:`, e.message);
@@ -7990,6 +8469,14 @@ app.post("/api/functions/:name", authMiddleware, async (req, res) => {
   }
 
   if (name === "fetch-player-photos") {
+    // Premium or admin only
+    const [_adminR3] = await pool.query("SELECT id FROM user_roles WHERE user_id = ? AND role = 'admin' LIMIT 1", [req.user.id]);
+    if (!_adminR3.length) {
+      const [_subR3] = await pool.query("SELECT is_premium FROM user_subscriptions WHERE user_id = ? LIMIT 1", [req.user.id]);
+      if (!_subR3.length || !_subR3[0].is_premium) {
+        return res.status(403).json({ error: "premium_required", message: "Cette fonctionnalité est réservée aux utilisateurs Premium." });
+      }
+    }
     try {
       const [players] = await pool.query(
         "SELECT id, name, club, nationality, generation FROM players WHERE user_id = ? AND (photo_url IS NULL OR photo_url = '')",
@@ -9825,6 +10312,21 @@ app.post("/api/storage/:bucket/upload", authMiddleware, upload.single("file"), a
     return res.status(400).json({ error: "No file uploaded" });
   }
 
+  // ── File size limits ─────────────────────────────────────────────────────
+  const isVideo = (req.file.mimetype || "").startsWith("video/");
+  const isImage = (req.file.mimetype || "").startsWith("image/");
+  const MAX_VIDEO_BYTES = 10 * 1024 * 1024; // 10 MB
+  const MAX_PHOTO_BYTES = 4 * 1024 * 1024;  // 4 MB
+
+  if (isVideo && req.file.size > MAX_VIDEO_BYTES) {
+    try { fs.unlinkSync(req.file.path); } catch {}
+    return res.status(413).json({ error: "video_too_large", message: "La vidéo ne doit pas dépasser 10 Mo." });
+  }
+  if (isImage && req.file.size > MAX_PHOTO_BYTES) {
+    try { fs.unlinkSync(req.file.path); } catch {}
+    return res.status(413).json({ error: "photo_too_large", message: "La photo ne doit pas dépasser 4 Mo." });
+  }
+
   const requestedName = String(req.body?.fileName || "").replace(/[^a-zA-Z0-9._-]/g, "");
   const imageId = requestedName || `${Date.now()}-${uuidv4()}`;
 
@@ -10147,6 +10649,408 @@ app.post("/api/admin/cron-enrichment-trigger", authMiddleware, async (req, res) 
   }
 });
 
+// ── Cron: inactive-user cleanup ─────────────────────────────────────────────
+
+// Auto-create log table
+pool.query(`CREATE TABLE IF NOT EXISTS cron_cleanup_logs (
+  id CHAR(36) PRIMARY KEY,
+  started_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  finished_at DATETIME NULL,
+  users_deleted INT NOT NULL DEFAULT 0,
+  users_warned INT NOT NULL DEFAULT 0,
+  status ENUM('running', 'done', 'failed') NOT NULL DEFAULT 'running',
+  error_detail TEXT NULL
+)`).catch(() => {});
+
+/**
+ * Delete non-admin users inactive for >= 5 years (based on last_sign_in_at,
+ * falling back to created_at). Warns users at >= 4 years 11 months via email.
+ * Only targets users whose only role is 'user' (never 'admin' or 'superadmin').
+ */
+async function runInactiveUserCleanup(dryRun = false) {
+  const logId = uuidv4();
+  await pool.query(
+    'INSERT INTO cron_cleanup_logs (id, status) VALUES (?, ?)',
+    [logId, 'running']
+  );
+
+  let usersDeleted = 0;
+  let usersWarned = 0;
+
+  try {
+    // Users whose last activity (sign-in or account creation) predates 4y11m ago
+    // who have NO admin/superadmin role.
+    const [candidates] = await pool.query(`
+      SELECT u.id, u.email,
+             COALESCE(u.last_sign_in_at, u.created_at) AS last_active
+      FROM users u
+      WHERE NOT EXISTS (
+        SELECT 1 FROM user_roles ur
+        WHERE ur.user_id = u.id
+          AND ur.role IN ('admin', 'superadmin')
+      )
+      AND COALESCE(u.last_sign_in_at, u.created_at) < DATE_SUB(NOW(), INTERVAL 4 YEAR)
+      ORDER BY last_active ASC
+    `);
+
+    console.log(`[cron-cleanup] ${candidates.length} candidate(s) found`);
+
+    for (const user of candidates) {
+      const lastActive = new Date(user.last_active);
+      const now = new Date();
+      const monthsInactive = (now - lastActive) / (1000 * 60 * 60 * 24 * 30.44);
+
+      if (monthsInactive >= 60) {
+        // >= 5 years: delete
+        if (!dryRun) {
+          await pool.query('DELETE FROM users WHERE id = ?', [user.id]);
+          console.log(`[cron-cleanup] Deleted inactive user ${user.email} (last active: ${lastActive.toISOString().slice(0, 10)})`);
+          // Attempt farewell email (best-effort)
+          sendEmail(user.email, 'Suppression de votre compte Scouty', `
+            <div style="font-family:sans-serif;max-width:520px;margin:0 auto;padding:24px">
+              <h2 style="color:#6366f1">Compte Scouty supprimé</h2>
+              <p>Votre compte Scouty a été automatiquement supprimé suite à 5 ans d'inactivité,
+              conformément à notre politique de conservation des données.</p>
+              <p>Toutes vos données personnelles ont été effacées de nos serveurs.</p>
+              <p>Si vous souhaitez recommencer, vous pouvez créer un nouveau compte gratuitement
+              sur <a href="https://scouty.app">scouty.app</a>.</p>
+              <p style="color:#aaa;font-size:12px;margin-top:24px">Scouty — Football Scouting CRM</p>
+            </div>
+          `).catch(() => {});
+        }
+        usersDeleted++;
+      } else if (monthsInactive >= 59) {
+        // >= 4y11m: send warning email
+        if (!dryRun) {
+          const daysLeft = Math.round((60 - monthsInactive) * 30.44);
+          sendEmail(user.email, 'Votre compte Scouty sera bientôt supprimé', `
+            <div style="font-family:sans-serif;max-width:520px;margin:0 auto;padding:24px">
+              <h2 style="color:#f59e0b">Compte Scouty — Avertissement d'inactivité</h2>
+              <p>Votre compte Scouty est inactif depuis presque 5 ans.</p>
+              <p>Conformément à notre politique de conservation des données, votre compte et
+              l'ensemble de vos données seront <strong>définitivement supprimés dans environ
+              ${daysLeft} jour(s)</strong>.</p>
+              <p>Pour conserver votre compte, il vous suffit de vous connecter :
+              <a href="https://scouty.app/auth">scouty.app/auth</a></p>
+              <p style="color:#aaa;font-size:12px;margin-top:24px">Scouty — Football Scouting CRM</p>
+            </div>
+          `).catch(() => {});
+          console.log(`[cron-cleanup] Warning email sent to ${user.email} (~${daysLeft}d before deletion)`);
+        }
+        usersWarned++;
+      }
+    }
+
+    await pool.query(
+      'UPDATE cron_cleanup_logs SET finished_at = NOW(), users_deleted = ?, users_warned = ?, status = ? WHERE id = ?',
+      [usersDeleted, usersWarned, 'done', logId]
+    );
+    console.log(`[cron-cleanup] Done — deleted: ${usersDeleted}, warned: ${usersWarned}${dryRun ? ' (dry-run)' : ''}`);
+  } catch (err) {
+    await pool.query(
+      'UPDATE cron_cleanup_logs SET finished_at = NOW(), status = ?, error_detail = ? WHERE id = ?',
+      ['failed', err.message, logId]
+    );
+    console.error('[cron-cleanup] Fatal error:', err.message);
+  }
+}
+
+// Schedule: 1st of every month at 03:00 (non-Vercel only)
+if (!isVercel && cron) {
+  cron.schedule('0 3 1 * *', () => runInactiveUserCleanup(false), { timezone: 'Europe/Paris' });
+  console.log('[startup] Cron scheduled: inactive-user cleanup on 1st of month at 03:00 Europe/Paris');
+}
+
+// GET /api/admin/cron-cleanup-logs
+app.get("/api/admin/cron-cleanup-logs", authMiddleware, ensureAdmin, async (req, res) => {
+  try {
+    const [logs] = await pool.query(
+      'SELECT * FROM cron_cleanup_logs ORDER BY started_at DESC LIMIT 30'
+    );
+    return res.json({ logs });
+  } catch (err) {
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+// POST /api/admin/cron-cleanup-trigger — manual trigger (dry_run=true by default from UI)
+app.post("/api/admin/cron-cleanup-trigger", authMiddleware, ensureAdmin, async (req, res) => {
+  const { dry_run = true } = req.body || {};
+  runInactiveUserCleanup(!!dry_run);
+  return res.json({ ok: true, dry_run: !!dry_run });
+});
+
+// ── Cron: generic job log helper ────────────────────────────────────────────
+
+pool.query(`CREATE TABLE IF NOT EXISTS cron_job_logs (
+  id CHAR(36) PRIMARY KEY,
+  job_name VARCHAR(50) NOT NULL,
+  started_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  finished_at DATETIME NULL,
+  status ENUM('running','done','failed') NOT NULL DEFAULT 'running',
+  result_json JSON NULL,
+  error_detail TEXT NULL,
+  INDEX idx_cjl_job_date (job_name, started_at)
+)`).catch(() => {});
+
+async function logJobStart(jobName) {
+  const id = uuidv4();
+  await pool.query(
+    'INSERT INTO cron_job_logs (id, job_name, status) VALUES (?, ?, ?)',
+    [id, jobName, 'running']
+  );
+  return id;
+}
+async function logJobDone(id, result) {
+  await pool.query(
+    'UPDATE cron_job_logs SET finished_at = NOW(), status = ?, result_json = ? WHERE id = ?',
+    ['done', JSON.stringify(result), id]
+  );
+}
+async function logJobFailed(id, err) {
+  await pool.query(
+    'UPDATE cron_job_logs SET finished_at = NOW(), status = ?, error_detail = ? WHERE id = ?',
+    ['failed', err.message, id]
+  );
+}
+
+// ── Cron 1: contract-alerts — daily 08:00 ───────────────────────────────────
+// Notifies each user in-app (+ email) when a tracked player's contract expires
+// in exactly 30 days, 7 days, or has just expired (today).
+
+async function runContractAlerts(dryRun = false) {
+  const logId = await logJobStart('contract-alerts');
+  let notified = 0;
+  try {
+    // Players whose contract expires today, in 7 days, or in 30 days
+    const [players] = await pool.query(`
+      SELECT p.id AS player_id, p.name AS player_name, p.contract_end,
+             p.user_id, u.email AS user_email,
+             DATEDIFF(p.contract_end, CURDATE()) AS days_left
+      FROM players p
+      JOIN users u ON u.id = p.user_id
+      WHERE p.contract_end IS NOT NULL
+        AND p.is_archived = 0
+        AND DATEDIFF(p.contract_end, CURDATE()) IN (0, 7, 30)
+    `);
+
+    for (const row of players) {
+      const daysLeft = row.days_left;
+      const label = daysLeft === 0 ? 'expiré aujourd\'hui'
+                  : daysLeft === 7 ? 'expire dans 7 jours'
+                  : 'expire dans 30 jours';
+      const icon = daysLeft === 0 ? 'AlertTriangle' : 'Clock';
+
+      if (!dryRun) {
+        await createNotification(row.user_id, {
+          type: 'contract_alert',
+          title: `Contrat — ${row.player_name}`,
+          message: `Le contrat de ${row.player_name} ${label}.`,
+          icon,
+          link: `/player/${row.player_id}`,
+          playerId: row.player_id,
+        });
+        if (daysLeft <= 7) {
+          sendEmail(row.user_email,
+            `[Scouty] Contrat de ${row.player_name} ${label}`,
+            `<div style="font-family:sans-serif;max-width:520px;margin:0 auto;padding:24px">
+              <h2 style="color:#6366f1">Alerte contrat</h2>
+              <p>Le contrat de <strong>${row.player_name}</strong> ${label}
+              (${row.contract_end ? new Date(row.contract_end).toLocaleDateString('fr-FR') : ''}).</p>
+              <p><a href="https://scouty.app/player/${row.player_id}" style="color:#6366f1">Voir le profil du joueur</a></p>
+              <p style="color:#aaa;font-size:12px;margin-top:24px">Scouty — Football Scouting CRM</p>
+            </div>`
+          ).catch(() => {});
+        }
+      }
+      notified++;
+    }
+
+    await logJobDone(logId, { notified, dry_run: dryRun });
+    console.log(`[cron-contracts] ${notified} alert(s)${dryRun ? ' (dry-run)' : ''}`);
+  } catch (err) {
+    await logJobFailed(logId, err);
+    console.error('[cron-contracts] Error:', err.message);
+  }
+}
+
+// ── Cron 2: match-reminders — daily 07:00 ───────────────────────────────────
+// Sends in-app + email reminder for matches scheduled tomorrow.
+
+async function runMatchReminders(dryRun = false) {
+  const logId = await logJobStart('match-reminders');
+  let sent = 0;
+  try {
+    // Matches planned for tomorrow (assigned to a specific user or owned by user)
+    const [matches] = await pool.query(`
+      SELECT ma.id, ma.home_team, ma.away_team, ma.match_date, ma.match_time,
+             ma.competition, ma.venue,
+             COALESCE(ma.assigned_to, ma.user_id) AS notify_user_id,
+             u.email AS user_email
+      FROM match_assignments ma
+      JOIN users u ON u.id = COALESCE(ma.assigned_to, ma.user_id)
+      WHERE ma.match_date = DATE_ADD(CURDATE(), INTERVAL 1 DAY)
+        AND ma.status = 'planned'
+    `);
+
+    for (const m of matches) {
+      const timeStr = m.match_time ? ` à ${m.match_time}` : '';
+      const venueStr = m.venue ? ` — ${m.venue}` : '';
+      const title = `${m.home_team} vs ${m.away_team}`;
+      const message = `Match demain${timeStr}${venueStr}${m.competition ? ` (${m.competition})` : ''}.`;
+
+      if (!dryRun) {
+        await createNotification(m.notify_user_id, {
+          type: 'match_reminder',
+          title: `Rappel match : ${title}`,
+          message,
+          icon: 'CalendarDays',
+          link: `/my-matches`,
+        });
+        sendEmail(m.user_email,
+          `[Scouty] Rappel : ${title} demain`,
+          `<div style="font-family:sans-serif;max-width:520px;margin:0 auto;padding:24px">
+            <h2 style="color:#6366f1">Rappel de match</h2>
+            <p>Vous avez un match prévu <strong>demain</strong> :</p>
+            <p style="font-size:18px;font-weight:bold">${title}</p>
+            <p>${m.competition ? `Compétition : ${m.competition}<br>` : ''}
+               ${m.match_time ? `Heure : ${m.match_time}<br>` : ''}
+               ${m.venue ? `Lieu : ${m.venue}` : ''}</p>
+            <p><a href="https://scouty.app/my-matches" style="color:#6366f1">Voir mes matchs</a></p>
+            <p style="color:#aaa;font-size:12px;margin-top:24px">Scouty — Football Scouting CRM</p>
+          </div>`
+        ).catch(() => {});
+      }
+      sent++;
+    }
+
+    await logJobDone(logId, { sent, dry_run: dryRun });
+    console.log(`[cron-reminders] ${sent} reminder(s)${dryRun ? ' (dry-run)' : ''}`);
+  } catch (err) {
+    await logJobFailed(logId, err);
+    console.error('[cron-reminders] Error:', err.message);
+  }
+}
+
+// ── Cron 3: token-cleanup — daily 04:30 ─────────────────────────────────────
+// Purges expired tokens, stale 2FA codes, old notifications, old cache entries.
+
+async function runTokenCleanup() {
+  const logId = await logJobStart('token-cleanup');
+  try {
+    const [r1] = await pool.query('DELETE FROM password_reset_tokens WHERE expires_at < NOW()');
+    const [r2] = await pool.query(
+      'UPDATE users SET email_2fa_code = NULL, email_2fa_expires_at = NULL WHERE email_2fa_expires_at < NOW()'
+    );
+    const [r3] = await pool.query(
+      'DELETE FROM notifications WHERE created_at < DATE_SUB(NOW(), INTERVAL 90 DAY)'
+    );
+    const [r4] = await pool.query(
+      'DELETE FROM api_football_cache WHERE expires_at < DATE_SUB(NOW(), INTERVAL 7 DAY)'
+    );
+    const result = {
+      reset_tokens: r1.affectedRows,
+      stale_2fa: r2.affectedRows,
+      old_notifications: r3.affectedRows,
+      old_cache: r4.affectedRows,
+    };
+    await logJobDone(logId, result);
+    console.log('[cron-cleanup-tokens]', result);
+  } catch (err) {
+    await logJobFailed(logId, err);
+    console.error('[cron-cleanup-tokens] Error:', err.message);
+  }
+}
+
+// ── Cron 4: subscription-expiry — daily 09:00 ───────────────────────────────
+// Warns users whose subscription ends in exactly 7 days (D-7 alert).
+
+async function runSubscriptionExpiryAlerts(dryRun = false) {
+  const logId = await logJobStart('subscription-expiry');
+  let warned = 0;
+  try {
+    const [subs] = await pool.query(`
+      SELECT us.user_id, us.plan_type, us.subscription_end,
+             u.email AS user_email
+      FROM user_subscriptions us
+      JOIN users u ON u.id = us.user_id
+      WHERE us.is_premium = 1
+        AND us.subscription_end IS NOT NULL
+        AND DATEDIFF(us.subscription_end, CURDATE()) = 7
+    `);
+
+    for (const sub of subs) {
+      const planLabel = sub.plan_type === 'pro' ? 'Pro' : sub.plan_type === 'elite' ? 'Elite' : 'Premium';
+      const endDate = new Date(sub.subscription_end).toLocaleDateString('fr-FR');
+
+      if (!dryRun) {
+        await createNotification(sub.user_id, {
+          type: 'subscription_expiry',
+          title: `Votre abonnement ${planLabel} expire dans 7 jours`,
+          message: `Date d'expiration : ${endDate}. Renouvelez pour conserver l'accès.`,
+          icon: 'Crown',
+          link: '/account',
+        });
+        sendEmail(sub.user_email,
+          `[Scouty] Votre abonnement ${planLabel} expire dans 7 jours`,
+          `<div style="font-family:sans-serif;max-width:520px;margin:0 auto;padding:24px">
+            <h2 style="color:#6366f1">Renouvellement d'abonnement</h2>
+            <p>Votre abonnement <strong>${planLabel}</strong> expire le <strong>${endDate}</strong>.</p>
+            <p>Pour continuer à profiter de toutes les fonctionnalités Scouty, renouvelez votre abonnement dès maintenant.</p>
+            <p><a href="https://scouty.app/pricing" style="display:inline-block;background:#6366f1;color:#fff;padding:10px 20px;border-radius:8px;text-decoration:none">Renouveler mon abonnement</a></p>
+            <p style="color:#aaa;font-size:12px;margin-top:24px">Scouty — Football Scouting CRM</p>
+          </div>`
+        ).catch(() => {});
+      }
+      warned++;
+    }
+
+    await logJobDone(logId, { warned, dry_run: dryRun });
+    console.log(`[cron-sub-expiry] ${warned} warning(s)${dryRun ? ' (dry-run)' : ''}`);
+  } catch (err) {
+    await logJobFailed(logId, err);
+    console.error('[cron-sub-expiry] Error:', err.message);
+  }
+}
+
+// ── Cron schedules (non-Vercel only) ────────────────────────────────────────
+
+if (!isVercel && cron) {
+  cron.schedule('0 7 * * *',   () => runMatchReminders(false),            { timezone: 'Europe/Paris' });
+  cron.schedule('0 8 * * *',   () => runContractAlerts(false),            { timezone: 'Europe/Paris' });
+  cron.schedule('30 4 * * *',  runTokenCleanup,                           { timezone: 'Europe/Paris' });
+  cron.schedule('0 9 * * *',   () => runSubscriptionExpiryAlerts(false),  { timezone: 'Europe/Paris' });
+  console.log('[startup] Crons scheduled: match-reminders 07:00 | contract-alerts 08:00 | token-cleanup 04:30 | sub-expiry 09:00');
+}
+
+// ── Admin: cron job logs & manual triggers ───────────────────────────────────
+
+app.get("/api/admin/cron-job-logs", authMiddleware, ensureAdmin, async (req, res) => {
+  try {
+    const [logs] = await pool.query(
+      `SELECT * FROM cron_job_logs ORDER BY started_at DESC LIMIT 100`
+    );
+    return res.json({ logs });
+  } catch (err) {
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+app.post("/api/admin/cron-trigger", authMiddleware, ensureAdmin, async (req, res) => {
+  const { job, dry_run = true } = req.body || {};
+  const jobs = {
+    'contract-alerts':    () => runContractAlerts(!!dry_run),
+    'match-reminders':    () => runMatchReminders(!!dry_run),
+    'token-cleanup':      () => runTokenCleanup(),
+    'subscription-expiry':() => runSubscriptionExpiryAlerts(!!dry_run),
+    'nightly-enrichment': () => runNightlyEnrichment(),
+    'inactive-cleanup':   () => runInactiveUserCleanup(!!dry_run),
+  };
+  if (!jobs[job]) return res.status(400).json({ error: 'Unknown job' });
+  jobs[job]();
+  return res.json({ ok: true, job, dry_run: !!dry_run });
+});
+
 // Export for Vercel serverless
 export default app;
 
@@ -10154,6 +11058,7 @@ export default app;
 if (!isVercel) {
   app.listen(port, () => {
     console.log(`API listening on http://localhost:${port}`);
+    runMigrations().catch(err => console.warn("[startup] migration error:", err?.message));
     // Clear stale match-detail caches on startup so new parsing logic takes effect
     pool.query("DELETE FROM api_football_cache WHERE cache_key LIKE 'match-detail:%' OR cache_key LIKE 'lineup:%'")
       .then(() => console.log("[startup] Cleared match-detail & lineup caches"))

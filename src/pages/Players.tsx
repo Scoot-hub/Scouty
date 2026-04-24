@@ -379,7 +379,17 @@ export default function Players() {
     if (mode === 'all') {
       // Server-side background enrichment — returns immediately
       const { data, error } = await supabase.functions.invoke('enrich-all-players');
-      if (error) { toast.error(t('common.error')); return; }
+      if (error || (data as any)?.error === 'premium_required') {
+        if ((data as any)?.error === 'premium_required' || (error as any)?.message?.includes('premium_required')) {
+          toast.error(t('profile.enrich_premium_required'), {
+            action: { label: t('sidebar.upgrade'), onClick: () => window.location.href = '/pricing' },
+            duration: 6000,
+          });
+        } else {
+          toast.error(t('common.error'));
+        }
+        return;
+      }
       const enrichResult = data as { alreadyRunning?: boolean; total?: number } | null;
       if (enrichResult?.alreadyRunning) { toast(t('players.enrichment_already_running') || 'Enrichissement déjà en cours'); return; }
       const total = enrichResult?.total ?? players.length;
@@ -582,7 +592,8 @@ export default function Players() {
     supabase.from('players').update({ has_news: null }).in('id', idsWithNews).then();
   }, [filtered, queryClient]);
 
-  const playersToExport = selectedIds.size > 0 ? filtered.filter(p => selectedIds.has(p.id)) : filtered;
+  // Export: selected players if any, otherwise the full unfiltered list
+  const playersToExport = selectedIds.size > 0 ? players.filter(p => selectedIds.has(p.id)) : players;
 
   const handleExportExcel = async () => {
     if (playersToExport.length === 0) return;
@@ -989,7 +1000,11 @@ export default function Players() {
           <Button variant="outline" size="sm" className="rounded-xl" onClick={handleExportExcel} disabled={exporting || playersToExport.length === 0}>
             <Download className="w-4 h-4 sm:mr-1.5" />
             <span className="hidden sm:inline">
-              {exporting ? t('players.exporting') : selectedIds.size > 0 ? `${t('players.export_excel')} (${selectedIds.size})` : t('players.export_excel')}
+              {exporting
+                ? t('players.exporting')
+                : selectedIds.size > 0
+                  ? `${t('players.export_excel')} (${selectedIds.size})`
+                  : `${t('players.export_excel')} (${players.length})`}
             </span>
           </Button>
           <ImportTmClubDialog externalOpen={importClubOpen} onExternalOpenChange={setImportClubOpen} />

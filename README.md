@@ -66,7 +66,7 @@ SMTP_PORT=587
 SMTP_SECURE=false
 SMTP_USER=votre-login@smtp-brevo.com
 SMTP_PASS=xsmtpsib-votre-cle-smtp
-SMTP_FROM=noreply@scouty.app
+SMTP_FROM=scouty.professional@gmail.com
 REPORT_ISSUE_TO=support@scouty.app
 ```
 

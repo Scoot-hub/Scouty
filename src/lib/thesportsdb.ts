@@ -1162,3 +1162,26 @@ export function getClubSearchAliases(clubName: string): string[] {
   const resolved = resolveClubName(clubName);
   return CLUB_NAME_MAP[resolved] || [];
 }
+
+export interface SquadPlayer {
+  idPlayer: string;
+  strPlayer: string;
+  strPosition: string | null;
+  strNationality: string | null;
+  strThumb: string | null;
+  strCutout: string | null;
+  dateBorn: string | null;
+  strNumber: string | null;
+  strHeight: string | null;
+  strWeight: string | null;
+}
+
+export async function fetchClubSquad(teamId: string): Promise<SquadPlayer[]> {
+  if (!teamId) return [];
+  try {
+    const data = await sportsDbFetch('lookup_all_players', { id: teamId }) as { player?: SquadPlayer[] };
+    return data?.player ?? [];
+  } catch {
+    return [];
+  }
+}

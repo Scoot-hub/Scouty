@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { Link } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
+import PageSEO from '@/components/PageSEO';
 import { supabase } from '@/integrations/supabase/client';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -39,6 +40,12 @@ export default function ForgotPassword() {
 
   return (
     <div className="min-h-screen bg-background flex items-center justify-center px-4">
+      <PageSEO
+        path="/forgot-password"
+        title="Mot de passe oublié | Scouty"
+        description="Réinitialisez votre mot de passe Scouty. Entrez votre adresse email pour recevoir un lien de réinitialisation sécurisé."
+        noIndex
+      />
       <div className="w-full max-w-sm">
         {/* Logo */}
         <div className="text-center mb-8">

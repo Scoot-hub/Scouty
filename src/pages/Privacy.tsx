@@ -48,12 +48,12 @@ const content = {
     ],
     art4_title: 'Article 4 — Duree de conservation',
     art4_items: [
-      { label: 'Donnees de compte', desc: "conservees pendant toute la duree de votre inscription. Supprimees dans un delai de 30 jours apres demande de suppression du compte." },
-      { label: 'Donnees de scouting', desc: "conservees pendant la duree de votre compte. Exportables a tout moment. Supprimees avec le compte." },
+      { label: 'Donnees de compte et de scouting', desc: "conservees pendant 5 ans maximum a compter de la derniere activite du compte, conformement aux normes RGPD et au delai de prescription commerciale (art. L.110-4 du Code de commerce). Supprimees dans un delai de 30 jours apres demande de suppression du compte." },
+      { label: 'Donnees de scouting', desc: "conservees pendant la duree de votre compte (5 ans maximum). Exportables a tout moment depuis votre page Compte. Supprimees avec le compte." },
       { label: 'Donnees de facturation', desc: "conservees 10 ans conformement aux obligations comptables et fiscales francaises (art. L.123-22 du Code de commerce)." },
       { label: 'Logs de connexion', desc: "conserves 12 mois conformement a la legislation applicable (LCEN)." },
       { label: 'Tokens de reinitialisation de mot de passe', desc: "expires et supprimes apres 1 heure." },
-      { label: 'Comptes inactifs', desc: "les comptes inactifs depuis plus de 24 mois peuvent etre supprimes apres notification par email." },
+      { label: 'Comptes inactifs', desc: "les comptes inactifs depuis plus de 24 mois peuvent etre supprimes apres notification par email, dans la limite du delai de conservation de 5 ans." },
     ],
     art5_title: 'Article 5 — Destinataires et sous-traitants',
     art5_p1: 'Vos donnees personnelles sont traitees par les sous-traitants suivants, dans le strict cadre de la fourniture du service :',
@@ -62,7 +62,7 @@ const content = {
       ['TiDB Cloud (PingCAP)', 'Hebergement de la base de donnees', 'UE (Francfort)'],
       ['Vercel Inc.', "Hebergement de l'application et analytics anonymes", 'USA (clauses contractuelles types)'],
       ['Stripe Inc.', 'Traitement des paiements', 'USA (certifie PCI-DSS, clauses contractuelles types)'],
-      ['Nodemailer / SMTP', "Envoi d'emails transactionnels", 'UE'],
+      ['Brevo (Sendinblue)', "Envoi d'emails transactionnels", 'UE (Paris, France)'],
       ['API-Football (RapidAPI)', 'Donnees de matchs et statistiques', 'UE'],
     ],
     art5_p2: "Aucune donnee personnelle n'est vendue ou louee a des tiers. Les donnees ne sont transmises qu'aux sous-traitants listes ci-dessus, dans le cadre de contrats conformes a l'article 28 du RGPD.",
@@ -190,12 +190,12 @@ const content = {
     ],
     art4_title: 'Article 4 — Data Retention Period',
     art4_items: [
-      { label: 'Account data', desc: 'retained for the duration of your subscription. Deleted within 30 days of an account deletion request.' },
-      { label: 'Scouting data', desc: 'retained for the duration of your account. Exportable at any time. Deleted with the account.' },
+      { label: 'Account and scouting data', desc: 'retained for a maximum of 5 years from the last account activity, in accordance with GDPR standards and the commercial limitation period (Art. L.110-4 of the Commercial Code). Deleted within 30 days of an account deletion request.' },
+      { label: 'Scouting data', desc: 'retained for the duration of your account (maximum 5 years). Exportable at any time from your Account page. Deleted with the account.' },
       { label: 'Billing data', desc: 'retained for 10 years in accordance with French accounting and tax obligations (art. L.123-22 of the Commercial Code).' },
       { label: 'Connection logs', desc: 'retained for 12 months in accordance with applicable legislation (LCEN).' },
       { label: 'Password reset tokens', desc: 'expired and deleted after 1 hour.' },
-      { label: 'Inactive accounts', desc: 'accounts inactive for more than 24 months may be deleted after email notification.' },
+      { label: 'Inactive accounts', desc: 'accounts inactive for more than 24 months may be deleted after email notification, within the 5-year retention limit.' },
     ],
     art5_title: 'Article 5 — Recipients and Sub-processors',
     art5_p1: 'Your personal data is processed by the following sub-processors, strictly within the scope of providing the service:',
@@ -204,7 +204,7 @@ const content = {
       ['TiDB Cloud (PingCAP)', 'Database hosting', 'EU (Frankfurt)'],
       ['Vercel Inc.', 'Application hosting and anonymous analytics', 'USA (Standard Contractual Clauses)'],
       ['Stripe Inc.', 'Payment processing', 'USA (PCI-DSS certified, Standard Contractual Clauses)'],
-      ['Nodemailer / SMTP', 'Transactional email delivery', 'EU'],
+      ['Brevo (Sendinblue)', 'Transactional email delivery', 'EU (Paris, France)'],
       ['API-Football (RapidAPI)', 'Match data and statistics', 'EU'],
     ],
     art5_p2: "No personal data is sold or rented to third parties. Data is only shared with the sub-processors listed above, under contracts compliant with Article 28 of the GDPR.",
@@ -332,12 +332,12 @@ const content = {
     ],
     art4_title: 'Articulo 4 — Periodo de conservacion',
     art4_items: [
-      { label: 'Datos de cuenta', desc: 'conservados durante toda la duracion de su suscripcion. Eliminados en un plazo de 30 dias tras la solicitud de eliminacion de la cuenta.' },
-      { label: 'Datos de scouting', desc: 'conservados durante la duracion de su cuenta. Exportables en cualquier momento. Eliminados con la cuenta.' },
+      { label: 'Datos de cuenta y scouting', desc: 'conservados durante un maximo de 5 anos desde la ultima actividad de la cuenta, de acuerdo con las normas del RGPD y el plazo de prescripcion comercial (Art. L.110-4 del Codigo de Comercio). Eliminados en un plazo de 30 dias tras la solicitud de eliminacion de la cuenta.' },
+      { label: 'Datos de scouting', desc: 'conservados durante la duracion de tu cuenta (maximo 5 anos). Exportables en cualquier momento desde tu pagina de Cuenta. Eliminados con la cuenta.' },
       { label: 'Datos de facturacion', desc: 'conservados 10 anos conforme a las obligaciones contables y fiscales francesas (art. L.123-22 del Codigo de Comercio).' },
       { label: 'Registros de conexion', desc: 'conservados 12 meses conforme a la legislacion aplicable (LCEN).' },
       { label: 'Tokens de restablecimiento de contrasena', desc: 'caducados y eliminados despues de 1 hora.' },
-      { label: 'Cuentas inactivas', desc: 'las cuentas inactivas durante mas de 24 meses pueden ser eliminadas previa notificacion por correo electronico.' },
+      { label: 'Cuentas inactivas', desc: 'las cuentas inactivas durante mas de 24 meses pueden ser eliminadas previa notificacion por correo electronico, dentro del limite de conservacion de 5 anos.' },
     ],
     art5_title: 'Articulo 5 — Destinatarios y subencargados',
     art5_p1: 'Sus datos personales son tratados por los siguientes subencargados, estrictamente en el marco de la prestacion del servicio:',
@@ -346,7 +346,7 @@ const content = {
       ['TiDB Cloud (PingCAP)', 'Alojamiento de la base de datos', 'UE (Frankfurt)'],
       ['Vercel Inc.', 'Alojamiento de la aplicacion y analiticas anonimas', 'EE.UU. (Clausulas Contractuales Tipo)'],
       ['Stripe Inc.', 'Procesamiento de pagos', 'EE.UU. (certificado PCI-DSS, Clausulas Contractuales Tipo)'],
-      ['Nodemailer / SMTP', 'Envio de correos electronicos transaccionales', 'UE'],
+      ['Brevo (Sendinblue)', 'Envio de correos electronicos transaccionales', 'UE (Paris, Francia)'],
       ['API-Football (RapidAPI)', 'Datos de partidos y estadisticas', 'UE'],
     ],
     art5_p2: "Ningun dato personal se vende ni se alquila a terceros. Los datos solo se transmiten a los subencargados listados anteriormente, en el marco de contratos conformes al articulo 28 del RGPD.",
@@ -442,6 +442,11 @@ export default function Privacy() {
 
   return (
     <div className="min-h-screen bg-background">
+      <PageSEO
+        path="/privacy"
+        title="Politique de confidentialité | Scouty"
+        description="Politique de confidentialité de Scouty : données collectées, durée de conservation (5 ans), droits RGPD, sécurité des données hébergées en Europe et contact du DPO."
+      />
       <header className="border-b border-border px-6 py-4">
         <div className="max-w-4xl mx-auto flex items-center gap-4">
           <Link to="/">

@@ -5,6 +5,9 @@ import { useMyPermissions, useIsAdmin } from '@/hooks/use-admin';
 import logo from '@/assets/logo.png';
 import { Lock } from 'lucide-react';
 
+// Pages where undefined permission = blocked (must be explicitly granted, like admin)
+const WHITELIST_ONLY_PAGES = new Set(['admin', 'data_import']);
+
 // Map route paths to page permission keys
 const ROUTE_TO_PAGE_KEY: Record<string, string> = {
   '/players': 'players',
@@ -29,6 +32,7 @@ const ROUTE_TO_PAGE_KEY: Record<string, string> = {
   '/profile': 'user_profile',
   '/admin': 'admin',
   '/admin/roles': 'admin',
+  '/data-import': 'data_import',
 };
 
 function getPageKey(pathname: string): string | null {
@@ -68,8 +72,8 @@ export default function ProtectedRoute() {
     const pageKey = getPageKey(location.pathname);
     if (pageKey && permsData?.permissions) {
       const allowed = permsData.permissions[pageKey];
-      // If permission is explicitly set to false, block access
-      if (allowed === false) {
+      // Block if explicitly denied, or if the page requires an explicit grant and none exists
+      if (allowed === false || (allowed === undefined && WHITELIST_ONLY_PAGES.has(pageKey))) {
         return (
           <div className="min-h-screen bg-background flex items-center justify-center">
             <div className="flex flex-col items-center gap-4 text-center max-w-md px-4">

@@ -3,12 +3,18 @@ import { useTranslation } from 'react-i18next';
 import { ArrowLeft } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import logo from '@/assets/logo.png';
+import PageSEO from '@/components/PageSEO';
 
 export default function CGU() {
   const { t } = useTranslation();
 
   return (
     <div className="min-h-screen bg-background">
+      <PageSEO
+        path="/cgu"
+        title="Conditions Générales d'Utilisation | Scouty"
+        description="Conditions Générales d'Utilisation de la plateforme Scouty. Droits et obligations des utilisateurs, propriété intellectuelle, responsabilités et protection des données personnelles."
+      />
       <header className="border-b border-border px-6 py-4">
         <div className="max-w-4xl mx-auto flex items-center gap-4">
           <Link to="/">

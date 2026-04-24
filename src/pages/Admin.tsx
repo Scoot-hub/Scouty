@@ -9,7 +9,7 @@ import { Badge } from '@/components/ui/badge';
 import { Textarea } from '@/components/ui/textarea';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs';
-import { Shield, Crown, Users, Mail, UserCheck, BarChart3, Lock, Check, X, Search, Plus, Trash2, ShieldCheck, ChevronDown, ChevronRight, Building2, UserPlus, UserMinus, Palette, User, ShieldAlert, Bell } from 'lucide-react';
+import { Shield, Crown, Users, Mail, UserCheck, BarChart3, Lock, Check, X, Search, Plus, Trash2, ShieldCheck, ChevronDown, ChevronRight, Building2, UserPlus, UserMinus, Palette, User, ShieldAlert, Bell, Zap, Clock } from 'lucide-react';
 import { toast } from 'sonner';
 import { Navigate, Link } from 'react-router-dom';
 import { useAuth } from '@/contexts/AuthContext';
@@ -50,6 +50,7 @@ const PAGE_ACTIONS: Record<string, string[]> = {
   club_profile:   ['view', 'follow', 'unfollow', 'view_squad'],
   user_profile:   ['view', 'edit'],
   admin:          ['view', 'manage_users', 'manage_roles', 'impersonate', 'toggle_premium', 'reset_password', 'delete_user', 'view_analytics', 'manage_tickets'],
+  data_import:    ['view', 'import'],
 };
 
 const ALL_PAGES = Object.keys(PAGE_ACTIONS);
@@ -539,6 +540,18 @@ export default function Admin() {
             <Button variant="outline" className="rounded-xl gap-2">
               <Bell className="w-4 h-4" />
               {t('admin.notifications')}
+            </Button>
+          </Link>
+          <Link to="/admin/credits">
+            <Button variant="outline" className="rounded-xl gap-2">
+              <Zap className="w-4 h-4 text-yellow-500" />
+              {t('admin.credits')}
+            </Button>
+          </Link>
+          <Link to="/admin/crons">
+            <Button variant="outline" className="rounded-xl gap-2">
+              <Clock className="w-4 h-4 text-primary" />
+              {t('admin.crons')}
             </Button>
           </Link>
         </div>

@@ -20,6 +20,11 @@ interface UserProfileData {
   social_x: string | null;
   social_instagram: string | null;
   social_linkedin: string | null;
+  social_facebook: string | null;
+  social_snapchat: string | null;
+  social_tiktok: string | null;
+  social_telegram: string | null;
+  social_whatsapp: string | null;
 }
 
 export default function UserProfile() {
@@ -63,7 +68,11 @@ export default function UserProfile() {
     month: 'long', year: 'numeric',
   });
 
-  const hasSocials = profile.social_public && (profile.social_x || profile.social_instagram || profile.social_linkedin);
+  const hasSocials = profile.social_public && (
+    profile.social_x || profile.social_instagram || profile.social_linkedin ||
+    profile.social_facebook || profile.social_snapchat || profile.social_tiktok ||
+    profile.social_telegram || profile.social_whatsapp
+  );
 
   return (
     <div className="max-w-2xl mx-auto p-4 sm:p-6 space-y-6">
@@ -171,12 +180,80 @@ export default function UserProfile() {
                   rel="noopener noreferrer"
                   className="flex items-center gap-3 p-3 rounded-lg border border-border hover:bg-muted/50 transition-colors group"
                 >
-                  <div className="w-8 h-8 rounded-full bg-blue-600/10 flex items-center justify-center text-blue-600 font-bold text-xs">
-                    in
-                  </div>
+                  <div className="w-8 h-8 rounded-full bg-blue-600/10 flex items-center justify-center text-blue-600 font-bold text-xs">in</div>
                   <div className="flex-1 min-w-0">
                     <p className="text-xs text-muted-foreground">LinkedIn</p>
                     <p className="text-sm font-medium truncate">{profile.social_linkedin}</p>
+                  </div>
+                  <ExternalLink className="w-3.5 h-3.5 text-muted-foreground group-hover:text-foreground transition-colors" />
+                </a>
+              )}
+              {profile.social_facebook && (
+                <a
+                  href={profile.social_facebook.startsWith('http') ? profile.social_facebook : `https://facebook.com/${profile.social_facebook}`}
+                  target="_blank" rel="noopener noreferrer"
+                  className="flex items-center gap-3 p-3 rounded-lg border border-border hover:bg-muted/50 transition-colors group"
+                >
+                  <div className="w-8 h-8 rounded-full bg-blue-500/10 flex items-center justify-center text-blue-500 font-bold text-xs">f</div>
+                  <div className="flex-1 min-w-0">
+                    <p className="text-xs text-muted-foreground">Facebook</p>
+                    <p className="text-sm font-medium truncate">{profile.social_facebook}</p>
+                  </div>
+                  <ExternalLink className="w-3.5 h-3.5 text-muted-foreground group-hover:text-foreground transition-colors" />
+                </a>
+              )}
+              {profile.social_snapchat && (
+                <a
+                  href={`https://snapchat.com/add/${profile.social_snapchat.replace('@', '')}`}
+                  target="_blank" rel="noopener noreferrer"
+                  className="flex items-center gap-3 p-3 rounded-lg border border-border hover:bg-muted/50 transition-colors group"
+                >
+                  <div className="w-8 h-8 rounded-full bg-yellow-400/15 flex items-center justify-center text-yellow-500 font-bold text-sm">👻</div>
+                  <div className="flex-1 min-w-0">
+                    <p className="text-xs text-muted-foreground">Snapchat</p>
+                    <p className="text-sm font-medium truncate">{profile.social_snapchat}</p>
+                  </div>
+                  <ExternalLink className="w-3.5 h-3.5 text-muted-foreground group-hover:text-foreground transition-colors" />
+                </a>
+              )}
+              {profile.social_tiktok && (
+                <a
+                  href={`https://tiktok.com/@${profile.social_tiktok.replace('@', '')}`}
+                  target="_blank" rel="noopener noreferrer"
+                  className="flex items-center gap-3 p-3 rounded-lg border border-border hover:bg-muted/50 transition-colors group"
+                >
+                  <div className="w-8 h-8 rounded-full bg-black/5 dark:bg-white/10 flex items-center justify-center font-bold text-sm">🎵</div>
+                  <div className="flex-1 min-w-0">
+                    <p className="text-xs text-muted-foreground">TikTok</p>
+                    <p className="text-sm font-medium truncate">{profile.social_tiktok}</p>
+                  </div>
+                  <ExternalLink className="w-3.5 h-3.5 text-muted-foreground group-hover:text-foreground transition-colors" />
+                </a>
+              )}
+              {profile.social_telegram && (
+                <a
+                  href={`https://t.me/${profile.social_telegram.replace('@', '')}`}
+                  target="_blank" rel="noopener noreferrer"
+                  className="flex items-center gap-3 p-3 rounded-lg border border-border hover:bg-muted/50 transition-colors group"
+                >
+                  <div className="w-8 h-8 rounded-full bg-sky-500/10 flex items-center justify-center text-sky-500 font-bold text-sm">✈️</div>
+                  <div className="flex-1 min-w-0">
+                    <p className="text-xs text-muted-foreground">Telegram</p>
+                    <p className="text-sm font-medium truncate">{profile.social_telegram}</p>
+                  </div>
+                  <ExternalLink className="w-3.5 h-3.5 text-muted-foreground group-hover:text-foreground transition-colors" />
+                </a>
+              )}
+              {profile.social_whatsapp && (
+                <a
+                  href={`https://wa.me/${profile.social_whatsapp.replace(/[\s+\-()]/g, '')}`}
+                  target="_blank" rel="noopener noreferrer"
+                  className="flex items-center gap-3 p-3 rounded-lg border border-border hover:bg-muted/50 transition-colors group"
+                >
+                  <div className="w-8 h-8 rounded-full bg-green-500/10 flex items-center justify-center text-green-500 font-bold text-sm">💬</div>
+                  <div className="flex-1 min-w-0">
+                    <p className="text-xs text-muted-foreground">WhatsApp</p>
+                    <p className="text-sm font-medium truncate">{profile.social_whatsapp}</p>
                   </div>
                   <ExternalLink className="w-3.5 h-3.5 text-muted-foreground group-hover:text-foreground transition-colors" />
                 </a>

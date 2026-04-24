@@ -54,9 +54,13 @@ const ClubProfile = lazy(() => import("@/pages/ClubProfile"));
 const MyClubs = lazy(() => import("@/pages/MyClubs"));
 const Privacy = lazy(() => import("@/pages/Privacy"));
 const AdminAnalytics = lazy(() => import("@/pages/AdminAnalytics"));
+const AdminCredits = lazy(() => import("@/pages/AdminCredits"));
+const AdminCrons = lazy(() => import("@/pages/AdminCrons"));
 const Championships = lazy(() => import("@/pages/Championships"));
 const MapView = lazy(() => import("@/pages/MapView"));
 const MatchDetail = lazy(() => import("@/pages/MatchDetail"));
+const DataImport = lazy(() => import("@/pages/DataImport"));
+const Onboarding = lazy(() => import("@/pages/Onboarding"));
 const NotFound = lazy(() => import("@/pages/NotFound"));
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -95,6 +99,8 @@ const App = () => (
 
             {/* Protected routes */}
             <Route element={<ProtectedRoute />}>
+              {/* Onboarding — plein écran, sans sidebar */}
+              <Route path="/welcome" element={<Onboarding />} />
               <Route element={<AppLayout />}>
                 <Route path="/dashboard" element={<Navigate to="/players" replace />} />
                 <Route path="/players" element={<Players />} />
@@ -114,6 +120,8 @@ const App = () => (
                 <Route path="/admin/tickets" element={<AdminTickets />} />
                 <Route path="/admin/settings" element={<AdminSettings />} />
                 <Route path="/admin/notifications" element={<AdminNotifications />} />
+                <Route path="/admin/credits" element={<AdminCredits />} />
+                <Route path="/admin/crons" element={<AdminCrons />} />
                 <Route path="/my-tickets" element={<MyTickets />} />
                 <Route path="/premium-success" element={<PremiumSuccess />} />
                 <Route path="/account" element={<Account />} />
@@ -133,6 +141,7 @@ const App = () => (
                 <Route path="/map" element={<MapView />} />
                 <Route path="/checkout" element={<Checkout />} />
                 <Route path="/affiliate" element={<Affiliate />} />
+                <Route path="/data-import" element={<DataImport />} />
               </Route>
             </Route>
 

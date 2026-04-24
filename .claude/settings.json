@@ -114,7 +114,13 @@
       "Bash(python -m json.tool)",
       "Bash(echo \"EXIT=$?\")",
       "Bash(npx eslint *)",
-      "Bash(node -e \"import\\('./server/club-aliases.js'\\).then\\(m=>console.log\\('keys:',Object.keys\\(m.CLUB_NAME_MAP\\).length\\)\\)\")"
+      "Bash(node -e \"import\\('./server/club-aliases.js'\\).then\\(m=>console.log\\('keys:',Object.keys\\(m.CLUB_NAME_MAP\\).length\\)\\)\")",
+      "Bash(netstat -ano)",
+      "Bash(powershell -Command \"Get-Process -Id 12292 | Select-Object StartTime, Id, Name\")",
+      "Bash(powershell -Command \"\\(Get-Item 'c:\\\\Users\\\\infor\\\\scouting-hub\\\\server\\\\index.js'\\).LastWriteTime\")",
+      "Bash(powershell -Command \"\\(Get-Item 'c:\\\\Users\\\\infor\\\\scouting-hub\\\\.env'\\).LastWriteTime\")",
+      "Bash(node -e \"import\\('./node_modules/express/package.json', {assert:{type:'json'}}\\).then\\(m => console.log\\(m.default.version\\)\\).catch\\(\\(\\) => require\\('./node_modules/express/package.json'\\).version\\)\")",
+      "Bash(python3 -c \"import sys,json; print\\(json.load\\(sys.stdin\\)['version']\\)\")"
     ],
     "additionalDirectories": [
       "\\tmp"

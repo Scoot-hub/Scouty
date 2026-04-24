@@ -116,6 +116,10 @@ export default function AddPlayer() {
   const queryClient = useQueryClient();
   const [searchParams] = useSearchParams();
   const createAsArchived = searchParams.get('archived') === 'true';
+  const prefillName = searchParams.get('name') || '';
+  const prefillClub = searchParams.get('club') || '';
+  const prefillPosition = searchParams.get('position') || '';
+  const prefillNationality = searchParams.get('nationality') || '';
   const { toast } = useToast();
   const { t, i18n } = useTranslation();
   const { positions: posLabels } = usePositions();
@@ -131,14 +135,28 @@ export default function AddPlayer() {
   const [customFieldValues, setCustomFieldValues] = useState<Record<string, string>>({});
   const [step, setStep] = useState(0);
 
-  const [name, setName] = useState('');
+  const [name, setName] = useState(prefillName);
   const [photoUrl, setPhotoUrl] = useState('');
   const [generation, setGeneration] = useState('2004');
-  const [nationality, setNationality] = useState('');
-  const [club, setClub] = useState('');
+  const [nationality, setNationality] = useState(prefillNationality);
+  const [club, setClub] = useState(prefillClub);
   const [league, setLeague] = useState('');
   const [zone, setZone] = useState('');
-  const [position, setPosition] = useState<Position | ''>('');
+  const mapTsdbPosition = (p: string): Position | '' => {
+    const s = p.toLowerCase();
+    if (s.includes('goalkeeper')) return 'GK';
+    if (s.includes('centre-back') || s.includes('center back') || s.includes('central def')) return 'DC';
+    if (s.includes('right back') || s.includes('right def')) return 'LD';
+    if (s.includes('left back') || s.includes('left def')) return 'LG';
+    if (s.includes('defensive mid')) return 'MDef';
+    if (s.includes('attacking mid') || s.includes('behind')) return 'MO';
+    if (s.includes('midfield')) return 'MC';
+    if (s.includes('right wing') || s.includes('right mid') || s.includes('right for')) return 'AD';
+    if (s.includes('left wing') || s.includes('left mid') || s.includes('left for')) return 'AG';
+    if (s.includes('forward') || s.includes('striker') || s.includes('centre-for') || s.includes('center for')) return 'ATT';
+    return '';
+  };
+  const [position, setPosition] = useState<Position | ''>(prefillPosition ? mapTsdbPosition(prefillPosition) : '');
   const [positionSecondaire, setPositionSecondaire] = useState<Position | ''>('');
   const [role, setRole] = useState('');
   const [foot, setFoot] = useState<Foot>('Droitier');

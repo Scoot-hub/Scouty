@@ -12,10 +12,12 @@ import { Input } from '@/components/ui/input';
 import { Badge } from '@/components/ui/badge';
 import { ClubBadge } from '@/components/ui/club-badge';
 import { translateCountry } from '@/types/player';
-import { resolveClubName, getClubSearchAliases } from '@/lib/thesportsdb';
+import { resolveClubName, getClubSearchAliases, fetchClubSquad, type SquadPlayer } from '@/lib/thesportsdb';
+import { PlayerAvatar } from '@/components/ui/player-avatar';
+import { FlagIcon } from '@/components/ui/flag-icon';
 import {
   Search, Loader2, MapPin, Calendar, Users, Trophy, Building2, Globe,
-  ExternalLink, Shirt, Info, Newspaper, Heart, HeartOff, Database, Trash2,
+  ExternalLink, Shirt, Info, Newspaper, Heart, HeartOff, Database, Trash2, Plus,
 } from 'lucide-react';
 import { toast } from 'sonner';
 
@@ -300,6 +302,18 @@ export default function ClubProfile() {
     p.club && clubName && p.club.toLowerCase().includes(clubName.toLowerCase())
   );
 
+  // TheSportsDB squad (only when we have a team ID)
+  const { data: squadPlayers = [], isLoading: squadLoading } = useQuery<SquadPlayer[]>({
+    queryKey: ['club-squad', team?.idTeam],
+    queryFn: () => fetchClubSquad(team!.idTeam),
+    enabled: !!team?.idTeam,
+    staleTime: 10 * 60 * 1000,
+  });
+
+  // Map user players by normalized name for quick lookup
+  const userPlayerNames = new Set(players.map(p => p.name?.toLowerCase().trim()));
+  const squadNotInList = squadPlayers.filter(s => !userPlayerNames.has(s.strPlayer?.toLowerCase().trim()));
+
   const userClubs = [...new Set(players.map(p => p.club).filter(Boolean))].sort();
 
   return (
@@ -462,6 +476,15 @@ export default function ClubProfile() {
                       <Button variant="outline" size="sm"><ExternalLink className="w-4 h-4 mr-1" /> Transfermarkt</Button>
                     </a>
                   )}
+                  <a
+                    href={`https://www.google.com/search?q=${encodeURIComponent((team.strTeam || clubName) + ' football')}`}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                  >
+                    <Button variant="outline" size="sm">
+                      <Search className="w-4 h-4 mr-1" /> {t('club.see_more')}
+                    </Button>
+                  </a>
                   {isAdmin && (
                     <Button
                       variant="outline"
@@ -511,25 +534,95 @@ export default function ClubProfile() {
                 </Card>
               )}
 
+              {/* ── Vos joueurs ── */}
               {clubPlayers.length > 0 && (
                 <Card>
-                  <CardHeader><CardTitle className="flex items-center gap-2 text-base"><Users className="w-4 h-4 text-primary" />{t('club.your_players')} ({clubPlayers.length})</CardTitle></CardHeader>
-                  <CardContent>
-                    <div className="space-y-2">
-                      {clubPlayers.slice(0, 10).map(p => (
-                        <Link key={p.id} to={`/player/${p.id}`} className="flex items-center gap-3 p-2 rounded-lg hover:bg-muted transition-colors">
-                          <div className="w-8 h-8 rounded-full bg-muted flex items-center justify-center text-xs font-bold shrink-0">{p.name?.[0]}</div>
+                  <CardHeader className="pb-3">
+                    <CardTitle className="flex items-center gap-2 text-base">
+                      <Users className="w-4 h-4 text-primary" />
+                      {t('club.your_players')} ({clubPlayers.length})
+                    </CardTitle>
+                  </CardHeader>
+                  <CardContent className="pt-0">
+                    <div className="space-y-1.5">
+                      {clubPlayers.map(p => (
+                        <Link key={p.id} to={`/player/${p.id}`} className="flex items-center gap-3 p-2 rounded-xl hover:bg-muted/60 transition-colors group">
+                          <PlayerAvatar name={p.name} photoUrl={p.photo_url} size="sm" />
                           <div className="flex-1 min-w-0">
-                            <p className="text-sm font-medium truncate">{p.name}</p>
-                            <p className="text-[10px] text-muted-foreground">{p.position} · {translateCountry(p.nationality, i18n.language)}</p>
+                            <p className="text-sm font-semibold truncate group-hover:text-primary transition-colors">{p.name}</p>
+                            <div className="flex items-center gap-1.5 mt-0.5">
+                              <FlagIcon nationality={p.nationality} size="sm" />
+                              <p className="text-[11px] text-muted-foreground truncate">{p.position}{p.nationality ? ` · ${translateCountry(p.nationality, i18n.language)}` : ''}</p>
+                            </div>
                           </div>
-                          <Badge variant="outline" className="text-[10px] shrink-0">{p.current_level}/10</Badge>
+                          <Badge variant="outline" className="text-[10px] shrink-0 font-mono">{p.current_level}/10</Badge>
                         </Link>
                       ))}
-                      {clubPlayers.length > 10 && (
-                        <p className="text-xs text-muted-foreground text-center pt-2">+{clubPlayers.length - 10} {t('club.more_players')}</p>
-                      )}
                     </div>
+                  </CardContent>
+                </Card>
+              )}
+
+              {/* ── Effectif TheSportsDB ── */}
+              {(squadLoading || squadNotInList.length > 0) && (
+                <Card>
+                  <CardHeader className="pb-3">
+                    <CardTitle className="flex items-center gap-2 text-base">
+                      <Shirt className="w-4 h-4 text-primary" />
+                      {t('club.squad_external')}
+                      {squadNotInList.length > 0 && (
+                        <span className="ml-1 text-sm font-normal text-muted-foreground">({squadNotInList.length})</span>
+                      )}
+                    </CardTitle>
+                  </CardHeader>
+                  <CardContent className="pt-0">
+                    {squadLoading ? (
+                      <div className="flex items-center justify-center py-6 gap-2 text-muted-foreground text-sm">
+                        <Loader2 className="w-4 h-4 animate-spin" />
+                        {t('club.loading_squad')}
+                      </div>
+                    ) : squadNotInList.length === 0 ? (
+                      <p className="text-sm text-muted-foreground text-center py-4">{t('club.all_players_in_list')}</p>
+                    ) : (
+                      <div className="space-y-1.5">
+                        {squadNotInList.map(sp => (
+                          <div key={sp.idPlayer} className="flex items-center gap-3 p-2 rounded-xl hover:bg-muted/40 transition-colors">
+                            {/* Photo ou initiale */}
+                            {sp.strThumb || sp.strCutout ? (
+                              <img
+                                src={sp.strThumb || sp.strCutout || ''}
+                                alt={sp.strPlayer}
+                                className="w-8 h-8 rounded-full object-cover shrink-0 bg-muted"
+                                onError={e => { (e.target as HTMLImageElement).style.display = 'none'; }}
+                              />
+                            ) : (
+                              <div className="w-8 h-8 rounded-full bg-muted flex items-center justify-center text-xs font-bold shrink-0 text-muted-foreground">
+                                {sp.strPlayer?.[0] ?? '?'}
+                              </div>
+                            )}
+                            <div className="flex-1 min-w-0">
+                              <p className="text-sm font-medium truncate">{sp.strPlayer}</p>
+                              <div className="flex items-center gap-1.5 mt-0.5">
+                                {sp.strNationality && <FlagIcon nationality={sp.strNationality} size="sm" />}
+                                <p className="text-[11px] text-muted-foreground truncate">
+                                  {[sp.strPosition, sp.strNationality ? translateCountry(sp.strNationality, i18n.language) : null].filter(Boolean).join(' · ')}
+                                </p>
+                              </div>
+                            </div>
+                            {sp.strNumber && (
+                              <span className="text-[11px] text-muted-foreground font-mono shrink-0">#{sp.strNumber}</span>
+                            )}
+                            <Link
+                              to={`/players/add?name=${encodeURIComponent(sp.strPlayer)}&club=${encodeURIComponent(clubName)}&position=${encodeURIComponent(sp.strPosition || '')}&nationality=${encodeURIComponent(sp.strNationality || '')}`}
+                              className="shrink-0 p-1 rounded-lg text-muted-foreground hover:text-primary hover:bg-primary/10 transition-colors"
+                              title={t('club.add_to_list')}
+                            >
+                              <Plus className="w-3.5 h-3.5" />
+                            </Link>
+                          </div>
+                        ))}
+                      </div>
+                    )}
                   </CardContent>
                 </Card>
               )}
