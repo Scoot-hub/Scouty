@@ -66,8 +66,8 @@ export default function NotFound() {
 
       {/* Drifting ball shadow */}
       <div
-        className="absolute w-96 h-96 rounded-full bg-primary/5 blur-3xl pointer-events-none transition-all duration-[2000ms] ease-in-out"
-        style={{ left: `${ballPos.x}%`, top: `${ballPos.y}%`, transform: 'translate(-50%,-50%)' }}
+        className="absolute w-96 h-96 rounded-full bg-primary/5 blur-3xl pointer-events-none ease-in-out"
+        style={{ left: `${ballPos.x}%`, top: `${ballPos.y}%`, transform: 'translate(-50%,-50%)', transition: 'left 2000ms ease-in-out, top 2000ms ease-in-out' }}
       />
 
       <div className="relative z-10 text-center max-w-lg space-y-8">

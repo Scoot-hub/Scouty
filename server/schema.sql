@@ -154,6 +154,7 @@ CREATE TABLE IF NOT EXISTS players (
   wyscout_division VARCHAR(20) NULL,
   wyscout_team_in_timeframe VARCHAR(255) NULL,
   wyscout_stats JSON NULL,
+  social_instagram VARCHAR(255) NULL,
   created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   INDEX idx_players_user_name (user_id, name(191)),
@@ -694,4 +695,18 @@ CREATE TABLE IF NOT EXISTS app_settings (
   setting_key VARCHAR(100) NOT NULL PRIMARY KEY,
   setting_value VARCHAR(500) NOT NULL DEFAULT '1',
   updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS user_integrations (
+  id CHAR(36) PRIMARY KEY,
+  user_id CHAR(36) NOT NULL,
+  service VARCHAR(50) NOT NULL,
+  api_key TEXT NULL,
+  enabled TINYINT(1) NOT NULL DEFAULT 0,
+  last_tested_at DATETIME NULL,
+  test_status VARCHAR(20) NULL,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  UNIQUE KEY uniq_user_service (user_id, service),
+  FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
 );

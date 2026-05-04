@@ -83,6 +83,37 @@ function FloatingOrbs() {
   );
 }
 
+// ── Static count card (for fixed numbers like 2024, 2 founders…) ─────────
+
+function StaticCountCard({ value, labelKey }: { value: string; labelKey: string }) {
+  const { t } = useTranslation();
+  const ref = useRef<HTMLDivElement>(null);
+  const [vis, setVis] = useState(false);
+  const n = parseInt(value) || 0;
+  const animated = useCountUp(n, 1600, vis);
+  useEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    const obs = new IntersectionObserver(([e]) => {
+      if (e.isIntersecting) { setVis(true); el.classList.add('in-view'); obs.disconnect(); }
+    }, { threshold: 0.3 });
+    obs.observe(el);
+    return () => obs.disconnect();
+  }, []);
+  return (
+    <div ref={ref} className="reveal-scale">
+      <Card className="text-center hover:border-primary/30 transition-all hover:shadow-lg hover:-translate-y-1 group">
+        <CardContent className="p-5">
+          <p className="text-3xl font-black text-primary tabular-nums group-hover:scale-110 inline-block transition-transform duration-300">
+            {vis ? (n > 0 ? animated : value) : '—'}
+          </p>
+          <p className="text-xs text-muted-foreground mt-1">{t(labelKey)}</p>
+        </CardContent>
+      </Card>
+    </div>
+  );
+}
+
 // ── Dynamic stat card (animated counter) ─────────────────────────────────
 
 function StatCard({ icon: Icon, value, labelKey, descKey, color, bg }: {
@@ -97,7 +128,7 @@ function StatCard({ icon: Icon, value, labelKey, descKey, color, bg }: {
   useEffect(() => {
     const el = ref.current;
     if (!el) return;
-    const obs = new IntersectionObserver(([e]) => { if (e.isIntersecting) { setVisible(true); obs.disconnect(); } }, { threshold: 0.3 });
+    const obs = new IntersectionObserver(([e]) => { if (e.isIntersecting) { setVisible(true); el.classList.add('in-view'); obs.disconnect(); } }, { threshold: 0.3 });
     obs.observe(el);
     return () => obs.disconnect();
   }, []);
@@ -130,7 +161,7 @@ function LiveNumber({ value, label, suffix = '' }: { value: number; label: strin
   useEffect(() => {
     const el = ref.current;
     if (!el) return;
-    const obs = new IntersectionObserver(([e]) => { if (e.isIntersecting) { setVisible(true); obs.disconnect(); } }, { threshold: 0.4 });
+    const obs = new IntersectionObserver(([e]) => { if (e.isIntersecting) { setVisible(true); el.classList.add('in-view'); obs.disconnect(); } }, { threshold: 0.4 });
     obs.observe(el);
     return () => obs.disconnect();
   }, []);
@@ -475,31 +506,9 @@ export default function About() {
                   { value: '2', labelKey: 'about.num_founders' },
                   { value: '21', labelKey: 'about.num_pages' },
                   { value: '5', labelKey: 'about.num_continents' },
-                ].map(({ value, labelKey }) => {
-                  const ref = useRef<HTMLDivElement>(null);
-                  const [vis, setVis] = useState(false);
-                  const n = parseInt(value) || 0;
-                  const animated = useCountUp(n, 1600, vis);
-                  useEffect(() => {
-                    const el = ref.current;
-                    if (!el) return;
-                    const obs = new IntersectionObserver(([e]) => { if (e.isIntersecting) { setVis(true); obs.disconnect(); } }, { threshold: 0.3 });
-                    obs.observe(el);
-                    return () => obs.disconnect();
-                  }, []);
-                  return (
-                    <div ref={ref} key={labelKey} className="reveal-scale">
-                      <Card className="text-center hover:border-primary/30 transition-all hover:shadow-lg hover:-translate-y-1 group">
-                        <CardContent className="p-5">
-                          <p className="text-3xl font-black text-primary tabular-nums group-hover:scale-110 inline-block transition-transform duration-300">
-                            {vis ? (n > 0 ? animated : value) : '—'}
-                          </p>
-                          <p className="text-xs text-muted-foreground mt-1">{t(labelKey)}</p>
-                        </CardContent>
-                      </Card>
-                    </div>
-                  );
-                })}
+                ].map(({ value, labelKey }) => (
+                  <StaticCountCard key={labelKey} value={value} labelKey={labelKey} />
+                ))}
               </div>
             </RevealSection>
           </div>
@@ -584,7 +593,7 @@ export default function About() {
               {/* Scout-card style values grid */}
               <div className="grid sm:grid-cols-2 lg:grid-cols-4 gap-4">
                 {values.map((v, i) => (
-                  <TiltCard key={v.titleKey} className={`reveal-scale reveal-delay-${i + 1}`}>
+                  <TiltCard key={v.titleKey} className="h-full">
                     <div className="rounded-2xl overflow-hidden border border-border/50 hover:border-primary/30 transition-all hover:shadow-2xl group cursor-default h-full flex flex-col">
                       {/* Top — colored art zone */}
                       <div className={`relative bg-gradient-to-br ${v.gradient} p-6 flex flex-col items-center justify-center min-h-[140px]`}>
@@ -721,7 +730,7 @@ export default function About() {
                     const initials = displayName.split(' ').map(w => w[0]).join('').slice(0, 2).toUpperCase();
                     const card = (
                       <TiltCard key={u.user_id}>
-                        <Card className={`hover:border-primary/30 hover:shadow-lg transition-all group cursor-pointer reveal-scale reveal-delay-${i + 1}`}>
+                        <Card className={`hover:border-primary/30 hover:shadow-lg transition-all group cursor-pointer`}>
                           <CardContent className="p-4 flex flex-col items-center text-center space-y-2">
                             {u.photo_url ? (
                               <img src={u.photo_url} alt={displayName} className="w-14 h-14 rounded-full object-cover ring-2 ring-border group-hover:ring-primary/50 group-hover:scale-105 transition-all" />
@@ -747,7 +756,7 @@ export default function About() {
                 /* Placeholder quand pas encore d'utilisateurs publics */
                 <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
                   {[...Array(4)].map((_, i) => (
-                    <Card key={i} className={`reveal-scale reveal-delay-${i + 1}`}>
+                    <Card key={i}>
                       <CardContent className="p-4 flex flex-col items-center text-center space-y-2">
                         <div className="w-14 h-14 rounded-full bg-gradient-to-br from-primary/10 to-accent/10 flex items-center justify-center text-primary/30">
                           <User className="w-6 h-6" />

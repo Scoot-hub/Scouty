@@ -16,6 +16,7 @@ import { createDbPoolConfig } from "./db-config.js";
 import { CLUB_NAME_MAP } from "./club-aliases.js";
 const require = createRequire(import.meta.url);
 import { v4 as uuidv4 } from "uuid";
+import * as XLSXLib from "xlsx";
 let cron = null;
 try {
   cron = (await import("node-cron")).default;
@@ -321,7 +322,8 @@ app.post("/api/stripe/webhook", express.raw({ type: "application/json" }), async
   }
 });
 
-app.use(express.json({ limit: "50mb" }));
+app.use(express.json({ limit: "250mb" }));
+app.use(express.urlencoded({ limit: "250mb", extended: true }));
 app.use("/uploads", express.static(UPLOAD_DIR));
 
 const upload = multer({
@@ -436,6 +438,7 @@ const ALLOWED_TABLES = {
     "id", "name", "photo_url", "generation", "nationality", "foot", "club", "league", "zone", "position", "position_secondaire", "role",
     "current_level", "potential", "general_opinion", "contract_end", "notes", "ts_report_published", "date_of_birth", "market_value",
     "transfermarkt_id", "external_data", "external_data_fetched_at", "shared_with_org", "has_news", "task", "is_archived", "user_id", "created_at", "updated_at",
+    "social_instagram",
   ],
   reports: ["id", "player_id", "report_date", "title", "opinion", "drive_link", "file_url", "user_id", "created_at"],
   custom_fields: ["id", "user_id", "field_name", "field_type", "field_options", "display_order", "created_at"],
@@ -898,6 +901,7 @@ async function _legacyRunMigrations() {
     "wyscout_division VARCHAR(20) NULL",
     "wyscout_team_in_timeframe VARCHAR(255) NULL",
     "wyscout_stats JSON NULL",
+    "social_instagram VARCHAR(255) NULL",
   ]) {
     try { await pool.query(`ALTER TABLE players ADD COLUMN ${col}`); } catch { /* already exists */ }
   }
@@ -2529,6 +2533,22 @@ app.delete("/api/player-research/:id", authMiddleware, async (req, res) => {
     return res.json({ ok: true });
   } catch (err) {
     console.error("[player-research] DELETE error:", err);
+    return res.status(500).json({ error: "Erreur serveur" });
+  }
+});
+
+// ── Player Wyscout stats ──────────────────────────────────────────────────
+app.get("/api/player-wyscout-stats/:playerId", authMiddleware, async (req, res) => {
+  try {
+    const [rows] = await pool.query(
+      `SELECT * FROM player_wyscout_stats
+       WHERE player_id = ? AND user_id = ?
+       ORDER BY year_end DESC, year_start DESC, season DESC`,
+      [req.params.playerId, req.user.id]
+    );
+    return res.json(rows);
+  } catch (err) {
+    console.error("[player-wyscout-stats] GET error:", err);
     return res.status(500).json({ error: "Erreur serveur" });
   }
 });
@@ -4649,142 +4669,272 @@ const WYSCOUT_STATS_MAP = [
 ];
 
 // ── POST /api/import/wyscout ────────────────────────────────────────────────
-app.post("/api/import/wyscout", authMiddleware, async (req, res) => {
+// Accepts multipart file upload (xlsx/xls/csv) to avoid JSON payload size limits
+const wyscoutUpload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 25 * 1024 * 1024 }, // 25 MB file limit
+  fileFilter: (_req, file, cb) => {
+    if (/\.(xlsx|xls|csv)$/i.test(file.originalname)) cb(null, true);
+    else cb(new Error('Format de fichier non supporté. Utilisez .xlsx, .xls ou .csv'));
+  },
+});
+
+// Multer error handler — converts multer errors to JSON so the client can display them
+function wyscoutUploadMiddleware(req, res, next) {
+  wyscoutUpload.single('file')(req, res, (err) => {
+    if (!err) return next();
+    const msg = err.code === 'LIMIT_FILE_SIZE'
+      ? `Fichier trop volumineux (limite : 25 Mo). Découpez le fichier en plusieurs parties.`
+      : err.message || 'Erreur lors de la réception du fichier.';
+    return res.status(400).json({ error: msg });
+  });
+}
+
+app.post("/api/import/wyscout", authMiddleware, wyscoutUploadMiddleware, async (req, res) => {
+  const t0 = Date.now();
+  const log = (msg) => console.log(`[import/wyscout ${Date.now()-t0}ms] ${msg}`);
+
+  try {
+  // ── Auth check ──────────────────────────────────────────────────────────────
+  log('auth check');
   const [roleRows] = await pool.query("SELECT role FROM user_roles WHERE user_id = ?", [req.user.id]);
   const roles = roleRows.map(r => r.role);
   if (!roles.includes('admin') && !roles.includes('importateur'))
     return res.status(403).json({ error: "Accès refusé. Rôle importateur requis." });
 
-  const { rows } = req.body || {};
-  if (!Array.isArray(rows) || rows.length === 0)
-    return res.status(400).json({ error: "Aucune donnée à importer." });
-  if (rows.length > 5000)
-    return res.status(400).json({ error: "Maximum 5000 joueurs par import." });
+  if (!req.file)
+    return res.status(400).json({ error: "Fichier requis (xlsx, xls ou csv)." });
 
-  const { v4: uuidv4 } = await import('uuid');
+  log(`file received: ${req.file.originalname} (${(req.file.size/1024/1024).toFixed(1)} Mo)`);
+
+  // ── Parse Excel ──────────────────────────────────────────────────────────────
+  let rows;
+  try {
+    const wb = XLSXLib.read(req.file.buffer, { type: 'buffer' });
+    const ws = wb.Sheets[wb.SheetNames[0]];
+    rows = XLSXLib.utils.sheet_to_json(ws, { defval: '' });
+  } catch (e) {
+    log(`XLSX parse error: ${e.message}`);
+    return res.status(400).json({ error: "Impossible de lire le fichier Excel : " + e.message });
+  }
+
+  if (!Array.isArray(rows) || rows.length === 0)
+    return res.status(400).json({ error: "Le fichier est vide." });
+  if (rows.length > 50000)
+    return res.status(400).json({ error: `Fichier trop volumineux : ${rows.length} joueurs. Maximum 50 000 par import.` });
+
+  log(`parsed ${rows.length} rows, ${Object.keys(rows[0]||{}).length} columns`);
+
   const userId = req.user.id;
-  let created = 0, updated = 0;
+  const now = new Date().toISOString().slice(0, 19).replace('T', ' ');
   const errors = [];
+
+  log('step 1: loading existing players');
+  // ── STEP 1 — Load all existing players in ONE query (avoids N+2 queries per row) ──
+  const [existingPlayers] = await pool.query(
+    'SELECT id, name, club FROM players WHERE user_id = ?',
+    [userId]
+  );
+  // Build lookup maps: name+club → id  (and name-only fallback)
+  const byNameClub = new Map();
+  const byName     = new Map();
+  for (const p of existingPlayers) {
+    const nm = (p.name || '').toLowerCase().trim();
+    const cl = (p.club  || '').toLowerCase().trim();
+    byNameClub.set(`${nm}\0${cl}`, p.id);
+    if (!byName.has(nm)) byName.set(nm, p.id);
+  }
+
+  log(`step 1 done: ${existingPlayers.length} existing players loaded`);
+  log('step 2: building memory records');
+  // ── STEP 2 — Parse all rows into memory records (no DB calls here) ────────
+  const playerRecs = []; // bio fields
+  const statsRecs  = []; // stat fields
 
   for (const row of rows) {
     const playerName = String(row['Player'] || '').trim();
     if (!playerName) continue;
 
+    const club           = String(row['Team'] || '').trim();
+    const teamInTF       = String(row['Team within selected timeframe'] || '').trim() || null;
+    const rawPos         = String(row['Position'] || '').trim().toUpperCase();
+    const posMap         = WYSCOUT_POS_MAP[rawPos] || { position: 'MC', zone: 'Milieu' };
+    // Use '' instead of null for season/division so UNIQUE KEY (player_id, season, division) deduplicates correctly
+    const season         = String(row['season'] || '').trim();
+    const division       = String(row['division'] || '').trim();
+    const continent      = String(row['continent'] || '').trim() || null;
+    const country        = String(row['country'] || '').trim() || null;
+    const countryRaw     = String(row['country_raw'] || '').trim() || null;
+    const yearStart      = parseInt(row['year_start']) || null;
+    const yearEnd        = parseInt(row['year_end']) || null;
+    const srcFilename    = String(row['filename'] || '').trim() || null;
+    const srcFilePath    = String(row['source_file'] || '').trim() || null;
+    const height         = parseInt(row['Height']) || null;
+    const weight         = parseInt(row['Weight']) || null;
+    const onLoan         = String(row['On loan'] || '').toLowerCase() === 'yes' ? 1 : 0;
+    const passportCountry = String(row['Passport country'] || '').trim() || null;
+    const marketValue    = mapWyscoutMarketValue(row['Market value']);
+    const contractEnd    = mapWyscoutContractDate(row['Contract expires']);
+    const foot           = mapWyscoutFoot(row['Foot']);
+    const nationality    = String(row['Birth country'] || '').trim() || 'France';
+    const age            = parseInt(row['Age']) || null;
+    const generation     = age && yearStart ? (yearStart - age) : 2000;
+    const matchesPlayed  = parseInt(row['Matches played']) || null;
+    const minutesPlayed  = parseInt(row['Minutes played']) || null;
+
+    // Resolve player ID from the in-memory map (no DB round-trip)
+    const nm = playerName.toLowerCase().trim();
+    const cl = club.toLowerCase().trim();
+    let playerId = byNameClub.get(`${nm}\0${cl}`) || byName.get(nm) || null;
+    const isNew = !playerId;
+    if (isNew) {
+      playerId = uuidv4();
+      byNameClub.set(`${nm}\0${cl}`, playerId); // register for subsequent rows of same player
+      byName.set(nm, playerId);
+    }
+
+    playerRecs.push({
+      id: playerId, isNew, name: playerName, club, division: division || '',
+      position: posMap.position, zone: posMap.zone, nationality, foot, generation,
+      marketValue, contractEnd, height, weight, onLoan, matchesPlayed, minutesPlayed,
+      passportCountry, season, wyscoutDivision: division, teamInTF,
+    });
+
+    // Build stats values array in same order as WYSCOUT_STATS_MAP
+    const statVals = WYSCOUT_STATS_MAP.map(({ e }) => wyscoutNum(row[e]));
+    statsRecs.push({
+      id: uuidv4(), playerId, userId, season, division, club,
+      continent, country, countryRaw, yearStart, yearEnd, srcFilename, srcFilePath,
+      statVals,
+    });
+  }
+
+  log(`step 2 done: ${playerRecs.length} player records, ${statsRecs.length} stats records`);
+  log('step 3: batch upsert players');
+  // ── STEP 3 — Batch upsert players (INSERT … ON DUPLICATE KEY UPDATE on PK id) ──
+  // 500 rows per chunk → ~64 queries for 31k rows instead of 126k individual queries
+  const PLAYER_CHUNK = 500;
+  const playerCols = [
+    'id', 'user_id', 'name', 'club', 'league', 'position', 'zone',
+    'nationality', 'foot', 'generation', 'market_value', 'contract_end',
+    'height', 'weight', 'on_loan', 'matches_played', 'minutes_played',
+    'passport_country', 'wyscout_season', 'wyscout_division', 'wyscout_team_in_timeframe',
+    'current_level', 'potential', 'general_opinion', 'ts_report_published',
+    'created_at', 'updated_at',
+  ];
+  const playerUpdateCols = [
+    'club', 'position', 'zone', 'nationality', 'foot', 'generation',
+    'market_value', 'contract_end', 'height', 'weight', 'on_loan',
+    'matches_played', 'minutes_played', 'passport_country',
+    'wyscout_season', 'wyscout_division', 'wyscout_team_in_timeframe', 'updated_at',
+  ];
+
+  let created = 0, updated = 0;
+  for (let i = 0; i < playerRecs.length; i += PLAYER_CHUNK) {
+    const chunk = playerRecs.slice(i, i + PLAYER_CHUNK);
+    if (!chunk.length) continue;
+
+    const rowPlaceholders = chunk.map(() => `(${playerCols.map(() => '?').join(',')})`).join(',');
+    const updateClause = playerUpdateCols.map(c => `${c} = VALUES(${c})`).join(', ');
+
+    const vals = [];
+    for (const r of chunk) {
+      vals.push(
+        r.id, userId, r.name, r.club, r.division,
+        r.position, r.zone, r.nationality, r.foot, r.generation,
+        r.marketValue, r.contractEnd, r.height, r.weight, r.onLoan,
+        r.matchesPlayed, r.minutesPlayed, r.passportCountry,
+        r.season, r.wyscoutDivision, r.teamInTF,
+        5.0, 5.0, 'À revoir', 0,
+        now, now,
+      );
+    }
+
     try {
-      const club        = String(row['Team'] || '').trim();
-      const teamInTF    = String(row['Team within selected timeframe'] || '').trim() || null;
-      const rawPos      = String(row['Position'] || '').trim().toUpperCase();
-      const posMap      = WYSCOUT_POS_MAP[rawPos] || { position: 'MC', zone: 'Milieu' };
-      const season      = String(row['season'] || '').trim() || null;
-      const division    = String(row['division'] || '').trim() || null;
-      const continent   = String(row['continent'] || '').trim() || null;
-      const country     = String(row['country'] || '').trim() || null;
-      const countryRaw  = String(row['country_raw'] || '').trim() || null;
-      const yearStart   = parseInt(row['year_start']) || null;
-      const yearEnd     = parseInt(row['year_end']) || null;
-      const srcFilename = String(row['filename'] || '').trim() || null;
-      const srcFilePath = String(row['source_file'] || '').trim() || null;
-
-      const height         = parseInt(row['Height']) || null;
-      const weight         = parseInt(row['Weight']) || null;
-      const onLoan         = String(row['On loan'] || '').toLowerCase() === 'yes' ? 1 : 0;
-      const passportCountry = String(row['Passport country'] || '').trim() || null;
-      const marketValue    = mapWyscoutMarketValue(row['Market value']);
-      const contractEnd    = mapWyscoutContractDate(row['Contract expires']);
-      const foot           = mapWyscoutFoot(row['Foot']);
-      const nationality    = String(row['Birth country'] || '').trim() || 'France';
-      const age            = parseInt(row['Age']) || null;
-      const generation     = age && yearStart ? (yearStart - age) : 2000;
-      const matchesPlayed  = parseInt(row['Matches played']) || null;
-      const minutesPlayed  = parseInt(row['Minutes played']) || null;
-
-      // ── 1. Upsert player (bio) ──────────────────────────────────────────
-      const [existByClub] = await pool.query(
-        `SELECT id FROM players WHERE user_id = ? AND LOWER(TRIM(name)) = LOWER(?) AND LOWER(TRIM(club)) = LOWER(?) LIMIT 1`,
-        [userId, playerName, club]
+      const [result] = await pool.query(
+        `INSERT INTO players (${playerCols.join(',')}) VALUES ${rowPlaceholders}
+         ON DUPLICATE KEY UPDATE ${updateClause}`,
+        vals
       );
-      let playerId = existByClub[0]?.id || null;
-      if (!playerId) {
-        const [existByName] = await pool.query(
-          `SELECT id FROM players WHERE user_id = ? AND LOWER(TRIM(name)) = LOWER(?) LIMIT 1`,
-          [userId, playerName]
-        );
-        playerId = existByName[0]?.id || null;
-      }
-
-      if (playerId) {
-        await pool.query(
-          `UPDATE players SET
-            club = ?, position = ?, nationality = ?, foot = ?,
-            market_value = COALESCE(?, market_value),
-            contract_end = COALESCE(?, contract_end),
-            height = ?, weight = ?, on_loan = ?,
-            matches_played = ?, minutes_played = ?,
-            passport_country = ?, wyscout_season = ?, wyscout_division = ?,
-            wyscout_team_in_timeframe = ?, updated_at = NOW()
-           WHERE id = ? AND user_id = ?`,
-          [club, posMap.position, nationality, foot,
-           marketValue, contractEnd, height, weight, onLoan,
-           matchesPlayed, minutesPlayed, passportCountry,
-           season, division, teamInTF, playerId, userId]
-        );
-        updated++;
-      } else {
-        playerId = uuidv4();
-        await pool.query(
-          `INSERT INTO players (id, user_id, name, club, league, position, zone,
-            nationality, foot, generation, market_value, contract_end,
-            height, weight, on_loan, matches_played, minutes_played,
-            passport_country, wyscout_season, wyscout_division, wyscout_team_in_timeframe,
-            current_level, potential, general_opinion, ts_report_published, created_at, updated_at)
-           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,5.0,5.0,'À revoir',0,NOW(),NOW())`,
-          [playerId, userId, playerName, club, division || '',
-           posMap.position, posMap.zone, nationality, foot,
-           generation, marketValue, contractEnd,
-           height, weight, onLoan, matchesPlayed, minutesPlayed,
-           passportCountry, season, division, teamInTF]
-        );
-        created++;
-      }
-
-      // ── 2. Upsert stats in player_wyscout_stats ─────────────────────────
-      // Build column list + values dynamically from WYSCOUT_STATS_MAP
-      const statCols = [];
-      const statVals = [];
-      for (const { e, db } of WYSCOUT_STATS_MAP) {
-        const v = wyscoutNum(row[e]);
-        statCols.push(db);
-        statVals.push(v);
-      }
-
-      const statId = uuidv4();
-      const colList = ['id', 'player_id', 'user_id', 'season', 'division', 'team',
-        'continent', 'country', 'country_raw', 'year_start', 'year_end',
-        'source_filename', 'source_file_path', ...statCols].join(', ');
-      const placeholders = Array(13 + statCols.length).fill('?').join(', ');
-      const allVals = [statId, playerId, userId, season || '', division,
-        club, continent, country, countryRaw, yearStart, yearEnd,
-        srcFilename, srcFilePath, ...statVals];
-
-      // ON DUPLICATE KEY UPDATE all stat columns
-      const updateSet = statCols.map(c => `${c} = VALUES(${c})`).join(', ')
-        + `, team = VALUES(team), continent = VALUES(continent), country = VALUES(country),`
-        + ` year_start = VALUES(year_start), year_end = VALUES(year_end),`
-        + ` source_filename = VALUES(source_filename), source_file_path = VALUES(source_file_path),`
-        + ` updated_at = NOW()`;
-
-      await pool.query(
-        `INSERT INTO player_wyscout_stats (${colList}) VALUES (${placeholders})
-         ON DUPLICATE KEY UPDATE ${updateSet}`,
-        allVals
-      );
-
+      // affectedRows = 1 for insert, 2 for update, 0 for no-op
+      created  += chunk.filter(r => r.isNew).length;
+      updated  += chunk.filter(r => !r.isNew).length;
     } catch (err) {
-      errors.push({ name: playerName, error: err?.message || 'Erreur inconnue' });
+      // On batch error, record the whole chunk as failed
+      for (const r of chunk) errors.push({ name: r.name, error: err?.message });
     }
   }
 
-  return res.json({ created, updated, errors, total: rows.length });
+  log(`step 3 done: ${created} created, ${updated} updated, ${errors.filter(e=>!e.error.startsWith('stats:')).length} bio errors`);
+  log('step 4: batch upsert stats');
+  // ── STEP 4 — Batch upsert stats (smaller chunks due to ~113 columns per row) ──
+  // 150 rows per chunk → ~211 queries for 31k rows
+  const STATS_CHUNK = 150;
+  const statFixedCols = [
+    'id', 'player_id', 'user_id', 'season', 'division', 'team',
+    'continent', 'country', 'country_raw', 'year_start', 'year_end',
+    'source_filename', 'source_file_path',
+  ];
+  const statDynCols = WYSCOUT_STATS_MAP.map(({ db }) => db);
+  const allStatCols = [...statFixedCols, ...statDynCols];
+  const statUpdateClause = [
+    ...statDynCols.map(c => `${c} = VALUES(${c})`),
+    'team = VALUES(team)', 'continent = VALUES(continent)',
+    'country = VALUES(country)', 'year_start = VALUES(year_start)',
+    'year_end = VALUES(year_end)', 'source_filename = VALUES(source_filename)',
+    'source_file_path = VALUES(source_file_path)', 'updated_at = NOW()',
+  ].join(', ');
+
+  for (let i = 0; i < statsRecs.length; i += STATS_CHUNK) {
+    const chunk = statsRecs.slice(i, i + STATS_CHUNK);
+    if (!chunk.length) continue;
+
+    const rowPlaceholders = chunk.map(() => `(${allStatCols.map(() => '?').join(',')})`).join(',');
+    const vals = [];
+    for (const s of chunk) {
+      vals.push(
+        s.id, s.playerId, s.userId,
+        s.season, s.division, s.club,
+        s.continent, s.country, s.countryRaw,
+        s.yearStart, s.yearEnd,
+        s.srcFilename, s.srcFilePath,
+        ...s.statVals,
+      );
+    }
+
+    try {
+      await pool.query(
+        `INSERT INTO player_wyscout_stats (${allStatCols.join(',')}) VALUES ${rowPlaceholders}
+         ON DUPLICATE KEY UPDATE ${statUpdateClause}`,
+        vals
+      );
+    } catch (err) {
+      // Stats errors are non-blocking (bio was already saved)
+      for (const s of chunk) errors.push({ name: s.playerId, error: 'stats: ' + err?.message });
+    }
+  }
+
+  const durationMs = Date.now() - t0;
+  log(`step 4 done — total ${durationMs}ms. created=${created} updated=${updated} errors=${errors.length}`);
+
+  const bioErrors  = errors.filter(e => !e.error?.startsWith('stats:'));
+  const statErrors = errors.filter(e =>  e.error?.startsWith('stats:'));
+  return res.json({
+    created, updated, total: rows.length,
+    errors: bioErrors,          // per-row bio errors shown to user
+    statErrors: statErrors.length, // count only, stats errors are secondary
+    durationMs,
+  });
+
+  } catch (fatalErr) {
+    const durationMs = Date.now() - t0;
+    console.error(`[import/wyscout] FATAL after ${durationMs}ms:`, fatalErr?.message || fatalErr);
+    if (!res.headersSent)
+      return res.status(500).json({
+        error: `Erreur serveur lors de l'import (${durationMs}ms) : ${fatalErr?.message || 'Erreur inconnue'}`,
+        hint: 'Consultez les logs du serveur pour plus de détails (npm run api).',
+      });
+  }
 });
 
 async function ensureAdmin(req, res, next) {
@@ -6339,6 +6489,84 @@ app.get("/api/club-tm-search", async (req, res) => {
     return res.json(profile);
   } catch (err) {
     console.error("[club-tm-search] Error:", err.message);
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+// ── Transfermarkt former players + honours ──────────────────────────────────
+app.get("/api/club-tm-history/:clubId", async (req, res) => {
+  const { clubId } = req.params;
+  if (!clubId || !/^\d+$/.test(clubId)) return res.status(400).json({ error: "Invalid club ID" });
+
+  const cacheKey = `club_history_${clubId}`;
+  try {
+    const [cached] = await pool.query(
+      "SELECT response_data FROM api_football_cache WHERE cache_key = ? AND created_at > DATE_SUB(NOW(), INTERVAL 24 HOUR) LIMIT 1",
+      [cacheKey]
+    );
+    if (cached.length > 0) return res.json(JSON.parse(cached[0].response_data));
+  } catch {}
+
+  try {
+    // Scrape former players page
+    const formerUrl = `https://www.transfermarkt.fr/a/alteAkte/verein/${clubId}/sort/stintende/plus/1`;
+    const formerResp = await fetch(formerUrl, { headers: TM_HEADERS, signal: AbortSignal.timeout(15000) });
+    const formerHtml = formerResp.ok ? await formerResp.text() : '';
+
+    const formerPlayers = [];
+    if (formerHtml) {
+      // Match table rows with player data
+      const rowRx = /<tr[^>]*class="(?:odd|even)[^"]*"[^>]*>([\s\S]*?)<\/tr>/g;
+      let rm;
+      while ((rm = rowRx.exec(formerHtml)) !== null && formerPlayers.length < 30) {
+        const row = rm[1];
+        const nameM = row.match(/class="(?:hauptlink|zentriert hauptlink)[^"]*"[^>]*>[\s\S]*?<a[^>]+>([^<]{2,60})<\/a>/);
+        if (!nameM) continue;
+        const name = nameM[1].trim();
+        if (!name || name.length < 2 || /[<>]/.test(name)) continue;
+        const natM = row.match(/class="flaggenrahmen[^"]*"[^>]*title="([^"]{2,50})"/);
+        const posM = row.match(/<td[^>]*title="([^"]{2,30})"[^>]*>[\s\S]*?<\/td>/);
+        const years = [...row.matchAll(/>(\d{4})<\//g)].map(m => m[1]);
+        formerPlayers.push({
+          name,
+          nationality: natM ? natM[1] : null,
+          position: posM ? posM[1] : null,
+          from: years[0] || null,
+          to: years[1] || null,
+        });
+      }
+    }
+
+    // Scrape honours/trophies page
+    const honoursUrl = `https://www.transfermarkt.fr/a/erfolge/verein/${clubId}`;
+    const honoursResp = await fetch(honoursUrl, { headers: TM_HEADERS, signal: AbortSignal.timeout(15000) });
+    const honoursHtml = honoursResp.ok ? await honoursResp.text() : '';
+
+    const honours = [];
+    if (honoursHtml) {
+      // TM honours page has: <div class="row" ...><div class="col-sm-4">TROPHY NAME</div><div class="col-sm-8">COUNT × (YEAR, YEAR...)</div>
+      const blockRx = /<div[^>]*class="[^"]*erfolg_bereich[^"]*"[^>]*>([\s\S]*?)<\/div>\s*<\/div>/g;
+      // Fallback: look for achievement rows
+      const rowRx2 = /<td[^>]*class="[^"]*hauptlink[^"]*"[^>]*>([\s\S]*?)<\/td>[\s\S]*?<td[^>]*>([\s\S]*?)<\/td>/g;
+      let hm;
+      while ((hm = rowRx2.exec(honoursHtml)) !== null && honours.length < 30) {
+        const trophyRaw = hm[1].replace(/<[^>]+>/g, '').trim();
+        const countRaw = hm[2].replace(/<[^>]+>/g, '').trim();
+        if (!trophyRaw || trophyRaw.length < 2) continue;
+        const count = parseInt(countRaw) || 1;
+        honours.push({ trophy: trophyRaw, count });
+      }
+    }
+
+    const result = { formerPlayers, honours };
+    await pool.query(
+      "INSERT INTO api_football_cache (cache_key, response_data, created_at) VALUES (?, ?, NOW()) ON DUPLICATE KEY UPDATE response_data = VALUES(response_data), created_at = NOW()",
+      [cacheKey, JSON.stringify(result)]
+    ).catch(() => {});
+
+    return res.json(result);
+  } catch (err) {
+    console.error("[club-tm-history] Error:", err.message);
     return res.status(500).json({ error: err.message });
   }
 });
@@ -11057,6 +11285,746 @@ async function _legacyEnsureFixtureTables() {
   }
 })();
 
+// ══════════════════════════════════════════════════════════════════════════════
+// ── Club staff cache (coach from Sofascore + president from Wikidata) ─────────
+// ══════════════════════════════════════════════════════════════════════════════
+
+pool.query(`CREATE TABLE IF NOT EXISTS club_staff_cache (
+  id CHAR(36) PRIMARY KEY,
+  club_name VARCHAR(255) NOT NULL,
+  sofascore_team_id INT NULL,
+  sofascore_team_slug VARCHAR(255) NULL,
+  coach_id INT NULL,
+  coach_name VARCHAR(255) NULL,
+  coach_slug VARCHAR(255) NULL,
+  coach_photo_url TEXT NULL,
+  coach_nationality VARCHAR(100) NULL,
+  coach_date_born DATE NULL,
+  coach_sofascore_url TEXT NULL,
+  president_name VARCHAR(255) NULL,
+  president_photo_url TEXT NULL,
+  president_wikidata_id VARCHAR(50) NULL,
+  fetched_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  UNIQUE KEY uniq_club_staff_name (club_name(191)),
+  INDEX idx_club_staff_fetched (fetched_at)
+)`).catch(err => { if (!err?.message?.includes('already exists')) console.warn('[warn] club_staff_cache:', err?.message); });
+
+async function fetchClubStaff(clubName) {
+  const CACHE_TTL_DAYS = 7;
+  const [cached] = await pool.query(
+    `SELECT * FROM club_staff_cache WHERE club_name = ? AND fetched_at > DATE_SUB(NOW(), INTERVAL ? DAY)`,
+    [clubName, CACHE_TTL_DAYS]
+  );
+  if (cached[0]) return cached[0];
+
+  const result = {
+    club_name: clubName,
+    sofascore_team_id: null, sofascore_team_slug: null,
+    coach_id: null, coach_name: null, coach_slug: null,
+    coach_photo_url: null, coach_nationality: null, coach_date_born: null, coach_sofascore_url: null,
+    president_name: null, president_photo_url: null, president_wikidata_id: null,
+  };
+
+  try {
+    const searchData = await sofaFetch(`/search/all?q=${encodeURIComponent(clubName)}&page=0`);
+    const teams = (searchData?.results ?? []).filter(r => r.type === 'team');
+    const nameLower = clubName.toLowerCase();
+    const best = teams.find(t => t.entity?.name?.toLowerCase() === nameLower)
+      ?? teams.find(t => t.entity?.name?.toLowerCase().includes(nameLower.split(' ')[0]))
+      ?? teams[0];
+
+    if (best?.entity?.id) {
+      result.sofascore_team_id = best.entity.id;
+      result.sofascore_team_slug = best.entity.slug ?? null;
+      const teamData = await sofaFetch(`/team/${best.entity.id}`);
+      const manager = teamData?.team?.manager;
+      if (manager?.id) {
+        result.coach_id = manager.id;
+        result.coach_name = manager.name ?? null;
+        result.coach_slug = manager.slug ?? null;
+        result.coach_sofascore_url = `https://www.sofascore.com/fr/football/manager/${manager.slug}/${manager.id}`;
+        result.coach_nationality = manager.nationality?.name ?? manager.country?.name ?? null;
+        result.coach_photo_url = `/api/club-staff/coach-photo/${manager.id}`;
+        const mgrData = await sofaFetch(`/manager/${manager.id}`);
+        if (mgrData?.manager?.dateOfBirthTimestamp) {
+          result.coach_date_born = new Date(mgrData.manager.dateOfBirthTimestamp * 1000).toISOString().slice(0, 10);
+        }
+      }
+    }
+  } catch (e) { console.warn('[club-staff] Sofascore error:', e.message); }
+
+  try {
+    const wdSearch = await fetch(
+      `https://www.wikidata.org/w/api.php?action=wbsearchentities&search=${encodeURIComponent(clubName)}&language=fr&type=item&format=json&limit=10`,
+      { signal: AbortSignal.timeout(8000) }
+    );
+    const wdSd = await wdSearch.json();
+    const clubEnt = (wdSd?.search ?? []).find(e => /football|club|soccer|f\.c\./i.test(e.description ?? '')) ?? (wdSd?.search ?? [])[0];
+    if (clubEnt?.id) {
+      const wdEnt = await fetch(`https://www.wikidata.org/w/api.php?action=wbgetentities&ids=${clubEnt.id}&props=claims&format=json`, { signal: AbortSignal.timeout(8000) });
+      const wdEd = await wdEnt.json();
+      const claims = wdEd?.entities?.[clubEnt.id]?.claims ?? {};
+      const chairQid = (claims.P488 ?? claims.P169 ?? [])[0]?.mainsnak?.datavalue?.value?.id;
+      if (chairQid) {
+        const wdPerson = await fetch(`https://www.wikidata.org/w/api.php?action=wbgetentities&ids=${chairQid}&props=labels|claims&languages=fr,en&format=json`, { signal: AbortSignal.timeout(8000) });
+        const wdPd = await wdPerson.json();
+        const pe = wdPd?.entities?.[chairQid];
+        const name = pe?.labels?.fr?.value ?? pe?.labels?.en?.value ?? null;
+        if (name) {
+          result.president_name = name;
+          result.president_wikidata_id = chairQid;
+          const photoFile = pe?.claims?.P18?.[0]?.mainsnak?.datavalue?.value;
+          if (photoFile) result.president_photo_url = `https://commons.wikimedia.org/wiki/Special:FilePath/${encodeURIComponent(photoFile)}?width=200`;
+        }
+      }
+    }
+  } catch (e) { console.warn('[club-staff] Wikidata error:', e.message); }
+
+  try {
+    const id = uuidv4();
+    await pool.query(
+      `INSERT INTO club_staff_cache (id, club_name, sofascore_team_id, sofascore_team_slug,
+         coach_id, coach_name, coach_slug, coach_photo_url, coach_nationality, coach_date_born, coach_sofascore_url,
+         president_name, president_photo_url, president_wikidata_id)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       ON DUPLICATE KEY UPDATE
+         sofascore_team_id=VALUES(sofascore_team_id), sofascore_team_slug=VALUES(sofascore_team_slug),
+         coach_id=VALUES(coach_id), coach_name=VALUES(coach_name), coach_slug=VALUES(coach_slug),
+         coach_photo_url=VALUES(coach_photo_url), coach_nationality=VALUES(coach_nationality),
+         coach_date_born=VALUES(coach_date_born), coach_sofascore_url=VALUES(coach_sofascore_url),
+         president_name=VALUES(president_name), president_photo_url=VALUES(president_photo_url),
+         president_wikidata_id=VALUES(president_wikidata_id), fetched_at=NOW()`,
+      [id, clubName, result.sofascore_team_id, result.sofascore_team_slug,
+       result.coach_id, result.coach_name, result.coach_slug, result.coach_photo_url,
+       result.coach_nationality, result.coach_date_born, result.coach_sofascore_url,
+       result.president_name, result.president_photo_url, result.president_wikidata_id]
+    );
+  } catch (e) { console.warn('[club-staff] DB error:', e.message); }
+
+  return result;
+}
+
+app.get("/api/club-staff", authMiddleware, async (req, res) => {
+  const { name } = req.query;
+  if (!name?.trim()) return res.status(400).json({ error: "name requis" });
+  try { return res.json(await fetchClubStaff(name.trim())); }
+  catch (err) { return res.status(500).json({ error: err.message }); }
+});
+
+app.post("/api/club-staff/refresh", authMiddleware, async (req, res) => {
+  const { name } = req.body || {};
+  if (!name?.trim()) return res.status(400).json({ error: "name requis" });
+  try {
+    await pool.query("DELETE FROM club_staff_cache WHERE club_name = ?", [name.trim()]);
+    return res.json(await fetchClubStaff(name.trim()));
+  } catch (err) { return res.status(500).json({ error: err.message }); }
+});
+
+// Proxy Sofascore manager image (avoid hotlink block)
+app.get("/api/club-staff/coach-photo/:managerId", async (req, res) => {
+  try {
+    const resp = await fetch(
+      `https://api.sofascore.com/api/v1/manager/${req.params.managerId}/image`,
+      { headers: { ...SOFA_HEADERS, Accept: 'image/*' }, signal: AbortSignal.timeout(8000) }
+    );
+    if (!resp.ok) return res.status(404).end();
+    const buf = await resp.arrayBuffer();
+    res.setHeader('Content-Type', resp.headers.get('content-type') || 'image/jpeg');
+    res.setHeader('Cache-Control', 'public, max-age=86400');
+    return res.send(Buffer.from(buf));
+  } catch { return res.status(404).end(); }
+});
+
+// ══════════════════════════════════════════════════════════════════════════════
+// ── Mes championnats — CRUD pour user_followed_leagues ────────────────────────
+// ══════════════════════════════════════════════════════════════════════════════
+
+// ── Saved championships (Sofascore/local catalog) ─────────────────────────────
+pool.query(`CREATE TABLE IF NOT EXISTS user_saved_championships (
+  id CHAR(36) PRIMARY KEY,
+  user_id CHAR(36) NOT NULL,
+  championship_name VARCHAR(255) NOT NULL,
+  championship_country VARCHAR(100) NULL,
+  championship_logo TEXT NULL,
+  sofascore_id INT NULL,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  UNIQUE KEY uniq_user_champ (user_id, championship_name(191)),
+  INDEX idx_saved_champs_user (user_id),
+  FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+)`).catch(err => { if (!err?.message?.includes('already exists')) console.warn('[warn] user_saved_championships:', err?.message); });
+
+app.get("/api/saved-championships", authMiddleware, async (req, res) => {
+  try {
+    const [rows] = await pool.query(
+      "SELECT * FROM user_saved_championships WHERE user_id = ? ORDER BY championship_name ASC",
+      [req.user.id]
+    );
+    return res.json(rows);
+  } catch (err) { return res.status(500).json({ error: err.message }); }
+});
+
+app.post("/api/saved-championships", authMiddleware, async (req, res) => {
+  const { championship_name, championship_country, championship_logo, sofascore_id } = req.body || {};
+  if (!championship_name?.trim()) return res.status(400).json({ error: "championship_name requis." });
+  try {
+    const id = uuidv4();
+    await pool.query(
+      `INSERT INTO user_saved_championships (id, user_id, championship_name, championship_country, championship_logo, sofascore_id)
+       VALUES (?, ?, ?, ?, ?, ?)
+       ON DUPLICATE KEY UPDATE championship_country = VALUES(championship_country),
+         championship_logo = VALUES(championship_logo), sofascore_id = VALUES(sofascore_id)`,
+      [id, req.user.id, championship_name.trim(), championship_country || null, championship_logo || null, sofascore_id || null]
+    );
+    const [rows] = await pool.query("SELECT * FROM user_saved_championships WHERE user_id = ? AND championship_name = ?", [req.user.id, championship_name.trim()]);
+    return res.status(201).json(rows[0]);
+  } catch (err) { return res.status(500).json({ error: err.message }); }
+});
+
+app.delete("/api/saved-championships/:name", authMiddleware, async (req, res) => {
+  try {
+    await pool.query("DELETE FROM user_saved_championships WHERE user_id = ? AND championship_name = ?",
+      [req.user.id, decodeURIComponent(req.params.name)]);
+    return res.json({ success: true });
+  } catch (err) { return res.status(500).json({ error: err.message }); }
+});
+
+// GET /api/followed-leagues — list user's followed leagues with fixture count
+app.get("/api/followed-leagues", authMiddleware, async (req, res) => {
+  try {
+    const [rows] = await pool.query(
+      `SELECT ufl.*,
+        (SELECT COUNT(*) FROM fixtures f
+         WHERE f.user_id = ufl.user_id AND f.api_league_id = ufl.league_id) AS fixture_count,
+        (SELECT COUNT(*) FROM fixtures f
+         WHERE f.user_id = ufl.user_id AND f.api_league_id = ufl.league_id
+           AND f.match_date >= CURDATE()) AS upcoming_count
+       FROM user_followed_leagues ufl
+       WHERE ufl.user_id = ?
+       ORDER BY ufl.league_name ASC`,
+      [req.user.id]
+    );
+    return res.json(rows);
+  } catch (err) {
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+// POST /api/followed-leagues — follow a league
+app.post("/api/followed-leagues", authMiddleware, async (req, res) => {
+  const { league_id, league_name, league_country, league_logo, season } = req.body || {};
+  if (!league_id || !league_name) return res.status(400).json({ error: "league_id et league_name requis." });
+  try {
+    const id = uuidv4();
+    const s = season || String(new Date().getFullYear());
+    await pool.query(
+      `INSERT INTO user_followed_leagues (id, user_id, league_id, league_name, league_country, league_logo, season)
+       VALUES (?, ?, ?, ?, ?, ?, ?)
+       ON DUPLICATE KEY UPDATE league_name = VALUES(league_name), league_country = VALUES(league_country),
+         league_logo = VALUES(league_logo), season = VALUES(season)`,
+      [id, req.user.id, league_id, league_name, league_country || null, league_logo || null, s]
+    );
+    const [rows] = await pool.query("SELECT * FROM user_followed_leagues WHERE user_id = ? AND league_id = ?", [req.user.id, league_id]);
+    return res.status(201).json(rows[0]);
+  } catch (err) {
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+// DELETE /api/followed-leagues/:leagueId — unfollow a league
+app.delete("/api/followed-leagues/:leagueId", authMiddleware, async (req, res) => {
+  try {
+    await pool.query("DELETE FROM user_followed_leagues WHERE user_id = ? AND league_id = ?", [req.user.id, req.params.leagueId]);
+    return res.json({ success: true });
+  } catch (err) {
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+// ══════════════════════════════════════════════════════════════════════════════
+// ── News / Actualités — Sofascore scraping via Apify ─────────────────────────
+// ══════════════════════════════════════════════════════════════════════════════
+
+// Auto-create news_articles table
+pool.query(`CREATE TABLE IF NOT EXISTS news_articles (
+  id CHAR(36) PRIMARY KEY,
+  external_id VARCHAR(255) NULL,
+  title VARCHAR(1000) NOT NULL,
+  description TEXT NULL,
+  content TEXT NULL,
+  image_url TEXT NULL,
+  article_url TEXT NOT NULL,
+  category VARCHAR(100) NULL,
+  tags JSON NULL,
+  author VARCHAR(255) NULL,
+  published_at DATETIME NOT NULL,
+  source VARCHAR(50) NOT NULL DEFAULT 'sofascore',
+  scraped_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  UNIQUE KEY uniq_news_url (article_url(191)),
+  INDEX idx_news_published (published_at DESC),
+  INDEX idx_news_category (category),
+  INDEX idx_news_source (source, published_at)
+)`).catch(err => { if (!err?.message?.includes('already exists')) console.warn('[warn] news_articles table:', err?.message); });
+
+// ── Sofascore scraping helpers ────────────────────────────────────────────────
+
+const SOFASCORE_HEADERS = {
+  'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+  'Accept': 'application/json, text/plain, */*',
+  'Accept-Language': 'fr-FR,fr;q=0.9,en;q=0.8',
+  'Referer': 'https://www.sofascore.com/fr/news',
+  'Origin': 'https://www.sofascore.com',
+  'Cache-Control': 'no-cache',
+};
+
+function normalizeSofascoreArticle(raw) {
+  // Handle multiple possible shapes returned by Sofascore API
+  const title   = raw.title || raw.name || raw.headline || '';
+  const desc    = raw.description || raw.subtitle || raw.summary || raw.teaser || '';
+  const url     = raw.url || raw.link || raw.articleUrl || raw.slug
+    ? (raw.slug ? `https://www.sofascore.com/fr/news/${raw.slug}` : null)
+    : null;
+  const image   = raw.imageUrl || raw.image?.url || raw.thumbnail || raw.image || null;
+  const cat     = raw.category?.slug || raw.category?.name || raw.category || 'Football';
+  const author  = raw.author?.name || raw.author || null;
+  const pubDate = raw.publishedAt || raw.createdAt || raw.published_at || raw.date || new Date().toISOString();
+  const extId   = String(raw.id || raw.externalId || raw.slug || '');
+  const tags    = Array.isArray(raw.tags) ? raw.tags.map(t => typeof t === 'string' ? t : t.name || t.slug) : [];
+  return { title, description: desc, article_url: url, image_url: image, category: cat, author, published_at: pubDate, external_id: extId, tags };
+}
+
+async function fetchNewsSofascoreDirect() {
+  // Try known Sofascore internal API patterns
+  const candidates = [
+    'https://www.sofascore.com/api/v1/cms/editorial/articles?lang=fr&category=football-fr&page=0&size=30',
+    'https://www.sofascore.com/api/v1/cms/editorial/articles?lang=fr&page=0&size=30',
+    'https://www.sofascore.com/api/v1/news?lang=fr&category=football-fr',
+    'https://api.sofascore.app/api/v1/cms/editorial/articles?lang=fr&category=football-fr',
+  ];
+  for (const url of candidates) {
+    try {
+      const res = await fetch(url, { headers: SOFASCORE_HEADERS, signal: AbortSignal.timeout(8000) });
+      if (!res.ok) continue;
+      const ct = res.headers.get('content-type') || '';
+      if (!ct.includes('json')) continue;
+      const data = await res.json();
+      const list = data.articles || data.news || data.data || data.items || data.results || [];
+      if (Array.isArray(list) && list.length > 0) {
+        console.log(`[news] Direct Sofascore API succeeded: ${list.length} articles (${url})`);
+        return list.map(normalizeSofascoreArticle).filter(a => a.title && a.article_url);
+      }
+    } catch (err) { /* try next */ }
+  }
+  return null;
+}
+
+async function fetchNewsWithApify() {
+  const apiKey = process.env.APIFY_API_KEY;
+  if (!apiKey) return null;
+
+  try {
+    // Use apify/website-content-crawler to render the JS-heavy page
+    const actorId = 'apify~website-content-crawler';
+    const runRes = await fetch(
+      `https://api.apify.com/v2/acts/${actorId}/run-sync-get-dataset-items?token=${apiKey}&timeout=120&memory=1024`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          startUrls: [{ url: 'https://www.sofascore.com/fr/news?category=football-fr' }],
+          maxCrawlingDepth: 0,
+          maxResults: 30,
+          saveMarkdown: false,
+          saveHtml: false,
+          proxyConfiguration: { useApifyProxy: true },
+          // Custom extractor for article cards
+          pageFunction: `async ({ page, enqueueLinks, request, log }) => {
+            await page.waitForTimeout(3000);
+            const articles = await page.evaluate(() => {
+              const sel = 'article, [class*="ArticleCard"], [class*="article-card"], [class*="news-card"], [data-testid*="article"]';
+              return Array.from(document.querySelectorAll(sel)).slice(0, 30).map(el => ({
+                title: (el.querySelector('h1,h2,h3,h4,[class*="title"]') || {}).textContent?.trim() || '',
+                description: (el.querySelector('p,[class*="description"],[class*="excerpt"],[class*="subtitle"]') || {}).textContent?.trim() || '',
+                image_url: (el.querySelector('img') || {}).src || '',
+                article_url: (el.querySelector('a') || {}).href || window.location.href,
+                category: (el.querySelector('[class*="category"],[class*="tag"],[class*="badge"]') || {}).textContent?.trim() || 'Football',
+                published_at: (el.querySelector('time') || {}).getAttribute?.('datetime') || new Date().toISOString(),
+                author: (el.querySelector('[class*="author"]') || {}).textContent?.trim() || null,
+              })).filter(a => a.title && a.article_url !== window.location.href);
+            });
+            return articles;
+          }`,
+        }),
+        signal: AbortSignal.timeout(130000),
+      }
+    );
+    if (!runRes.ok) { console.warn('[news] Apify run failed:', runRes.status); return null; }
+    const items = await runRes.json();
+    const flat = items.flat ? items.flat() : items;
+    const articles = flat.filter(a => a?.title).map(a => ({
+      ...a,
+      external_id: a.article_url,
+      tags: [],
+      source: 'sofascore',
+    }));
+    if (articles.length > 0) {
+      console.log(`[news] Apify succeeded: ${articles.length} articles`);
+      return articles;
+    }
+    return null;
+  } catch (err) {
+    console.warn('[news] Apify error:', err?.message);
+    return null;
+  }
+}
+
+async function saveNewsArticles(articles) {
+  const { v4: uuidv4 } = await import('uuid');
+  let saved = 0;
+  for (const a of articles) {
+    if (!a.title || !a.article_url) continue;
+    try {
+      await pool.query(
+        `INSERT INTO news_articles
+          (id, external_id, title, description, content, image_url, article_url, category, tags, author, published_at, source)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         ON DUPLICATE KEY UPDATE
+           title = VALUES(title), description = VALUES(description),
+           image_url = VALUES(image_url), category = VALUES(category),
+           tags = VALUES(tags), author = VALUES(author),
+           published_at = VALUES(published_at), scraped_at = NOW()`,
+        [
+          uuidv4(),
+          a.external_id || a.article_url,
+          String(a.title).slice(0, 1000),
+          a.description || null,
+          a.content || null,
+          a.image_url || null,
+          a.article_url,
+          a.category || 'Football',
+          JSON.stringify(a.tags || []),
+          a.author || null,
+          a.published_at ? new Date(a.published_at) : new Date(),
+          a.source || 'sofascore',
+        ]
+      );
+      saved++;
+    } catch (err) {
+      if (!err?.message?.includes('Duplicate')) console.warn('[news] Save error:', err?.message);
+    }
+  }
+  return saved;
+}
+
+async function runNewsScrape() {
+  console.log('[news] Starting news scrape...');
+  let articles = await fetchNewsSofascoreDirect();
+  if (!articles || articles.length === 0) {
+    console.log('[news] Direct API returned nothing, trying Apify...');
+    articles = await fetchNewsWithApify();
+  }
+  if (!articles || articles.length === 0) {
+    console.log('[news] No articles found from any source.');
+    return 0;
+  }
+  const saved = await saveNewsArticles(articles);
+  console.log(`[news] Scrape done: ${saved} articles saved/updated.`);
+  return saved;
+}
+
+// ── GET /api/news — public listing with filters ───────────────────────────────
+app.get("/api/news", async (req, res) => {
+  try {
+    const limit  = Math.min(parseInt(req.query.limit) || 20, 50);
+    const offset = Math.max(parseInt(req.query.offset) || 0, 0);
+    const search = (req.query.search || '').trim();
+    const category = (req.query.category || '').trim();
+    const source = (req.query.source || '').trim();
+    const from = req.query.from ? new Date(req.query.from) : null;
+    const to   = req.query.to   ? new Date(req.query.to)   : null;
+
+    const clauses = ['1=1'];
+    const params = [];
+    if (search)   { clauses.push('(title LIKE ? OR description LIKE ?)'); params.push(`%${search}%`, `%${search}%`); }
+    if (category) { clauses.push('category = ?'); params.push(category); }
+    if (source)   { clauses.push('source = ?'); params.push(source); }
+    if (from)     { clauses.push('published_at >= ?'); params.push(from); }
+    if (to)       { clauses.push('published_at <= ?'); params.push(to); }
+
+    const where = clauses.join(' AND ');
+    const [[{ total }]] = await pool.query(`SELECT COUNT(*) as total FROM news_articles WHERE ${where}`, params);
+    const [rows] = await pool.query(
+      `SELECT * FROM news_articles WHERE ${where} ORDER BY published_at DESC LIMIT ? OFFSET ?`,
+      [...params, limit, offset]
+    );
+
+    // Distinct categories for filters
+    const [cats] = await pool.query(
+      "SELECT DISTINCT category, COUNT(*) as count FROM news_articles GROUP BY category ORDER BY count DESC LIMIT 20"
+    );
+
+    return res.json({ articles: rows, total, categories: cats, limit, offset });
+  } catch (err) {
+    return res.status(500).json({ error: err?.message });
+  }
+});
+
+// ── POST /api/admin/news/refresh — manual scrape trigger ──────────────────────
+app.post("/api/admin/news/refresh", authMiddleware, ensureAdmin, async (_req, res) => {
+  try {
+    const saved = await runNewsScrape();
+    return res.json({ ok: true, saved });
+  } catch (err) {
+    return res.status(500).json({ error: err?.message });
+  }
+});
+
+// ── GET /api/admin/news/status ────────────────────────────────────────────────
+app.get("/api/admin/news/status", authMiddleware, ensureAdmin, async (_req, res) => {
+  try {
+    const [[{ total }]] = await pool.query("SELECT COUNT(*) as total FROM news_articles");
+    const [[latest]] = await pool.query("SELECT scraped_at FROM news_articles ORDER BY scraped_at DESC LIMIT 1");
+    return res.json({ total, last_scraped: latest?.scraped_at || null, apify_configured: !!process.env.APIFY_API_KEY });
+  } catch (err) {
+    return res.status(500).json({ error: err?.message });
+  }
+});
+
+// ── Football Buzz — RSS aggregator ────────────────────────────────────────────
+
+pool.query(`CREATE TABLE IF NOT EXISTS football_buzz (
+  id CHAR(36) PRIMARY KEY,
+  source_name VARCHAR(100) NOT NULL,
+  source_handle VARCHAR(100) NOT NULL,
+  source_color VARCHAR(20) NOT NULL DEFAULT '#3B82F6',
+  content TEXT NOT NULL,
+  image_url TEXT NULL,
+  external_url TEXT NOT NULL,
+  buzz_score INT NOT NULL DEFAULT 0,
+  is_hot TINYINT(1) NOT NULL DEFAULT 0,
+  published_at DATETIME NOT NULL,
+  scraped_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  content_hash CHAR(64) NOT NULL,
+  UNIQUE KEY uniq_buzz_hash (content_hash),
+  INDEX idx_buzz_score (buzz_score DESC, published_at DESC),
+  INDEX idx_buzz_date (published_at DESC)
+)`).catch(err => { if (!err?.message?.includes('already exists')) console.warn('[warn] football_buzz table:', err?.message); });
+
+const BUZZ_SOURCES = [
+  { name: "L'Équipe",      handle: '@lequipe',       color: '#FFD700', url: 'https://www.lequipe.fr/rss/actu_rss_Football.xml',          scoreBase: 90 },
+  { name: 'Goal.com',      handle: '@goal_fr',        color: '#1a9e3f', url: 'https://www.goal.com/feeds/fr/news',                        scoreBase: 80 },
+  { name: 'Foot Mercato',  handle: '@footmercato',    color: '#e74c3c', url: 'https://www.footmercato.net/rss.xml',                       scoreBase: 75 },
+  { name: 'RMC Sport',     handle: '@RMCsport',       color: '#e8340b', url: 'https://rmcsport.bfmtv.com/rss/football/',                  scoreBase: 85 },
+  { name: 'Transfermarkt', handle: '@Transfermarkt',  color: '#00a550', url: 'https://www.transfermarkt.fr/rdf/transfergeruchte.xml',     scoreBase: 70 },
+  { name: 'Eurosport',     handle: '@Eurosport_FR',   color: '#ff6900', url: 'https://www.eurosport.fr/football/rss.xml',                 scoreBase: 78 },
+  { name: 'So Foot',       handle: '@sofoot',         color: '#8B5CF6', url: 'https://www.sofoot.com/rss.xml',                           scoreBase: 65 },
+];
+
+const BUZZ_KEYWORDS_HOT = ['transfert','recrute','signe','officiel','blessé','blessure','suspendu','record','titre','champion','licencié','convoqué','exclu','penalty','but','victoire','défaite','scandal','mercato'];
+
+function buzzHash(content, url) {
+  const str = (content + url).slice(0, 200);
+  let h = 0;
+  for (let i = 0; i < str.length; i++) { h = (Math.imul(31, h) + str.charCodeAt(i)) | 0; }
+  return Math.abs(h).toString(16).padStart(16, '0') + str.length.toString(16).padStart(8, '0');
+}
+
+function parseRssItems(xml) {
+  const items = [];
+  const itemMatches = xml.matchAll(/<item>([\s\S]*?)<\/item>/gi);
+  for (const m of itemMatches) {
+    const block = m[1];
+    const getTag = (tag) => {
+      const r = block.match(new RegExp(`<${tag}[^>]*><!\\[CDATA\\[([\\s\\S]*?)\\]\\]><\\/${tag}>|<${tag}[^>]*>([^<]*)<\\/${tag}>`, 'i'));
+      return r ? (r[1] || r[2] || '').trim() : '';
+    };
+    const title = getTag('title');
+    const description = getTag('description');
+    const link = getTag('link') || block.match(/<link>\s*(https?:\/\/[^<]+)/i)?.[1] || '';
+    const pubDate = getTag('pubDate');
+    const enclosure = block.match(/enclosure[^>]+url="([^"]+)"/i)?.[1] || null;
+    const mediaUrl = block.match(/<media:content[^>]+url="([^"]+)"/i)?.[1] || enclosure;
+    if (!title || !link) continue;
+    const content = title + (description ? ' — ' + description.replace(/<[^>]+>/g, '').slice(0, 200) : '');
+    const published = pubDate ? new Date(pubDate) : new Date();
+    if (isNaN(published.getTime())) continue;
+    items.push({ title, content: content.slice(0, 400), link: link.trim(), image_url: mediaUrl || null, published });
+  }
+  return items;
+}
+
+function computeBuzzScore(content, source, published) {
+  let score = source.scoreBase;
+  // recency bonus: +30 if < 1h, +20 if < 3h, +10 if < 6h
+  const ageH = (Date.now() - published.getTime()) / 3600000;
+  if (ageH < 1) score += 30;
+  else if (ageH < 3) score += 20;
+  else if (ageH < 6) score += 10;
+  // keyword bonus
+  const lc = content.toLowerCase();
+  for (const kw of BUZZ_KEYWORDS_HOT) { if (lc.includes(kw)) { score += 8; break; } }
+  // base randomness for variety
+  score += Math.floor(Math.random() * 15);
+  return Math.min(score, 200);
+}
+
+async function fetchBuzzSource(source) {
+  try {
+    const res = await fetch(source.url, {
+      headers: { 'User-Agent': 'Mozilla/5.0 (compatible; ScoutyBot/1.0)', Accept: 'application/rss+xml, application/xml, text/xml' },
+      signal: AbortSignal.timeout(8000),
+    });
+    if (!res.ok) return [];
+    const xml = await res.text();
+    return parseRssItems(xml).map(item => ({ ...item, source }));
+  } catch (e) {
+    console.warn(`[buzz] ${source.name} failed:`, e.message);
+    return [];
+  }
+}
+
+async function runBuzzScrape() {
+  console.log('[buzz] Starting buzz scrape...');
+  const results = await Promise.allSettled(BUZZ_SOURCES.map(fetchBuzzSource));
+  let saved = 0;
+  for (const r of results) {
+    if (r.status !== 'fulfilled') continue;
+    for (const item of r.value) {
+      const hash = buzzHash(item.content, item.link);
+      const score = computeBuzzScore(item.content, item.source, item.published);
+      const isHot = score >= 120 ? 1 : 0;
+      try {
+        await pool.query(
+          `INSERT INTO football_buzz (id, source_name, source_handle, source_color, content, image_url, external_url, buzz_score, is_hot, published_at, content_hash)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+           ON DUPLICATE KEY UPDATE buzz_score = ?, is_hot = ?, scraped_at = NOW()`,
+          [uuidv4(), item.source.name, item.source.handle, item.source.color,
+           item.content, item.image_url, item.link, score, isHot, item.published, hash,
+           score, isHot]
+        );
+        saved++;
+      } catch {}
+    }
+  }
+  // Clean up buzz older than 7 days
+  await pool.query("DELETE FROM football_buzz WHERE published_at < DATE_SUB(NOW(), INTERVAL 7 DAY)").catch(() => {});
+  console.log(`[buzz] Scrape done: ${saved} posts saved/updated.`);
+  return saved;
+}
+
+app.get("/api/buzz", authMiddleware, async (req, res) => {
+  try {
+    const limit = Math.min(parseInt(req.query.limit) || 30, 60);
+    const offset = Math.max(parseInt(req.query.offset) || 0, 0);
+    const source = (req.query.source || '').trim();
+    const filter = req.query.filter || 'trending'; // 'trending' | 'recent' | 'hot'
+
+    const clauses = ['1=1'];
+    const params = [];
+    if (source) { clauses.push('source_name = ?'); params.push(source); }
+    if (filter === 'hot') { clauses.push('is_hot = 1'); }
+
+    const where = clauses.join(' AND ');
+    const order = filter === 'recent' ? 'published_at DESC' : 'buzz_score DESC, published_at DESC';
+
+    const [[{ total }]] = await pool.query(`SELECT COUNT(*) as total FROM football_buzz WHERE ${where}`, params);
+    const [rows] = await pool.query(`SELECT * FROM football_buzz WHERE ${where} ORDER BY ${order} LIMIT ? OFFSET ?`, [...params, limit, offset]);
+    const [sources] = await pool.query("SELECT DISTINCT source_name, source_handle, source_color FROM football_buzz ORDER BY source_name");
+    const [[{ last_scraped }]] = await pool.query("SELECT MAX(scraped_at) as last_scraped FROM football_buzz");
+    return res.json({ posts: rows, total, sources, last_scraped });
+  } catch (err) {
+    return res.status(500).json({ error: err?.message });
+  }
+});
+
+// ── X / SocialData feed ──────────────────────────────────────────────────────
+
+app.get("/api/x/feed", authMiddleware, async (req, res) => {
+  try {
+    const [keyRows] = await pool.query(
+      'SELECT api_key FROM user_integrations WHERE user_id = ? AND service = ? AND enabled = 1 AND api_key IS NOT NULL',
+      [req.user.id, 'socialdata']
+    );
+    const key = keyRows[0]?.api_key;
+    if (!key) return res.status(402).json({ error: 'no_key' });
+
+    const accounts = (req.query.accounts || '').split(',').map(s => s.trim()).filter(Boolean);
+    const keywords = (req.query.keywords || '').split(',').map(s => s.trim()).filter(Boolean);
+    const limit = Math.min(parseInt(req.query.limit) || 30, 50);
+
+    // Build SocialData query
+    const accountPart = accounts.length ? accounts.map(a => `from:${a.replace(/^@/, '')}`).join(' OR ') : '';
+    const keywordPart = keywords.join(' OR ');
+    let query = [accountPart ? `(${accountPart})` : '', keywordPart].filter(Boolean).join(' ');
+    if (!query) query = 'football scouting';
+
+    // Cache key
+    const cacheKey = `x_feed_${req.user.id}_${Buffer.from(query).toString('base64').slice(0, 40)}`;
+    const [[cached]] = await pool.query(
+      "SELECT data FROM api_football_cache WHERE cache_key = ? AND expires_at > NOW()",
+      [cacheKey]
+    );
+    if (cached) return res.json(JSON.parse(cached.data));
+
+    // Fetch from SocialData
+    const sdUrl = `https://api.socialdata.tools/twitter/search?query=${encodeURIComponent(query)}&type=Latest&count=${limit}`;
+    const sdRes = await fetch(sdUrl, {
+      headers: { Authorization: `Bearer ${key}`, Accept: 'application/json' },
+    });
+    if (!sdRes.ok) {
+      const errText = await sdRes.text();
+      return res.status(sdRes.status).json({ error: errText });
+    }
+    const sdData = await sdRes.json();
+
+    // Normalize to our BuzzPost shape
+    const tweets = (sdData.tweets || sdData.data || []);
+    const posts = tweets.map(tw => {
+      const user = tw.user || tw.author || {};
+      const metrics = tw.public_metrics || {};
+      return {
+        id: tw.id_str || tw.id || String(Math.random()),
+        source_name: user.name || user.username || 'X',
+        source_handle: `@${user.screen_name || user.username || 'x'}`,
+        source_color: '#000000',
+        content: tw.full_text || tw.text || '',
+        image_url: tw.entities?.media?.[0]?.media_url_https || tw.extended_entities?.media?.[0]?.media_url_https || null,
+        external_url: `https://x.com/${user.screen_name || user.username}/status/${tw.id_str || tw.id}`,
+        buzz_score: (metrics.like_count || tw.favorite_count || 0),
+        retweet_count: metrics.retweet_count || tw.retweet_count || 0,
+        reply_count: metrics.reply_count || tw.reply_count || 0,
+        is_hot: (metrics.like_count || tw.favorite_count || 0) > 500 ? 1 : 0,
+        published_at: tw.created_at || new Date().toISOString(),
+        verified: user.verified || user.is_blue_verified || false,
+        profile_image: user.profile_image_url_https || null,
+      };
+    });
+
+    const payload = { posts, total: posts.length, query };
+
+    // Cache 30 minutes
+    const expiresAt = new Date(Date.now() + 30 * 60 * 1000).toISOString().slice(0, 19).replace('T', ' ');
+    await pool.query(
+      "INSERT INTO api_football_cache (cache_key, data, expires_at) VALUES (?, ?, ?) ON DUPLICATE KEY UPDATE data = VALUES(data), expires_at = VALUES(expires_at)",
+      [cacheKey, JSON.stringify(payload), expiresAt]
+    ).catch(() => {});
+
+    return res.json(payload);
+  } catch (err) {
+    return res.status(500).json({ error: err?.message });
+  }
+});
+
+app.post("/api/admin/buzz/refresh", authMiddleware, ensureAdmin, async (_req, res) => {
+  try {
+    const saved = await runBuzzScrape();
+    return res.json({ ok: true, saved });
+  } catch (err) {
+    return res.status(500).json({ error: err?.message });
+  }
+});
+
+// ── Cron: news scrape every 3 hours ──────────────────────────────────────────
+
 // ── Cron: nightly enrichment for premium users ─────────────────────────────
 
 // Auto-create cron_enrichment_logs table
@@ -11195,6 +12163,12 @@ async function runNightlyEnrichment() {
 if (!isVercel && cron) {
   cron.schedule('0 2 * * *', runNightlyEnrichment, { timezone: 'Europe/Paris' });
   console.log('[startup] Cron scheduled: nightly enrichment at 02:00 Europe/Paris');
+  cron.schedule('0 */3 * * *', () => runNewsScrape(), { timezone: 'Europe/Paris' });
+  console.log('[startup] Cron scheduled: news-scrape every 3 hours');
+  cron.schedule('*/30 * * * *', () => runBuzzScrape(), { timezone: 'Europe/Paris' });
+  console.log('[startup] Cron scheduled: buzz-scrape every 30 minutes');
+  // Initial buzz on startup
+  runBuzzScrape().catch(e => console.warn('[buzz] Initial scrape error:', e.message));
 }
 
 // ── Admin endpoint: cron enrichment logs & manual trigger ───────────────────
@@ -11626,10 +12600,406 @@ app.post("/api/admin/cron-trigger", authMiddleware, ensureAdmin, async (req, res
     'subscription-expiry':() => runSubscriptionExpiryAlerts(!!dry_run),
     'nightly-enrichment': () => runNightlyEnrichment(),
     'inactive-cleanup':   () => runInactiveUserCleanup(!!dry_run),
+    'buzz-scrape':        () => runBuzzScrape(),
   };
   if (!jobs[job]) return res.status(400).json({ error: 'Unknown job' });
   jobs[job]();
   return res.json({ ok: true, job, dry_run: !!dry_run });
+});
+
+// ── User integrations (Perplexity / Pappers / Drop Contact) ─────────────────
+
+pool.query(`CREATE TABLE IF NOT EXISTS user_integrations (
+  id CHAR(36) PRIMARY KEY,
+  user_id CHAR(36) NOT NULL,
+  service VARCHAR(50) NOT NULL,
+  api_key TEXT NULL,
+  enabled TINYINT(1) NOT NULL DEFAULT 0,
+  last_tested_at DATETIME NULL,
+  test_status VARCHAR(20) NULL,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  UNIQUE KEY uniq_user_service (user_id, service),
+  FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+)`).catch(() => {});
+
+const ALLOWED_SERVICES = new Set(['perplexity', 'pappers', 'dropcontact', 'socialdata']);
+
+// GET /api/integrations — list user's integrations (keys masked)
+app.get('/api/integrations', authMiddleware, async (req, res) => {
+  try {
+    const [rows] = await pool.query(
+      'SELECT service, enabled, last_tested_at, test_status, CASE WHEN api_key IS NOT NULL THEN 1 ELSE 0 END AS has_key FROM user_integrations WHERE user_id = ?',
+      [req.user.id]
+    );
+    return res.json(rows);
+  } catch (err) { return res.status(500).json({ error: err.message }); }
+});
+
+// POST /api/integrations/:service — save key + enabled state
+app.post('/api/integrations/:service', authMiddleware, async (req, res) => {
+  const { service } = req.params;
+  if (!ALLOWED_SERVICES.has(service)) return res.status(400).json({ error: 'Unknown service' });
+  const { api_key, enabled } = req.body ?? {};
+  try {
+    await pool.query(
+      `INSERT INTO user_integrations (id, user_id, service, api_key, enabled)
+       VALUES (?, ?, ?, ?, ?)
+       ON DUPLICATE KEY UPDATE
+         api_key = COALESCE(NULLIF(?, ''), api_key),
+         enabled = ?,
+         updated_at = NOW()`,
+      [uuidv4(), req.user.id, service, api_key || null, enabled ? 1 : 0, api_key || null, enabled ? 1 : 0]
+    );
+    return res.json({ ok: true });
+  } catch (err) { return res.status(500).json({ error: err.message }); }
+});
+
+// DELETE /api/integrations/:service — remove key
+app.delete('/api/integrations/:service', authMiddleware, async (req, res) => {
+  const { service } = req.params;
+  if (!ALLOWED_SERVICES.has(service)) return res.status(400).json({ error: 'Unknown service' });
+  try {
+    await pool.query('DELETE FROM user_integrations WHERE user_id = ? AND service = ?', [req.user.id, service]);
+    return res.json({ ok: true });
+  } catch (err) { return res.status(500).json({ error: err.message }); }
+});
+
+// POST /api/integrations/:service/test — test API key connection
+app.post('/api/integrations/:service/test', authMiddleware, async (req, res) => {
+  const { service } = req.params;
+  if (!ALLOWED_SERVICES.has(service)) return res.status(400).json({ error: 'Unknown service' });
+  try {
+    const [rows] = await pool.query('SELECT api_key FROM user_integrations WHERE user_id = ? AND service = ?', [req.user.id, service]);
+    const key = rows[0]?.api_key;
+    if (!key) return res.status(400).json({ error: 'no_key' });
+
+    let ok = false;
+    if (service === 'perplexity') {
+      const r = await fetch('https://api.perplexity.ai/chat/completions', {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${key}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ model: 'sonar', messages: [{ role: 'user', content: 'ping' }], max_tokens: 1 }),
+      });
+      ok = r.status < 500;
+    } else if (service === 'pappers') {
+      const r = await fetch(`https://api.pappers.fr/v2/entreprise?api_token=${encodeURIComponent(key)}&siren=siren`);
+      ok = r.status !== 401 && r.status !== 403;
+    } else if (service === 'dropcontact') {
+      const r = await fetch('https://api.dropcontact.com/b2b/v2/enrich', {
+        method: 'POST',
+        headers: { 'X-Access-Token': key, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ data: [{ first_name: 'Test', last_name: 'Scout' }], siren: false }),
+      });
+      ok = r.status !== 401 && r.status !== 403;
+    } else if (service === 'socialdata') {
+      const r = await fetch('https://api.socialdata.tools/twitter/search?query=football&type=Latest&count=1', {
+        headers: { Authorization: `Bearer ${key}`, 'Accept': 'application/json' },
+      });
+      ok = r.status === 200;
+    }
+
+    await pool.query(
+      'UPDATE user_integrations SET last_tested_at = NOW(), test_status = ? WHERE user_id = ? AND service = ?',
+      [ok ? 'ok' : 'error', req.user.id, service]
+    );
+    return res.json({ ok });
+  } catch (err) {
+    await pool.query('UPDATE user_integrations SET last_tested_at = NOW(), test_status = ? WHERE user_id = ? AND service = ?', ['error', req.user.id, req.params.service]).catch(() => {});
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+// POST /api/integrations/enrich/:playerId — enrich a player via all active modules
+app.post('/api/integrations/enrich/:playerId', authMiddleware, async (req, res) => {
+  const { playerId } = req.params;
+  const { services } = req.body ?? {}; // optional array to limit which services to use
+
+  try {
+    // Check player belongs to user (or shared)
+    const [pRows] = await pool.query('SELECT * FROM players WHERE id = ? AND user_id = ?', [playerId, req.user.id]);
+    if (!pRows.length) return res.status(404).json({ error: 'Player not found' });
+    const player = pRows[0];
+
+    // Get active integrations
+    const [integrations] = await pool.query(
+      'SELECT service, api_key FROM user_integrations WHERE user_id = ? AND enabled = 1 AND api_key IS NOT NULL',
+      [req.user.id]
+    );
+    const activeMap = Object.fromEntries(integrations.map(i => [i.service, i.api_key]));
+    const toRun = services ? integrations.filter(i => services.includes(i.service)) : integrations;
+    if (!toRun.length) return res.json({ ok: true, results: {} });
+
+    const results = {};
+    const externalData = typeof player.external_data === 'string'
+      ? JSON.parse(player.external_data || '{}')
+      : (player.external_data ?? {});
+
+    // ── Perplexity: AI research on the player ──
+    if (activeMap.perplexity && (!services || services.includes('perplexity'))) {
+      try {
+        const r = await fetch('https://api.perplexity.ai/chat/completions', {
+          method: 'POST',
+          headers: { Authorization: `Bearer ${activeMap.perplexity}`, 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            model: 'sonar',
+            messages: [{
+              role: 'user',
+              content: `Tu es un assistant de scouting football. Donne-moi en 3-4 phrases maximum les informations les plus récentes sur le joueur ${player.name}${player.club ? ` (${player.club})` : ''}${player.nationality ? `, nationalité ${player.nationality}` : ''} : contrat actuel, statistiques saison en cours, actualités transferts ou blessures. Sois factuel, en français, sans introduction.`,
+            }],
+            search_recency_filter: 'month',
+            max_tokens: 300,
+          }),
+        });
+        if (r.ok) {
+          const data = await r.json();
+          const summary = data.choices?.[0]?.message?.content ?? '';
+          if (summary) {
+            externalData.perplexity_summary = summary;
+            externalData.perplexity_updated_at = new Date().toISOString();
+            results.perplexity = { ok: true, summary };
+          }
+        } else { results.perplexity = { ok: false, status: r.status }; }
+      } catch (e) { results.perplexity = { ok: false, error: e.message }; }
+    }
+
+    // ── Pappers: legal data for the player's club ──
+    if (activeMap.pappers && (!services || services.includes('pappers')) && player.club) {
+      try {
+        const r = await fetch(`https://api.pappers.fr/v2/recherche?q=${encodeURIComponent(player.club)}&api_token=${encodeURIComponent(activeMap.pappers)}&type_entreprise=SA,SAS,SARL&nombre=1`);
+        if (r.ok) {
+          const data = await r.json();
+          const company = data.resultats?.[0];
+          if (company) {
+            externalData.pappers_club = {
+              nom: company.nom_entreprise ?? company.nom,
+              siren: company.siren,
+              siege: company.siege?.adresse_ligne_1,
+              date_creation: company.date_creation,
+              dirigeant: company.representants?.[0]?.nom_complet,
+            };
+            externalData.pappers_updated_at = new Date().toISOString();
+            results.pappers = { ok: true, company: externalData.pappers_club };
+          } else { results.pappers = { ok: true, found: false }; }
+        } else { results.pappers = { ok: false, status: r.status }; }
+      } catch (e) { results.pappers = { ok: false, error: e.message }; }
+    }
+
+    // ── Drop Contact: find contact info for the player (by name) ──
+    if (activeMap.dropcontact && (!services || services.includes('dropcontact'))) {
+      try {
+        const nameParts = (player.name ?? '').split(' ');
+        const firstName = nameParts[0] ?? '';
+        const lastName = nameParts.slice(1).join(' ') ?? '';
+        const r = await fetch('https://api.dropcontact.com/b2b/v2/enrich', {
+          method: 'POST',
+          headers: { 'X-Access-Token': activeMap.dropcontact, 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            data: [{ first_name: firstName, last_name: lastName, company: player.club || '' }],
+            siren: false,
+          }),
+        });
+        if (r.ok) {
+          const data = await r.json();
+          const contact = data.data?.[0];
+          if (contact?.email?.length) {
+            externalData.dropcontact = {
+              email: contact.email[0]?.email,
+              confidence: contact.email[0]?.qualification,
+              found_at: new Date().toISOString(),
+            };
+            results.dropcontact = { ok: true, email: externalData.dropcontact.email };
+          } else { results.dropcontact = { ok: true, found: false }; }
+        } else { results.dropcontact = { ok: false, status: r.status }; }
+      } catch (e) { results.dropcontact = { ok: false, error: e.message }; }
+    }
+
+    // Save enriched external_data back
+    await pool.query(
+      'UPDATE players SET external_data = ?, updated_at = NOW() WHERE id = ? AND user_id = ?',
+      [JSON.stringify(externalData), playerId, req.user.id]
+    );
+
+    // Consume 1 credit per active module used
+    const successCount = Object.values(results).filter(r => r.ok).length;
+    if (successCount > 0) {
+      pool.query(
+        'INSERT INTO user_credit_events (id, user_id, action_type, direction, amount, description) VALUES (?, ?, ?, ?, ?, ?)',
+        [uuidv4(), req.user.id, 'module_enrichment', 'spend', successCount, `Modules: ${Object.keys(results).join(', ')}`]
+      ).catch(() => {});
+    }
+
+    return res.json({ ok: true, results });
+  } catch (err) {
+    console.error('[integrations/enrich] Error:', err.message);
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+// ── Editorial Articles ────────────────────────────────────────────────────────
+pool.query(`CREATE TABLE IF NOT EXISTS editorial_articles (
+  id CHAR(36) PRIMARY KEY,
+  user_id CHAR(36) NOT NULL,
+  title VARCHAR(500) NOT NULL,
+  slug VARCHAR(500) NOT NULL,
+  content LONGTEXT NOT NULL,
+  banner_url TEXT NULL,
+  keywords JSON NULL,
+  status ENUM('draft','published','archived') NOT NULL DEFAULT 'draft',
+  views INT NOT NULL DEFAULT 0,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  UNIQUE KEY uniq_editorial_slug (slug(191)),
+  INDEX idx_editorial_user (user_id),
+  INDEX idx_editorial_status (status, created_at),
+  FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+)`).catch(err => { if (!err?.message?.includes('already exists')) console.warn('[warn] editorial_articles table:', err?.message); });
+
+function hasEditorialRole(roles) {
+  return roles.some(r => ['admin','rédacteur','redacteur','editeur','éditeur'].includes(r.toLowerCase()));
+}
+
+function editorialSlugify(str) {
+  return str.toLowerCase()
+    .normalize('NFD').replace(/[̀-ͯ]/g, '')
+    .replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 120);
+}
+
+app.get("/api/editorial", authMiddleware, async (req, res) => {
+  try {
+    const { filter = 'published', search, limit = 20, offset = 0 } = req.query;
+    const [roleRows] = await pool.query("SELECT role FROM user_roles WHERE user_id = ?", [req.user.id]);
+    const roles = roleRows.map(r => r.role);
+    const isAdmin = roles.includes('admin');
+
+    const where = [];
+    const params = [];
+    if (filter === 'mine') {
+      where.push("ea.user_id = ?"); params.push(req.user.id);
+    } else if (filter === 'all' && isAdmin) {
+      // no filter
+    } else {
+      where.push("(ea.status = 'published' OR ea.user_id = ?)"); params.push(req.user.id);
+    }
+    if (search) {
+      where.push("(ea.title LIKE ? OR JSON_SEARCH(ea.keywords, 'one', ?) IS NOT NULL)");
+      params.push(`%${search}%`, search);
+    }
+    const whereStr = where.length ? `WHERE ${where.join(' AND ')}` : '';
+    const [[{ total }]] = await pool.query(`SELECT COUNT(*) as total FROM editorial_articles ea ${whereStr}`, params);
+    const [articles] = await pool.query(
+      `SELECT ea.id, ea.title, ea.slug, ea.banner_url, ea.keywords, ea.status, ea.views, ea.created_at, ea.updated_at,
+              ea.user_id, u.email as author_email,
+              COALESCE(p.full_name, u.email) as author_name, p.photo_url as author_photo
+       FROM editorial_articles ea
+       LEFT JOIN users u ON u.id = ea.user_id
+       LEFT JOIN profiles p ON p.user_id = ea.user_id
+       ${whereStr} ORDER BY ea.created_at DESC LIMIT ? OFFSET ?`,
+      [...params, parseInt(limit), parseInt(offset)]
+    );
+    return res.json({ articles, total });
+  } catch (err) {
+    console.error("[editorial] list error:", err);
+    return res.status(500).json({ error: "Erreur serveur" });
+  }
+});
+
+app.get("/api/editorial/:id", authMiddleware, async (req, res) => {
+  try {
+    const [rows] = await pool.query(
+      `SELECT ea.*, u.email as author_email,
+              COALESCE(p.full_name, u.email) as author_name, p.photo_url as author_photo
+       FROM editorial_articles ea
+       LEFT JOIN users u ON u.id = ea.user_id
+       LEFT JOIN profiles p ON p.user_id = ea.user_id
+       WHERE ea.id = ?`,
+      [req.params.id]
+    );
+    if (!rows[0]) return res.status(404).json({ error: "Article introuvable" });
+    if (rows[0].status === 'published') {
+      pool.query("UPDATE editorial_articles SET views = views + 1 WHERE id = ?", [req.params.id]).catch(() => {});
+    }
+    return res.json(rows[0]);
+  } catch (err) {
+    return res.status(500).json({ error: "Erreur serveur" });
+  }
+});
+
+app.post("/api/editorial", authMiddleware, async (req, res) => {
+  const [roleRows] = await pool.query("SELECT role FROM user_roles WHERE user_id = ?", [req.user.id]);
+  if (!hasEditorialRole(roleRows.map(r => r.role))) return res.status(403).json({ error: "Rôle rédacteur requis." });
+  const { title, content, banner_url, keywords, status = 'draft' } = req.body || {};
+  if (!title?.trim() || !content?.trim()) return res.status(400).json({ error: "Titre et contenu requis." });
+  try {
+    const id = uuidv4();
+    let slug = editorialSlugify(title);
+    const [ex] = await pool.query("SELECT id FROM editorial_articles WHERE slug = ?", [slug]);
+    if (ex.length) slug = `${slug}-${Date.now()}`;
+    await pool.query(
+      `INSERT INTO editorial_articles (id, user_id, title, slug, content, banner_url, keywords, status)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      [id, req.user.id, title.trim(), slug, content, banner_url || null,
+       keywords ? JSON.stringify(keywords) : null, status]
+    );
+    const [rows] = await pool.query("SELECT * FROM editorial_articles WHERE id = ?", [id]);
+    return res.status(201).json(rows[0]);
+  } catch (err) {
+    console.error("[editorial] create error:", err);
+    return res.status(500).json({ error: "Erreur serveur" });
+  }
+});
+
+app.put("/api/editorial/:id", authMiddleware, async (req, res) => {
+  const [roleRows] = await pool.query("SELECT role FROM user_roles WHERE user_id = ?", [req.user.id]);
+  const roles = roleRows.map(r => r.role);
+  const isAdmin = roles.includes('admin');
+  try {
+    const [rows] = await pool.query("SELECT user_id FROM editorial_articles WHERE id = ?", [req.params.id]);
+    if (!rows[0]) return res.status(404).json({ error: "Article introuvable" });
+    if (rows[0].user_id !== req.user.id && !isAdmin) return res.status(403).json({ error: "Accès refusé" });
+    const { title, content, banner_url, keywords, status } = req.body || {};
+    const updates = {};
+    if (title !== undefined) updates.title = title.trim();
+    if (content !== undefined) updates.content = content;
+    if (banner_url !== undefined) updates.banner_url = banner_url || null;
+    if (keywords !== undefined) updates.keywords = JSON.stringify(keywords);
+    if (status !== undefined) updates.status = status;
+    if (!Object.keys(updates).length) return res.json(rows[0]);
+    const setClauses = Object.keys(updates).map(k => `\`${k}\` = ?`).join(', ');
+    await pool.query(`UPDATE editorial_articles SET ${setClauses} WHERE id = ?`, [...Object.values(updates), req.params.id]);
+    const [updated] = await pool.query("SELECT * FROM editorial_articles WHERE id = ?", [req.params.id]);
+    return res.json(updated[0]);
+  } catch (err) {
+    return res.status(500).json({ error: "Erreur serveur" });
+  }
+});
+
+app.delete("/api/editorial/:id", authMiddleware, async (req, res) => {
+  const [roleRows] = await pool.query("SELECT role FROM user_roles WHERE user_id = ?", [req.user.id]);
+  const roles = roleRows.map(r => r.role);
+  const isAdmin = roles.includes('admin');
+  try {
+    const [rows] = await pool.query("SELECT user_id FROM editorial_articles WHERE id = ?", [req.params.id]);
+    if (!rows[0]) return res.status(404).json({ error: "Article introuvable" });
+    if (rows[0].user_id !== req.user.id && !isAdmin) return res.status(403).json({ error: "Accès refusé" });
+    await pool.query("DELETE FROM editorial_articles WHERE id = ?", [req.params.id]);
+    return res.json({ success: true });
+  } catch (err) {
+    return res.status(500).json({ error: "Erreur serveur" });
+  }
+});
+
+app.post("/api/editorial/banner", authMiddleware, upload.single("file"), async (req, res) => {
+  const [roleRows] = await pool.query("SELECT role FROM user_roles WHERE user_id = ?", [req.user.id]);
+  if (!hasEditorialRole(roleRows.map(r => r.role))) return res.status(403).json({ error: "Accès refusé" });
+  if (!req.file) return res.status(400).json({ error: "Fichier requis" });
+  try {
+    const imageId = uuidv4();
+    const bannerUrl = await saveImageToDb(req.file.path, imageId, req.file.mimetype);
+    return res.json({ url: bannerUrl });
+  } catch (err) {
+    return res.status(500).json({ error: "Erreur serveur" });
+  }
 });
 
 // Export for Vercel serverless

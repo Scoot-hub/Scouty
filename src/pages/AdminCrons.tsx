@@ -37,6 +37,7 @@ const JOB_META: Record<string, {
   'subscription-expiry': { label: 'Expiration d\'abonnement',   desc: 'Prévient les utilisateurs dont l\'abonnement expire dans 7 jours.',          schedule: 'Chaque jour à 09:00',       icon: Crown,         color: 'text-yellow-500', supportsDryRun: true  },
   'nightly-enrichment':  { label: 'Enrichissement nocturne',    desc: 'Enrichit les données de tous les joueurs des utilisateurs premium.',          schedule: 'Chaque jour à 02:00',       icon: Zap,           color: 'text-purple-500', supportsDryRun: false },
   'inactive-cleanup':    { label: 'Comptes inactifs',           desc: 'Supprime les comptes sans activité depuis 5 ans. Avertit à 4 ans 11 mois.',   schedule: '1er du mois à 03:00',       icon: UserX,         color: 'text-red-500',    supportsDryRun: true  },
+  'buzz-scrape':         { label: 'Buzz Football',              desc: 'Agrège les flux RSS des médias football (L\'Équipe, Goal, RMC...) pour la page Buzz.',  schedule: 'Toutes les 30 minutes', icon: Zap,           color: 'text-orange-500', supportsDryRun: false },
 };
 
 function resultSummary(log: CronLog): string {

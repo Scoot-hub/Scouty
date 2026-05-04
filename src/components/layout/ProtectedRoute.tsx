@@ -34,6 +34,7 @@ const ROUTE_TO_PAGE_KEY: Record<string, string> = {
   '/admin': 'admin',
   '/admin/roles': 'admin',
   '/data-import': 'data_import',
+  '/news': 'news',
 };
 
 function getPageKey(pathname: string): string | null {

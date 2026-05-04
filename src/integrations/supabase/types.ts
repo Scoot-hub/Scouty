@@ -220,6 +220,7 @@ export type Database = {
           potential: number
           role: string | null
           shared_with_org: boolean
+          social_instagram: string | null
           task: string | null
           transfermarkt_id: string | null
           ts_report_published: boolean
@@ -252,6 +253,7 @@ export type Database = {
           potential?: number
           role?: string | null
           shared_with_org?: boolean
+          social_instagram?: string | null
           task?: string | null
           transfermarkt_id?: string | null
           ts_report_published?: boolean
@@ -284,6 +286,7 @@ export type Database = {
           potential?: number
           role?: string | null
           shared_with_org?: boolean
+          social_instagram?: string | null
           task?: string | null
           transfermarkt_id?: string | null
           ts_report_published?: boolean

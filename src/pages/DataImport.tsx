@@ -90,7 +90,9 @@ export default function DataImport() {
 
   const [step, setStep] = useState<Step>('upload');
   const [rows, setRows] = useState<Record<string, unknown>[]>([]);
+  const [originalFile, setOriginalFile] = useState<File | null>(null);
   const [fileName, setFileName] = useState('');
+  const [fileSize, setFileSize] = useState(0);
   const [sheetName, setSheetName] = useState('');
   const [error, setError] = useState('');
   const [dragging, setDragging] = useState(false);
@@ -99,14 +101,36 @@ export default function DataImport() {
   const [showErrors, setShowErrors] = useState(false);
   const [showMapping, setShowMapping] = useState(false);
 
+  const SIZE_HARD_LIMIT_MB = 20;  // block before even reading
+  const SIZE_WARN_MB = 2;
+  const ROW_WARN = 10_000;
+  const formatMB = (bytes: number) => (bytes / 1024 / 1024).toFixed(1);
+
   // ── File parsing ─────────────────────────────────────────────────────────
   const processFile = (file: File) => {
     setError('');
+    setFileSize(file.size);
+
     if (!file.name.match(/\.(xlsx|xls|csv)$/i)) {
       setError(t('data_import.error_format'));
       return;
     }
+
+    // Hard block before even reading the file
+    const fileMB = file.size / 1024 / 1024;
+    if (fileMB > SIZE_HARD_LIMIT_MB) {
+      setError(
+        `Fichier trop volumineux (${formatMB(file.size)} Mo). ` +
+        `Limite : ${SIZE_HARD_LIMIT_MB} Mo. ` +
+        `Découpez le fichier en plusieurs parties de moins de ${SIZE_HARD_LIMIT_MB} Mo.`
+      );
+      return;
+    }
+
     setFileName(file.name);
+    setOriginalFile(file);
+
+    // Read only for preview — the actual import sends the raw file
     const reader = new FileReader();
     reader.onload = (e) => {
       try {
@@ -144,31 +168,77 @@ export default function DataImport() {
   const reset = () => {
     setStep('upload');
     setRows([]);
+    setOriginalFile(null);
     setFileName('');
+    setFileSize(0);
     setError('');
     setResult(null);
     setShowErrors(false);
   };
 
-  // ── Import submission ─────────────────────────────────────────────────────
+  // ── Import submission ────────────────────────────────────────────────────
+  const IMPORT_TIMEOUT_MS = 10 * 60 * 1000; // 10 minutes max
+
   const handleImport = async () => {
     if (!canImport) {
       toast.error("Vous n'avez pas la permission d'importer.");
       return;
     }
+    if (!originalFile) {
+      toast.error('Fichier introuvable. Veuillez recharger le fichier.');
+      return;
+    }
     setStep('importing');
+
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), IMPORT_TIMEOUT_MS);
+
     try {
-      const res = await fetch(`${API}/import/wyscout`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        credentials: 'include',
-        body: JSON.stringify({ rows }),
-      });
+      const formData = new FormData();
+      formData.append('file', originalFile, originalFile.name);
+
+      let res: Response;
+      try {
+        res = await fetch(`${API}/import/wyscout`, {
+          method: 'POST',
+          credentials: 'include',
+          body: formData,
+          signal: controller.signal,
+        });
+      } catch (fetchErr: unknown) {
+        // Translate low-level network errors into actionable messages
+        if (fetchErr instanceof DOMException && fetchErr.name === 'AbortError')
+          throw new Error(`Import annulé : délai dépassé (${IMPORT_TIMEOUT_MS / 60000} min). Le fichier est peut-être trop volumineux ou le serveur est surchargé.`);
+        const isOffline = !navigator.onLine;
+        throw new Error(
+          isOffline
+            ? 'Impossible de joindre le serveur : vérifiez votre connexion réseau.'
+            : `Impossible de joindre le serveur d'import. Causes possibles :\n` +
+              `• Le serveur n'est pas démarré (npm run api)\n` +
+              `• Le proxy Vite a expiré (redémarrez le serveur de dev)\n` +
+              `• Erreur réseau (${(fetchErr as Error)?.message ?? 'Unknown'})`
+        );
+      }
+
+      // Guard against HTML error pages (413, 502, nginx errors...)
+      const contentType = res.headers.get('content-type') || '';
+      if (!contentType.includes('application/json')) {
+        const text = await res.text();
+        const statusMsg =
+          res.status === 413 ? 'Fichier trop volumineux pour le serveur (limite 25 Mo). Découpez le fichier en plusieurs parties.'
+          : res.status === 403 ? 'Accès refusé. Rôle importateur requis.'
+          : res.status === 502 ? 'Le serveur a dépassé le timeout (502). Réessayez avec un fichier plus petit (< 5 000 lignes).'
+          : res.status === 504 ? 'Timeout du serveur (504). Le fichier est trop grand pour un seul import.'
+          : `Erreur serveur HTTP ${res.status}.`;
+        throw new Error(`${statusMsg}\n\nDétail : ${text.slice(0, 300).replace(/<[^>]+>/g, '').trim()}`);
+      }
+
       const data = await res.json();
-      if (!res.ok) throw new Error(data.error || 'Erreur serveur');
+      if (!res.ok) throw new Error(data.error || `Erreur serveur (${res.status})`);
+
       setResult(data);
       setStep('done');
-      if (data.errors?.length === 0) {
+      if (!data.errors?.length) {
         toast.success(`Import terminé : ${data.created} créés, ${data.updated} mis à jour.`);
       } else {
         toast.warning(`Import terminé avec ${data.errors.length} erreur(s).`);
@@ -177,7 +247,9 @@ export default function DataImport() {
       const msg = err instanceof Error ? err.message : 'Erreur inconnue';
       setError(msg);
       setStep('preview');
-      toast.error(msg);
+      toast.error(msg.split('\n')[0]); // show first line in toast, full in card
+    } finally {
+      clearTimeout(timer);
     }
   };
 
@@ -213,6 +285,12 @@ export default function DataImport() {
         {step !== 'upload' && (
           <div className="ml-auto flex items-center gap-2">
             <Badge variant="secondary" className="font-mono">{fileName}</Badge>
+            {fileSize > 0 && (
+              <Badge variant={fileSize > SIZE_WARN_MB * 1024 * 1024 ? 'outline' : 'secondary'}
+                className={fileSize > 10 * 1024 * 1024 ? 'border-orange-400 text-orange-600' : fileSize > SIZE_WARN_MB * 1024 * 1024 ? 'border-amber-400 text-amber-600' : ''}>
+                {formatMB(fileSize)} Mo
+              </Badge>
+            )}
             <Button variant="ghost" size="sm" onClick={reset}>
               <X className="w-4 h-4 mr-1" />
               {t('data_import.change_file')}
@@ -260,9 +338,9 @@ export default function DataImport() {
             </label>
 
             {error && (
-              <div className="flex items-center gap-2 text-destructive text-sm">
-                <AlertCircle className="w-4 h-4 shrink-0" />
-                {error}
+              <div className="flex items-start gap-2 rounded-xl bg-destructive/8 border border-destructive/20 p-3 text-sm text-destructive">
+                <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
+                <pre className="whitespace-pre-wrap font-sans text-xs leading-relaxed">{error}</pre>
               </div>
             )}
           </CardContent>
@@ -298,6 +376,37 @@ export default function DataImport() {
                 <code className="mx-1 px-1 py-0.5 bg-destructive/10 rounded text-[11px]">Team</code>,
                 <code className="mx-1 px-1 py-0.5 bg-destructive/10 rounded text-[11px]">xG</code>,
                 <code className="mx-1 px-1 py-0.5 bg-destructive/10 rounded text-[11px]">Duels per 90</code> sont présentes.
+              </span>
+            </div>
+          )}
+
+          {/* ── Avertissements taille / volume ── */}
+          {fileSize > SIZE_WARN_MB * 1024 * 1024 && fileSize <= 10 * 1024 * 1024 && (
+            <div className="flex items-start gap-2.5 p-3 rounded-lg bg-amber-50 dark:bg-amber-950/20 border border-amber-300 dark:border-amber-700/50 text-sm text-amber-800 dark:text-amber-300">
+              <AlertCircle className="w-4 h-4 shrink-0 mt-0.5 text-amber-500" />
+              <span>
+                <strong>Fichier volumineux ({formatMB(fileSize)} Mo).</strong>{' '}
+                L'upload et le traitement peuvent prendre quelques minutes.
+              </span>
+            </div>
+          )}
+
+          {fileSize > 10 * 1024 * 1024 && (
+            <div className="flex items-start gap-2.5 p-3 rounded-lg bg-orange-50 dark:bg-orange-950/20 border border-orange-400 dark:border-orange-600/50 text-sm text-orange-900 dark:text-orange-300">
+              <AlertCircle className="w-4 h-4 shrink-0 mt-0.5 text-orange-500" />
+              <div>
+                <p className="font-semibold">Fichier très volumineux ({formatMB(fileSize)} Mo — {rows.length.toLocaleString('fr-FR')} joueurs)</p>
+                <p className="mt-0.5">L'import peut prendre plusieurs minutes. Patientez sans fermer la page.</p>
+              </div>
+            </div>
+          )}
+
+          {rows.length > ROW_WARN && (
+            <div className="flex items-start gap-2.5 p-3 rounded-lg bg-amber-50 dark:bg-amber-950/20 border border-amber-300 dark:border-amber-700/50 text-sm text-amber-800 dark:text-amber-300">
+              <AlertCircle className="w-4 h-4 shrink-0 mt-0.5 text-amber-500" />
+              <span>
+                <strong>{rows.length.toLocaleString('fr-FR')} joueurs détectés.</strong>{' '}
+                Au-delà de {ROW_WARN.toLocaleString('fr-FR')} lignes, l'import peut prendre plusieurs minutes.
               </span>
             </div>
           )}

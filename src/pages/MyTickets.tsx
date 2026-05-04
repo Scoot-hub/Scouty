@@ -1,15 +1,20 @@
 import { useState, useRef, useEffect } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useMyTickets, useMyTicketDetail, useMyTicketReply } from '@/hooks/use-tickets';
-import { Card, CardContent } from '@/components/ui/card';
+import { useQueryClient } from '@tanstack/react-query';
+import { moderateFields } from '@/lib/content-moderation';
+import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Textarea } from '@/components/ui/textarea';
 import {
   MessageSquare, Send, Loader2, CheckCircle, Clock, AlertCircle, ChevronLeft,
+  Plus, X, Bug, Lightbulb, HelpCircle, ChevronDown,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { toast } from 'sonner';
+
+const API_BASE = (import.meta.env.API_URL || '/api').replace(/\/$/, '');
 
 const statusBadge = (status: string, t: (k: string) => string) => {
   if (status === 'closed') return <Badge variant="secondary" className="text-[10px] gap-1"><CheckCircle className="w-3 h-3" /> {t('tickets.closed')}</Badge>;
@@ -17,10 +22,132 @@ const statusBadge = (status: string, t: (k: string) => string) => {
   return <Badge className="text-[10px] gap-1 bg-blue-500/15 text-blue-600 hover:bg-blue-500/20 border-0"><AlertCircle className="w-3 h-3" /> {t('tickets.open')}</Badge>;
 };
 
+const CATEGORY_META: Record<string, { icon: typeof Bug; color: string }> = {
+  bug:     { icon: Bug,         color: 'text-red-500' },
+  feature: { icon: Lightbulb,   color: 'text-amber-500' },
+  other:   { icon: HelpCircle,  color: 'text-muted-foreground' },
+};
+
+// ── New ticket inline form ──────────────────────────────────────────────────
+function NewTicketForm({ onCreated }: { onCreated: () => void }) {
+  const { t } = useTranslation();
+  const qc = useQueryClient();
+  const [subject, setSubject] = useState('');
+  const [category, setCategory] = useState('bug');
+  const [message, setMessage] = useState('');
+  const [sending, setSending] = useState(false);
+
+  const reset = () => { setSubject(''); setCategory('bug'); setMessage(''); };
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!subject.trim() || !message.trim()) return;
+    if (!moderateFields(subject, message).clean) { toast.error(t('moderation.blocked')); return; }
+    setSending(true);
+    try {
+      const res = await fetch(`${API_BASE}/report-issue`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify({ category, subject: subject.trim(), message: message.trim(), url: window.location.href, userAgent: navigator.userAgent }),
+      });
+      if (!res.ok) { const d = await res.json().catch(() => ({})); throw new Error(d.error || 'Erreur'); }
+      toast.success(t('report_issue.success'));
+      reset();
+      qc.invalidateQueries({ queryKey: ['my-tickets'] });
+      onCreated();
+    } catch { toast.error(t('report_issue.error')); }
+    finally { setSending(false); }
+  };
+
+  const CATS = [
+    { value: 'bug',     label: t('report_issue.category_bug'),     Icon: Bug,        color: 'border-red-500/40 text-red-500 bg-red-500/5 hover:bg-red-500/10' },
+    { value: 'feature', label: t('report_issue.category_feature'), Icon: Lightbulb,  color: 'border-amber-500/40 text-amber-500 bg-amber-500/5 hover:bg-amber-500/10' },
+    { value: 'other',   label: t('report_issue.category_other'),   Icon: HelpCircle, color: 'border-border text-muted-foreground hover:bg-muted/50' },
+  ];
+
+  return (
+    <Card className="card-warm">
+      <CardHeader className="pb-3">
+        <CardTitle className="text-base flex items-center gap-2">
+          <Plus className="w-4 h-4 text-primary" />
+          {t('tickets.new_ticket')}
+        </CardTitle>
+      </CardHeader>
+      <CardContent>
+        <form onSubmit={handleSubmit} className="space-y-4">
+          {/* Category picker */}
+          <div className="grid grid-cols-3 gap-2">
+            {CATS.map(({ value, label, Icon, color }) => (
+              <button
+                key={value}
+                type="button"
+                onClick={() => setCategory(value)}
+                className={cn(
+                  'flex flex-col items-center gap-1.5 rounded-xl border p-3 text-xs font-medium transition-all',
+                  category === value ? color + ' ring-1 ring-current' : 'border-border text-muted-foreground hover:bg-muted/50',
+                )}
+              >
+                <Icon className="w-4 h-4" />
+                {label}
+              </button>
+            ))}
+          </div>
+
+          {/* Subject */}
+          <div className="space-y-1.5">
+            <label className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+              {t('report_issue.subject')}
+            </label>
+            <input
+              type="text"
+              required
+              value={subject}
+              onChange={e => setSubject(e.target.value)}
+              placeholder={t('report_issue.subject_placeholder')}
+              className="w-full rounded-xl border border-input bg-background px-3 py-2 text-sm placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-ring"
+            />
+          </div>
+
+          {/* Message */}
+          <div className="space-y-1.5">
+            <label className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+              {t('report_issue.message')}
+            </label>
+            <Textarea
+              required
+              rows={4}
+              value={message}
+              onChange={e => setMessage(e.target.value)}
+              placeholder={t('report_issue.message_placeholder')}
+              className="rounded-xl resize-none text-sm"
+            />
+          </div>
+
+          <p className="text-xs text-muted-foreground">{t('report_issue.context_info')}</p>
+
+          <div className="flex justify-end gap-2">
+            <Button
+              type="submit"
+              disabled={sending || !subject.trim() || !message.trim()}
+              className="rounded-xl gap-2"
+            >
+              {sending ? <Loader2 className="w-4 h-4 animate-spin" /> : <Send className="w-4 h-4" />}
+              {sending ? t('report_issue.sending') : t('report_issue.send')}
+            </Button>
+          </div>
+        </form>
+      </CardContent>
+    </Card>
+  );
+}
+
+// ── Main page ───────────────────────────────────────────────────────────────
 export default function MyTickets() {
   const { t } = useTranslation();
   const { data: tickets = [], isLoading } = useMyTickets();
   const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [showForm, setShowForm] = useState(false);
 
   if (isLoading) return <div className="flex items-center justify-center py-20"><Loader2 className="w-5 h-5 animate-spin" /></div>;
 
@@ -28,54 +155,104 @@ export default function MyTickets() {
     return <TicketChat ticketId={selectedId} onBack={() => setSelectedId(null)} />;
   }
 
+  const openCount = tickets.filter(t => t.status !== 'closed').length;
+
   return (
-    <div className="max-w-3xl mx-auto">
-      <div className="flex items-center gap-3 mb-6">
-        <div className="w-10 h-10 rounded-xl bg-primary/10 flex items-center justify-center">
-          <MessageSquare className="w-5 h-5 text-primary" />
+    <div className="max-w-3xl mx-auto space-y-6">
+      {/* Header */}
+      <div className="flex items-center justify-between">
+        <div className="flex items-center gap-3">
+          <div className="w-10 h-10 rounded-xl bg-primary/10 flex items-center justify-center">
+            <MessageSquare className="w-5 h-5 text-primary" />
+          </div>
+          <div>
+            <h1 className="text-2xl font-extrabold tracking-tight">{t('tickets.my_tickets')}</h1>
+            <p className="text-sm text-muted-foreground">{t('tickets.my_tickets_desc')}</p>
+          </div>
         </div>
-        <div>
-          <h1 className="text-2xl font-extrabold tracking-tight">{t('tickets.my_tickets')}</h1>
-          <p className="text-sm text-muted-foreground">{t('tickets.my_tickets_desc')}</p>
-        </div>
+        <Button
+          onClick={() => setShowForm(v => !v)}
+          variant={showForm ? 'outline' : 'default'}
+          className="rounded-xl gap-2"
+        >
+          {showForm ? <X className="w-4 h-4" /> : <Plus className="w-4 h-4" />}
+          {showForm ? t('common.cancel') : t('tickets.new_ticket')}
+        </Button>
       </div>
 
-      {tickets.length === 0 ? (
-        <Card>
-          <CardContent className="py-12 text-center">
-            <MessageSquare className="w-10 h-10 mx-auto mb-3 text-muted-foreground opacity-30" />
-            <p className="text-sm text-muted-foreground">{t('tickets.no_tickets')}</p>
-          </CardContent>
-        </Card>
-      ) : (
-        <div className="space-y-2">
-          {tickets.map(ticket => (
-            <button
-              key={ticket.id}
-              onClick={() => setSelectedId(ticket.id)}
-              className="w-full text-left rounded-xl border p-4 hover:bg-muted/50 transition-colors"
-            >
-              <div className="flex items-center justify-between mb-1">
-                <span className="text-sm font-semibold">{ticket.subject}</span>
-                <div className="flex items-center gap-2">
-                  {(ticket.unread_count ?? 0) > 0 && (
-                    <span className="bg-primary text-primary-foreground text-[9px] rounded-full w-5 h-5 flex items-center justify-center font-bold">
-                      {ticket.unread_count}
-                    </span>
-                  )}
-                  {statusBadge(ticket.status, t)}
-                </div>
-              </div>
-              <p className="text-xs text-muted-foreground line-clamp-1">{ticket.message}</p>
-              <p className="text-[10px] text-muted-foreground mt-1">{new Date(ticket.created_at).toLocaleString()}</p>
-            </button>
-          ))}
-        </div>
+      {/* New ticket form */}
+      {showForm && (
+        <NewTicketForm onCreated={() => setShowForm(false)} />
       )}
+
+      {/* Ticket list */}
+      <div>
+        {/* Stats row */}
+        {tickets.length > 0 && (
+          <div className="flex items-center gap-3 mb-3">
+            <span className="text-xs text-muted-foreground">{tickets.length} ticket{tickets.length > 1 ? 's' : ''}</span>
+            {openCount > 0 && (
+              <Badge className="text-[10px] bg-blue-500/15 text-blue-600 border-0">
+                {openCount} {openCount > 1 ? t('tickets.open_plural') : t('tickets.open')}
+              </Badge>
+            )}
+          </div>
+        )}
+
+        {tickets.length === 0 ? (
+          <Card>
+            <CardContent className="py-16 text-center">
+              <MessageSquare className="w-12 h-12 mx-auto mb-3 text-muted-foreground opacity-20" />
+              <p className="text-sm font-medium text-muted-foreground mb-1">{t('tickets.no_tickets')}</p>
+              <p className="text-xs text-muted-foreground/60 mb-4">{t('tickets.no_tickets_hint')}</p>
+              <Button size="sm" className="rounded-xl gap-2" onClick={() => setShowForm(true)}>
+                <Plus className="w-4 h-4" />
+                {t('tickets.new_ticket')}
+              </Button>
+            </CardContent>
+          </Card>
+        ) : (
+          <div className="space-y-2">
+            {tickets.map(ticket => {
+              const CatIcon = CATEGORY_META[ticket.category ?? 'other']?.icon ?? HelpCircle;
+              const catColor = CATEGORY_META[ticket.category ?? 'other']?.color ?? 'text-muted-foreground';
+              return (
+                <button
+                  key={ticket.id}
+                  onClick={() => setSelectedId(ticket.id)}
+                  className="w-full text-left rounded-xl border border-border/60 bg-card p-4 hover:bg-muted/40 transition-colors group"
+                >
+                  <div className="flex items-start gap-3">
+                    <div className={cn('mt-0.5 shrink-0', catColor)}>
+                      <CatIcon className="w-4 h-4" />
+                    </div>
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center justify-between gap-2 mb-0.5">
+                        <span className="text-sm font-semibold truncate">{ticket.subject}</span>
+                        <div className="flex items-center gap-2 shrink-0">
+                          {(ticket.unread_count ?? 0) > 0 && (
+                            <span className="bg-primary text-primary-foreground text-[9px] rounded-full min-w-[18px] h-[18px] flex items-center justify-center font-bold px-1">
+                              {ticket.unread_count}
+                            </span>
+                          )}
+                          {statusBadge(ticket.status, t)}
+                        </div>
+                      </div>
+                      <p className="text-xs text-muted-foreground line-clamp-1">{ticket.message}</p>
+                      <p className="text-[10px] text-muted-foreground/60 mt-1">{new Date(ticket.created_at).toLocaleString()}</p>
+                    </div>
+                  </div>
+                </button>
+              );
+            })}
+          </div>
+        )}
+      </div>
     </div>
   );
 }
 
+// ── Ticket chat ─────────────────────────────────────────────────────────────
 function TicketChat({ ticketId, onBack }: { ticketId: string; onBack: () => void }) {
   const { t } = useTranslation();
   const { data, isLoading } = useMyTicketDetail(ticketId);
@@ -97,6 +274,8 @@ function TicketChat({ ticketId, onBack }: { ticketId: string; onBack: () => void
   if (isLoading || !data) return <div className="flex items-center justify-center py-20"><Loader2 className="w-5 h-5 animate-spin" /></div>;
 
   const { ticket, messages } = data;
+  const CatIcon = CATEGORY_META[ticket.category ?? 'other']?.icon ?? HelpCircle;
+  const catColor = CATEGORY_META[ticket.category ?? 'other']?.color ?? 'text-muted-foreground';
 
   return (
     <div className="max-w-3xl mx-auto flex flex-col" style={{ height: 'calc(100vh - 80px)' }}>
@@ -105,6 +284,7 @@ function TicketChat({ ticketId, onBack }: { ticketId: string; onBack: () => void
         <Button variant="ghost" size="icon" onClick={onBack} className="rounded-xl">
           <ChevronLeft className="w-5 h-5" />
         </Button>
+        <CatIcon className={cn('w-4 h-4 shrink-0', catColor)} />
         <div className="flex-1 min-w-0">
           <h2 className="text-lg font-bold truncate">{ticket.subject}</h2>
           <p className="text-xs text-muted-foreground flex items-center gap-2">
@@ -115,7 +295,6 @@ function TicketChat({ ticketId, onBack }: { ticketId: string; onBack: () => void
 
       {/* Messages */}
       <div className="flex-1 overflow-y-auto rounded-xl border bg-card px-4 py-4 space-y-3">
-        {/* Original message */}
         <div className="flex justify-end">
           <div className="max-w-[80%] rounded-2xl rounded-tr-md px-4 py-2.5 bg-primary text-primary-foreground text-sm">
             <div className="whitespace-pre-wrap leading-relaxed">{ticket.message}</div>
@@ -141,7 +320,7 @@ function TicketChat({ ticketId, onBack }: { ticketId: string; onBack: () => void
       </div>
 
       {/* Reply input */}
-      {ticket.status !== 'closed' && (
+      {ticket.status !== 'closed' ? (
         <div className="pt-3">
           <div className="flex gap-2">
             <Textarea
@@ -161,9 +340,7 @@ function TicketChat({ ticketId, onBack }: { ticketId: string; onBack: () => void
             </Button>
           </div>
         </div>
-      )}
-
-      {ticket.status === 'closed' && (
+      ) : (
         <div className="pt-3 text-center">
           <p className="text-xs text-muted-foreground">{t('tickets.ticket_closed')}</p>
         </div>

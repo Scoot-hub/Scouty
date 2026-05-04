@@ -2,14 +2,14 @@ import { useState } from 'react';
 import { Link, useLocation, useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import {
-  Users, Menu, X, LogOut, Settings, Shield, UserCircle, Eye, Sparkles, Building2, Bug, CalendarDays, CalendarCheck, Shirt, ClipboardList, ChevronLeft, ChevronRight, ChevronDown, Route, MapPinned, Gift, Search, Globe, Heart, MessageSquare, Info, Trophy, FileSpreadsheet
+  Users, Menu, X, LogOut, Settings, Shield, UserCircle, Eye, Sparkles, Building2, CalendarDays, CalendarCheck, Shirt, ClipboardList, ChevronLeft, ChevronRight, ChevronDown, Route, MapPinned, Gift, Search, Globe, Heart, MessageSquare, Info, Trophy, FileSpreadsheet, Newspaper, PenLine, Plus, Zap, Twitter, Star
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { useAuth } from '@/contexts/AuthContext';
 import { useIsAdmin, useIsPremium, useMyPermissions } from '@/hooks/use-admin';
+import { useUiPreferences } from '@/contexts/UiPreferencesContext';
 import { useMyOrganizations, slugify } from '@/hooks/use-organization';
-import { useAdminTicketUnreadCount } from '@/hooks/use-tickets';
-import ReportIssueDialog from '@/components/ReportIssueDialog';
+import { useAdminTicketUnreadCount, useMyTickets } from '@/hooks/use-tickets';
 import { FeatureGate } from '@/components/FeatureGate';
 import logo from '@/assets/logo.png';
 
@@ -54,8 +54,11 @@ export default function AppSidebar({ collapsed, onToggle }: AppSidebarProps) {
   const { data: isPremium } = useIsPremium();
   const { data: permsData } = useMyPermissions();
   const { data: ticketUnread = 0 } = useAdminTicketUnreadCount();
+  const { data: myTicketsList = [] } = useMyTickets();
+  const myTicketUnread = myTicketsList.reduce((sum, tk) => sum + (tk.unread_count ?? 0), 0);
   const { data: myOrgs } = useMyOrganizations();
   const { t } = useTranslation();
+  const { hideRestrictedElements } = useUiPreferences();
 
   const WHITELIST_ONLY = new Set(['admin', 'data_import']);
   const canView = (pageKey: string): boolean => {
@@ -66,8 +69,18 @@ export default function AppSidebar({ collapsed, onToggle }: AppSidebarProps) {
     return val;
   };
 
+  const canAction = (pageKey: string, action: string): boolean => {
+    if (isAdmin) return true;
+    const val = (permsData?.permissions as Record<string, unknown> | undefined)?.[pageKey];
+    if (val && typeof val === 'object') return !!(val as Record<string, boolean>)[action];
+    return false;
+  };
+
+  // When hideRestrictedElements is off, restricted items are greyed out instead of hidden
+  const shouldShow = (pageKey: string) => canView(pageKey) || !hideRestrictedElements;
+  const restrictedClass = (pageKey: string) => (!canView(pageKey) ? 'pointer-events-none opacity-40' : '');
+
   const [mobileOpen, setMobileOpen] = useState(false);
-  const [reportOpen, setReportOpen] = useState(false);
   const [legalOpen, setLegalOpen] = useState(false);
 
   // null = auto (based on active child route), true/false = user override
@@ -80,15 +93,23 @@ export default function AppSidebar({ collapsed, onToggle }: AppSidebarProps) {
 
   const playersChildPaths = ['/discover', '/watchlist', '/shadow-team'];
   const fixturesChildPaths = ['/my-matches', '/map'];
+  const champChildPaths = ['/my-championships'];
   const clubChildPaths = ['/my-clubs', '/club', '/club-search'];
   const orgChildPaths = myOrgs?.map(o => `/organization/${slugify(o.name)}`) ?? [];
 
   const [clubOpenOverride, setClubOpenOverride] = useState<boolean | null>(null);
+  const [champOpenOverride, setChampOpenOverride] = useState<boolean | null>(null);
+  const [newsOpenOverride, setNewsOpenOverride] = useState<boolean | null>(null);
+
+  const editorialChildPaths = ['/editorial/new'];
+  const newsChildPaths = ['/buzz', '/x', '/instagram', '/editorial', '/editorial/new'];
 
   const playersOpen = playersOpenOverride ?? hasActiveChild(playersChildPaths);
   const fixturesOpen = fixturesOpenOverride ?? hasActiveChild(fixturesChildPaths);
   const orgOpen = orgOpenOverride ?? hasActiveChild(orgChildPaths);
   const clubOpen = clubOpenOverride ?? hasActiveChild(clubChildPaths);
+  const champOpen = champOpenOverride ?? hasActiveChild(champChildPaths);
+  const newsOpen = newsOpenOverride ?? hasActiveChild(newsChildPaths);
 
   const handleSignOut = async () => {
     await signOut();
@@ -186,60 +207,70 @@ export default function AppSidebar({ collapsed, onToggle }: AppSidebarProps) {
       <nav className={cn('flex-1 space-y-0.5', collapsed ? 'px-2 overflow-hidden' : 'px-3 overflow-y-auto sidebar-scroll')}>
 
         {/* ── Joueurs ── */}
-        {canView('players') && (
-          <CollapsibleParent open={playersOpen} onToggleOpen={() => setPlayersOpenOverride(v => v === null ? !hasActiveChild(playersChildPaths) : !v)}>
-            <SidebarTooltip label={t('sidebar.players')} collapsed={collapsed}>
-              <Link to="/players" className={linkClass('/players', playersChildPaths)} onClick={() => { setMobileOpen(false); setPlayersOpenOverride(true); }}>
-                <Users className="w-4 h-4 shrink-0" />
-                {!collapsed && t('sidebar.players')}
-              </Link>
-            </SidebarTooltip>
-          </CollapsibleParent>
+        {shouldShow('players') && (
+          <div className={restrictedClass('players')}>
+            <CollapsibleParent open={playersOpen} onToggleOpen={() => setPlayersOpenOverride(v => v === null ? !hasActiveChild(playersChildPaths) : !v)}>
+              <SidebarTooltip label={t('sidebar.players')} collapsed={collapsed}>
+                <Link to="/players" className={linkClass('/players', playersChildPaths)} onClick={() => { setMobileOpen(false); setPlayersOpenOverride(true); }}>
+                  <Users className="w-4 h-4 shrink-0" />
+                  {!collapsed && t('sidebar.players')}
+                </Link>
+              </SidebarTooltip>
+            </CollapsibleParent>
+          </div>
         )}
 
-        {!collapsed && canView('players') && playersOpen && (
+        {!collapsed && shouldShow('players') && canView('players') && playersOpen && (
           <div className="pl-7 space-y-0.5">
-            {canView('discover') && (
-              <FeatureGate featureKey="feature_discover" inline>
-                <Link to="/discover" className={subLinkClass(isActive('/discover'))} onClick={() => setMobileOpen(false)}>
-                  <Search className="w-3.5 h-3.5" />
-                  <span className="flex items-center gap-2">
-                    {t('sidebar.discover')}
-                    <span className="text-[9px] px-1.5 py-0.5 rounded-full bg-primary/15 text-primary font-bold">PRO</span>
-                  </span>
-                </Link>
-              </FeatureGate>
+            {shouldShow('discover') && (
+              <div className={restrictedClass('discover')}>
+                <FeatureGate featureKey="feature_discover" inline>
+                  <Link to="/discover" className={subLinkClass(isActive('/discover'))} onClick={() => setMobileOpen(false)}>
+                    <Search className="w-3.5 h-3.5" />
+                    <span className="flex items-center gap-2">
+                      {t('sidebar.discover')}
+                      <span className="text-[9px] px-1.5 py-0.5 rounded-full bg-primary/15 text-primary font-bold">PRO</span>
+                    </span>
+                  </Link>
+                </FeatureGate>
+              </div>
             )}
-            {canView('watchlist') && (
-              <Link to="/watchlist" className={subLinkClass(isActive('/watchlist'))} onClick={() => setMobileOpen(false)}>
-                <Eye className="w-3.5 h-3.5" />
-                {t('sidebar.watchlist')}
-              </Link>
-            )}
-            {canView('shadow_team') && (
-              <FeatureGate featureKey="feature_shadow_team" inline>
-                <Link to="/shadow-team" className={subLinkClass(isActive('/shadow-team'))} onClick={() => setMobileOpen(false)}>
-                  <Shirt className="w-3.5 h-3.5" />
-                  {t('sidebar.shadow_team')}
+            {shouldShow('watchlist') && (
+              <div className={restrictedClass('watchlist')}>
+                <Link to="/watchlist" className={subLinkClass(isActive('/watchlist'))} onClick={() => setMobileOpen(false)}>
+                  <Eye className="w-3.5 h-3.5" />
+                  {t('sidebar.watchlist')}
                 </Link>
-              </FeatureGate>
+              </div>
+            )}
+            {shouldShow('shadow_team') && (
+              <div className={restrictedClass('shadow_team')}>
+                <FeatureGate featureKey="feature_shadow_team" inline>
+                  <Link to="/shadow-team" className={subLinkClass(isActive('/shadow-team'))} onClick={() => setMobileOpen(false)}>
+                    <Shirt className="w-3.5 h-3.5" />
+                    {t('sidebar.shadow_team')}
+                  </Link>
+                </FeatureGate>
+              </div>
             )}
           </div>
         )}
 
         {/* ── Organisation ── */}
-        {canView('organization') && (
-          <CollapsibleParent open={orgOpen} onToggleOpen={() => setOrgOpenOverride(v => v === null ? !hasActiveChild(orgChildPaths) : !v)}>
-            <SidebarTooltip label={t('sidebar.organization')} collapsed={collapsed}>
-              <Link to="/organization" className={linkClass('/organization', orgChildPaths)} onClick={() => { setMobileOpen(false); setOrgOpenOverride(true); }}>
-                <Building2 className="w-4 h-4 shrink-0" />
-                {!collapsed && t('sidebar.organization')}
-              </Link>
-            </SidebarTooltip>
-          </CollapsibleParent>
+        {shouldShow('organization') && (
+          <div className={restrictedClass('organization')}>
+            <CollapsibleParent open={orgOpen} onToggleOpen={() => setOrgOpenOverride(v => v === null ? !hasActiveChild(orgChildPaths) : !v)}>
+              <SidebarTooltip label={t('sidebar.organization')} collapsed={collapsed}>
+                <Link to="/organization" className={linkClass('/organization', orgChildPaths)} onClick={() => { setMobileOpen(false); setOrgOpenOverride(true); }}>
+                  <Building2 className="w-4 h-4 shrink-0" />
+                  {!collapsed && t('sidebar.organization')}
+                </Link>
+              </SidebarTooltip>
+            </CollapsibleParent>
+          </div>
         )}
 
-        {!collapsed && canView('organization') && orgOpen && myOrgs && myOrgs.length > 0 && (
+        {!collapsed && shouldShow('organization') && canView('organization') && orgOpen && myOrgs && myOrgs.length > 0 && (
           <div className="pl-7 space-y-0.5">
             {myOrgs.map((org) => {
               const slug = slugify(org.name);
@@ -284,120 +315,212 @@ export default function AppSidebar({ collapsed, onToggle }: AppSidebarProps) {
         )}
 
         {/* ── Calendrier / Fixtures ── */}
-        {canView('fixtures') && (
-          <FeatureGate featureKey="feature_fixtures" inline>
-            <CollapsibleParent open={fixturesOpen} onToggleOpen={() => setFixturesOpenOverride(v => v === null ? !hasActiveChild(fixturesChildPaths) : !v)}>
-              <SidebarTooltip label={t('sidebar.fixtures')} collapsed={collapsed}>
-                <Link to="/fixtures" className={linkClass('/fixtures', fixturesChildPaths)} onClick={() => { setMobileOpen(false); setFixturesOpenOverride(true); }}>
-                  <CalendarDays className="w-4 h-4 shrink-0" />
-                  {!collapsed && t('sidebar.fixtures')}
-                </Link>
-              </SidebarTooltip>
-            </CollapsibleParent>
-          </FeatureGate>
+        {shouldShow('fixtures') && (
+          <div className={restrictedClass('fixtures')}>
+            <FeatureGate featureKey="feature_fixtures" inline>
+              <CollapsibleParent open={fixturesOpen} onToggleOpen={() => setFixturesOpenOverride(v => v === null ? !hasActiveChild(fixturesChildPaths) : !v)}>
+                <SidebarTooltip label={t('sidebar.fixtures')} collapsed={collapsed}>
+                  <Link to="/fixtures" className={linkClass('/fixtures', fixturesChildPaths)} onClick={() => { setMobileOpen(false); setFixturesOpenOverride(true); }}>
+                    <CalendarDays className="w-4 h-4 shrink-0" />
+                    {!collapsed && t('sidebar.fixtures')}
+                  </Link>
+                </SidebarTooltip>
+              </CollapsibleParent>
+            </FeatureGate>
+          </div>
         )}
 
-        {!collapsed && canView('fixtures') && fixturesOpen && (
+        {!collapsed && shouldShow('fixtures') && canView('fixtures') && fixturesOpen && (
           <div className="pl-7 space-y-0.5">
-            {canView('my_matches') && (
-              <Link to="/my-matches" className={subLinkClass(isActive('/my-matches'))} onClick={() => setMobileOpen(false)}>
-                <MapPinned className="w-3.5 h-3.5" />
-                {t('sidebar.my_matches')}
-              </Link>
-            )}
-            {canView('map') && (
-              <FeatureGate featureKey="feature_map" inline>
-                <Link to="/map" className={subLinkClass(isActive('/map'))} onClick={() => setMobileOpen(false)}>
-                  <Globe className="w-3.5 h-3.5" />
-                  {t('sidebar.map')}
+            {shouldShow('my_matches') && (
+              <div className={restrictedClass('my_matches')}>
+                <Link to="/my-matches" className={subLinkClass(isActive('/my-matches'))} onClick={() => setMobileOpen(false)}>
+                  <MapPinned className="w-3.5 h-3.5" />
+                  {t('sidebar.my_matches')}
                 </Link>
-              </FeatureGate>
+              </div>
+            )}
+            {shouldShow('map') && (
+              <div className={restrictedClass('map')}>
+                <FeatureGate featureKey="feature_map" inline>
+                  <Link to="/map" className={subLinkClass(isActive('/map'))} onClick={() => setMobileOpen(false)}>
+                    <Globe className="w-3.5 h-3.5" />
+                    {t('sidebar.map')}
+                  </Link>
+                </FeatureGate>
+              </div>
             )}
           </div>
         )}
 
         {/* ── Championnats ── */}
-        <SidebarTooltip label={t('sidebar.championships')} collapsed={collapsed}>
-          <Link to="/championships" className={linkClass('/championships')} onClick={() => setMobileOpen(false)}>
-            <Trophy className="w-4 h-4 shrink-0" />
-            {!collapsed && t('sidebar.championships')}
-          </Link>
-        </SidebarTooltip>
+        <CollapsibleParent open={champOpen} onToggleOpen={() => setChampOpenOverride(v => v === null ? !hasActiveChild(champChildPaths) : !v)}>
+          <SidebarTooltip label={t('sidebar.championships')} collapsed={collapsed}>
+            <Link to="/championships" className={linkClass('/championships', champChildPaths)} onClick={() => { setMobileOpen(false); setChampOpenOverride(true); }}>
+              <Trophy className="w-4 h-4 shrink-0" />
+              {!collapsed && t('sidebar.championships')}
+            </Link>
+          </SidebarTooltip>
+        </CollapsibleParent>
+
+        {!collapsed && champOpen && (
+          <div className="pl-7 space-y-0.5">
+            <Link to="/my-championships" className={subLinkClass(isActive('/my-championships'))} onClick={() => setMobileOpen(false)}>
+              <Star className="w-3.5 h-3.5 text-yellow-500" />
+              {t('sidebar.my_championships')}
+            </Link>
+          </div>
+        )}
 
         {/* ── Club ── */}
-        {canView('club_profile') && (
-          <FeatureGate featureKey="feature_club_profile" inline>
-            <CollapsibleParent open={clubOpen} onToggleOpen={() => setClubOpenOverride(v => v === null ? !hasActiveChild(clubChildPaths) : !v)}>
-              <SidebarTooltip label={t('sidebar.club')} collapsed={collapsed}>
-                <Link to="/club-search" className={linkClass('/club-search', clubChildPaths)} onClick={() => { setMobileOpen(false); setClubOpenOverride(true); }}>
-                  <Building2 className="w-4 h-4 shrink-0" />
-                  {!collapsed && t('sidebar.club')}
+        {shouldShow('club_profile') && (
+          <div className={restrictedClass('club_profile')}>
+            <FeatureGate featureKey="feature_club_profile" inline>
+              <CollapsibleParent open={clubOpen} onToggleOpen={() => setClubOpenOverride(v => v === null ? !hasActiveChild(clubChildPaths) : !v)}>
+                <SidebarTooltip label={t('sidebar.club')} collapsed={collapsed}>
+                  <Link to="/club-search" className={linkClass('/club-search', clubChildPaths)} onClick={() => { setMobileOpen(false); setClubOpenOverride(true); }}>
+                    <Building2 className="w-4 h-4 shrink-0" />
+                    {!collapsed && t('sidebar.club')}
+                  </Link>
+                </SidebarTooltip>
+              </CollapsibleParent>
+            </FeatureGate>
+          </div>
+        )}
+
+        {!collapsed && shouldShow('club_profile') && canView('club_profile') && clubOpen && (
+          <div className="pl-7 space-y-0.5">
+            {shouldShow('my_clubs') && (
+              <div className={restrictedClass('my_clubs')}>
+                <Link to="/my-clubs" className={subLinkClass(isActive('/my-clubs'))} onClick={() => setMobileOpen(false)}>
+                  <Heart className="w-3.5 h-3.5" />
+                  {t('sidebar.my_clubs')}
+                </Link>
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* ── Actualités (collapsible) ── */}
+        {shouldShow('news') && (
+          <div className={restrictedClass('news')}>
+            <CollapsibleParent open={newsOpen} onToggleOpen={() => setNewsOpenOverride(v => v === null ? !hasActiveChild(newsChildPaths) : !v)}>
+              <SidebarTooltip label={t('sidebar.news')} collapsed={collapsed}>
+                <Link to="/news" className={linkClass('/news', newsChildPaths)} onClick={() => { setMobileOpen(false); setNewsOpenOverride(true); }}>
+                  <Newspaper className="w-4 h-4 shrink-0" />
+                  {!collapsed && t('sidebar.news')}
                 </Link>
               </SidebarTooltip>
             </CollapsibleParent>
-          </FeatureGate>
+          </div>
         )}
 
-        {!collapsed && canView('club_profile') && clubOpen && (
+        {!collapsed && shouldShow('news') && canView('news') && newsOpen && (
           <div className="pl-7 space-y-0.5">
-            {canView('my_clubs') && (
-              <Link to="/my-clubs" className={subLinkClass(isActive('/my-clubs'))} onClick={() => setMobileOpen(false)}>
-                <Heart className="w-3.5 h-3.5" />
-                {t('sidebar.my_clubs')}
-              </Link>
+            {/* X */}
+            <Link to="/x" className={subLinkClass(isActive('/x'))} onClick={() => setMobileOpen(false)}>
+              <Twitter className="w-3.5 h-3.5 text-sky-500" />
+              {t('sidebar.x')}
+            </Link>
+            {/* Football Buzz */}
+            <Link to="/buzz" className={subLinkClass(isActive('/buzz'))} onClick={() => setMobileOpen(false)}>
+              <Zap className="w-3.5 h-3.5 text-orange-500" />
+              {t('sidebar.buzz')}
+            </Link>
+            {/* Instagram */}
+            <Link to="/instagram" className={subLinkClass(isActive('/instagram'))} onClick={() => setMobileOpen(false)}>
+              <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="url(#ig-grad)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <defs>
+                  <linearGradient id="ig-grad" x1="0%" y1="0%" x2="100%" y2="100%">
+                    <stop offset="0%" stopColor="#f09433" />
+                    <stop offset="50%" stopColor="#dc2743" />
+                    <stop offset="100%" stopColor="#bc1888" />
+                  </linearGradient>
+                </defs>
+                <rect x="2" y="2" width="20" height="20" rx="5" ry="5" />
+                <path d="M16 11.37A4 4 0 1 1 12.63 8 4 4 0 0 1 16 11.37z" />
+                <line x1="17.5" y1="6.5" x2="17.51" y2="6.5" />
+              </svg>
+              {t('sidebar.instagram')}
+            </Link>
+            {/* Articles + sous-item Créer */}
+            {shouldShow('editorial') && (
+              <div className={restrictedClass('editorial')}>
+                <Link to="/editorial" className={subLinkClass(isActive('/editorial') && !isActive('/editorial/new'))} onClick={() => setMobileOpen(false)}>
+                  <PenLine className="w-3.5 h-3.5" />
+                  {t('sidebar.editorial')}
+                </Link>
+                {/* Créer un article — sous-menu de Articles, rédacteurs seulement */}
+                {canAction('editorial', 'create') && (
+                  <div className="pl-4 mt-0.5">
+                    <Link to="/editorial/new" className={subLinkSmClass(isActive('/editorial/new'))} onClick={() => setMobileOpen(false)}>
+                      <Plus className="w-3 h-3" />
+                      {t('sidebar.editorial_new')}
+                    </Link>
+                  </div>
+                )}
+              </div>
             )}
           </div>
         )}
 
         {/* ── Communauté ── */}
-        {canView('community') && (
-          <FeatureGate featureKey="feature_community" inline>
-            <SidebarTooltip label={t('sidebar.community')} collapsed={collapsed}>
-              <Link to="/community" className={linkClass('/community')} onClick={() => setMobileOpen(false)}>
-                <MessageSquare className="w-4 h-4 shrink-0" />
-                {!collapsed && (
-                  <span className="flex items-center gap-2">
-                    {t('sidebar.community')}
-                    <span className="text-[9px] px-1.5 py-0.5 rounded-full bg-primary/15 text-primary font-bold">PRO</span>
-                  </span>
-                )}
-              </Link>
-            </SidebarTooltip>
-          </FeatureGate>
+        {shouldShow('community') && (
+          <div className={restrictedClass('community')}>
+            <FeatureGate featureKey="feature_community" inline>
+              <SidebarTooltip label={t('sidebar.community')} collapsed={collapsed}>
+                <Link to="/community" className={linkClass('/community')} onClick={() => setMobileOpen(false)}>
+                  <MessageSquare className="w-4 h-4 shrink-0" />
+                  {!collapsed && (
+                    <span className="flex items-center gap-2">
+                      {t('sidebar.community')}
+                      <span className="text-[9px] px-1.5 py-0.5 rounded-full bg-primary/15 text-primary font-bold">PRO</span>
+                    </span>
+                  )}
+                </Link>
+              </SidebarTooltip>
+            </FeatureGate>
+          </div>
         )}
 
         {/* ── Booking ── */}
-        {canView('booking') && (
-          <FeatureGate featureKey="feature_booking" inline>
-            <SidebarTooltip label={t('sidebar.booking')} collapsed={collapsed}>
-              <Link to="/booking" className={linkClass('/booking')} onClick={() => setMobileOpen(false)}>
-                <CalendarCheck className="w-4 h-4 shrink-0" />
-                {!collapsed && t('sidebar.booking')}
-              </Link>
-            </SidebarTooltip>
-          </FeatureGate>
+        {shouldShow('booking') && (
+          <div className={restrictedClass('booking')}>
+            <FeatureGate featureKey="feature_booking" inline>
+              <SidebarTooltip label={t('sidebar.booking')} collapsed={collapsed}>
+                <Link to="/booking" className={linkClass('/booking')} onClick={() => setMobileOpen(false)}>
+                  <CalendarCheck className="w-4 h-4 shrink-0" />
+                  {!collapsed && t('sidebar.booking')}
+                </Link>
+              </SidebarTooltip>
+            </FeatureGate>
+          </div>
         )}
 
         {/* ── Import de données ── */}
-        {canView('data_import') && (
-          <SidebarTooltip label={t('sidebar.data_import')} collapsed={collapsed}>
-            <Link to="/data-import" className={linkClass('/data-import')} onClick={() => setMobileOpen(false)}>
-              <FileSpreadsheet className="w-4 h-4 shrink-0" />
-              {!collapsed && t('sidebar.data_import')}
-            </Link>
-          </SidebarTooltip>
+        {shouldShow('data_import') && (
+          <div className={restrictedClass('data_import')}>
+            <SidebarTooltip label={t('sidebar.data_import')} collapsed={collapsed}>
+              <Link to="/data-import" className={linkClass('/data-import')} onClick={() => setMobileOpen(false)}>
+                <FileSpreadsheet className="w-4 h-4 shrink-0" />
+                {!collapsed && t('sidebar.data_import')}
+              </Link>
+            </SidebarTooltip>
+          </div>
         )}
 
         {/* ── Affiliation ── */}
-        {canView('affiliate') && (
-          <FeatureGate featureKey="feature_affiliate" inline>
-            <SidebarTooltip label={t('sidebar.affiliate')} collapsed={collapsed}>
-              <Link to="/affiliate" className={linkClass('/affiliate')} onClick={() => setMobileOpen(false)}>
-                <Gift className="w-4 h-4 shrink-0" />
-                {!collapsed && t('sidebar.affiliate')}
-              </Link>
-            </SidebarTooltip>
-          </FeatureGate>
+        {shouldShow('affiliate') && (
+          <div className={restrictedClass('affiliate')}>
+            <FeatureGate featureKey="feature_affiliate" inline>
+              <SidebarTooltip label={t('sidebar.affiliate')} collapsed={collapsed}>
+                <Link to="/affiliate" className={linkClass('/affiliate')} onClick={() => setMobileOpen(false)}>
+                  <Gift className="w-4 h-4 shrink-0" />
+                  {!collapsed && t('sidebar.affiliate')}
+                </Link>
+              </SidebarTooltip>
+            </FeatureGate>
+          </div>
         )}
       </nav>
 
@@ -452,26 +575,26 @@ export default function AppSidebar({ collapsed, onToggle }: AppSidebarProps) {
             </Link>
           </SidebarTooltip>
 
-          {canView('settings') && (
-            <SidebarTooltip label={t('sidebar.settings')} collapsed={collapsed}>
-              <Link to="/settings" className={footerLinkClass('/settings')} onClick={() => setMobileOpen(false)}>
-                <Settings className="w-3.5 h-3.5 shrink-0" />
-                {!collapsed && t('sidebar.settings')}
-              </Link>
-            </SidebarTooltip>
+          {shouldShow('settings') && (
+            <div className={restrictedClass('settings')}>
+              <SidebarTooltip label={t('sidebar.settings')} collapsed={collapsed}>
+                <Link to="/settings" className={footerLinkClass('/settings')} onClick={() => setMobileOpen(false)}>
+                  <Settings className="w-3.5 h-3.5 shrink-0" />
+                  {!collapsed && t('sidebar.settings')}
+                </Link>
+              </SidebarTooltip>
+            </div>
           )}
-
-          <SidebarTooltip label={t('sidebar.report_issue')} collapsed={collapsed}>
-            <button onClick={() => { setReportOpen(true); setMobileOpen(false); }} className={footerBtnClass}>
-              <Bug className="w-3.5 h-3.5 shrink-0" />
-              {!collapsed && t('sidebar.report_issue')}
-            </button>
-          </SidebarTooltip>
 
           <SidebarTooltip label={t('sidebar.my_tickets')} collapsed={collapsed}>
             <Link to="/my-tickets" className={footerLinkClass('/my-tickets')} onClick={() => setMobileOpen(false)}>
               <MessageSquare className="w-3.5 h-3.5 shrink-0" />
               {!collapsed && t('sidebar.my_tickets')}
+              {myTicketUnread > 0 && (
+                <span className="ml-auto bg-primary text-primary-foreground text-[9px] rounded-full min-w-[18px] h-[18px] flex items-center justify-center font-bold px-1">
+                  {myTicketUnread}
+                </span>
+              )}
             </Link>
           </SidebarTooltip>
 
@@ -537,8 +660,6 @@ export default function AppSidebar({ collapsed, onToggle }: AppSidebarProps) {
       >
         {sidebar}
       </aside>
-
-      <ReportIssueDialog open={reportOpen} onOpenChange={setReportOpen} />
     </>
   );
 }

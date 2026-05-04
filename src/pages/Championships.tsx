@@ -1,4 +1,5 @@
-import { useState, useMemo } from 'react';
+import { useState, useMemo, useEffect, useRef } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { useQuery } from '@tanstack/react-query';
 import {
@@ -12,9 +13,12 @@ import {
   type ChampionshipEntry,
   type SofascoreTeam,
 } from '@/hooks/use-championships';
+import { useSavedChampionships, useSaveChampionship, useUnsaveChampionship } from '@/hooks/use-saved-championships';
 import { usePlayers } from '@/hooks/use-players';
 import { useIsAdmin } from '@/hooks/use-admin';
-import { getFlag, type Player } from '@/types/player';
+import { type Player } from '@/types/player';
+import { FlagIcon } from '@/components/ui/flag-icon';
+import { LeagueLogo } from '@/components/ui/league-logo';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -38,27 +42,13 @@ import { toast } from 'sonner';
 import { Link } from 'react-router-dom';
 import {
   PlusCircle, Search, Trash2, Trophy, Users, X, UserPlus, ChevronLeft,
-  Building2, ExternalLink, MapPin, TrendingUp, Star, CalendarDays,
+  Building2, ExternalLink, MapPin, TrendingUp, Star, StarOff, CalendarDays,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 
 const API_BASE = (import.meta.env.API_URL || '/api').replace(/\/$/, '');
 
 // ── Logo components ─────────────────────────────────────────────────────────
-
-function LeagueLogo({ src, name, size = 'md' }: { src: string | null; name: string; size?: 'sm' | 'md' | 'lg' }) {
-  const [error, setError] = useState(false);
-  const dims = size === 'lg' ? 'w-14 h-14' : size === 'md' ? 'w-10 h-10' : 'w-7 h-7';
-  const iconDims = size === 'lg' ? 'w-7 h-7' : size === 'md' ? 'w-5 h-5' : 'w-3.5 h-3.5';
-  if (src && !error) {
-    return <img src={src} alt={name} className={cn(dims, 'rounded-lg object-contain shrink-0')} onError={() => setError(true)} />;
-  }
-  return (
-    <div className={cn(dims, 'rounded-lg bg-primary/10 flex items-center justify-center shrink-0')}>
-      <Trophy className={cn(iconDims, 'text-primary')} />
-    </div>
-  );
-}
 
 function ClubLogo({ src, name, size = 'md' }: { src?: string | null; name: string; size?: 'sm' | 'md' | 'lg' }) {
   const [error, setError] = useState(false);
@@ -272,9 +262,35 @@ function ChampionshipDetail({
   const { data: logosMap = {} } = useClubLogosMap();
   const linkPlayer = useLinkPlayer();
   const unlinkPlayer = useUnlinkPlayer();
+  const { data: savedChamps = [] } = useSavedChampionships();
+  const saveChamp = useSaveChampionship();
+  const unsaveChamp = useUnsaveChampionship();
+  const isSaved = savedChamps.some(s => s.championship_name === champ.name);
+  const [justSaved, setJustSaved] = useState(false);
   const [playerSearch, setPlayerSearch] = useState('');
   const [tab, setTab] = useState<'clubs' | 'players'>('clubs');
   const [selectedClub, setSelectedClub] = useState<SelectedClub | null>(null);
+  const animTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const handleToggleSave = () => {
+    if (isSaved) {
+      unsaveChamp.mutate(champ.name, {
+        onSuccess: () => toast.success(t('championships.unbookmarked', { name: champ.name })),
+      });
+    } else {
+      saveChamp.mutate(
+        { championship_name: champ.name, championship_country: champ.country, championship_logo: champ.logoUrl, sofascore_id: champ.sofascoreId },
+        {
+          onSuccess: () => {
+            toast.success(t('championships.bookmarked', { name: champ.name }));
+            setJustSaved(true);
+            if (animTimerRef.current) clearTimeout(animTimerRef.current);
+            animTimerRef.current = setTimeout(() => setJustSaved(false), 1200);
+          },
+        }
+      );
+    }
+  };
 
   const getEffectiveLeague = (p: Player): string =>
     ((p.external_data?.enriched_league ?? p.league) ?? '').trim();
@@ -356,13 +372,51 @@ function ChampionshipDetail({
 
       {/* Header */}
       <div className="flex items-center gap-4">
-        <LeagueLogo src={champ.logoUrl} name={champ.name} size="lg" />
-        <div>
+        <div className="w-14 h-14 flex items-center justify-center shrink-0">
+          <LeagueLogo league={champ.name} size="lg" />
+        </div>
+        <div className="flex-1 min-w-0">
           <h1 className="text-2xl font-bold">{champ.name}</h1>
-          <p className="text-sm text-muted-foreground">
-            {getFlag(champ.country)} {champ.country}
+          <p className="text-sm text-muted-foreground flex items-center gap-1.5">
+            <FlagIcon nationality={champ.country} size="sm" />
+            {champ.country}
             {sofaData?.season?.name && ` — ${sofaData.season.name}`}
           </p>
+        </div>
+        <div className="relative shrink-0">
+          {/* Burst particles on save */}
+          {justSaved && (
+            <span className="absolute inset-0 pointer-events-none" aria-hidden>
+              {['⭐','✨','🌟','💛','⭐'].map((e, i) => (
+                <span
+                  key={i}
+                  className="absolute text-sm animate-star-burst"
+                  style={{
+                    left: '50%', top: '50%',
+                    '--angle': `${i * 72}deg`,
+                    '--dist': '28px',
+                    animationDelay: `${i * 40}ms`,
+                  } as React.CSSProperties}
+                >{e}</span>
+              ))}
+            </span>
+          )}
+          <Button
+            variant={isSaved ? 'default' : 'outline'}
+            size="sm"
+            onClick={handleToggleSave}
+            disabled={saveChamp.isPending || unsaveChamp.isPending}
+            className={cn(
+              'rounded-xl gap-2 transition-all duration-300',
+              isSaved
+                ? 'bg-yellow-500 hover:bg-yellow-600 border-yellow-500 text-white shadow-lg shadow-yellow-500/30'
+                : 'hover:border-yellow-400 hover:text-yellow-600',
+              justSaved && 'scale-110',
+            )}
+          >
+            <Star className={cn('w-4 h-4 transition-all duration-300', isSaved && 'fill-current', justSaved && 'animate-spin-once')} />
+            {isSaved ? t('championships.unbookmark') : t('championships.bookmark')}
+          </Button>
         </div>
       </div>
 
@@ -633,18 +687,27 @@ function ChampionshipDetail({
 
 export default function Championships() {
   const { t } = useTranslation();
+  const [urlParams] = useSearchParams();
   const { data: championships = [], isLoading } = useChampionships();
   const { data: players = [] } = usePlayers();
   const { data: isAdmin } = useIsAdmin();
   const addCustom = useAddCustomChampionship();
   const deleteCustom = useDeleteCustomChampionship();
 
-  const [search, setSearch] = useState('');
+  const [search, setSearch] = useState(() => urlParams.get('search') || '');
   const [dialogOpen, setDialogOpen] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState<ChampionshipEntry | null>(null);
   const [formName, setFormName] = useState('');
   const [formCountry, setFormCountry] = useState('');
   const [selectedChamp, setSelectedChamp] = useState<ChampionshipEntry | null>(null);
+
+  // Auto-select championship that exactly matches the ?search= param
+  useEffect(() => {
+    const q = urlParams.get('search');
+    if (!q || championships.length === 0) return;
+    const exact = championships.find(c => c.name.toLowerCase() === q.toLowerCase());
+    if (exact) setSelectedChamp(exact);
+  }, [championships]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const playerCountByLeague = useMemo(() => {
     const map: Record<string, number> = {};
@@ -736,10 +799,13 @@ export default function Championships() {
                 className="group relative rounded-xl border bg-card p-5 hover:shadow-md hover:border-primary/30 transition-all cursor-pointer"
               >
                 <div className="flex items-start gap-3">
-                  <LeagueLogo src={c.logoUrl} name={c.name} />
+                  <LeagueLogo league={c.name} size="lg" />
                   <div className="min-w-0 flex-1">
                     <h3 className="font-semibold truncate">{c.name}</h3>
-                    <p className="text-sm text-muted-foreground">{getFlag(c.country)} {c.country}</p>
+                    <p className="text-sm text-muted-foreground flex items-center gap-1.5">
+                      <FlagIcon nationality={c.country} size="sm" />
+                      {c.country}
+                    </p>
                   </div>
                 </div>
                 <div className="mt-3 flex items-center gap-3 text-xs text-muted-foreground">

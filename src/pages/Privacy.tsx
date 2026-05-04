@@ -8,7 +8,7 @@ import logo from '@/assets/logo.png';
 const content = {
   fr: {
     title: 'Politique de Confidentialite',
-    effective: 'En vigueur au 1er avril 2026',
+    effective: 'En vigueur au 5 mai 2026',
     art1_title: 'Article 1 — Responsable du traitement',
     art1_p1: 'Le responsable du traitement des donnees personnelles collectees via la plateforme Scouty (scouty.app) est :',
     art1_items: [
@@ -34,7 +34,24 @@ const content = {
       { label: 'Cookies strictement necessaires', desc: "session d'authentification, preferences de langue et de theme" },
     ],
     art2_3_title: "2.3 Donnees issues de l'enrichissement automatique",
-    art2_3_p: "Pour les utilisateurs ayant active l'enrichissement, des donnees de joueurs (photo, valeur marchande, statistiques de carriere) sont collectees depuis des sources publiques (Transfermarkt, TheSportsDB, API-Football). Ces donnees sont stockees dans le compte de l'Utilisateur et sont soumises aux memes regles de confidentialite.",
+    art2_3_p: "Pour les utilisateurs ayant active l'enrichissement, des donnees de joueurs (photo, valeur marchande, statistiques de carriere) sont collectees depuis des sources publiques (Transfermarkt, TheSportsDB, API-Football, Wikidata). Ces donnees sont stockees dans le compte de l'Utilisateur et sont soumises aux memes regles de confidentialite.",
+    art2_4_title: "2.4 Donnees des modules d'integration tiers (optionnels)",
+    art2_4_p: "L'Utilisateur peut configurer des modules d'integration optionnels en renseignant ses propres cles d'API. Ces cles sont stockees de maniere chiffree dans la table user_integrations. Les donnees d'enrichissement obtenues via ces modules (informations sur les joueurs, les clubs ou les contacts) sont attachees aux fiches correspondantes :",
+    art2_4_items: [
+      { label: 'Perplexity AI', desc: "enrichissement textuel des profils joueurs via l'IA (si cle API fournie)" },
+      { label: 'Pappers', desc: "donnees de societes et d'agents sportifs (si cle API fournie)" },
+      { label: 'Drop Contact', desc: "enrichissement et verification de contacts professionnels (si cle API fournie)" },
+      { label: 'SocialData', desc: "donnees issues de reseaux sociaux publics (si cle API fournie)" },
+    ],
+    art2_4_note: "L'activation de ces modules est entierement volontaire. Les donnees enrichies sont conservees dans le compte de l'Utilisateur aux memes conditions que les donnees de scouting.",
+    art2_5_title: "2.5 Donnees issues de l'import de fichiers Wyscout",
+    art2_5_p: "Les Utilisateurs disposant du role importateur peuvent importer des fichiers Excel (format Wyscout) contenant des statistiques de joueurs. Ces donnees statistiques (jusqu'a 130 colonnes par joueur : buts, passes, distance parcourue, etc.) sont stockees dans la table player_wyscout_stats et sont liees aux fiches joueurs existantes ou nouvellement creees. Ces donnees sont traitees et stockees exclusivement sur les serveurs de la plateforme et ne sont pas transmises a des tiers.",
+    art2_6_title: "2.6 Systeme de credits et programme de parrainage",
+    art2_6_p: "Scouty dispose d'un systeme de credits permettant d'acceder a certaines fonctionnalites avancees. Les evenements de credits (attribution, consommation) sont enregistres dans la table user_credit_events avec le motif (ex. : parrainage, enrichissement). Le programme de parrainage attribue un code unique a chaque Utilisateur. Les affiliations sont tracees dans la table referrals. Ces donnees constituent des donnees de compte traitees dans le cadre de l'execution du contrat.",
+    art2_7_title: "2.7 Preferences d'interface (stockage local uniquement)",
+    art2_7_p: "Certaines preferences d'interface (unite de distance km/miles, jour de debut de semaine, affichage des elements restreints, deconnexion automatique) sont stockees exclusivement dans le localStorage du navigateur de l'Utilisateur sous la cle scouthub-ui-preferences. Ces preferences ne transitent jamais par nos serveurs et ne sont pas collectees.",
+    art2_8_title: "2.8 Donnees de geolocalisation",
+    art2_8_p: "La fonctionnalite 'Carte du monde — Pres de moi' utilise l'API de geolocalisation du navigateur (Geolocation API) pour centrer la carte sur la position de l'Utilisateur. Cette position est utilisee exclusivement en memoire locale dans le navigateur, n'est jamais transmise a nos serveurs et n'est pas stockee.",
     art3_title: 'Article 3 — Finalites et bases legales du traitement',
     art3_headers: ['Finalite', 'Base legale'],
     art3_rows: [
@@ -46,6 +63,11 @@ const content = {
       ['Analytics anonymes (Vercel Analytics)', 'Interet legitime'],
       ['Support technique et reponse aux tickets', 'Execution du contrat'],
       ['Securite et prevention des fraudes', 'Obligation legale / Interet legitime'],
+      ['Programme de parrainage et gestion des credits', 'Execution du contrat / Interet legitime'],
+      ["Enrichissement des profils via modules tiers (Perplexity, Pappers, etc.)", 'Consentement (activation volontaire par l\'Utilisateur)'],
+      ['Import de donnees statistiques (fichiers Wyscout)', 'Execution du contrat'],
+      ['Gestion des roles et permissions granulaires', 'Execution du contrat'],
+      ['Enrichissement automatique via sources publiques (Wikidata, TheSportsDB)', 'Interet legitime'],
     ],
     art4_title: 'Article 4 — Duree de conservation',
     art4_items: [
@@ -65,8 +87,15 @@ const content = {
       ['Stripe Inc.', 'Traitement des paiements', 'USA (certifie PCI-DSS, clauses contractuelles types)'],
       ['Brevo (Sendinblue)', "Envoi d'emails transactionnels", 'UE (Paris, France)'],
       ['API-Football (RapidAPI)', 'Donnees de matchs et statistiques', 'UE'],
+      ['Wikidata (Wikimedia Foundation)', 'Enrichissement profils clubs (presidents, donnees publiques)', 'Mondial (donnees ouvertes)'],
+      ['TheSportsDB', "Profils entraineurs et donnees sportives publiques", 'International'],
+      ['Transfermarkt', 'Valeurs marchandes et donnees de carriere (donnees publiques)', 'UE (Allemagne)'],
+      ['Perplexity AI (si configure)', 'Enrichissement IA des profils joueurs', 'USA (si active par l\'Utilisateur)'],
+      ['Pappers (si configure)', 'Donnees de societes et mandataires sociaux', 'UE (France, si active)'],
+      ['Drop Contact (si configure)', 'Enrichissement de contacts professionnels', 'UE (France, si active)'],
+      ['SocialData (si configure)', 'Donnees issues de reseaux sociaux publics', 'International (si active)'],
     ],
-    art5_p2: "Aucune donnee personnelle n'est vendue ou louee a des tiers. Les donnees ne sont transmises qu'aux sous-traitants listes ci-dessus, dans le cadre de contrats conformes a l'article 28 du RGPD.",
+    art5_p2: "Aucune donnee personnelle n'est vendue ou louee a des tiers. Les donnees ne sont transmises qu'aux sous-traitants listes ci-dessus, dans le cadre de contrats conformes a l'article 28 du RGPD. Les modules d'integration tiers (Perplexity, Pappers, Drop Contact, SocialData) ne sont actives que sur configuration explicite de l'Utilisateur via ses propres cles API.",
     art6_title: 'Article 6 — Transferts de donnees hors UE',
     art6_p: 'Certains de nos sous-traitants (Vercel, Stripe) sont etablis aux Etats-Unis. Ces transferts sont encadres par :',
     art6_items: [
@@ -107,6 +136,7 @@ const content = {
       ['scouthub_session', 'Authentification et maintien de connexion', 'Session', 'Strictement necessaire'],
       ['scouthub-lang', 'Preference de langue', 'Persistant', 'Strictement necessaire'],
       ['theme', 'Preference de theme (clair/sombre)', 'Persistant', 'Strictement necessaire'],
+      ['scouthub-ui-preferences', "Preferences d'interface (unite de distance, vue sidebar, deconnexion auto)", 'Persistant', 'Strictement necessaire'],
     ],
     art8_2_title: "8.2 Ce que nous n'utilisons PAS",
     art8_2_items: [
@@ -150,7 +180,7 @@ const content = {
   },
   en: {
     title: 'Privacy Policy',
-    effective: 'Effective as of April 1, 2026',
+    effective: 'Effective as of May 5, 2026',
     art1_title: 'Article 1 — Data Controller',
     art1_p1: 'The data controller for personal data collected through the Scouty platform (scouty.app) is:',
     art1_items: [
@@ -176,7 +206,24 @@ const content = {
       { label: 'Strictly necessary cookies', desc: 'authentication session, language and theme preferences' },
     ],
     art2_3_title: '2.3 Data from automatic enrichment',
-    art2_3_p: "For users who have enabled enrichment, player data (photo, market value, career statistics) is collected from public sources (Transfermarkt, TheSportsDB, API-Football). This data is stored in the User's account and is subject to the same privacy rules.",
+    art2_3_p: "For users who have enabled enrichment, player data (photo, market value, career statistics) is collected from public sources (Transfermarkt, TheSportsDB, API-Football, Wikidata). This data is stored in the User's account and is subject to the same privacy rules.",
+    art2_4_title: '2.4 Third-party integration module data (optional)',
+    art2_4_p: 'Users may configure optional integration modules by providing their own API keys. These keys are stored encrypted in the user_integrations table. Enrichment data obtained through these modules is attached to the corresponding player or club profiles:',
+    art2_4_items: [
+      { label: 'Perplexity AI', desc: 'AI-based textual enrichment of player profiles (if API key provided)' },
+      { label: 'Pappers', desc: 'Company and sports agent data (if API key provided)' },
+      { label: 'Drop Contact', desc: 'Professional contact enrichment and verification (if API key provided)' },
+      { label: 'SocialData', desc: 'Data from public social networks (if API key provided)' },
+    ],
+    art2_4_note: 'Activating these modules is entirely voluntary. Enriched data is retained in the User\'s account under the same conditions as scouting data.',
+    art2_5_title: '2.5 Data from Wyscout file imports',
+    art2_5_p: 'Users with the importer role can upload Excel files (Wyscout format) containing player statistics. These statistical data points (up to 130 columns per player: goals, assists, distance covered, etc.) are stored in the player_wyscout_stats table and linked to existing or newly created player profiles. This data is processed and stored exclusively on the platform\'s servers and is not shared with third parties.',
+    art2_6_title: '2.6 Credits system and referral program',
+    art2_6_p: 'Scouty has a credit system that grants access to certain advanced features. Credit events (earning and spending) are recorded in the user_credit_events table with their reason (e.g. referral, enrichment). The referral program assigns a unique code to each User. Affiliations are tracked in the referrals table. This data constitutes account data processed for performance of the contract.',
+    art2_7_title: '2.7 Interface preferences (local storage only)',
+    art2_7_p: 'Certain interface preferences (distance unit km/miles, week start day, display of restricted elements, auto-logout) are stored exclusively in the browser\'s localStorage under the key scouthub-ui-preferences. These preferences never transit through our servers and are not collected.',
+    art2_8_title: '2.8 Geolocation data',
+    art2_8_p: 'The "Map — Near me" feature uses the browser\'s Geolocation API to center the map on the User\'s position. This position is used exclusively in the browser\'s local memory, is never transmitted to our servers and is not stored.',
     art3_title: 'Article 3 — Purposes and Legal Bases for Processing',
     art3_headers: ['Purpose', 'Legal basis'],
     art3_rows: [
@@ -188,6 +235,11 @@ const content = {
       ['Anonymous analytics (Vercel Analytics)', 'Legitimate interest'],
       ['Technical support and ticket response', 'Performance of the contract'],
       ['Security and fraud prevention', 'Legal obligation / Legitimate interest'],
+      ['Referral program and credit management', 'Performance of the contract / Legitimate interest'],
+      ['Profile enrichment via third-party modules (Perplexity, Pappers, etc.)', "Consent (voluntarily enabled by the User)"],
+      ['Statistical data import (Wyscout files)', 'Performance of the contract'],
+      ['Granular role and permission management', 'Performance of the contract'],
+      ['Automatic enrichment via public sources (Wikidata, TheSportsDB)', 'Legitimate interest'],
     ],
     art4_title: 'Article 4 — Data Retention Period',
     art4_items: [
@@ -207,8 +259,15 @@ const content = {
       ['Stripe Inc.', 'Payment processing', 'USA (PCI-DSS certified, Standard Contractual Clauses)'],
       ['Brevo (Sendinblue)', 'Transactional email delivery', 'EU (Paris, France)'],
       ['API-Football (RapidAPI)', 'Match data and statistics', 'EU'],
+      ['Wikidata (Wikimedia Foundation)', 'Club profile enrichment (presidents, public data)', 'Global (open data)'],
+      ['TheSportsDB', 'Coaching profiles and public sports data', 'International'],
+      ['Transfermarkt', 'Market values and career data (public data)', 'EU (Germany)'],
+      ['Perplexity AI (if configured)', 'AI-powered player profile enrichment', 'USA (if enabled by User)'],
+      ['Pappers (if configured)', 'Company and officer data', 'EU (France, if enabled)'],
+      ['Drop Contact (if configured)', 'Professional contact enrichment', 'EU (France, if enabled)'],
+      ['SocialData (if configured)', 'Data from public social networks', 'International (if enabled)'],
     ],
-    art5_p2: "No personal data is sold or rented to third parties. Data is only shared with the sub-processors listed above, under contracts compliant with Article 28 of the GDPR.",
+    art5_p2: "No personal data is sold or rented to third parties. Data is only shared with the sub-processors listed above, under contracts compliant with Article 28 of the GDPR. Third-party integration modules (Perplexity, Pappers, Drop Contact, SocialData) are only activated upon explicit configuration by the User using their own API keys.",
     art6_title: 'Article 6 — Data Transfers Outside the EU',
     art6_p: 'Some of our sub-processors (Vercel, Stripe) are based in the United States. These transfers are governed by:',
     art6_items: [
@@ -249,6 +308,7 @@ const content = {
       ['scouthub_session', 'Authentication and session maintenance', 'Session', 'Strictly necessary'],
       ['scouthub-lang', 'Language preference', 'Persistent', 'Strictly necessary'],
       ['theme', 'Theme preference (light/dark)', 'Persistent', 'Strictly necessary'],
+      ['scouthub-ui-preferences', 'Interface preferences (distance unit, sidebar view, auto-logout)', 'Persistent', 'Strictly necessary'],
     ],
     art8_2_title: '8.2 What we do NOT use',
     art8_2_items: [
@@ -292,7 +352,7 @@ const content = {
   },
   es: {
     title: 'Politica de Privacidad',
-    effective: 'En vigor desde el 1 de abril de 2026',
+    effective: 'En vigor desde el 5 de mayo de 2026',
     art1_title: 'Articulo 1 — Responsable del tratamiento',
     art1_p1: 'El responsable del tratamiento de los datos personales recogidos a traves de la plataforma Scouty (scouty.app) es:',
     art1_items: [
@@ -318,7 +378,24 @@ const content = {
       { label: 'Cookies estrictamente necesarias', desc: 'sesion de autenticacion, preferencias de idioma y tema' },
     ],
     art2_3_title: '2.3 Datos procedentes del enriquecimiento automatico',
-    art2_3_p: "Para los usuarios que han activado el enriquecimiento, se recogen datos de jugadores (foto, valor de mercado, estadisticas de carrera) de fuentes publicas (Transfermarkt, TheSportsDB, API-Football). Estos datos se almacenan en la cuenta del Usuario y estan sujetos a las mismas reglas de privacidad.",
+    art2_3_p: "Para los usuarios que han activado el enriquecimiento, se recogen datos de jugadores (foto, valor de mercado, estadisticas de carrera) de fuentes publicas (Transfermarkt, TheSportsDB, API-Football, Wikidata). Estos datos se almacenan en la cuenta del Usuario y estan sujetos a las mismas reglas de privacidad.",
+    art2_4_title: '2.4 Datos de los modulos de integracion de terceros (opcionales)',
+    art2_4_p: 'El Usuario puede configurar modulos de integracion opcionales proporcionando sus propias claves de API. Estas claves se almacenan de forma cifrada en la tabla user_integrations. Los datos de enriquecimiento obtenidos a traves de estos modulos se adjuntan a los perfiles correspondientes:',
+    art2_4_items: [
+      { label: 'Perplexity AI', desc: 'enriquecimiento textual con IA de perfiles de jugadores (si se proporciona clave API)' },
+      { label: 'Pappers', desc: 'datos de empresas y agentes deportivos (si se proporciona clave API)' },
+      { label: 'Drop Contact', desc: 'enriquecimiento y verificacion de contactos profesionales (si se proporciona clave API)' },
+      { label: 'SocialData', desc: 'datos procedentes de redes sociales publicas (si se proporciona clave API)' },
+    ],
+    art2_4_note: 'La activacion de estos modulos es completamente voluntaria. Los datos enriquecidos se conservan en la cuenta del Usuario en las mismas condiciones que los datos de scouting.',
+    art2_5_title: '2.5 Datos procedentes de la importacion de archivos Wyscout',
+    art2_5_p: 'Los Usuarios con el rol de importador pueden importar archivos Excel (formato Wyscout) que contengan estadisticas de jugadores. Estos datos estadisticos (hasta 130 columnas por jugador: goles, asistencias, distancia recorrida, etc.) se almacenan en la tabla player_wyscout_stats y se vinculan a los perfiles de jugadores existentes o recien creados. Estos datos se procesan y almacenan exclusivamente en los servidores de la plataforma y no se comparten con terceros.',
+    art2_6_title: '2.6 Sistema de creditos y programa de referidos',
+    art2_6_p: 'Scouty dispone de un sistema de creditos que permite acceder a determinadas funcionalidades avanzadas. Los eventos de creditos (obtencion y consumo) se registran en la tabla user_credit_events con su motivo (ej.: referido, enriquecimiento). El programa de referidos asigna un codigo unico a cada Usuario. Las afiliaciones se rastrean en la tabla referrals. Estos datos constituyen datos de cuenta tratados en el marco de la ejecucion del contrato.',
+    art2_7_title: '2.7 Preferencias de interfaz (almacenamiento local unicamente)',
+    art2_7_p: "Ciertas preferencias de interfaz (unidad de distancia km/millas, dia de inicio de semana, visualizacion de elementos restringidos, cierre de sesion automatico) se almacenan exclusivamente en el localStorage del navegador del Usuario bajo la clave scouthub-ui-preferences. Estas preferencias nunca transitan por nuestros servidores y no se recopilan.",
+    art2_8_title: '2.8 Datos de geolocalizacion',
+    art2_8_p: "La funcionalidad 'Mapa mundial — Cerca de mi' utiliza la API de geolocalizacion del navegador para centrar el mapa en la posicion del Usuario. Esta posicion se utiliza exclusivamente en la memoria local del navegador, nunca se transmite a nuestros servidores y no se almacena.",
     art3_title: 'Articulo 3 — Finalidades y bases legales del tratamiento',
     art3_headers: ['Finalidad', 'Base legal'],
     art3_rows: [
@@ -330,6 +407,11 @@ const content = {
       ['Analiticas anonimas (Vercel Analytics)', 'Interes legitimo'],
       ['Soporte tecnico y respuesta a tickets', 'Ejecucion del contrato'],
       ['Seguridad y prevencion de fraude', 'Obligacion legal / Interes legitimo'],
+      ['Programa de referidos y gestion de creditos', 'Ejecucion del contrato / Interes legitimo'],
+      ['Enriquecimiento de perfiles mediante modulos de terceros (Perplexity, Pappers, etc.)', 'Consentimiento (activacion voluntaria del Usuario)'],
+      ['Importacion de datos estadisticos (archivos Wyscout)', 'Ejecucion del contrato'],
+      ['Gestion de roles y permisos granulares', 'Ejecucion del contrato'],
+      ['Enriquecimiento automatico mediante fuentes publicas (Wikidata, TheSportsDB)', 'Interes legitimo'],
     ],
     art4_title: 'Articulo 4 — Periodo de conservacion',
     art4_items: [
@@ -349,8 +431,15 @@ const content = {
       ['Stripe Inc.', 'Procesamiento de pagos', 'EE.UU. (certificado PCI-DSS, Clausulas Contractuales Tipo)'],
       ['Brevo (Sendinblue)', 'Envio de correos electronicos transaccionales', 'UE (Paris, Francia)'],
       ['API-Football (RapidAPI)', 'Datos de partidos y estadisticas', 'UE'],
+      ['Wikidata (Wikimedia Foundation)', 'Enriquecimiento de perfiles de clubes (datos publicos)', 'Mundial (datos abiertos)'],
+      ['TheSportsDB', 'Perfiles de entrenadores y datos deportivos publicos', 'Internacional'],
+      ['Transfermarkt', 'Valores de mercado y datos de carrera (datos publicos)', 'UE (Alemania)'],
+      ['Perplexity AI (si configurado)', 'Enriquecimiento IA de perfiles de jugadores', 'EE.UU. (si activado por el Usuario)'],
+      ['Pappers (si configurado)', 'Datos de empresas y administradores', 'UE (Francia, si activado)'],
+      ['Drop Contact (si configurado)', 'Enriquecimiento de contactos profesionales', 'UE (Francia, si activado)'],
+      ['SocialData (si configurado)', 'Datos de redes sociales publicas', 'Internacional (si activado)'],
     ],
-    art5_p2: "Ningun dato personal se vende ni se alquila a terceros. Los datos solo se transmiten a los subencargados listados anteriormente, en el marco de contratos conformes al articulo 28 del RGPD.",
+    art5_p2: "Ningun dato personal se vende ni se alquila a terceros. Los datos solo se transmiten a los subencargados listados anteriormente, en el marco de contratos conformes al articulo 28 del RGPD. Los modulos de integracion de terceros (Perplexity, Pappers, Drop Contact, SocialData) solo se activan mediante configuracion explicita del Usuario con sus propias claves API.",
     art6_title: 'Articulo 6 — Transferencias de datos fuera de la UE',
     art6_p: 'Algunos de nuestros subencargados (Vercel, Stripe) estan establecidos en Estados Unidos. Estas transferencias estan reguladas por:',
     art6_items: [
@@ -391,6 +480,7 @@ const content = {
       ['scouthub_session', 'Autenticacion y mantenimiento de sesion', 'Sesion', 'Estrictamente necesaria'],
       ['scouthub-lang', 'Preferencia de idioma', 'Persistente', 'Estrictamente necesaria'],
       ['theme', 'Preferencia de tema (claro/oscuro)', 'Persistente', 'Estrictamente necesaria'],
+      ['scouthub-ui-preferences', 'Preferencias de interfaz (unidad de distancia, vista sidebar, cierre automatico)', 'Persistente', 'Estrictamente necesaria'],
     ],
     art8_2_title: '8.2 Lo que NO utilizamos',
     art8_2_items: [
@@ -501,6 +591,27 @@ export default function Privacy() {
 
             <h3 className="text-base font-semibold mt-4">{c.art2_3_title}</h3>
             <p>{c.art2_3_p}</p>
+
+            <h3 className="text-base font-semibold mt-4">{c.art2_4_title}</h3>
+            <p>{c.art2_4_p}</p>
+            <ul>
+              {c.art2_4_items.map((item, i) => (
+                <li key={i}><strong>{item.label}</strong> : {item.desc}</li>
+              ))}
+            </ul>
+            <p className="text-muted-foreground text-xs mt-1">{c.art2_4_note}</p>
+
+            <h3 className="text-base font-semibold mt-4">{c.art2_5_title}</h3>
+            <p>{c.art2_5_p}</p>
+
+            <h3 className="text-base font-semibold mt-4">{c.art2_6_title}</h3>
+            <p>{c.art2_6_p}</p>
+
+            <h3 className="text-base font-semibold mt-4">{c.art2_7_title}</h3>
+            <p>{c.art2_7_p}</p>
+
+            <h3 className="text-base font-semibold mt-4">{c.art2_8_title}</h3>
+            <p>{c.art2_8_p}</p>
           </section>
 
           {/* Article 3 */}

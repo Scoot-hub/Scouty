@@ -7,6 +7,7 @@ import { usePlayers, usePlayersPaginated, usePlayerFacets, isSamePlayer, useTogg
 import { useMyOrganizations } from '@/hooks/use-organization';
 import { ShareWithOrgPopover, BulkShareDialog } from '@/components/ShareWithOrgPopover';
 import { useIsPremium, useIsAdmin } from '@/hooks/use-admin';
+import { PermGate } from '@/components/PermGate';
 import { getPlayerAge, getOpinionBgClass, getOpinionEmoji, getOpinionTranslationKey, ALL_OPINIONS, getTaskBgClass, getTaskEmoji, getTaskTranslationKey, translateFoot, PLAYER_TASKS, resolveLeagueName, translateCountry, type Opinion, type Position, type Foot, type PlayerTask, type Player } from '@/types/player';
 import type { PerfStats } from '@/lib/player-stats';
 import { usePositions } from '@/hooks/use-positions';
@@ -795,31 +796,33 @@ export default function Players() {
               </span>
             )}
           </Button>
-          <DropdownMenu modal={false}>
-            <DropdownMenuTrigger asChild>
-              <Button size="sm" className="rounded-xl">
-                <Users className="w-4 h-4 sm:mr-1.5" />
-                <span className="hidden sm:inline">{t('players.add_player')}</span>
-                <ChevronDown className="w-3.5 h-3.5 ml-1" />
-              </Button>
-            </DropdownMenuTrigger>
-            <DropdownMenuContent align="end">
-              <DropdownMenuItem asChild>
-                <Link to="/player/new">
-                  <Users className="w-4 h-4 mr-2" />
-                  {t('players.add_player')}
-                </Link>
-              </DropdownMenuItem>
-              <DropdownMenuItem onClick={() => setImportClubOpen(true)}>
-                <Building2 className="w-4 h-4 mr-2" />
-                {t('players.add_club')}
-              </DropdownMenuItem>
-              <DropdownMenuItem onClick={() => setImportMatchOpen(true)}>
-                <Swords className="w-4 h-4 mr-2" />
-                {t('players.add_match')}
-              </DropdownMenuItem>
-            </DropdownMenuContent>
-          </DropdownMenu>
+          <PermGate pageKey="add_player" action="create">
+            <DropdownMenu modal={false}>
+              <DropdownMenuTrigger asChild>
+                <Button size="sm" className="rounded-xl">
+                  <Users className="w-4 h-4 sm:mr-1.5" />
+                  <span className="hidden sm:inline">{t('players.add_player')}</span>
+                  <ChevronDown className="w-3.5 h-3.5 ml-1" />
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end">
+                <DropdownMenuItem asChild>
+                  <Link to="/player/new">
+                    <Users className="w-4 h-4 mr-2" />
+                    {t('players.add_player')}
+                  </Link>
+                </DropdownMenuItem>
+                <DropdownMenuItem onClick={() => setImportClubOpen(true)}>
+                  <Building2 className="w-4 h-4 mr-2" />
+                  {t('players.add_club')}
+                </DropdownMenuItem>
+                <DropdownMenuItem onClick={() => setImportMatchOpen(true)}>
+                  <Swords className="w-4 h-4 mr-2" />
+                  {t('players.add_match')}
+                </DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
+          </PermGate>
           <DropdownMenu modal={false}>
             <DropdownMenuTrigger asChild>
               <Button variant="outline" size="sm" className="rounded-xl">

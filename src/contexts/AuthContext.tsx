@@ -1,5 +1,6 @@
-import { createContext, useContext, useEffect, useState, useCallback, ReactNode } from 'react';
+import { createContext, useContext, useEffect, useRef, useState, useCallback, ReactNode } from 'react';
 import { supabase } from '@/integrations/supabase/client';
+import { toast } from 'sonner';
 
 interface User {
   id: string;
@@ -29,6 +30,8 @@ interface AuthContextType {
 }
 
 const IMPERSONATE_KEY = 'scouthub_impersonating';
+export const INACTIVITY_TIMEOUT_KEY = 'scouthub_session_timeout';
+const ACTIVITY_EVENTS = ['mousemove', 'mousedown', 'keydown', 'touchstart', 'scroll'] as const;
 
 const AuthContext = createContext<AuthContextType>({
   user: null,
@@ -45,6 +48,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [session, setSession] = useState<Session | null>(null);
   const [loading, setLoading] = useState(true);
   const [isImpersonating, setIsImpersonating] = useState(() => !!localStorage.getItem(IMPERSONATE_KEY));
+  const inactivityTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const warningTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const signOutRef = useRef<() => Promise<void>>(() => Promise.resolve());
 
   useEffect(() => {
     // Listen FIRST, then get session
@@ -98,13 +104,60 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const signOut = async () => {
-    // If impersonating, just stop impersonation instead of signing out
     if (isImpersonating) {
       stopImpersonation();
       return;
     }
     await supabase.auth.signOut();
   };
+
+  // keep a stable ref so the inactivity effect can call signOut without re-running
+  signOutRef.current = signOut;
+
+  // Inactivity auto-logout
+  useEffect(() => {
+    if (!user) return;
+
+    const getTimeoutMs = () => {
+      const raw = localStorage.getItem(INACTIVITY_TIMEOUT_KEY);
+      const minutes = raw ? parseInt(raw, 10) : 0;
+      return minutes > 0 ? minutes * 60 * 1000 : 0;
+    };
+
+    const clearTimers = () => {
+      if (inactivityTimer.current) clearTimeout(inactivityTimer.current);
+      if (warningTimer.current) clearTimeout(warningTimer.current);
+    };
+
+    const scheduleLogout = () => {
+      clearTimers();
+      const ms = getTimeoutMs();
+      if (!ms) return;
+
+      const warningMs = ms - 60_000;
+      if (warningMs > 0) {
+        warningTimer.current = setTimeout(() => {
+          toast.warning('Déconnexion dans 1 minute en raison d\'inactivité.', { id: 'inactivity-warning', duration: 55_000 });
+        }, warningMs);
+      }
+
+      inactivityTimer.current = setTimeout(() => {
+        toast.dismiss('inactivity-warning');
+        toast.info('Session expirée — vous avez été déconnecté.', { duration: 5000 });
+        signOutRef.current();
+      }, ms);
+    };
+
+    const onActivity = () => scheduleLogout();
+
+    scheduleLogout();
+    ACTIVITY_EVENTS.forEach(e => window.addEventListener(e, onActivity, { passive: true }));
+
+    return () => {
+      clearTimers();
+      ACTIVITY_EVENTS.forEach(e => window.removeEventListener(e, onActivity));
+    };
+  }, [user]);
 
   return (
     <AuthContext.Provider value={{ user, session, loading, signOut, isImpersonating, startImpersonation, stopImpersonation }}>

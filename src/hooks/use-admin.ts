@@ -38,6 +38,15 @@ export function useMyPermissions() {
   });
 }
 
+export function useCanAction(pageKey: string, action: string = 'view') {
+  const { data: isAdmin } = useIsAdmin();
+  const { data: permsData } = useMyPermissions();
+  if (isAdmin) return true;
+  if (!permsData?.permissions) return true;
+  const val = permsData.permissions[`${pageKey}.${action}`];
+  return val !== false;
+}
+
 export function useIsPremium() {
   const { user } = useAuth();
   return useQuery({

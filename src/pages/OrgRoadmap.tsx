@@ -1,5 +1,6 @@
 import { useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
+import { useUiPreferences } from '@/contexts/UiPreferencesContext';
 import { useAuth } from '@/contexts/AuthContext';
 import {
   useOrgMatchAssignments,
@@ -42,9 +43,10 @@ const STATUS_DOT: Record<string, string> = {
   cancelled: 'bg-muted-foreground',
 };
 
-function getMonthDays(year: number, month: number) {
+function getMonthDays(year: number, month: number, weekStart: 0 | 1 = 1) {
   const first = new Date(year, month, 1);
-  const startDay = (first.getDay() + 6) % 7; // Monday = 0
+  // weekStart 1=Mon: (getDay()+6)%7 gives Mon=0; weekStart 0=Sun: getDay() gives Sun=0
+  const startDay = weekStart === 1 ? (first.getDay() + 6) % 7 : first.getDay();
   const daysInMonth = new Date(year, month + 1, 0).getDate();
   const prevDays = new Date(year, month, 0).getDate();
 
@@ -91,6 +93,7 @@ export default function OrgRoadmap() {
   const now = new Date();
   const [viewYear, setViewYear] = useState(now.getFullYear());
   const [viewMonth, setViewMonth] = useState(now.getMonth());
+  const { weekStartDay } = useUiPreferences();
 
   const myRole = org?.myRole;
   const isAdminOrOwner = myRole === 'owner' || myRole === 'admin';
@@ -129,18 +132,19 @@ export default function OrgRoadmap() {
     return map;
   }, [filtered]);
 
-  const calendarCells = useMemo(() => getMonthDays(viewYear, viewMonth), [viewYear, viewMonth]);
+  const calendarCells = useMemo(() => getMonthDays(viewYear, viewMonth, weekStartDay), [viewYear, viewMonth, weekStartDay]);
 
   const monthLabel = new Date(viewYear, viewMonth, 1).toLocaleDateString(i18n.language, { month: 'long', year: 'numeric' });
 
   const dayNames = useMemo(() => {
-    const base = new Date(2024, 0, 1); // Monday
+    // weekStartDay 1 = Monday (Jan 1 2024), weekStartDay 0 = Sunday (Dec 31 2023)
+    const base = weekStartDay === 1 ? new Date(2024, 0, 1) : new Date(2023, 11, 31);
     return Array.from({ length: 7 }, (_, i) => {
       const d = new Date(base);
       d.setDate(d.getDate() + i);
       return d.toLocaleDateString(i18n.language, { weekday: 'short' });
     });
-  }, [i18n.language]);
+  }, [i18n.language, weekStartDay]);
 
   const goToPrev = () => {
     if (viewMonth === 0) { setViewMonth(11); setViewYear(y => y - 1); }

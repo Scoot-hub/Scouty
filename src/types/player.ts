@@ -33,6 +33,7 @@ export interface Player {
   task?: PlayerTask | null;
   has_news?: string | null;
   is_archived?: boolean;
+  social_instagram?: string | null;
   created_at: string;
   updated_at: string;
 }

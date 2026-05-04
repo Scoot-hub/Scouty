@@ -9,9 +9,10 @@ import { Card, CardContent } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
-import { Activity, TrendingUp, RefreshCw, Maximize2, BarChart3 } from 'lucide-react';
+import { Activity, TrendingUp, RefreshCw, Maximize2, BarChart3, Database, ChevronDown, ChevronUp } from 'lucide-react';
 import { computePercentile, CHART_COLORS, RADAR_PRESETS } from '@/lib/player-stats';
 import { getPlayerAge, resolveLeagueName, ALL_OPINIONS, type Player, type Report, type Opinion } from '@/types/player';
+import { useWyscoutStats, type WyscoutStatRow } from '@/hooks/use-wyscout-stats';
 
 interface ProfileDataTabProps {
   player: Player;
@@ -56,6 +57,11 @@ export default function ProfileDataTab({
   const [benchmarkLevelFilter, setBenchmarkLevelFilter] = useState<string>('all');
   const [rankScope, setRankScope] = useState<'all' | 'position' | 'league' | 'age'>('all');
   const [seasonChartStat, setSeasonChartStat] = useState<string>('goals');
+  const [wyscoutSeasonIdx, setWyscoutSeasonIdx] = useState(0);
+  const [wyscoutExpandedCats, setWyscoutExpandedCats] = useState<Record<string, boolean>>({});
+
+  const { data: wyscoutRows = [] } = useWyscoutStats(player.id);
+  const selectedWyscout: WyscoutStatRow | undefined = wyscoutRows[wyscoutSeasonIdx];
 
   const ps = ext.performance_stats;
   const s = ps?.stats;
@@ -954,6 +960,254 @@ export default function ProfileDataTab({
           </CardContent>
         </Card>
       </div>
+
+      {/* ── Wyscout stats section ── */}
+      {wyscoutRows.length > 0 && (() => {
+        type CatDef = { key: string; label: string; color: string; fields: { db: keyof WyscoutStatRow; label: string; unit?: string }[] };
+        const CATS: CatDef[] = [
+          {
+            key: 'base', label: t('wyscout.cat_base'), color: 'text-primary bg-primary/10',
+            fields: [
+              { db: 'matches_played', label: t('wyscout.matches_played') },
+              { db: 'minutes_played', label: t('wyscout.minutes_played') },
+              { db: 'goals', label: t('wyscout.goals') },
+              { db: 'xg', label: 'xG' },
+              { db: 'assists', label: t('wyscout.assists') },
+              { db: 'xa', label: 'xA' },
+              { db: 'shots', label: t('wyscout.shots') },
+              { db: 'np_goals', label: t('wyscout.np_goals') },
+              { db: 'head_goals', label: t('wyscout.head_goals') },
+              { db: 'yellow_cards', label: t('wyscout.yellow_cards') },
+              { db: 'red_cards', label: t('wyscout.red_cards') },
+              { db: 'penalties_taken', label: t('wyscout.penalties_taken') },
+              { db: 'conceded_goals', label: t('wyscout.conceded_goals') },
+              { db: 'shots_against', label: t('wyscout.shots_against') },
+              { db: 'clean_sheets', label: t('wyscout.clean_sheets') },
+            ],
+          },
+          {
+            key: 'attack', label: t('wyscout.cat_attack'), color: 'text-orange-600 bg-orange-500/10',
+            fields: [
+              { db: 'attacking_actions_per90', label: t('wyscout.attacking_actions_per90') },
+              { db: 'goals_per90', label: t('wyscout.goals_per90') },
+              { db: 'np_goals_per90', label: t('wyscout.np_goals_per90') },
+              { db: 'xg_per90', label: 'xG /90' },
+              { db: 'head_goals_per90', label: t('wyscout.head_goals_per90') },
+              { db: 'shots_per90', label: t('wyscout.shots_per90') },
+              { db: 'shots_on_target_pct', label: t('wyscout.shots_on_target_pct'), unit: '%' },
+              { db: 'goal_conversion_pct', label: t('wyscout.goal_conversion_pct'), unit: '%' },
+              { db: 'assists_per90', label: t('wyscout.assists_per90') },
+              { db: 'xa_per90', label: 'xA /90' },
+              { db: 'crosses_per90', label: t('wyscout.crosses_per90') },
+              { db: 'crosses_accurate_pct', label: t('wyscout.crosses_accurate_pct'), unit: '%' },
+              { db: 'dribbles_per90', label: t('wyscout.dribbles_per90') },
+              { db: 'dribbles_success_pct', label: t('wyscout.dribbles_success_pct'), unit: '%' },
+              { db: 'offensive_duels_per90', label: t('wyscout.offensive_duels_per90') },
+              { db: 'offensive_duels_won_pct', label: t('wyscout.offensive_duels_won_pct'), unit: '%' },
+              { db: 'touches_in_box_per90', label: t('wyscout.touches_in_box_per90') },
+              { db: 'progressive_runs_per90', label: t('wyscout.progressive_runs_per90') },
+              { db: 'accelerations_per90', label: t('wyscout.accelerations_per90') },
+              { db: 'fouls_suffered_per90', label: t('wyscout.fouls_suffered_per90') },
+            ],
+          },
+          {
+            key: 'defense', label: t('wyscout.cat_defense'), color: 'text-blue-600 bg-blue-500/10',
+            fields: [
+              { db: 'defensive_actions_per90', label: t('wyscout.defensive_actions_per90') },
+              { db: 'defensive_duels_per90', label: t('wyscout.defensive_duels_per90') },
+              { db: 'defensive_duels_won_pct', label: t('wyscout.defensive_duels_won_pct'), unit: '%' },
+              { db: 'aerial_duels_per90', label: t('wyscout.aerial_duels_per90') },
+              { db: 'aerial_duels_won_pct', label: t('wyscout.aerial_duels_won_pct'), unit: '%' },
+              { db: 'duels_per90', label: t('wyscout.duels_per90') },
+              { db: 'duels_won_pct', label: t('wyscout.duels_won_pct'), unit: '%' },
+              { db: 'interceptions_per90', label: t('wyscout.interceptions_per90') },
+              { db: 'padj_interceptions', label: 'PAdj Interc.' },
+              { db: 'sliding_tackles_per90', label: t('wyscout.sliding_tackles_per90') },
+              { db: 'padj_sliding_tackles', label: 'PAdj Tackles' },
+              { db: 'shots_blocked_per90', label: t('wyscout.shots_blocked_per90') },
+              { db: 'fouls_per90', label: t('wyscout.fouls_per90') },
+              { db: 'yellow_cards_per90', label: t('wyscout.yellow_cards_per90') },
+              { db: 'red_cards_per90', label: t('wyscout.red_cards_per90') },
+            ],
+          },
+          {
+            key: 'passing', label: t('wyscout.cat_passing'), color: 'text-teal-600 bg-teal-500/10',
+            fields: [
+              { db: 'passes_per90', label: t('wyscout.passes_per90') },
+              { db: 'passes_accurate_pct', label: t('wyscout.passes_accurate_pct'), unit: '%' },
+              { db: 'forward_passes_per90', label: t('wyscout.forward_passes_per90') },
+              { db: 'forward_passes_accurate_pct', label: t('wyscout.forward_passes_accurate_pct'), unit: '%' },
+              { db: 'back_passes_per90', label: t('wyscout.back_passes_per90') },
+              { db: 'lateral_passes_per90', label: t('wyscout.lateral_passes_per90') },
+              { db: 'long_passes_per90', label: t('wyscout.long_passes_per90') },
+              { db: 'long_passes_accurate_pct', label: t('wyscout.long_passes_accurate_pct'), unit: '%' },
+              { db: 'avg_pass_length', label: t('wyscout.avg_pass_length'), unit: 'm' },
+              { db: 'key_passes_per90', label: t('wyscout.key_passes_per90') },
+              { db: 'shot_assists_per90', label: t('wyscout.shot_assists_per90') },
+              { db: 'smart_passes_per90', label: t('wyscout.smart_passes_per90') },
+              { db: 'smart_passes_accurate_pct', label: t('wyscout.smart_passes_accurate_pct'), unit: '%' },
+              { db: 'passes_final_third_per90', label: t('wyscout.passes_final_third_per90') },
+              { db: 'passes_penalty_area_per90', label: t('wyscout.passes_penalty_area_per90') },
+              { db: 'through_passes_per90', label: t('wyscout.through_passes_per90') },
+              { db: 'progressive_passes_per90', label: t('wyscout.progressive_passes_per90') },
+              { db: 'progressive_passes_accurate_pct', label: t('wyscout.progressive_passes_accurate_pct'), unit: '%' },
+              { db: 'deep_completions_per90', label: t('wyscout.deep_completions_per90') },
+              { db: 'received_passes_per90', label: t('wyscout.received_passes_per90') },
+              { db: 'received_long_passes_per90', label: t('wyscout.received_long_passes_per90') },
+            ],
+          },
+          {
+            key: 'setpieces', label: t('wyscout.cat_setpieces'), color: 'text-violet-600 bg-violet-500/10',
+            fields: [
+              { db: 'free_kicks_per90', label: t('wyscout.free_kicks_per90') },
+              { db: 'direct_free_kicks_per90', label: t('wyscout.direct_free_kicks_per90') },
+              { db: 'direct_free_kicks_on_target_pct', label: t('wyscout.direct_free_kicks_on_target_pct'), unit: '%' },
+              { db: 'corners_per90', label: t('wyscout.corners_per90') },
+              { db: 'penalty_conversion_pct', label: t('wyscout.penalty_conversion_pct'), unit: '%' },
+            ],
+          },
+          {
+            key: 'goalkeeper', label: t('wyscout.cat_goalkeeper'), color: 'text-yellow-600 bg-yellow-500/10',
+            fields: [
+              { db: 'conceded_goals_per90', label: t('wyscout.conceded_goals_per90') },
+              { db: 'shots_against_per90', label: t('wyscout.shots_against_per90') },
+              { db: 'save_rate_pct', label: t('wyscout.save_rate_pct'), unit: '%' },
+              { db: 'xg_against', label: 'xG against' },
+              { db: 'xg_against_per90', label: 'xG against /90' },
+              { db: 'prevented_goals', label: t('wyscout.prevented_goals') },
+              { db: 'prevented_goals_per90', label: t('wyscout.prevented_goals_per90') },
+              { db: 'gk_back_passes_per90', label: t('wyscout.gk_back_passes_per90') },
+              { db: 'gk_exits_per90', label: t('wyscout.gk_exits_per90') },
+              { db: 'gk_aerial_duels_per90', label: t('wyscout.gk_aerial_duels_per90') },
+            ],
+          },
+          {
+            key: 'physical', label: t('wyscout.cat_physical'), color: 'text-red-600 bg-red-500/10',
+            fields: [
+              { db: 'total_distance_per90', label: t('wyscout.total_distance_per90'), unit: 'm' },
+              { db: 'running_distance_per90', label: t('wyscout.running_distance_per90'), unit: 'm' },
+              { db: 'hsr_distance_per90', label: t('wyscout.hsr_distance_per90'), unit: 'm' },
+              { db: 'sprint_distance_per90', label: t('wyscout.sprint_distance_per90'), unit: 'm' },
+              { db: 'hi_distance_per90', label: t('wyscout.hi_distance_per90'), unit: 'm' },
+              { db: 'meters_per_min', label: t('wyscout.meters_per_min'), unit: 'm/min' },
+              { db: 'max_speed', label: t('wyscout.max_speed'), unit: 'km/h' },
+              { db: 'medium_accel_per90', label: t('wyscout.medium_accel_per90') },
+              { db: 'high_accel_per90', label: t('wyscout.high_accel_per90') },
+              { db: 'medium_decel_per90', label: t('wyscout.medium_decel_per90') },
+              { db: 'high_decel_per90', label: t('wyscout.high_decel_per90') },
+              { db: 'hsr_count_per90', label: t('wyscout.hsr_count_per90') },
+              { db: 'sprint_count_per90', label: t('wyscout.sprint_count_per90') },
+              { db: 'hi_count_per90', label: t('wyscout.hi_count_per90') },
+            ],
+          },
+        ];
+
+        const toggleCat = (key: string) =>
+          setWyscoutExpandedCats(prev => ({ ...prev, [key]: !prev[key] }));
+
+        const fmtVal = (v: number | null, unit?: string) => {
+          if (v === null || v === undefined) return null;
+          const n = typeof v === 'string' ? parseFloat(v) : v;
+          if (isNaN(n)) return null;
+          const str = Number.isInteger(n) ? String(n) : n.toFixed(2).replace(/\.?0+$/, '');
+          return unit ? `${str} ${unit}` : str;
+        };
+
+        return (
+          <div className="mt-8">
+            {/* Header */}
+            <div className="flex items-center justify-between mb-4">
+              <div className="flex items-center gap-2">
+                <div className="w-8 h-8 rounded-lg bg-primary/10 flex items-center justify-center">
+                  <Database className="w-4 h-4 text-primary" />
+                </div>
+                <div>
+                  <h2 className="text-sm font-bold">{t('wyscout.section_title')}</h2>
+                  <p className="text-xs text-muted-foreground">{t('wyscout.section_desc')}</p>
+                </div>
+              </div>
+              {/* Season selector */}
+              {wyscoutRows.length > 1 && (
+                <div className="flex items-center gap-1.5 flex-wrap justify-end">
+                  {wyscoutRows.map((row, idx) => (
+                    <button
+                      key={row.id}
+                      onClick={() => setWyscoutSeasonIdx(idx)}
+                      className={`px-2.5 py-1 rounded-lg text-xs font-semibold border transition-colors ${
+                        idx === wyscoutSeasonIdx
+                          ? 'bg-primary text-primary-foreground border-primary'
+                          : 'bg-muted/40 border-border text-muted-foreground hover:bg-muted'
+                      }`}
+                    >
+                      {row.season}{row.division ? ` · ${row.division}` : ''}
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            {/* Season info pill */}
+            {selectedWyscout && (
+              <div className="flex items-center gap-2 mb-4 flex-wrap">
+                {selectedWyscout.team && (
+                  <Badge variant="secondary" className="text-xs">{selectedWyscout.team}</Badge>
+                )}
+                {selectedWyscout.season && (
+                  <Badge variant="outline" className="text-xs">{selectedWyscout.season}</Badge>
+                )}
+                {selectedWyscout.division && (
+                  <Badge variant="outline" className="text-xs">{selectedWyscout.division}</Badge>
+                )}
+                {selectedWyscout.country && (
+                  <Badge variant="outline" className="text-xs">{selectedWyscout.country}</Badge>
+                )}
+                {selectedWyscout.source_filename && (
+                  <span className="text-[10px] text-muted-foreground ml-auto">{t('wyscout.source')}: {selectedWyscout.source_filename}</span>
+                )}
+              </div>
+            )}
+
+            {/* Stat categories */}
+            {selectedWyscout && (
+              <div className="space-y-3">
+                {CATS.map(cat => {
+                  const visibleFields = cat.fields.filter(f => fmtVal(selectedWyscout[f.db] as number | null) !== null);
+                  if (visibleFields.length === 0) return null;
+                  const isExpanded = wyscoutExpandedCats[cat.key] !== false; // default open
+                  return (
+                    <Card key={cat.key} className="card-warm overflow-hidden">
+                      <button
+                        onClick={() => toggleCat(cat.key)}
+                        className="w-full flex items-center justify-between px-4 py-3 hover:bg-muted/30 transition-colors"
+                      >
+                        <div className="flex items-center gap-2">
+                          <span className={`text-xs font-bold px-2 py-0.5 rounded-full ${cat.color}`}>
+                            {cat.label}
+                          </span>
+                          <span className="text-xs text-muted-foreground">{visibleFields.length} stats</span>
+                        </div>
+                        {isExpanded ? <ChevronUp className="w-3.5 h-3.5 text-muted-foreground" /> : <ChevronDown className="w-3.5 h-3.5 text-muted-foreground" />}
+                      </button>
+                      {isExpanded && (
+                        <CardContent className="p-0 pb-2">
+                          <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-px bg-border/40">
+                            {visibleFields.map(f => (
+                              <div key={f.db} className="bg-card px-3 py-2.5">
+                                <div className="text-[10px] text-muted-foreground leading-tight mb-0.5">{f.label}</div>
+                                <div className="text-sm font-bold tabular-nums">{fmtVal(selectedWyscout[f.db] as number | null, f.unit)}</div>
+                              </div>
+                            ))}
+                          </div>
+                        </CardContent>
+                      )}
+                    </Card>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+        );
+      })()}
     </div>
   );
 }

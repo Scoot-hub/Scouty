@@ -1,8 +1,11 @@
 import { lazy, Suspense, useMemo, useState, useCallback, useRef, useEffect } from 'react';
 import { useParams, Link, useNavigate } from 'react-router-dom';
 import { useIsPremium, useIsAdmin } from '@/hooks/use-admin';
+import { PermGate } from '@/components/PermGate';
 import { useTranslation } from 'react-i18next';
 import { usePlayer, useReports, usePlayers, useAddReport, useToggleArchive } from '@/hooks/use-players';
+import { useIntegrations, useEnrichWithModules } from '@/hooks/use-integrations';
+import { useQueryClient } from '@tanstack/react-query';
 import { useMyOrganizations, useCurrentOrg } from '@/hooks/use-organization';
 import { useScoutOpinions, useAddScoutOpinion, useDeleteScoutOpinion, type ScoutOpinion, type OpinionLink } from '@/hooks/use-scout-opinions';
 import { useAuth } from '@/contexts/AuthContext';
@@ -33,7 +36,7 @@ import { usePlayerInjuries } from '@/hooks/use-player-injuries';
 import { usePlayerMarketValue } from '@/hooks/use-player-market-value';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from '@/components/ui/dropdown-menu';
-import { ArrowLeft, Edit, ExternalLink, PlusCircle, Trash2, RefreshCw, Globe, TrendingUp, Calendar, Ruler, User, MapPin, Hash, Pencil, Euro, Briefcase, LayoutDashboard, ListPlus, Check, Building2, AlertCircle, FileText, Upload, X, Clock, Youtube, Newspaper, Link2, StickyNote, Plus, Activity, Info, Video, ClipboardList, BarChart3, Play, HeartPulse, ChevronDown } from 'lucide-react';
+import { ArrowLeft, Edit, ExternalLink, PlusCircle, Trash2, RefreshCw, Globe, TrendingUp, Calendar, Ruler, User, MapPin, Hash, Pencil, Euro, Briefcase, LayoutDashboard, ListPlus, Check, Building2, AlertCircle, FileText, Upload, X, Clock, Youtube, Newspaper, Link2, StickyNote, Plus, Activity, Info, Video, ClipboardList, BarChart3, Play, HeartPulse, ChevronDown, Plug, Loader2 as ModuleLoader, CheckCircle2 as ModuleOk } from 'lucide-react';
 import { toast } from 'sonner';
 import { parseScoutingNotes, serializeScoutingNotes, loadLayout, saveLayout, type CardId, type CardSize, type LayoutConfig, type ScoutingNotes } from '@/lib/scouting-notes';
 
@@ -68,6 +71,7 @@ export default function PlayerProfile() {
   const { positions: posLabels, positionShort: posShort } = usePositions();
   const { data: isPremium } = useIsPremium();
   const { data: isAdmin } = useIsAdmin();
+  const queryClient = useQueryClient();
   const { data: myOrgs = [] } = useMyOrganizations();
   const hasOrg = myOrgs.length > 0;
   const navigate = useNavigate();
@@ -115,6 +119,10 @@ export default function PlayerProfile() {
   const [deleteConfirm, setDeleteConfirm] = useState('');
   const [deleting, setDeleting] = useState(false);
   const [enriching, setEnriching] = useState(false);
+  const { data: userIntegrations = [] } = useIntegrations();
+  const enrichWithModules = useEnrichWithModules();
+  const [modulesOpen, setModulesOpen] = useState(false);
+  const activeModules = userIntegrations.filter(i => i.enabled && i.has_key);
   const toggleArchive = useToggleArchive();
   const [tmUrlInput, setTmUrlInput] = useState('');
   const [editingReport, setEditingReport] = useState<{ id: string; title: string; drive_link: string; file_url: string } | null>(null);
@@ -535,6 +543,61 @@ export default function PlayerProfile() {
               </TooltipTrigger>
               {!isPremium && <TooltipContent>Fonctionnalité réservée aux comptes Premium</TooltipContent>}
             </Tooltip>
+            {activeModules.length > 0 && (
+              <DropdownMenu modal={false}>
+                <DropdownMenuTrigger asChild>
+                  <Button size="sm" variant="outline" className="rounded-xl gap-1.5" disabled={enrichWithModules.isPending}>
+                    {enrichWithModules.isPending
+                      ? <ModuleLoader className="w-3.5 h-3.5 animate-spin" />
+                      : <Plug className="w-3.5 h-3.5" />}
+                    {t('profile.enrich_modules')}
+                    <ChevronDown className="w-3 h-3" />
+                  </Button>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align="end" className="w-52">
+                  {activeModules.map(m => (
+                    <DropdownMenuItem
+                      key={m.service}
+                      onClick={() => {
+                        enrichWithModules.mutate(
+                          { playerId: player.id, services: [m.service] },
+                          { onSuccess: (res) => {
+                              const r = res.results[m.service];
+                              if (r?.ok) { toast.success(t('profile.module_enriched', { service: m.service })); queryClient.invalidateQueries({ queryKey: ['player', player.id] }); }
+                              else toast.error(t('profile.module_error'));
+                            },
+                            onError: () => toast.error(t('profile.module_error')),
+                          }
+                        );
+                      }}
+                      className="gap-2"
+                    >
+                      <Plug className="w-3.5 h-3.5 text-muted-foreground" />
+                      {m.service === 'perplexity' ? 'Perplexity AI' : m.service === 'pappers' ? 'Pappers' : 'Drop Contact'}
+                    </DropdownMenuItem>
+                  ))}
+                  {activeModules.length > 1 && (
+                    <>
+                      <DropdownMenuSeparator />
+                      <DropdownMenuItem
+                        onClick={() => {
+                          enrichWithModules.mutate(
+                            { playerId: player.id },
+                            { onSuccess: () => { toast.success(t('profile.modules_all_enriched')); queryClient.invalidateQueries({ queryKey: ['player', player.id] }); },
+                              onError: () => toast.error(t('profile.module_error')),
+                            }
+                          );
+                        }}
+                        className="gap-2 font-medium"
+                      >
+                        <ModuleOk className="w-3.5 h-3.5 text-primary" />
+                        {t('profile.enrich_all_modules')}
+                      </DropdownMenuItem>
+                    </>
+                  )}
+                </DropdownMenuContent>
+              </DropdownMenu>
+            )}
           </CardHeader>
           <CardContent className="space-y-3 px-5 pb-5">
             {items.length > 0 ? (
@@ -576,6 +639,49 @@ export default function PlayerProfile() {
                       : t('profile.enrich_tm_save')}
                   </Button>
                 </div>
+              </div>
+            )}
+
+            {/* ── Module enrichment results ── */}
+            {ext.perplexity_summary && (
+              <div className="p-3 rounded-xl bg-teal-500/10 border border-teal-500/20 space-y-1.5">
+                <p className="text-xs font-bold text-teal-700 dark:text-teal-400 flex items-center gap-1.5">
+                  <Plug className="w-3.5 h-3.5" /> Perplexity AI
+                  {ext.perplexity_updated_at && (
+                    <span className="font-normal text-teal-600/70 dark:text-teal-500/70 ml-auto">
+                      {new Date(ext.perplexity_updated_at as string).toLocaleDateString()}
+                    </span>
+                  )}
+                </p>
+                <p className="text-xs text-teal-800 dark:text-teal-300 leading-relaxed">{ext.perplexity_summary as string}</p>
+              </div>
+            )}
+            {ext.pappers_club && (
+              <div className="p-3 rounded-xl bg-blue-500/10 border border-blue-500/20 space-y-1.5">
+                <p className="text-xs font-bold text-blue-700 dark:text-blue-400 flex items-center gap-1.5">
+                  <Plug className="w-3.5 h-3.5" /> Pappers — {(ext.pappers_club as { nom?: string }).nom}
+                </p>
+                <div className="grid grid-cols-2 gap-1 text-xs">
+                  {Object.entries(ext.pappers_club as Record<string, string>).filter(([k]) => k !== 'nom').map(([k, v]) => v && (
+                    <div key={k} className="flex gap-1">
+                      <span className="text-blue-600/70 dark:text-blue-500/70 capitalize">{k.replace(/_/g, ' ')} :</span>
+                      <span className="font-medium text-blue-800 dark:text-blue-300">{v}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+            {ext.dropcontact && (
+              <div className="p-3 rounded-xl bg-orange-500/10 border border-orange-500/20 space-y-1">
+                <p className="text-xs font-bold text-orange-700 dark:text-orange-400 flex items-center gap-1.5">
+                  <Plug className="w-3.5 h-3.5" /> Drop Contact
+                  <span className="ml-auto text-[10px] font-normal text-orange-600/70">
+                    {(ext.dropcontact as { confidence?: string }).confidence}
+                  </span>
+                </p>
+                <p className="text-xs font-mono text-orange-800 dark:text-orange-300">
+                  {(ext.dropcontact as { email?: string }).email}
+                </p>
               </div>
             )}
 
@@ -844,12 +950,14 @@ export default function PlayerProfile() {
                 </Button>
               </DropdownMenuTrigger>
               <DropdownMenuContent align="end" className="w-56">
-                <DropdownMenuItem asChild>
-                  <Link to={`/player/${player.id}/edit`} className="flex items-center gap-2.5">
-                    <Edit className="w-4 h-4" />
-                    {t('profile.edit')}
-                  </Link>
-                </DropdownMenuItem>
+                <PermGate pageKey="player_profile" action="edit">
+                  <DropdownMenuItem asChild>
+                    <Link to={`/player/${player.id}/edit`} className="flex items-center gap-2.5">
+                      <Edit className="w-4 h-4" />
+                      {t('profile.edit')}
+                    </Link>
+                  </DropdownMenuItem>
+                </PermGate>
                 {hasOrg && (
                   <DropdownMenuItem onSelect={(e) => e.preventDefault()} className="p-0">
                     <ShareWithOrgPopover playerId={player.id} />
@@ -996,19 +1104,21 @@ export default function PlayerProfile() {
           )}
 
           {/* Delete zone */}
-          <Card className="border border-destructive/20 bg-destructive/5 mt-4">
-            <CardContent className="p-6">
-              <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
-                <div>
-                  <h3 className="text-sm font-bold text-destructive">{t('profile.danger_zone')}</h3>
-                  <p className="text-xs text-muted-foreground mt-1">{t('profile.delete_confirm_desc')}</p>
+          <PermGate pageKey="player_profile" action="delete">
+            <Card className="border border-destructive/20 bg-destructive/5 mt-4">
+              <CardContent className="p-6">
+                <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
+                  <div>
+                    <h3 className="text-sm font-bold text-destructive">{t('profile.danger_zone')}</h3>
+                    <p className="text-xs text-muted-foreground mt-1">{t('profile.delete_confirm_desc')}</p>
+                  </div>
+                  <Button size="sm" variant="destructive" className="rounded-xl shrink-0" onClick={() => setDeleteOpen(true)}>
+                    <Trash2 className="w-3.5 h-3.5 mr-1.5" />{t('profile.delete')}
+                  </Button>
                 </div>
-                <Button size="sm" variant="destructive" className="rounded-xl shrink-0" onClick={() => setDeleteOpen(true)}>
-                  <Trash2 className="w-3.5 h-3.5 mr-1.5" />{t('profile.delete')}
-                </Button>
-              </div>
-            </CardContent>
-          </Card>
+              </CardContent>
+            </Card>
+          </PermGate>
         </TabsContent>
 
         {/* ── Tab: Scout Report (evaluation + notes cards) ── */}
@@ -1816,6 +1926,7 @@ export default function PlayerProfile() {
             </CardContent>
           </Card>
         </TabsContent>
+
       </Tabs>
 
       {/* Edit Report Dialog */}

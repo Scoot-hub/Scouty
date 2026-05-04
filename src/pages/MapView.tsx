@@ -1,4 +1,5 @@
 import { useMemo, useState, useEffect, useRef } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { MapContainer, TileLayer, Marker, Popup, Circle, useMap } from 'react-leaflet';
 import L from 'leaflet';
@@ -14,11 +15,12 @@ import { Card, CardContent } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
 import { Badge } from '@/components/ui/badge';
 import {
-  Search, Loader2, CalendarDays, ChevronLeft, ChevronRight, MapPin, Users, Crosshair, Navigation, RefreshCw, LocateFixed,
+  Search, Loader2, CalendarDays, ChevronLeft, ChevronRight, MapPin, Users, Crosshair, Navigation, RefreshCw, LocateFixed, SlidersHorizontal,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { cn } from '@/lib/utils';
 import { useGeolocation, distanceKm } from '@/hooks/use-geolocation';
+import { useUiPreferences } from '@/contexts/UiPreferencesContext';
 import { useQueryClient } from '@tanstack/react-query';
 import { toast } from 'sonner';
 
@@ -58,6 +60,25 @@ const COUNTRY_COORDS: Record<string, [number, number]> = {
   ENG:[52.5,-1.5],SCO:[56.5,-4],WAL:[52.3,-3.5],NIR:[54.6,-6.7],
 };
 
+// Map country full names → [lat, lng] for deep-link fly-to from ClubProfile
+const COUNTRY_NAME_COORDS: Record<string, [number, number]> = {
+  'france':[46,2],'england':[52.5,-1.5],'germany':[51,9],'spain':[40,-4],'italy':[42.8,12.8],
+  'portugal':[39.5,-8],'netherlands':[52.5,5.8],'belgium':[50.8,4],'scotland':[56.5,-4],
+  'brazil':[-10,-55],'argentina':[-34,-64],'united states':[38,-97],'mexico':[23,-102],
+  'turkey':[39,35],'russia':[60,100],'ukraine':[49,32],'poland':[52,20],'sweden':[62,15],
+  'norway':[62,10],'denmark':[56,10],'switzerland':[47,8],'austria':[47.3,13.3],
+  'croatia':[45.2,15.5],'serbia':[44,21],'greece':[39,22],'czech republic':[49.8,15.5],
+  'slovakia':[48.7,19.5],'romania':[46,25],'hungary':[47,20],'bulgaria':[43,25],
+  'saudi arabia':[25,45],'united arab emirates':[24,54],'qatar':[25.5,51.2],
+  'japan':[36,138],'south korea':[37,128],'china':[35,105],'australia':[-27,133],
+  'morocco':[32,-5],'egypt':[27,30],'nigeria':[10,8],'south africa':[-29,24],
+  'colombia':[4,-72],'chile':[-30,-71],'ecuador':[-2,-77.5],'uruguay':[-33,-56],
+  'wales':[52.3,-3.5],'northern ireland':[54.6,-6.7],'ireland':[53,-8],
+  'israel':[31.5,35],'iran':[32,53],'ghana':[8,-1.2],'cameroon':[6,12],
+  'senegal':[14,-14],'ivory coast':[8,-5],'mali':[17,-4],'algeria':[28,3],
+  'tunisia':[34,9],'kosovo':[42.6,21],'north macedonia':[41.5,22],'albania':[41,20],
+};
+
 // ---------------------------------------------------------------------------
 // Custom map markers via L.divIcon
 // ---------------------------------------------------------------------------
@@ -86,7 +107,7 @@ const USER_ICON = L.divIcon({
   </div>`,
 });
 
-const NEARBY_RADIUS_KM = 150; // radius for "nearby" matches
+const NEARBY_RADIUS_KM_DEFAULT = 150;
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -161,18 +182,37 @@ function parseLatLng(s: string): [number, number] | null {
 
 export default function MapView() {
   const { t, i18n } = useTranslation();
+  const [searchParams] = useSearchParams();
   const [dayOffset, setDayOffset] = useState(0);
   const selectedDate = getDateString(dayOffset);
   const { data: eventsData, isLoading: eventsLoading } = useEventsForDay(selectedDate);
   const { data: players = [] } = usePlayers();
   const { data: clubLocations = [] } = useClubLocations();
-  const [search, setSearch] = useState('');
+  const [search, setSearch] = useState(() => searchParams.get('q') || '');
   const [flyTarget, setFlyTarget] = useState<{ center: [number, number]; zoom: number } | null>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const [mapHeight, setMapHeight] = useState(500);
   const { position: userPos, loading: geoLoading, locate } = useGeolocation();
   const [showNearby, setShowNearby] = useState(false);
   const [pendingNearby, setPendingNearby] = useState(false);
+  const [nearbyRadiusKm, setNearbyRadiusKm] = useState(NEARBY_RADIUS_KM_DEFAULT);
+
+  // On mount: if ?q= param provided, try to fly to it (lat,lng or country name)
+  useEffect(() => {
+    const q = searchParams.get('q');
+    if (!q) return;
+    // Try lat,lng format
+    const parsed = parseLatLng(q);
+    if (parsed) { setFlyTarget({ center: parsed, zoom: 14 }); return; }
+    // Try country name lookup
+    const lower = q.toLowerCase().trim();
+    const coords = COUNTRY_NAME_COORDS[lower];
+    if (coords) { setFlyTarget({ center: coords, zoom: 6 }); return; }
+    // Partial match fallback (e.g. "England" → "england")
+    for (const [name, c] of Object.entries(COUNTRY_NAME_COORDS)) {
+      if (lower.includes(name) || name.includes(lower)) { setFlyTarget({ center: c, zoom: 6 }); return; }
+    }
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Auto-activate nearby view once position arrives after clicking the button
   useEffect(() => {
@@ -183,6 +223,21 @@ export default function MapView() {
     }
   }, [pendingNearby, userPos]);
   const queryClient = useQueryClient();
+  const { distanceUnit } = useUiPreferences();
+
+  // Convert km ↔ display unit helpers
+  const kmToUnit = (km: number) => distanceUnit === 'mi' ? Math.round(km * 0.621371) : Math.round(km);
+  const unitToKm = (v: number) => distanceUnit === 'mi' ? Math.round(v / 0.621371) : v;
+  const unitLabel = distanceUnit === 'mi' ? 'mi' : 'km';
+  const fmtDist = (km: number) => `${kmToUnit(km)} ${unitLabel}`;
+  const nearbyRadiusDisplay = `${kmToUnit(nearbyRadiusKm)} ${unitLabel}`;
+
+  // Slider config in display unit
+  const radiusInUnit = kmToUnit(nearbyRadiusKm);
+  const radiusMin = distanceUnit === 'mi' ? 15 : 25;
+  const radiusMax = distanceUnit === 'mi' ? 300 : 500;
+  const radiusStep = distanceUnit === 'mi' ? 15 : 25;
+  const handleRadiusChange = (v: number) => setNearbyRadiusKm(unitToKm(v));
 
   // ── Club location correction state ──
   const [fixingClub, setFixingClub] = useState<string | null>(null);
@@ -321,9 +376,9 @@ export default function MapView() {
         ...m,
         distance: distanceKm(userPos.latitude, userPos.longitude, m.coords[0], m.coords[1]),
       }))
-      .filter(m => m.distance <= NEARBY_RADIUS_KM)
+      .filter(m => m.distance <= nearbyRadiusKm)
       .sort((a, b) => a.distance - b.distance);
-  }, [userPos, matchMarkers]);
+  }, [userPos, matchMarkers, nearbyRadiusKm]);
 
   // Nearby clubs from user's scouted players (sorted by distance)
   const nearbyClubs = useMemo(() => {
@@ -333,9 +388,9 @@ export default function MapView() {
         ...c,
         distance: distanceKm(userPos.latitude, userPos.longitude, c.coords[0], c.coords[1]),
       }))
-      .filter(c => c.distance <= NEARBY_RADIUS_KM)
+      .filter(c => c.distance <= nearbyRadiusKm)
       .sort((a, b) => a.distance - b.distance);
-  }, [userPos, clubMarkers]);
+  }, [userPos, clubMarkers, nearbyRadiusKm]);
 
   // Detect if search is a lat,lng coordinate
   const parsedLatLng = useMemo(() => parseLatLng(search), [search]);
@@ -396,9 +451,9 @@ export default function MapView() {
             </button>
           </div>
           <Button
-            variant={userPos ? 'default' : 'outline'}
+            variant={userPos && showNearby ? 'default' : 'outline'}
             size="sm"
-            className="rounded-xl gap-1.5"
+            className="rounded-xl gap-1.5 shrink-0"
             onClick={() => {
               if (userPos) {
                 const next = !showNearby;
@@ -414,6 +469,26 @@ export default function MapView() {
             {geoLoading ? <Loader2 className="w-4 h-4 animate-spin" /> : <Crosshair className="w-4 h-4" />}
             {userPos ? t('map.nearby') : t('map.locate_me')}
           </Button>
+
+          {/* Radius slider — visible only when nearby mode is active */}
+          {userPos && showNearby && (
+            <div className="flex items-center gap-2 bg-muted/50 rounded-xl px-3 py-1.5 shrink-0">
+              <SlidersHorizontal className="w-3.5 h-3.5 text-purple-500 shrink-0" />
+              <input
+                type="range"
+                min={radiusMin}
+                max={radiusMax}
+                step={radiusStep}
+                value={radiusInUnit}
+                onChange={e => handleRadiusChange(Number(e.target.value))}
+                className="w-24 accent-purple-500 cursor-pointer"
+                title={`${t('map.radius')}: ${nearbyRadiusDisplay}`}
+              />
+              <span className="text-xs font-semibold text-purple-600 tabular-nums w-16 shrink-0">
+                {nearbyRadiusDisplay}
+              </span>
+            </div>
+          )}
           <div className="relative w-64">
             <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
             <Input
@@ -560,7 +635,7 @@ export default function MapView() {
                       </div>
                       {nearbyMatches.length > 0 && (
                         <div style={{ fontSize: 11, marginTop: 4, color: '#a855f7', fontWeight: 600 }}>
-                          ⚽ {nearbyMatches.reduce((s, m) => s + m.comp.events.length, 0)} {t('map.matches_nearby', { radius: NEARBY_RADIUS_KM })}
+                          ⚽ {nearbyMatches.reduce((s, m) => s + m.comp.events.length, 0)} {t('map.matches_nearby', { radius: nearbyRadiusDisplay })}
                         </div>
                       )}
                       {nearbyClubs.length > 0 && (
@@ -574,7 +649,7 @@ export default function MapView() {
                 {showNearby && (
                   <Circle
                     center={[userPos.latitude, userPos.longitude]}
-                    radius={NEARBY_RADIUS_KM * 1000}
+                    radius={nearbyRadiusKm * 1000}
                     pathOptions={{
                       color: '#a855f7',
                       fillColor: '#a855f7',
@@ -590,14 +665,14 @@ export default function MapView() {
         </div>
 
         {/* Sidebar */}
-        <div className="w-80 shrink-0 hidden lg:flex flex-col gap-2 overflow-y-auto pr-1">
+        <div className="w-80 shrink-0 hidden lg:flex flex-col gap-2 overflow-y-auto">
           {/* ── Nearby section — matches + clubs ── */}
           {userPos && showNearby && (nearbyMatches.length > 0 || nearbyClubs.length > 0) && (
             <>
               <div className="flex items-center gap-1.5 px-1">
                 <Navigation className="w-3 h-3 text-purple-500" />
                 <p className="text-xs font-bold uppercase tracking-wider text-purple-500">
-                  {t('map.nearby_title')} — {NEARBY_RADIUS_KM} km
+                  {t('map.nearby_title')} — {nearbyRadiusDisplay}
                 </p>
               </div>
 
@@ -626,7 +701,7 @@ export default function MapView() {
                               <p className="text-xs text-muted-foreground">{m.comp.country}</p>
                             </div>
                             <Badge variant="outline" className="text-[10px] shrink-0 border-purple-500/30 text-purple-600">
-                              {Math.round(m.distance)} km
+                              {fmtDist(m.distance)}
                             </Badge>
                           </div>
                           <div className="space-y-1">
@@ -675,7 +750,7 @@ export default function MapView() {
                           )}
                         </div>
                         <Badge variant="outline" className="text-[10px] shrink-0 border-sky-500/30 text-sky-600">
-                          {Math.round(c.distance)} km
+                          {fmtDist(c.distance)}
                         </Badge>
                       </CardContent>
                     </Card>
@@ -686,7 +761,7 @@ export default function MapView() {
               {/* Empty state if no nearby data despite having position */}
               {nearbyMatches.length === 0 && nearbyClubs.length === 0 && (
                 <p className="text-xs text-muted-foreground text-center py-4">
-                  {t('map.nothing_nearby', { radius: NEARBY_RADIUS_KM })}
+                  {t('map.nothing_nearby', { radius: nearbyRadiusDisplay })}
                 </p>
               )}
 

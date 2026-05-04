@@ -9,6 +9,7 @@ import { AuthProvider } from "@/contexts/AuthContext";
 import { UiPreferencesProvider } from "@/contexts/UiPreferencesContext";
 import ProtectedRoute from "@/components/layout/ProtectedRoute";
 import AppLayout from "@/components/layout/AppLayout";
+import PageLoader from "@/components/PageLoader";
 import CookieBanner from "@/components/CookieBanner";
 import { ThemeProvider } from "@/components/ThemeProvider";
 import ErrorBoundary from "@/components/ErrorBoundary";
@@ -36,6 +37,7 @@ const Watchlist = lazy(() => import("@/pages/Watchlist"));
 const ShadowTeamPage = lazy(() => import("@/pages/ShadowTeam"));
 const Fixtures = lazy(() => import("@/pages/Fixtures"));
 const MyMatches = lazy(() => import("@/pages/MyMatches"));
+const MyChampionships = lazy(() => import("@/pages/MyChampionships"));
 const OrgRoadmap = lazy(() => import("@/pages/OrgRoadmap"));
 const Contacts = lazy(() => import("@/pages/Contacts"));
 const ForgotPassword = lazy(() => import("@/pages/ForgotPassword"));
@@ -49,6 +51,10 @@ const CGU = lazy(() => import("@/pages/CGU"));
 const Booking = lazy(() => import("@/pages/Booking"));
 const Discover = lazy(() => import("@/pages/Discover"));
 const Community = lazy(() => import("@/pages/Community"));
+const News = lazy(() => import("@/pages/News"));
+const Buzz = lazy(() => import("@/pages/Buzz"));
+const XPage = lazy(() => import("@/pages/X"));
+const Instagram = lazy(() => import("@/pages/Instagram"));
 const UserProfile = lazy(() => import("@/pages/UserProfile"));
 const ClubProfile = lazy(() => import("@/pages/ClubProfile"));
 const ClubSearch = lazy(() => import("@/pages/ClubSearch"));
@@ -62,6 +68,9 @@ const MapView = lazy(() => import("@/pages/MapView"));
 const MatchDetail = lazy(() => import("@/pages/MatchDetail"));
 const DataImport = lazy(() => import("@/pages/DataImport"));
 const Onboarding = lazy(() => import("@/pages/Onboarding"));
+const Editorial = lazy(() => import("@/pages/Editorial"));
+const EditorialEditor = lazy(() => import("@/pages/EditorialEditor"));
+const EditorialView = lazy(() => import("@/pages/EditorialView"));
 const NotFound = lazy(() => import("@/pages/NotFound"));
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -84,7 +93,7 @@ const App = () => (
       <Sonner />
       <BrowserRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
         <AuthProvider>
-          <Suspense fallback={null}>
+          <Suspense fallback={<PageLoader />}>
           <Routes>
             {/* Public routes */}
             <Route path="/" element={<Landing />} />
@@ -113,6 +122,7 @@ const App = () => (
                 <Route path="/fixtures" element={<Fixtures />} />
                 <Route path="/match/:matchId" element={<MatchDetail />} />
                 <Route path="/my-matches" element={<MyMatches />} />
+                <Route path="/my-championships" element={<MyChampionships />} />
                 <Route path="/contacts" element={<Contacts />} />
                 <Route path="/settings" element={<Settings />} />
                 <Route path="/admin" element={<Admin />} />
@@ -135,6 +145,10 @@ const App = () => (
                 <Route path="/booking" element={<Booking />} />
                 <Route path="/discover" element={<Discover />} />
                 <Route path="/community" element={<Community />} />
+                <Route path="/news" element={<News />} />
+                <Route path="/buzz" element={<Buzz />} />
+                <Route path="/x" element={<XPage />} />
+                <Route path="/instagram" element={<Instagram />} />
                 <Route path="/profile/:userId" element={<UserProfile />} />
                 <Route path="/club-search" element={<ClubSearch />} />
                 <Route path="/club" element={<ClubProfile />} />
@@ -144,6 +158,10 @@ const App = () => (
                 <Route path="/checkout" element={<Checkout />} />
                 <Route path="/affiliate" element={<Affiliate />} />
                 <Route path="/data-import" element={<DataImport />} />
+                <Route path="/editorial" element={<Editorial />} />
+                <Route path="/editorial/new" element={<EditorialEditor />} />
+                <Route path="/editorial/:id" element={<EditorialView />} />
+                <Route path="/editorial/:id/edit" element={<EditorialEditor />} />
               </Route>
             </Route>
 

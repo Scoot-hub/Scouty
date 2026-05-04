@@ -1,6 +1,6 @@
 import { Link } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
-import { Shield, Eye, Lock, Accessibility, ArrowLeft } from 'lucide-react';
+import { Shield, Eye, Lock, Accessibility, ArrowLeft, Building2, Database, CreditCard, Bot, FileSpreadsheet } from 'lucide-react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import logo from '@/assets/logo.png';
@@ -10,26 +10,15 @@ export default function Legal() {
   const { t } = useTranslation();
 
   const sections = [
-    {
-      icon: Shield,
-      title: t('legal.rgpd_title'),
-      content: t('legal.rgpd_content'),
-    },
-    {
-      icon: Accessibility,
-      title: t('legal.rgaa_title'),
-      content: t('legal.rgaa_content'),
-    },
-    {
-      icon: Lock,
-      title: t('legal.iso27001_title'),
-      content: t('legal.iso27001_content'),
-    },
-    {
-      icon: Eye,
-      title: t('legal.cookies_title'),
-      content: t('legal.cookies_content'),
-    },
+    { icon: Building2,      title: t('legal.editor_title'),         content: t('legal.editor_content') },
+    { icon: Shield,         title: t('legal.rgpd_title'),           content: t('legal.rgpd_content') },
+    { icon: Database,       title: t('legal.subcontractors_title'), content: t('legal.subcontractors_content') },
+    { icon: Lock,           title: t('legal.iso27001_title'),       content: t('legal.iso27001_content') },
+    { icon: Bot,            title: t('legal.enrichment_title'),     content: t('legal.enrichment_content') },
+    { icon: FileSpreadsheet,title: t('legal.import_title'),         content: t('legal.import_content') },
+    { icon: CreditCard,     title: t('legal.payment_title'),        content: t('legal.payment_content') },
+    { icon: Accessibility,  title: t('legal.rgaa_title'),           content: t('legal.rgaa_content') },
+    { icon: Eye,            title: t('legal.cookies_title'),        content: t('legal.cookies_content') },
   ];
 
   return (

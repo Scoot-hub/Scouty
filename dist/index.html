@@ -26,15 +26,48 @@
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
-    <script type="module" crossorigin src="/assets/index-D07_IndX.js"></script>
-    <link rel="modulepreload" crossorigin href="/assets/vendor-DFlAKvYn.js">
-    <link rel="modulepreload" crossorigin href="/assets/ui-BDvlBp72.js">
-    <link rel="modulepreload" crossorigin href="/assets/icons-DEVKSLRs.js">
-    <link rel="modulepreload" crossorigin href="/assets/tanstack-CL1swa4H.js">
-    <link rel="modulepreload" crossorigin href="/assets/utils-Bxl92pM9.js">
-    <link rel="stylesheet" crossorigin href="/assets/index-D5iOv7bU.css">
+    <script type="module" crossorigin src="/assets/index-CjVirUBE.js"></script>
+    <link rel="modulepreload" crossorigin href="/assets/vendor-DxiIBByp.js">
+    <link rel="modulepreload" crossorigin href="/assets/ui-KTeeEmW5.js">
+    <link rel="modulepreload" crossorigin href="/assets/icons-EvkMA_ns.js">
+    <link rel="modulepreload" crossorigin href="/assets/tanstack-5GFH0yC-.js">
+    <link rel="modulepreload" crossorigin href="/assets/utils-B0xD_c7V.js">
+    <link rel="stylesheet" crossorigin href="/assets/index-CF_7pynh.css">
   </head>
   <body>
+    <div id="static-loader" style="position:fixed;inset:0;z-index:9999;display:flex;flex-direction:column;align-items:center;justify-content:center;background:#09090b;gap:24px;">
+      <div style="position:relative;">
+        <div id="sl-ring" style="position:absolute;inset:0;border-radius:24px;"></div>
+        <img src="/logo.png" alt="Scouty" style="width:80px;height:80px;border-radius:24px;box-shadow:0 25px 50px -12px rgba(99,102,241,0.3);animation:sl-logo 1.8s ease-in-out infinite;" />
+      </div>
+      <div style="text-align:center;">
+        <p style="font-family:'Plus Jakarta Sans',sans-serif;font-size:1.5rem;font-weight:900;letter-spacing:-0.025em;color:#fafafa;animation:sl-fade 1.8s ease-in-out infinite;margin:0 0 8px;">Scouty</p>
+        <div style="width:128px;height:4px;border-radius:9999px;background:#27272a;overflow:hidden;margin:0 auto;">
+          <div style="height:100%;border-radius:9999px;background:#6366f1;animation:sl-bar 1.4s ease-in-out infinite;"></div>
+        </div>
+      </div>
+      <style>
+        @keyframes sl-ring {
+          0%   { box-shadow: 0 0 0 0 rgba(99,102,241,0.45); }
+          70%  { box-shadow: 0 0 0 18px rgba(99,102,241,0); }
+          100% { box-shadow: 0 0 0 0 rgba(99,102,241,0); }
+        }
+        @keyframes sl-logo {
+          0%, 100% { transform: scale(1);    filter: drop-shadow(0 0 0px rgba(99,102,241,0)); }
+          50%       { transform: scale(1.06); filter: drop-shadow(0 0 12px rgba(99,102,241,0.5)); }
+        }
+        @keyframes sl-fade {
+          0%, 100% { opacity: 0.6; }
+          50%       { opacity: 1; }
+        }
+        @keyframes sl-bar {
+          0%   { width: 0%;  margin-left: 0%; }
+          50%  { width: 60%; margin-left: 20%; }
+          100% { width: 0%;  margin-left: 100%; }
+        }
+        #sl-ring { animation: sl-ring 1.8s ease-out infinite; }
+      </style>
+    </div>
     <div id="root"></div>
   </body>
 </html>
