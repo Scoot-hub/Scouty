@@ -121,6 +121,28 @@ export function useCreateOrganization() {
   });
 }
 
+// Update organization name and/or description (owner/admin)
+export function useUpdateOrganization(orgId: string | undefined) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async (data: { name?: string; description?: string }) => {
+      if (!orgId) throw new Error('No org id');
+      const res = await fetch(`${API_BASE}/organizations/${orgId}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify(data),
+      });
+      const json = await res.json();
+      if (!res.ok) throw new Error(json.error || 'Erreur');
+      return json;
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['my-organizations'] });
+    },
+  });
+}
+
 // Join an organization by invite code
 export function useJoinOrganization() {
   const { user } = useAuth();

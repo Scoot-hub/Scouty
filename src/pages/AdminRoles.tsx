@@ -216,8 +216,10 @@ export default function AdminRoles() {
     } catch { toast.error(t('common.error')); }
   };
 
+  const SYSTEM_ROLES = ['admin', 'user', 'moderateur', 'importateur'];
+
   const deleteRole = async (role: string) => {
-    if (role === 'admin' || role === 'user') return;
+    if (SYSTEM_ROLES.includes(role)) return;
     try {
       const res = await fetch(`${API_BASE}/admin/roles/delete`, {
         method: 'POST', ...authFetchInit(), body: JSON.stringify({ role }),
@@ -325,6 +327,9 @@ export default function AdminRoles() {
                 >
                   <Icon className="w-3.5 h-3.5" />
                   {role}
+                  {SYSTEM_ROLES.includes(role) && role !== 'admin' && role !== 'user' && (
+                    <Lock className="w-2.5 h-2.5 opacity-60" />
+                  )}
                 </Button>
               );
             })}
@@ -365,9 +370,18 @@ export default function AdminRoles() {
                       );
                     })()}
                     {selectedRole === 'admin' && <Badge variant="outline" className="text-[10px]">{t('roles.full_access')}</Badge>}
+                    {SYSTEM_ROLES.includes(selectedRole) && selectedRole !== 'admin' && (
+                      <Badge variant="outline" className="text-[10px] border-emerald-500/40 text-emerald-600 dark:text-emerald-400">
+                        <Lock className="w-2.5 h-2.5 mr-1" />{t('roles.system_role')}
+                      </Badge>
+                    )}
                   </CardTitle>
                   <CardDescription>
-                    {selectedRole === 'admin' ? t('roles.admin_desc') : t('roles.perm_desc')}
+                    {selectedRole === 'admin'
+                      ? t('roles.admin_desc')
+                      : selectedRole === 'importateur'
+                        ? t('roles.importateur_desc')
+                        : t('roles.perm_desc')}
                   </CardDescription>
                 </div>
                 <div className="flex items-center gap-2">
@@ -385,7 +399,7 @@ export default function AdminRoles() {
                       aria-label={t('roles.change_color')}
                     />
                   </label>
-                  {selectedRole !== 'admin' && selectedRole !== 'user' && (
+                  {!SYSTEM_ROLES.includes(selectedRole) && (
                     <Button variant="ghost" size="sm"
                       className="text-destructive hover:text-destructive hover:bg-destructive/10"
                       onClick={() => deleteRole(selectedRole)}>

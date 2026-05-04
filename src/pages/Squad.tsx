@@ -3,6 +3,7 @@ import { useTranslation } from 'react-i18next';
 import { useSquadPlayers, useUpsertSquadPlayer, useDeleteSquadPlayer } from '@/hooks/use-squad';
 import { usePlayers } from '@/hooks/use-players';
 import { useCurrentOrg, useOrgPlayers } from '@/hooks/use-organization';
+import OrgTabBar from '@/components/OrgTabBar';
 import { usePositions } from '@/hooks/use-positions';
 import { getPlayerAge, translateFoot, translateCountry, type Foot } from '@/types/player';
 import type { SquadPlayer, SquadPlayerStatus } from '@/types/squad';
@@ -409,6 +410,9 @@ export default function Squad() {
 
   return (
     <div className="space-y-6 pb-10">
+      {/* Tab bar */}
+      <OrgTabBar orgName={org.name as string} />
+
       {/* Header */}
       <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
         <div>

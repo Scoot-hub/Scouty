@@ -51,6 +51,7 @@ const Discover = lazy(() => import("@/pages/Discover"));
 const Community = lazy(() => import("@/pages/Community"));
 const UserProfile = lazy(() => import("@/pages/UserProfile"));
 const ClubProfile = lazy(() => import("@/pages/ClubProfile"));
+const ClubSearch = lazy(() => import("@/pages/ClubSearch"));
 const MyClubs = lazy(() => import("@/pages/MyClubs"));
 const Privacy = lazy(() => import("@/pages/Privacy"));
 const AdminAnalytics = lazy(() => import("@/pages/AdminAnalytics"));
@@ -135,6 +136,7 @@ const App = () => (
                 <Route path="/discover" element={<Discover />} />
                 <Route path="/community" element={<Community />} />
                 <Route path="/profile/:userId" element={<UserProfile />} />
+                <Route path="/club-search" element={<ClubSearch />} />
                 <Route path="/club" element={<ClubProfile />} />
                 <Route path="/my-clubs" element={<MyClubs />} />
                 <Route path="/championships" element={<Championships />} />

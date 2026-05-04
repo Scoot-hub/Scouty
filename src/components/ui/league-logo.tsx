@@ -139,6 +139,124 @@ const LEAGUE_FLAG_CODE: Record<string, string> = {
   'fiji premier league': 'fj',
 };
 
+// ── Local static logos (public/leagues/) — loaded instantly, no API call ──
+const LOCAL_LOGOS: Record<string, string> = {
+  // France
+  'ligue 1': '/leagues/ligue-1.png',
+  'ligue 2': '/leagues/ligue-2.png',
+  // Angleterre
+  'premier league': '/leagues/premier-league.png',
+  'efl championship': '/leagues/championship.png',
+  'championship': '/leagues/championship.png',
+  'league one': '/leagues/league-one.png',
+  // Espagne
+  'la liga': '/leagues/la-liga.png',
+  'laliga': '/leagues/la-liga.png',
+  'la liga 2': '/leagues/la-liga-2.png',
+  'segunda division': '/leagues/la-liga-2.png',
+  // Italie
+  'serie a': '/leagues/serie-a.png',
+  'serie b': '/leagues/serie-b.png',
+  // Allemagne
+  'bundesliga': '/leagues/bundesliga.png',
+  '2. bundesliga': '/leagues/bundesliga-2.png',
+  '2.bundesliga': '/leagues/bundesliga-2.png',
+  // Portugal
+  'liga portugal': '/leagues/liga-portugal.png',
+  'primeira liga': '/leagues/liga-portugal.png',
+  'liga portugal 2': '/leagues/liga-portugal-2.png',
+  // Pays-Bas
+  'eredivisie': '/leagues/eredivisie.png',
+  'eerste divisie': '/leagues/eerste-divisie.png',
+  // Belgique
+  'jupiler pro league': '/leagues/jupiler-pro-league.png',
+  'pro league': '/leagues/jupiler-pro-league.png',
+  'challenger pro league': '/leagues/challenger-pro-league.png',
+  // Turquie
+  'super lig': '/leagues/super-lig.png',
+  'super lig turquie': '/leagues/super-lig.png',
+  // Suisse
+  'super league suisse': '/leagues/super-league-suisse.png',
+  'super league': '/leagues/super-league-suisse.png',
+  'challenge league suisse': '/leagues/challenge-league-suisse.png',
+  // Scandinavie
+  'superligaen': '/leagues/superligaen.png',
+  'allsvenskan': '/leagues/allsvenskan.png',
+  'superettan': '/leagues/superettan.png',
+  'eliteserien': '/leagues/eliteserien.png',
+  // Est Europe
+  'ekstraklasa': '/leagues/ekstraklasa.png',
+  'fortuna liga': '/leagues/fortuna-liga.png',
+  'fortuna liga tchéquie': '/leagues/fortuna-liga.png',
+  'nb i': '/leagues/nb-i.png',
+  'nb i hongrie': '/leagues/nb-i.png',
+  'premier league russe': '/leagues/premier-league-russe.png',
+  'premier league ukrainienne': '/leagues/premier-league-ukrainienne.png',
+  // Écosse
+  'premier league écosse': '/leagues/premier-league-ecosse.png',
+  'scottish premiership': '/leagues/premier-league-ecosse.png',
+  // Balkans
+  'superliga serbie': '/leagues/superliga-serbie.png',
+  'hnl': '/leagues/hnl.png',
+  'hnl croatie': '/leagues/hnl.png',
+  'super league grèce': '/leagues/super-league-grece.png',
+  // Coupes européennes
+  'uefa champions league': '/leagues/champions-league.png',
+  'champions league': '/leagues/champions-league.png',
+  'ligue des champions': '/leagues/champions-league.png',
+  'uefa europa league': '/leagues/europa-league.png',
+  'europa league': '/leagues/europa-league.png',
+  'ligue europa': '/leagues/europa-league.png',
+  'uefa conference league': '/leagues/conference-league.png',
+  'conference league': '/leagues/conference-league.png',
+  'ligue europa conférence': '/leagues/conference-league.png',
+  // Amériques
+  'mls': '/leagues/mls.png',
+  'liga mx': '/leagues/liga-mx.png',
+  'liga mx mexicaine': '/leagues/liga-mx.png',
+  'brasileirão série a': '/leagues/brasileirao-serie-a.png',
+  'brasileirao serie a': '/leagues/brasileirao-serie-a.png',
+  'serie a brésilienne': '/leagues/brasileirao-serie-a.png',
+  'brasileirão série b': '/leagues/brasileirao-serie-b.png',
+  'liga profesional argentina': '/leagues/liga-profesional-argentina.png',
+  'liga betplay': '/leagues/liga-betplay.png',
+  'liga betplay colombie': '/leagues/liga-betplay.png',
+  'primera división uruguay': '/leagues/primera-division-uruguay.png',
+  'primera division uruguay': '/leagues/primera-division-uruguay.png',
+  'primera división chili': '/leagues/primera-division-chili.png',
+  'canadian premier league': '/leagues/canadian-premier-league.png',
+  'copa libertadores': '/leagues/copa-libertadores.png',
+  'copa sudamericana': '/leagues/copa-sudamericana.png',
+  // Asie / Moyen-Orient
+  'j-league': '/leagues/j-league.png',
+  'j league': '/leagues/j-league.png',
+  'k league': '/leagues/k-league.png',
+  'k league 1': '/leagues/k-league.png',
+  'chinese super league': '/leagues/chinese-super-league.png',
+  'saudi pro league': '/leagues/saudi-pro-league.png',
+  'ligue professionnelle saoudienne': '/leagues/saudi-pro-league.png',
+  'uae pro league': '/leagues/uae-pro-league.png',
+  // Afrique
+  'botola pro maroc': '/leagues/botola-pro.png',
+  'botola pro': '/leagues/botola-pro.png',
+  // Compétitions internationales
+  'coupe du monde': '/leagues/world-cup.png',
+  'world cup': '/leagues/world-cup.png',
+  'euro': '/leagues/euro.png',
+  'uefa euro': '/leagues/euro.png',
+  'nations league': '/leagues/nations-league.png',
+  'ligue des nations': '/leagues/nations-league.png',
+  'copa america': '/leagues/copa-america.png',
+  'can': '/leagues/african-cup.png',
+  'coupe dafrique': '/leagues/african-cup.png',
+  'africa cup of nations': '/leagues/african-cup.png',
+};
+
+/** Returns a local static logo path if available, null otherwise */
+export function getLocalLeagueLogo(league: string): string | null {
+  return LOCAL_LOGOS[league.toLowerCase().trim()] ?? null;
+}
+
 interface LeagueLogoProps {
   league: string;
   size?: 'xs' | 'sm' | 'md' | 'lg';
@@ -233,14 +351,26 @@ const flagSizeMap = {
 };
 
 export function LeagueLogo({ league, size = 'md', className, fallback }: LeagueLogoProps) {
-  const key = league.toLowerCase();
+  const key = league.toLowerCase().trim();
   const flagCode = LEAGUE_FLAG_CODE[key] ?? null;
-  const [logoUrl, setLogoUrl] = useState<string | null>(logoCache.get(key) ?? null);
-  const [loaded, setLoaded] = useState(logoCache.has(key));
+
+  // 1. Check local static files first (instant, no request)
+  const localLogo = LOCAL_LOGOS[key] ?? null;
+
+  const [logoUrl, setLogoUrl] = useState<string | null>(
+    localLogo ?? logoCache.get(key) ?? null
+  );
+  const [loaded, setLoaded] = useState(!!localLogo || logoCache.has(key));
 
   useEffect(() => {
-    let cancelled = false;
+    // Local file available — no need for DB or API
+    if (localLogo) {
+      setLogoUrl(localLogo);
+      setLoaded(true);
+      return;
+    }
 
+    let cancelled = false;
     dbLoaded.then(() => {
       if (cancelled) return;
       const cached = logoCache.get(key);
@@ -249,7 +379,7 @@ export function LeagueLogo({ league, size = 'md', className, fallback }: LeagueL
         setLoaded(true);
         return;
       }
-      // If we have a flag code for this league, skip the API call entirely
+      // Flag available → skip API call
       if (flagCode) {
         setLoaded(true);
         return;
@@ -261,9 +391,8 @@ export function LeagueLogo({ league, size = 'md', className, fallback }: LeagueL
         setLoaded(true);
       });
     });
-
     return () => { cancelled = true; };
-  }, [league, key, flagCode]);
+  }, [league, key, localLogo, flagCode]);
 
   if (loaded && logoUrl) {
     return (

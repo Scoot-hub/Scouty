@@ -4,11 +4,13 @@ import { useTranslation } from 'react-i18next';
 import { useCustomFields, useCustomFieldValues, useUpsertCustomFieldValue, type CustomField } from '@/hooks/use-custom-fields';
 import { usePlayers } from '@/hooks/use-players';
 import { useMyMatches } from '@/hooks/use-match-assignments';
+import { useChampionships } from '@/hooks/use-championships';
 import { Input } from '@/components/ui/input';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Checkbox } from '@/components/ui/checkbox';
-import { ExternalLink, Users, CalendarDays, Search, X } from 'lucide-react';
+import { ExternalLink, Users, CalendarDays, Search, X, Trophy } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import { LeagueLogo } from '@/components/ui/league-logo';
 
 interface Props {
   playerId: string;
@@ -66,6 +68,9 @@ function ReadonlyField({ field, value }: { field: CustomField; value: string }) 
   if (field.field_type === 'match') {
     return <MatchRefReadonly matchId={value} />;
   }
+  if (field.field_type === 'championship') {
+    return <ChampionshipRefReadonly name={value} />;
+  }
   return <span className="text-sm font-bold">{value}</span>;
 }
 
@@ -77,6 +82,20 @@ function PlayerRefReadonly({ playerId }: { playerId: string }) {
     <Link to={`/player/${playerId}`} className="text-sm text-primary font-medium flex items-center gap-1.5 hover:underline">
       <Users className="w-3 h-3" />
       {player.name}
+    </Link>
+  );
+}
+
+function ChampionshipRefReadonly({ name }: { name: string }) {
+  if (!name) return <span className="text-sm text-muted-foreground">—</span>;
+  return (
+    <Link
+      to={`/championships?selected=${encodeURIComponent(name)}`}
+      className="text-sm text-primary font-medium flex items-center gap-1.5 hover:underline"
+    >
+      <LeagueLogo leagueName={name} size="sm" />
+      {name}
+      <Trophy className="w-3 h-3 shrink-0" />
     </Link>
   );
 }
@@ -122,6 +141,9 @@ function EditableField({ field, value, onChange }: { field: CustomField; value: 
   }
   if (field.field_type === 'match') {
     return <MatchRefPicker value={value} onChange={onChange} />;
+  }
+  if (field.field_type === 'championship') {
+    return <ChampionshipRefPicker value={value} onChange={onChange} />;
   }
   return (
     <Input
@@ -198,6 +220,82 @@ function PlayerRefPicker({ value, onChange }: { value: string; onChange: (v: str
                   <Users className="w-3.5 h-3.5 text-muted-foreground shrink-0" />
                   <span className="truncate font-medium">{p.name}</span>
                   {p.club && <span className="text-xs text-muted-foreground truncate ml-auto">{p.club}</span>}
+                </button>
+              ))
+            )}
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Searchable picker for championship references
+// ---------------------------------------------------------------------------
+
+function ChampionshipRefPicker({ value, onChange }: { value: string; onChange: (v: string) => void }) {
+  const { t } = useTranslation();
+  const { data: championships = [] } = useChampionships();
+  const [search, setSearch] = useState('');
+  const [pickerOpen, setPickerOpen] = useState(false);
+
+  const filtered = useMemo(() => {
+    const q = search.toLowerCase();
+    const list = q
+      ? championships.filter(c => c.name.toLowerCase().includes(q) || c.country?.toLowerCase().includes(q))
+      : championships;
+    return list.slice(0, 25);
+  }, [championships, search]);
+
+  if (value && !pickerOpen) {
+    return (
+      <div className="flex items-center gap-1.5 w-[220px]">
+        <Link
+          to={`/championships?selected=${encodeURIComponent(value)}`}
+          className="text-sm text-primary font-medium flex items-center gap-1.5 hover:underline truncate flex-1"
+        >
+          <LeagueLogo leagueName={value} size="sm" />
+          <span className="truncate">{value}</span>
+        </Link>
+        <button onClick={() => { onChange(''); setPickerOpen(true); }} className="p-0.5 hover:bg-muted rounded shrink-0">
+          <X className="w-3.5 h-3.5 text-muted-foreground" />
+        </button>
+      </div>
+    );
+  }
+
+  return (
+    <div className="relative w-[220px]">
+      <div className="relative">
+        <Search className="absolute left-2 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-muted-foreground" />
+        <Input
+          value={search}
+          onChange={e => { setSearch(e.target.value); setPickerOpen(true); }}
+          onFocus={() => setPickerOpen(true)}
+          placeholder={t('custom_fields.search_championship')}
+          className="h-8 text-sm pl-7"
+        />
+      </div>
+      {pickerOpen && (
+        <>
+          <div className="fixed inset-0 z-40" onClick={() => setPickerOpen(false)} />
+          <div className="absolute z-50 top-9 left-0 w-full max-h-56 overflow-y-auto bg-popover border border-border rounded-lg shadow-lg">
+            {filtered.length === 0 ? (
+              <p className="p-3 text-xs text-muted-foreground text-center">{t('custom_fields.no_results')}</p>
+            ) : (
+              filtered.map(c => (
+                <button
+                  key={c.name}
+                  onClick={() => { onChange(c.name); setSearch(''); setPickerOpen(false); }}
+                  className={cn(
+                    'w-full text-left px-3 py-2 text-sm hover:bg-muted flex items-center gap-2.5 transition-colors',
+                    c.name === value && 'bg-primary/10'
+                  )}
+                >
+                  <LeagueLogo leagueName={c.name} size="sm" />
+                  <span className="truncate font-medium">{c.name}</span>
+                  {c.country && <span className="text-xs text-muted-foreground ml-auto shrink-0">{c.country}</span>}
                 </button>
               ))
             )}
@@ -328,6 +426,10 @@ export function CustomFieldsForm({ values, onChange }: { values: Record<string, 
           ) : field.field_type === 'match' ? (
             <div className="mt-1">
               <MatchRefPicker value={values[field.id] ?? ''} onChange={v => handleChange(field.id, v)} />
+            </div>
+          ) : field.field_type === 'championship' ? (
+            <div className="mt-1">
+              <ChampionshipRefPicker value={values[field.id] ?? ''} onChange={v => handleChange(field.id, v)} />
             </div>
           ) : (
             <Input

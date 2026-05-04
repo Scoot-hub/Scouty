@@ -9,6 +9,7 @@ import {
   type MatchAssignment,
 } from '@/hooks/use-match-assignments';
 import { useCurrentOrg, useOrganizationMembers } from '@/hooks/use-organization';
+import OrgTabBar from '@/components/OrgTabBar';
 import { Card, CardContent } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import {
@@ -188,6 +189,11 @@ export default function OrgRoadmap() {
 
   return (
     <div className="max-w-7xl mx-auto">
+      {/* Tab bar */}
+      <div className="mb-4">
+        <OrgTabBar orgName={org?.name as string ?? ''} />
+      </div>
+
       {/* Header */}
       <div className="mb-6 flex items-center justify-between flex-wrap gap-3">
         <div className="flex items-center gap-3">

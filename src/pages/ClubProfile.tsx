@@ -1,5 +1,4 @@
-import { useState, useEffect, useRef } from 'react';
-import { useSearchParams, Link } from 'react-router-dom';
+import { useSearchParams, Link, Navigate, useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { supabase } from '@/integrations/supabase/client';
@@ -8,7 +7,6 @@ import { useIsAdmin } from '@/hooks/use-admin';
 import { useFollowedClubs, useFollowClub, useUnfollowClub } from '@/hooks/use-followed-clubs';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
-import { Input } from '@/components/ui/input';
 import { Badge } from '@/components/ui/badge';
 import { ClubBadge } from '@/components/ui/club-badge';
 import { translateCountry } from '@/types/player';
@@ -16,8 +14,8 @@ import { resolveClubName, getClubSearchAliases, fetchClubSquad, type SquadPlayer
 import { PlayerAvatar } from '@/components/ui/player-avatar';
 import { FlagIcon } from '@/components/ui/flag-icon';
 import {
-  Search, Loader2, MapPin, Calendar, Users, Trophy, Building2, Globe,
-  ExternalLink, Shirt, Info, Newspaper, Heart, HeartOff, Database, Trash2, Plus,
+  Loader2, MapPin, Calendar, Users, Trophy, Building2, Globe,
+  ExternalLink, Shirt, Info, Newspaper, Heart, HeartOff, Trash2, Plus, ArrowLeft, Search,
 } from 'lucide-react';
 import { toast } from 'sonner';
 
@@ -53,56 +51,10 @@ interface TeamData {
   _tmMarketValue?: string | null;
 }
 
-// ── Autocomplete suggestions from local DB ──────────────────────────────────
-
-interface ClubSuggestion {
-  club_name: string;
-  logo_url: string | null;
-  competition: string;
-  country: string;
-}
-
-function useClubSuggestions(query: string) {
-  return useQuery<ClubSuggestion[]>({
-    queryKey: ['club-search', query],
-    queryFn: async () => {
-      if (query.length < 2) return [];
-      // 1. Local DB search (fast)
-      const resp = await fetch(`${API}/club-search?q=${encodeURIComponent(query)}`);
-      const local: ClubSuggestion[] = resp.ok ? await resp.json() : [];
-      if (local.length >= 3) return local;
-
-      // 2. Transfermarkt fallback (if local results are sparse)
-      if (query.length >= 3) {
-        try {
-          const tmResp = await fetch(`${API}/club-tm-search?q=${encodeURIComponent(query)}`);
-          if (tmResp.ok) {
-            const tm = await tmResp.json();
-            if (tm?.clubName) {
-              const alreadyHas = local.some(l => l.club_name.toLowerCase() === tm.clubName.toLowerCase());
-              if (!alreadyHas) {
-                local.push({
-                  club_name: tm.clubName,
-                  logo_url: tm.badge || null,
-                  competition: tm.league || '',
-                  country: tm.country || '',
-                });
-              }
-            }
-          }
-        } catch { /* TM fallback failed, no problem */ }
-      }
-      return local;
-    },
-    enabled: query.length >= 2,
-    staleTime: 60_000,
-  });
-}
-
 export default function ClubProfile() {
   const { t, i18n } = useTranslation();
-  const [searchParams, setSearchParams] = useSearchParams();
-  const [search, setSearch] = useState(searchParams.get('q') || '');
+  const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
   const clubName = searchParams.get('club') || '';
   const { data: players = [] } = usePlayers();
   const { data: followedClubs = [] } = useFollowedClubs();
@@ -111,22 +63,6 @@ export default function ClubProfile() {
   const { data: isAdmin } = useIsAdmin();
   const queryClient = useQueryClient();
   const followedEntry = followedClubs.find(c => c.club_name.toLowerCase() === clubName.toLowerCase());
-
-  // Autocomplete
-  const [showSuggestions, setShowSuggestions] = useState(false);
-  const { data: suggestions = [] } = useClubSuggestions(search);
-  const suggestionsRef = useRef<HTMLDivElement>(null);
-
-  // Close suggestions on outside click
-  useEffect(() => {
-    const handler = (e: MouseEvent) => {
-      if (suggestionsRef.current && !suggestionsRef.current.contains(e.target as Node)) {
-        setShowSuggestions(false);
-      }
-    };
-    document.addEventListener('mousedown', handler);
-    return () => document.removeEventListener('mousedown', handler);
-  }, []);
 
   // Resolve common abbreviations
   const resolvedClub = clubName ? resolveClubName(clubName) : '';
@@ -277,18 +213,7 @@ export default function ClubProfile() {
     staleTime: 10 * 60 * 1000,
   });
 
-  const handleSearch = (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!search.trim()) return;
-    setShowSuggestions(false);
-    setSearchParams({ club: search.trim() });
-  };
 
-  const handleClubClick = (club: string) => {
-    setSearch(club);
-    setShowSuggestions(false);
-    setSearchParams({ club });
-  };
 
   const description = (() => {
     if (!team) return '';
@@ -314,106 +239,52 @@ export default function ClubProfile() {
   const userPlayerNames = new Set(players.map(p => p.name?.toLowerCase().trim()));
   const squadNotInList = squadPlayers.filter(s => !userPlayerNames.has(s.strPlayer?.toLowerCase().trim()));
 
-  const userClubs = [...new Set(players.map(p => p.club).filter(Boolean))].sort();
+  // Redirect to search page if no club selected
+  if (!clubName) return <Navigate to="/club-search" replace />;
 
   return (
     <div className="max-w-5xl mx-auto space-y-6">
-      {/* Header */}
-      <div>
-        <h1 className="text-2xl font-bold tracking-tight flex items-center gap-3">
-          <Building2 className="w-6 h-6 text-primary" />
-          {t('club.title')}
-        </h1>
-        <p className="text-muted-foreground text-sm mt-1">{t('club.subtitle')}</p>
+      {/* Header with back button */}
+      <div className="flex items-center gap-3">
+        <Button variant="ghost" size="icon" className="rounded-xl shrink-0" onClick={() => navigate('/club-search')}>
+          <ArrowLeft className="w-5 h-5" />
+        </Button>
+        <div className="flex items-center gap-3 min-w-0">
+          <div className="w-10 h-10 rounded-xl bg-primary/10 flex items-center justify-center shrink-0">
+            <Building2 className="w-5 h-5 text-primary" />
+          </div>
+          <div className="min-w-0">
+            <h1 className="text-xl font-extrabold tracking-tight truncate">
+              {team?.strTeam || clubName}
+            </h1>
+            <button
+              onClick={() => navigate('/club-search')}
+              className="text-xs text-muted-foreground hover:text-primary transition-colors flex items-center gap-1 mt-0.5"
+            >
+              <Search className="w-3 h-3" />
+              {t('club.search_other')}
+            </button>
+          </div>
+        </div>
       </div>
-
-      {/* Search with autocomplete */}
-      <Card>
-        <CardContent className="p-4">
-          <form onSubmit={handleSearch} className="flex gap-2">
-            <div className="flex-1 relative" ref={suggestionsRef}>
-              <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
-              <Input
-                value={search}
-                onChange={e => { setSearch(e.target.value); setShowSuggestions(true); }}
-                onFocus={() => setShowSuggestions(true)}
-                placeholder={t('club.search_placeholder')}
-                className="pl-10"
-                autoComplete="off"
-              />
-              {/* Autocomplete dropdown */}
-              {showSuggestions && suggestions.length > 0 && (
-                <div className="absolute z-50 top-full left-0 right-0 mt-1 rounded-xl border bg-popover shadow-lg max-h-64 overflow-y-auto">
-                  <div className="p-1.5">
-                    <p className="px-2.5 py-1 text-[10px] font-semibold text-muted-foreground uppercase tracking-wider flex items-center gap-1.5">
-                      <Database className="w-3 h-3" />
-                      {t('club.from_database')}
-                    </p>
-                    {suggestions.map(s => (
-                      <button
-                        key={s.club_name}
-                        type="button"
-                        onClick={() => handleClubClick(s.club_name)}
-                        className="w-full flex items-center gap-2.5 px-2.5 py-2 rounded-lg text-left hover:bg-muted transition-colors"
-                      >
-                        {s.logo_url ? (
-                          <img src={s.logo_url} alt="" className="w-6 h-6 object-contain shrink-0" />
-                        ) : (
-                          <ClubBadge club={s.club_name} size="xs" />
-                        )}
-                        <div className="flex-1 min-w-0">
-                          <p className="text-sm font-medium truncate">{s.club_name}</p>
-                          {(s.competition || s.country) && (
-                            <p className="text-[10px] text-muted-foreground truncate">
-                              {[s.competition, s.country].filter(Boolean).join(' · ')}
-                            </p>
-                          )}
-                        </div>
-                      </button>
-                    ))}
-                  </div>
-                </div>
-              )}
-            </div>
-            <Button type="submit" disabled={isLoading || !search.trim()}>
-              {isLoading ? <Loader2 className="w-4 h-4 animate-spin mr-2" /> : <Search className="w-4 h-4 mr-2" />}
-              {t('club.search_btn')}
-            </Button>
-          </form>
-
-          {/* Quick access: user's clubs */}
-          {!clubName && userClubs.length > 0 && (
-            <div className="mt-4 pt-3 border-t border-border">
-              <p className="text-xs font-medium text-muted-foreground mb-2">{t('club.your_clubs')}</p>
-              <div className="flex flex-wrap gap-1.5">
-                {userClubs.slice(0, 20).map(club => (
-                  <button
-                    key={club}
-                    onClick={() => handleClubClick(club)}
-                    className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs bg-muted hover:bg-accent transition-colors"
-                  >
-                    <ClubBadge club={club} size="xs" />
-                    {club}
-                  </button>
-                ))}
-              </div>
-            </div>
-          )}
-        </CardContent>
-      </Card>
 
       {/* Loading */}
       {isLoading && (
-        <div className="flex items-center justify-center py-16">
+        <div className="flex items-center justify-center py-24">
           <Loader2 className="w-8 h-8 animate-spin text-primary" />
         </div>
       )}
 
       {/* No results */}
-      {clubName && !isLoading && !team && (
-        <div className="text-center py-16">
-          <Building2 className="w-10 h-10 text-muted-foreground/30 mx-auto mb-3" />
-          <p className="text-sm text-muted-foreground">{t('club.not_found')}</p>
+      {!isLoading && !team && (
+        <div className="text-center py-20">
+          <Building2 className="w-12 h-12 text-muted-foreground/20 mx-auto mb-4" />
+          <p className="text-base font-semibold text-muted-foreground">{t('club.not_found')}</p>
+          <p className="text-sm text-muted-foreground/60 mt-1 mb-4">{t('club.not_found_desc', { name: clubName })}</p>
+          <Button variant="outline" onClick={() => navigate('/club-search')}>
+            <ArrowLeft className="w-4 h-4 mr-2" />
+            {t('club.back_to_search')}
+          </Button>
         </div>
       )}
 
@@ -505,7 +376,7 @@ export default function ClubProfile() {
                             queryClient.invalidateQueries({ queryKey: ['players'] });
                             queryClient.invalidateQueries({ queryKey: ['followed-clubs'] });
                             toast.success(t('club.deleted_with_count', { count: data.playersDetached || 0 }));
-                            setSearchParams({});
+                            navigate('/club-search');
                           } else {
                             const err = await resp.json().catch(() => ({}));
                             toast.error(err.error || t('common.error'));
@@ -693,13 +564,6 @@ export default function ClubProfile() {
         </div>
       )}
 
-      {!clubName && !isLoading && (
-        <div className="text-center py-16">
-          <Building2 className="w-10 h-10 text-muted-foreground/20 mx-auto mb-3" />
-          <p className="text-sm font-medium text-muted-foreground">{t('club.empty_title')}</p>
-          <p className="text-xs text-muted-foreground/60 mt-1">{t('club.empty_desc')}</p>
-        </div>
-      )}
     </div>
   );
 }

@@ -1,10 +1,11 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { Link, useParams, useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { useAuth } from '@/contexts/AuthContext';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
+import { Textarea } from '@/components/ui/textarea';
 import { Separator } from '@/components/ui/separator';
 import { Badge } from '@/components/ui/badge';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
@@ -12,7 +13,7 @@ import { toast } from 'sonner';
 import {
   Building2, Users, Copy, LogOut, UserMinus, Share2,
   Shield, Loader2, Plus, KeyRound, ChevronRight,
-  Calendar, Briefcase, Camera, Trash2,
+  Calendar, Briefcase, Camera, Trash2, Pencil, Check, X,
 } from 'lucide-react';
 import {
   useMyOrganizations,
@@ -24,8 +25,10 @@ import {
   useRemoveMember,
   useLeaveOrganization,
   useUpdateOrgLogo,
+  useUpdateOrganization,
   slugify,
 } from '@/hooks/use-organization';
+import OrgTabBar from '@/components/OrgTabBar';
 
 const ORG_TYPES = [
   { value: 'club', labelKey: 'org.type_club' },
@@ -310,11 +313,27 @@ function OrganizationDashboard({ org, userId }: { org: Record<string, unknown>; 
   const updateRole = useUpdateMemberRole();
   const removeMember = useRemoveMember();
   const leaveOrg = useLeaveOrganization();
+  const updateOrg = useUpdateOrganization(org.id as string);
   const { upload: uploadLogo, remove: removeLogo } = useUpdateOrgLogo(org.id);
 
   const isOwner = org.myRole === 'owner';
   const isAdmin = org.myRole === 'owner' || org.myRole === 'admin';
   const [selectedMember, setSelectedMember] = useState<Record<string, unknown> | null>(null);
+
+  // Description inline edit state
+  const [editingDesc, setEditingDesc] = useState(false);
+  const [descDraft, setDescDraft] = useState(String(org.description || ''));
+  useEffect(() => { setDescDraft(String(org.description || '')); }, [org.description]);
+
+  const handleSaveDesc = async () => {
+    const trimmed = descDraft.trim();
+    try {
+      await updateOrg.mutateAsync({ description: trimmed });
+      setEditingDesc(false);
+      setDescDraft(trimmed);
+      toast.success(t('org.desc_updated'));
+    } catch { toast.error(t('common.error')); }
+  };
 
   const handleLogoChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -386,77 +405,116 @@ function OrganizationDashboard({ org, userId }: { org: Record<string, unknown>; 
 
   return (
     <div className="max-w-2xl mx-auto space-y-6">
-      {/* Header */}
-      <div className="flex items-start gap-4">
-        {/* Logo + actions */}
-        <div className="flex flex-col items-center gap-2 shrink-0">
-          <div className="w-16 h-16 rounded-2xl bg-primary/10 border border-border/50 overflow-hidden flex items-center justify-center">
-            {org.logo_url ? (
-              <img src={org.logo_url} alt={org.name} className="w-full h-full object-cover" />
-            ) : (
-              <Building2 className="w-7 h-7 text-primary/60" />
-            )}
-          </div>
-          {isAdmin && (
-            <div className="flex items-center gap-1">
-              <label className="cursor-pointer">
-                <span className="inline-flex items-center gap-1 text-[11px] font-medium px-2 py-1 rounded-md border border-border bg-background hover:bg-accent/50 transition-colors">
-                  {uploadLogo.isPending
-                    ? <Loader2 className="w-3 h-3 animate-spin" />
-                    : <Camera className="w-3 h-3" />}
-                  {org.logo_url ? t('org.logo_change') : t('org.logo_add')}
-                </span>
-                <input type="file" accept="image/*" className="hidden" onChange={handleLogoChange} disabled={uploadLogo.isPending} />
-              </label>
-              {org.logo_url && (
-                <button
-                  type="button"
-                  onClick={handleRemoveLogo}
-                  disabled={removeLogo.isPending}
-                  className="inline-flex items-center justify-center w-6 h-6 rounded-md border border-border bg-background hover:text-destructive hover:border-destructive/40 transition-colors"
-                  title={t('org.logo_remove')}
-                >
-                  {removeLogo.isPending ? <Loader2 className="w-3 h-3 animate-spin" /> : <Trash2 className="w-3 h-3" />}
-                </button>
+      {/* Tab bar (includes persistent org header) */}
+      <OrgTabBar orgName={org.name as string} />
+
+      {/* ── Paramètres ── */}
+      {isAdmin && (
+        <Card>
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2 text-base">
+              <Building2 className="w-4 h-4 text-primary" />
+              Informations de l'organisation
+            </CardTitle>
+            <CardDescription>Logo, nom et description visibles par tous les membres.</CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-5">
+            {/* Logo */}
+            <div className="flex items-center gap-4">
+              <div className="w-16 h-16 rounded-2xl bg-primary/10 border border-border/50 overflow-hidden flex items-center justify-center shrink-0">
+                {org.logo_url ? (
+                  <img src={org.logo_url as string} alt={org.name as string} className="w-full h-full object-cover" />
+                ) : (
+                  <Building2 className="w-7 h-7 text-primary/60" />
+                )}
+              </div>
+              <div className="space-y-1.5">
+                <p className="text-sm font-medium">{t('org.logo')}</p>
+                <div className="flex items-center gap-2">
+                  <label className="cursor-pointer">
+                    <span className="inline-flex items-center gap-1.5 text-xs font-medium px-3 py-1.5 rounded-lg border border-border bg-background hover:bg-accent/50 transition-colors">
+                      {uploadLogo.isPending ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Camera className="w-3.5 h-3.5" />}
+                      {org.logo_url ? t('org.logo_change') : t('org.logo_add')}
+                    </span>
+                    <input type="file" accept="image/*" className="hidden" onChange={handleLogoChange} disabled={uploadLogo.isPending} />
+                  </label>
+                  {org.logo_url && (
+                    <Button type="button" variant="outline" size="sm" onClick={handleRemoveLogo} disabled={removeLogo.isPending} className="gap-1.5 text-destructive hover:text-destructive">
+                      {removeLogo.isPending ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Trash2 className="w-3.5 h-3.5" />}
+                      {t('org.logo_remove')}
+                    </Button>
+                  )}
+                </div>
+              </div>
+            </div>
+
+            <Separator />
+
+            {/* Description */}
+            <div className="space-y-2">
+              <div className="flex items-center justify-between">
+                <label className="text-sm font-medium">Description</label>
+                {!editingDesc && (
+                  <Button variant="ghost" size="sm" onClick={() => setEditingDesc(true)} className="gap-1.5 h-7 text-xs">
+                    <Pencil className="w-3 h-3" /> Modifier
+                  </Button>
+                )}
+              </div>
+              {editingDesc ? (
+                <div className="space-y-2">
+                  <Textarea
+                    value={descDraft}
+                    onChange={e => setDescDraft(e.target.value)}
+                    placeholder="Décrivez votre organisation (objectifs, type de scouting, zone géographique…)"
+                    className="text-sm resize-none min-h-[100px]"
+                    maxLength={2000}
+                    autoFocus
+                  />
+                  <p className="text-xs text-muted-foreground text-right">{descDraft.length}/2000</p>
+                  <div className="flex items-center gap-2">
+                    <Button size="sm" onClick={handleSaveDesc} disabled={updateOrg.isPending} className="gap-1.5">
+                      {updateOrg.isPending ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Check className="w-3.5 h-3.5" />}
+                      Enregistrer
+                    </Button>
+                    <Button size="sm" variant="ghost" onClick={() => { setEditingDesc(false); setDescDraft(String(org.description || '')); }}>
+                      <X className="w-3.5 h-3.5 mr-1" /> Annuler
+                    </Button>
+                  </div>
+                </div>
+              ) : (
+                <div className="px-3 py-2.5 rounded-lg bg-muted/40 border border-border/50 min-h-[60px]">
+                  {org.description ? (
+                    <p className="text-sm text-muted-foreground leading-relaxed">{org.description as string}</p>
+                  ) : (
+                    <p className="text-sm text-muted-foreground/40 italic">Aucune description pour l'instant.</p>
+                  )}
+                </div>
               )}
             </div>
-          )}
-        </div>
-        <div className="flex-1 min-w-0 pt-1">
-          <h1 className="text-2xl font-bold tracking-tight truncate">{org.name}</h1>
-          <p className="text-muted-foreground text-sm">{t('org.subtitle')}</p>
-        </div>
-      </div>
+          </CardContent>
+        </Card>
+      )}
 
-      {/* Org info */}
+      {/* Lien de parrainage */}
       <Card>
         <CardHeader>
-          <CardTitle className="flex items-center gap-2 text-lg">
-            <Building2 className="w-5 h-5 text-primary" />
-            {org.name}
+          <CardTitle className="flex items-center gap-2 text-base">
+            <KeyRound className="w-4 h-4 text-primary" />
+            Lien d'invitation
           </CardTitle>
-          <CardDescription>
-            {typeLabel ? t(typeLabel.labelKey) : org.type}
-            {' · '}
-            {members.length} {t('org.members_count')}
-          </CardDescription>
+          <CardDescription>{t('org.invite_link_help')}</CardDescription>
         </CardHeader>
-        <CardContent className="space-y-4">
-          {/* Invite link */}
-          <div>
-            <label className="text-sm font-medium text-muted-foreground">{t('org.invite_link')}</label>
-            <div className="mt-1 flex items-center gap-2">
-              <div className="flex-1 px-3 py-2.5 rounded-lg bg-muted/40 border border-border/50 font-mono text-xs text-muted-foreground truncate select-all">
-                {inviteLink}
-              </div>
-              <Button variant="outline" size="icon" onClick={handleCopyLink} title={t('org.copy_link')}>
-                <Copy className="w-4 h-4" />
-              </Button>
-              <Button variant="outline" size="icon" onClick={handleShare} title={t('org.share')}>
-                <Share2 className="w-4 h-4" />
-              </Button>
+        <CardContent className="space-y-3">
+          <div className="flex items-center gap-2">
+            <div className="flex-1 px-3 py-2.5 rounded-lg bg-muted/40 border border-border/50 font-mono text-xs text-muted-foreground truncate select-all">
+              {inviteLink}
             </div>
-            <p className="text-xs text-muted-foreground mt-1">{t('org.invite_link_help')}</p>
+            <Button variant="outline" size="icon" onClick={handleCopyLink} title={t('org.copy_link')}>
+              <Copy className="w-4 h-4" />
+            </Button>
+            <Button variant="outline" size="icon" onClick={handleShare} title={t('org.share')}>
+              <Share2 className="w-4 h-4" />
+            </Button>
           </div>
         </CardContent>
       </Card>

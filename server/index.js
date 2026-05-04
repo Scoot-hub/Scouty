@@ -321,7 +321,7 @@ app.post("/api/stripe/webhook", express.raw({ type: "application/json" }), async
   }
 });
 
-app.use(express.json({ limit: "5mb" }));
+app.use(express.json({ limit: "50mb" }));
 app.use("/uploads", express.static(UPLOAD_DIR));
 
 const upload = multer({
@@ -449,11 +449,11 @@ const ALLOWED_TABLES = {
   fixtures: ["id", "user_id", "home_team", "away_team", "match_date", "match_time", "competition", "venue", "score_home", "score_away", "notes", "is_favorite", "source", "api_fixture_id", "api_league_id", "created_at", "updated_at"],
   user_followed_leagues: ["id", "user_id", "league_id", "league_name", "league_country", "league_logo", "season", "created_at"],
   contacts: ["id", "user_id", "first_name", "last_name", "photo_url", "organization", "role_title", "phone", "email", "linkedin_url", "notes", "created_at", "updated_at"],
-  organizations: ["id", "name", "type", "invite_code", "created_by", "created_at", "updated_at"],
+  organizations: ["id", "name", "type", "invite_code", "logo_url", "description", "created_by", "created_at", "updated_at"],
   organization_members: ["id", "organization_id", "user_id", "role", "joined_at"],
   player_org_shares: ["id", "player_id", "organization_id", "user_id", "created_at"],
   match_assignments: ["id", "user_id", "organization_id", "assigned_to", "assigned_by", "home_team", "away_team", "match_date", "match_time", "competition", "venue", "home_badge", "away_badge", "notes", "status", "created_at", "updated_at"],
-  community_posts: ["id", "user_id", "author_name", "category", "title", "content", "likes", "replies_count", "is_archived", "created_at"],
+  community_posts: ["id", "user_id", "author_name", "category", "title", "content", "likes", "replies_count", "is_archived", "views", "is_pinned", "display_order", "created_at"],
   community_replies: ["id", "post_id", "user_id", "author_name", "content", "created_at"],
   community_likes: ["id", "post_id", "user_id", "created_at"],
 };
@@ -867,10 +867,15 @@ async function _legacyRunMigrations() {
     await pool.query(`ALTER TABLE players ADD COLUMN is_archived TINYINT(1) NOT NULL DEFAULT 0`);
   } catch { /* column already exists */ }
 
-  // Ensure is_archived column exists on community_posts
-  try {
-    await pool.query(`ALTER TABLE community_posts ADD COLUMN is_archived TINYINT(1) NOT NULL DEFAULT 0`);
-  } catch { /* column already exists */ }
+  // Ensure community_posts moderation columns exist
+  for (const col of [
+    'is_archived TINYINT(1) NOT NULL DEFAULT 0',
+    'views INT NOT NULL DEFAULT 0',
+    'is_pinned TINYINT(1) NOT NULL DEFAULT 0',
+    'display_order INT NOT NULL DEFAULT 0',
+  ]) {
+    try { await pool.query(`ALTER TABLE community_posts ADD COLUMN ${col}`); } catch { /* already exists */ }
+  }
 
   // Ensure has_news column exists on players
   try {
@@ -880,6 +885,172 @@ async function _legacyRunMigrations() {
     await pool.query(`ALTER TABLE players MODIFY COLUMN has_news VARCHAR(50) NULL DEFAULT NULL`);
     await pool.query(`UPDATE players SET has_news = NULL WHERE has_news IN ('0', '1')`);
   } catch {}
+
+  // Wyscout import columns on players (bio/physical)
+  for (const col of [
+    "height INT NULL",
+    "weight INT NULL",
+    "on_loan TINYINT(1) NOT NULL DEFAULT 0",
+    "matches_played INT NULL",
+    "minutes_played INT NULL",
+    "passport_country VARCHAR(255) NULL",
+    "wyscout_season VARCHAR(20) NULL",
+    "wyscout_division VARCHAR(20) NULL",
+    "wyscout_team_in_timeframe VARCHAR(255) NULL",
+    "wyscout_stats JSON NULL",
+  ]) {
+    try { await pool.query(`ALTER TABLE players ADD COLUMN ${col}`); } catch { /* already exists */ }
+  }
+
+  // Dedicated Wyscout stats table — one row per player × season × division
+  try {
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS player_wyscout_stats (
+        id CHAR(36) PRIMARY KEY,
+        player_id CHAR(36) NOT NULL,
+        user_id CHAR(36) NOT NULL,
+        season VARCHAR(20) NOT NULL,
+        division VARCHAR(20) NULL,
+        team VARCHAR(255) NULL,
+        continent VARCHAR(100) NULL,
+        country VARCHAR(100) NULL,
+        country_raw VARCHAR(100) NULL,
+        year_start SMALLINT NULL,
+        year_end SMALLINT NULL,
+        source_filename TEXT NULL,
+        source_file_path TEXT NULL,
+        -- Base counting stats
+        matches_played INT NULL,
+        minutes_played INT NULL,
+        goals INT NULL,
+        xg DECIMAL(6,2) NULL,
+        assists INT NULL,
+        xa DECIMAL(6,2) NULL,
+        yellow_cards INT NULL,
+        red_cards INT NULL,
+        shots INT NULL,
+        np_goals INT NULL,
+        head_goals INT NULL,
+        conceded_goals INT NULL,
+        shots_against INT NULL,
+        clean_sheets INT NULL,
+        penalties_taken INT NULL,
+        -- Defensive per-90
+        defensive_actions_per90 DECIMAL(6,2) NULL,
+        defensive_duels_per90 DECIMAL(6,2) NULL,
+        defensive_duels_won_pct DECIMAL(5,2) NULL,
+        aerial_duels_per90 DECIMAL(6,2) NULL,
+        aerial_duels_won_pct DECIMAL(5,2) NULL,
+        sliding_tackles_per90 DECIMAL(6,2) NULL,
+        padj_sliding_tackles DECIMAL(6,2) NULL,
+        shots_blocked_per90 DECIMAL(6,2) NULL,
+        interceptions_per90 DECIMAL(6,2) NULL,
+        padj_interceptions DECIMAL(6,2) NULL,
+        fouls_per90 DECIMAL(6,2) NULL,
+        yellow_cards_per90 DECIMAL(6,2) NULL,
+        red_cards_per90 DECIMAL(6,2) NULL,
+        duels_per90 DECIMAL(6,2) NULL,
+        duels_won_pct DECIMAL(5,2) NULL,
+        -- Attacking per-90
+        attacking_actions_per90 DECIMAL(6,2) NULL,
+        goals_per90 DECIMAL(6,2) NULL,
+        np_goals_per90 DECIMAL(6,2) NULL,
+        xg_per90 DECIMAL(6,2) NULL,
+        head_goals_per90 DECIMAL(6,2) NULL,
+        shots_per90 DECIMAL(6,2) NULL,
+        shots_on_target_pct DECIMAL(5,2) NULL,
+        goal_conversion_pct DECIMAL(5,2) NULL,
+        assists_per90 DECIMAL(6,2) NULL,
+        xa_per90 DECIMAL(6,2) NULL,
+        crosses_per90 DECIMAL(6,2) NULL,
+        crosses_accurate_pct DECIMAL(5,2) NULL,
+        crosses_left_per90 DECIMAL(6,2) NULL,
+        crosses_left_accurate_pct DECIMAL(5,2) NULL,
+        crosses_right_per90 DECIMAL(6,2) NULL,
+        crosses_right_accurate_pct DECIMAL(5,2) NULL,
+        crosses_to_box_per90 DECIMAL(6,2) NULL,
+        dribbles_per90 DECIMAL(6,2) NULL,
+        dribbles_success_pct DECIMAL(5,2) NULL,
+        offensive_duels_per90 DECIMAL(6,2) NULL,
+        offensive_duels_won_pct DECIMAL(5,2) NULL,
+        touches_in_box_per90 DECIMAL(6,2) NULL,
+        progressive_runs_per90 DECIMAL(6,2) NULL,
+        accelerations_per90 DECIMAL(6,2) NULL,
+        received_passes_per90 DECIMAL(6,2) NULL,
+        received_long_passes_per90 DECIMAL(6,2) NULL,
+        fouls_suffered_per90 DECIMAL(6,2) NULL,
+        -- Passing per-90
+        passes_per90 DECIMAL(6,2) NULL,
+        passes_accurate_pct DECIMAL(5,2) NULL,
+        forward_passes_per90 DECIMAL(6,2) NULL,
+        forward_passes_accurate_pct DECIMAL(5,2) NULL,
+        back_passes_per90 DECIMAL(6,2) NULL,
+        back_passes_accurate_pct DECIMAL(5,2) NULL,
+        lateral_passes_per90 DECIMAL(6,2) NULL,
+        lateral_passes_accurate_pct DECIMAL(5,2) NULL,
+        short_medium_passes_per90 DECIMAL(6,2) NULL,
+        short_medium_passes_accurate_pct DECIMAL(5,2) NULL,
+        long_passes_per90 DECIMAL(6,2) NULL,
+        long_passes_accurate_pct DECIMAL(5,2) NULL,
+        avg_pass_length DECIMAL(5,2) NULL,
+        avg_long_pass_length DECIMAL(5,2) NULL,
+        shot_assists_per90 DECIMAL(6,2) NULL,
+        second_assists_per90 DECIMAL(6,2) NULL,
+        third_assists_per90 DECIMAL(6,2) NULL,
+        smart_passes_per90 DECIMAL(6,2) NULL,
+        smart_passes_accurate_pct DECIMAL(5,2) NULL,
+        key_passes_per90 DECIMAL(6,2) NULL,
+        passes_final_third_per90 DECIMAL(6,2) NULL,
+        passes_final_third_accurate_pct DECIMAL(5,2) NULL,
+        passes_penalty_area_per90 DECIMAL(6,2) NULL,
+        passes_penalty_area_accurate_pct DECIMAL(5,2) NULL,
+        through_passes_per90 DECIMAL(6,2) NULL,
+        through_passes_accurate_pct DECIMAL(5,2) NULL,
+        deep_completions_per90 DECIMAL(6,2) NULL,
+        deep_completed_crosses_per90 DECIMAL(6,2) NULL,
+        progressive_passes_per90 DECIMAL(6,2) NULL,
+        progressive_passes_accurate_pct DECIMAL(5,2) NULL,
+        -- Set pieces
+        free_kicks_per90 DECIMAL(6,2) NULL,
+        direct_free_kicks_per90 DECIMAL(6,2) NULL,
+        direct_free_kicks_on_target_pct DECIMAL(5,2) NULL,
+        corners_per90 DECIMAL(6,2) NULL,
+        penalty_conversion_pct DECIMAL(5,2) NULL,
+        -- Goalkeeper
+        conceded_goals_per90 DECIMAL(6,2) NULL,
+        shots_against_per90 DECIMAL(6,2) NULL,
+        save_rate_pct DECIMAL(5,2) NULL,
+        xg_against DECIMAL(6,2) NULL,
+        xg_against_per90 DECIMAL(6,2) NULL,
+        prevented_goals DECIMAL(6,2) NULL,
+        prevented_goals_per90 DECIMAL(6,2) NULL,
+        gk_back_passes_per90 DECIMAL(6,2) NULL,
+        gk_exits_per90 DECIMAL(6,2) NULL,
+        gk_aerial_duels_per90 DECIMAL(6,2) NULL,
+        -- Physical / athletic
+        total_distance_per90 DECIMAL(8,2) NULL,
+        running_distance_per90 DECIMAL(8,2) NULL,
+        hsr_distance_per90 DECIMAL(8,2) NULL,
+        sprint_distance_per90 DECIMAL(8,2) NULL,
+        hi_distance_per90 DECIMAL(8,2) NULL,
+        meters_per_min DECIMAL(6,2) NULL,
+        max_speed DECIMAL(5,2) NULL,
+        medium_accel_per90 DECIMAL(6,2) NULL,
+        high_accel_per90 DECIMAL(6,2) NULL,
+        medium_decel_per90 DECIMAL(6,2) NULL,
+        high_decel_per90 DECIMAL(6,2) NULL,
+        hsr_count_per90 DECIMAL(6,2) NULL,
+        sprint_count_per90 DECIMAL(6,2) NULL,
+        hi_count_per90 DECIMAL(6,2) NULL,
+        -- Meta
+        created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        UNIQUE KEY uniq_player_season_div (player_id, season(20), division(20)),
+        FOREIGN KEY (player_id) REFERENCES players(id) ON DELETE CASCADE,
+        FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+      )
+    `);
+  } catch (err) { if (!err?.message?.includes('already exists')) console.warn('[warn] player_wyscout_stats migration:', err?.message); }
 
   // Ensure player_org_shares table exists
   try {
@@ -1192,8 +1363,9 @@ async function _legacyRunMigrations() {
   // referred_by – separate migration so failures in the loop above don't skip it
   try { await pool.query("ALTER TABLE profiles ADD COLUMN referred_by CHAR(36) NULL"); } catch (err) { if (err?.errno !== 1060) console.warn("[warn] referred_by migration:", err?.message); }
 
-  // org logo_url
+  // org logo_url + description
   try { await pool.query("ALTER TABLE organizations ADD COLUMN logo_url TEXT NULL"); } catch (err) { if (err?.errno !== 1060) console.warn("[warn] org logo_url migration:", err?.message); }
+  try { await pool.query("ALTER TABLE organizations ADD COLUMN description TEXT NULL"); } catch (err) { if (err?.errno !== 1060) console.warn("[warn] org description migration:", err?.message); }
 
   // Ensure player_research table exists
   try {
@@ -2166,6 +2338,20 @@ app.get("/api/profile/user/:userId", async (req, res) => {
   } catch (err) {
     console.error("[public-profile-by-id] Error:", err);
     return res.status(500).json({ error: "Erreur serveur." });
+  }
+});
+
+// ── Public stats (dynamic key figures for About page) ─────────────────────
+app.get("/api/public/stats", async (_req, res) => {
+  try {
+    const [[{ total_users }]] = await pool.query("SELECT COUNT(*) as total_users FROM users");
+    const [[{ total_players }]] = await pool.query("SELECT COUNT(*) as total_players FROM players");
+    const [[{ total_reports }]] = await pool.query("SELECT COUNT(*) as total_reports FROM reports");
+    const [[{ total_orgs }]] = await pool.query("SELECT COUNT(*) as total_orgs FROM organizations");
+    const [[{ total_clubs }]] = await pool.query("SELECT COUNT(DISTINCT LOWER(TRIM(club))) as total_clubs FROM players WHERE club != ''");
+    return res.json({ total_users, total_players, total_reports, total_orgs, total_clubs });
+  } catch {
+    return res.json({ total_users: 0, total_players: 0, total_reports: 0, total_orgs: 0, total_clubs: 0 });
   }
 });
 
@@ -4223,6 +4409,59 @@ app.delete("/api/community/replies/:id", authMiddleware, async (req, res) => {
   }
 });
 
+// ── Community: increment view count ─────────────────────────────────────
+app.post("/api/community/posts/:id/view", authMiddleware, async (req, res) => {
+  try {
+    await pool.query("UPDATE community_posts SET views = views + 1 WHERE id = ?", [req.params.id]);
+    return res.json({ ok: true });
+  } catch { return res.json({ ok: false }); }
+});
+
+// ── Community: bulk moderation (admin + mod) ─────────────────────────────
+app.post("/api/community/bulk", authMiddleware, async (req, res) => {
+  const { ids, action, value } = req.body || {};
+  if (!ids?.length || !action) return res.status(400).json({ error: "ids et action requis" });
+
+  // Check admin or moderator role
+  const [roleRows] = await pool.query(
+    "SELECT id FROM user_roles WHERE user_id = ? AND role IN ('admin','moderateur') LIMIT 1",
+    [req.user.id]
+  );
+  if (!roleRows.length) return res.status(403).json({ error: "Réservé aux admins et modérateurs" });
+
+  try {
+    const placeholders = ids.map(() => '?').join(',');
+    switch (action) {
+      case 'archive':
+        await pool.query(`UPDATE community_posts SET is_archived = ? WHERE id IN (${placeholders})`, [value ? 1 : 0, ...ids]);
+        break;
+      case 'pin':
+        await pool.query(`UPDATE community_posts SET is_pinned = ? WHERE id IN (${placeholders})`, [value ? 1 : 0, ...ids]);
+        break;
+      case 'priority_up':
+        for (const id of ids) {
+          await pool.query("UPDATE community_posts SET display_order = display_order + 1 WHERE id = ?", [id]);
+        }
+        break;
+      case 'priority_down':
+        for (const id of ids) {
+          await pool.query("UPDATE community_posts SET display_order = GREATEST(display_order - 1, 0) WHERE id = ?", [id]);
+        }
+        break;
+      case 'delete':
+        await pool.query(`DELETE FROM community_replies WHERE post_id IN (${placeholders})`, ids);
+        await pool.query(`DELETE FROM community_posts WHERE id IN (${placeholders})`, ids);
+        break;
+      default:
+        return res.status(400).json({ error: "Action inconnue" });
+    }
+    return res.json({ ok: true, count: ids.length });
+  } catch (err) {
+    console.error("[community/bulk]", err);
+    return res.status(500).json({ error: "Erreur serveur" });
+  }
+});
+
 // ── Community: admin clear all ───────────────────────────────────────────
 app.post("/api/admin/community/clear-all", authMiddleware, async (req, res) => {
   const [adminRows] = await pool.query("SELECT id FROM user_roles WHERE user_id = ? AND role = 'admin' LIMIT 1", [req.user.id]);
@@ -4236,6 +4475,316 @@ app.post("/api/admin/community/clear-all", authMiddleware, async (req, res) => {
     console.error("[admin/community/clear-all]", err);
     return res.status(500).json({ error: "Erreur serveur" });
   }
+});
+
+// ── Wyscout position → app position mapping ────────────────────────────────
+// ── Wyscout helpers ─────────────────────────────────────────────────────────
+const WYSCOUT_POS_MAP = {
+  GK: { position: 'GK', zone: 'Gardien' },
+  CB: { position: 'DC', zone: 'Défenseur' }, LCB: { position: 'DC', zone: 'Défenseur' }, RCB: { position: 'DC', zone: 'Défenseur' },
+  LB: { position: 'LG', zone: 'Défenseur' }, LWB: { position: 'LG', zone: 'Défenseur' },
+  RB: { position: 'LD', zone: 'Défenseur' }, RWB: { position: 'LD', zone: 'Défenseur' },
+  DMF: { position: 'MDef', zone: 'Milieu' }, LDMF: { position: 'MDef', zone: 'Milieu' }, RDMF: { position: 'MDef', zone: 'Milieu' },
+  CMF: { position: 'MC', zone: 'Milieu' }, LCMF: { position: 'MC', zone: 'Milieu' }, RCMF: { position: 'MC', zone: 'Milieu' },
+  AMF: { position: 'MO', zone: 'Milieu' }, LAMF: { position: 'AG', zone: 'Milieu' }, RAMF: { position: 'AD', zone: 'Milieu' },
+  LMF: { position: 'AG', zone: 'Milieu' }, RMF: { position: 'AD', zone: 'Milieu' },
+  LW: { position: 'AG', zone: 'Attaquant' }, RW: { position: 'AD', zone: 'Attaquant' }, WF: { position: 'MO', zone: 'Milieu' },
+  CF: { position: 'ATT', zone: 'Attaquant' }, SS: { position: 'ATT', zone: 'Attaquant' }, ST: { position: 'ATT', zone: 'Attaquant' },
+};
+
+function mapWyscoutFoot(foot) {
+  if (!foot) return 'Droitier';
+  const f = String(foot).toLowerCase().trim();
+  if (f === 'left' || f === 'gauche') return 'Gaucher';
+  if (f === 'both' || f === 'both feet' || f === 'ambidextre') return 'Ambidextre';
+  return 'Droitier';
+}
+function mapWyscoutMarketValue(val) {
+  const n = Number(val);
+  if (!n || isNaN(n)) return null;
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(n % 1_000_000 === 0 ? 0 : 1)}M€`;
+  if (n >= 1_000) return `${Math.round(n / 1_000)}K€`;
+  return `${n}€`;
+}
+function mapWyscoutContractDate(val) {
+  if (!val || val === '') return null;
+  const n = Number(val);
+  if (!isNaN(n) && n > 1900 && n < 2100 && String(val).length === 4) return `${n}-06-30`;
+  if (typeof val === 'string' && val.match(/^\d{4}-\d{2}-\d{2}$/)) return val;
+  if (!isNaN(n) && n > 40000) return new Date(Math.round((n - 25569) * 86400 * 1000)).toISOString().slice(0, 10);
+  return null;
+}
+function wyscoutNum(v) {
+  if (v === '' || v === null || v === undefined) return null;
+  const n = Number(v);
+  return isNaN(n) ? null : n;
+}
+
+// Complete mapping: Excel column → DB column in player_wyscout_stats
+// type 'int' = integer count, 'dec' = DECIMAL stat
+const WYSCOUT_STATS_MAP = [
+  // Base
+  { e: 'Matches played',                   db: 'matches_played',                       t: 'int' },
+  { e: 'Minutes played',                   db: 'minutes_played',                       t: 'int' },
+  { e: 'Goals',                            db: 'goals',                                t: 'int' },
+  { e: 'xG',                               db: 'xg',                                   t: 'dec' },
+  { e: 'Assists',                          db: 'assists',                              t: 'int' },
+  { e: 'xA',                               db: 'xa',                                   t: 'dec' },
+  { e: 'Yellow cards',                     db: 'yellow_cards',                         t: 'int' },
+  { e: 'Red cards',                        db: 'red_cards',                            t: 'int' },
+  { e: 'Shots',                            db: 'shots',                                t: 'int' },
+  { e: 'Non-penalty goals',                db: 'np_goals',                             t: 'int' },
+  { e: 'Head goals',                       db: 'head_goals',                           t: 'int' },
+  { e: 'Conceded goals',                   db: 'conceded_goals',                       t: 'int' },
+  { e: 'Shots against',                    db: 'shots_against',                        t: 'int' },
+  { e: 'Clean sheets',                     db: 'clean_sheets',                         t: 'int' },
+  { e: 'Penalties taken',                  db: 'penalties_taken',                      t: 'int' },
+  // Defensive per-90
+  { e: 'Duels per 90',                     db: 'duels_per90',                          t: 'dec' },
+  { e: 'Duels won, %',                     db: 'duels_won_pct',                        t: 'dec' },
+  { e: 'Successful defensive actions per 90', db: 'defensive_actions_per90',           t: 'dec' },
+  { e: 'Defensive duels per 90',           db: 'defensive_duels_per90',                t: 'dec' },
+  { e: 'Defensive duels won, %',           db: 'defensive_duels_won_pct',              t: 'dec' },
+  { e: 'Aerial duels per 90',              db: 'aerial_duels_per90',                   t: 'dec' },
+  { e: 'Aerial duels won, %',              db: 'aerial_duels_won_pct',                 t: 'dec' },
+  { e: 'Sliding tackles per 90',           db: 'sliding_tackles_per90',                t: 'dec' },
+  { e: 'PAdj Sliding tackles',             db: 'padj_sliding_tackles',                 t: 'dec' },
+  { e: 'Shots blocked per 90',             db: 'shots_blocked_per90',                  t: 'dec' },
+  { e: 'Interceptions per 90',             db: 'interceptions_per90',                  t: 'dec' },
+  { e: 'PAdj Interceptions',               db: 'padj_interceptions',                   t: 'dec' },
+  { e: 'Fouls per 90',                     db: 'fouls_per90',                          t: 'dec' },
+  { e: 'Yellow cards per 90',              db: 'yellow_cards_per90',                   t: 'dec' },
+  { e: 'Red cards per 90',                 db: 'red_cards_per90',                      t: 'dec' },
+  // Attacking per-90
+  { e: 'Successful attacking actions per 90', db: 'attacking_actions_per90',           t: 'dec' },
+  { e: 'Goals per 90',                     db: 'goals_per90',                          t: 'dec' },
+  { e: 'Non-penalty goals per 90',         db: 'np_goals_per90',                       t: 'dec' },
+  { e: 'xG per 90',                        db: 'xg_per90',                             t: 'dec' },
+  { e: 'Head goals per 90',                db: 'head_goals_per90',                     t: 'dec' },
+  { e: 'Shots per 90',                     db: 'shots_per90',                          t: 'dec' },
+  { e: 'Shots on target, %',               db: 'shots_on_target_pct',                  t: 'dec' },
+  { e: 'Goal conversion, %',               db: 'goal_conversion_pct',                  t: 'dec' },
+  { e: 'Assists per 90',                   db: 'assists_per90',                        t: 'dec' },
+  { e: 'xA per 90',                        db: 'xa_per90',                             t: 'dec' },
+  { e: 'Crosses per 90',                   db: 'crosses_per90',                        t: 'dec' },
+  { e: 'Accurate crosses, %',              db: 'crosses_accurate_pct',                 t: 'dec' },
+  { e: 'Crosses from left flank per 90',   db: 'crosses_left_per90',                   t: 'dec' },
+  { e: 'Accurate crosses from left flank, %', db: 'crosses_left_accurate_pct',         t: 'dec' },
+  { e: 'Crosses from right flank per 90',  db: 'crosses_right_per90',                  t: 'dec' },
+  { e: 'Accurate crosses from right flank, %', db: 'crosses_right_accurate_pct',       t: 'dec' },
+  { e: 'Crosses to goalie box per 90',     db: 'crosses_to_box_per90',                 t: 'dec' },
+  { e: 'Dribbles per 90',                  db: 'dribbles_per90',                       t: 'dec' },
+  { e: 'Successful dribbles, %',           db: 'dribbles_success_pct',                 t: 'dec' },
+  { e: 'Offensive duels per 90',           db: 'offensive_duels_per90',                t: 'dec' },
+  { e: 'Offensive duels won, %',           db: 'offensive_duels_won_pct',              t: 'dec' },
+  { e: 'Touches in box per 90',            db: 'touches_in_box_per90',                 t: 'dec' },
+  { e: 'Progressive runs per 90',          db: 'progressive_runs_per90',               t: 'dec' },
+  { e: 'Accelerations per 90',             db: 'accelerations_per90',                  t: 'dec' },
+  { e: 'Received passes per 90',           db: 'received_passes_per90',                t: 'dec' },
+  { e: 'Received long passes per 90',      db: 'received_long_passes_per90',           t: 'dec' },
+  { e: 'Fouls suffered per 90',            db: 'fouls_suffered_per90',                 t: 'dec' },
+  // Passing
+  { e: 'Passes per 90',                    db: 'passes_per90',                         t: 'dec' },
+  { e: 'Accurate passes, %',               db: 'passes_accurate_pct',                  t: 'dec' },
+  { e: 'Forward passes per 90',            db: 'forward_passes_per90',                 t: 'dec' },
+  { e: 'Accurate forward passes, %',       db: 'forward_passes_accurate_pct',          t: 'dec' },
+  { e: 'Back passes per 90',               db: 'back_passes_per90',                    t: 'dec' },
+  { e: 'Accurate back passes, %',          db: 'back_passes_accurate_pct',             t: 'dec' },
+  { e: 'Lateral passes per 90',            db: 'lateral_passes_per90',                 t: 'dec' },
+  { e: 'Accurate lateral passes, %',       db: 'lateral_passes_accurate_pct',          t: 'dec' },
+  { e: 'Short / medium passes per 90',     db: 'short_medium_passes_per90',            t: 'dec' },
+  { e: 'Accurate short / medium passes, %', db: 'short_medium_passes_accurate_pct',    t: 'dec' },
+  { e: 'Long passes per 90',               db: 'long_passes_per90',                    t: 'dec' },
+  { e: 'Accurate long passes, %',          db: 'long_passes_accurate_pct',             t: 'dec' },
+  { e: 'Average pass length, m',           db: 'avg_pass_length',                      t: 'dec' },
+  { e: 'Average long pass length, m',      db: 'avg_long_pass_length',                 t: 'dec' },
+  { e: 'Shot assists per 90',              db: 'shot_assists_per90',                   t: 'dec' },
+  { e: 'Second assists per 90',            db: 'second_assists_per90',                 t: 'dec' },
+  { e: 'Third assists per 90',             db: 'third_assists_per90',                  t: 'dec' },
+  { e: 'Smart passes per 90',              db: 'smart_passes_per90',                   t: 'dec' },
+  { e: 'Accurate smart passes, %',         db: 'smart_passes_accurate_pct',            t: 'dec' },
+  { e: 'Key passes per 90',                db: 'key_passes_per90',                     t: 'dec' },
+  { e: 'Passes to final third per 90',     db: 'passes_final_third_per90',             t: 'dec' },
+  { e: 'Accurate passes to final third, %', db: 'passes_final_third_accurate_pct',     t: 'dec' },
+  { e: 'Passes to penalty area per 90',    db: 'passes_penalty_area_per90',            t: 'dec' },
+  { e: 'Accurate passes to penalty area, %', db: 'passes_penalty_area_accurate_pct',   t: 'dec' },
+  { e: 'Through passes per 90',            db: 'through_passes_per90',                 t: 'dec' },
+  { e: 'Accurate through passes, %',       db: 'through_passes_accurate_pct',          t: 'dec' },
+  { e: 'Deep completions per 90',          db: 'deep_completions_per90',               t: 'dec' },
+  { e: 'Deep completed crosses per 90',    db: 'deep_completed_crosses_per90',         t: 'dec' },
+  { e: 'Progressive passes per 90',        db: 'progressive_passes_per90',             t: 'dec' },
+  { e: 'Accurate progressive passes, %',   db: 'progressive_passes_accurate_pct',      t: 'dec' },
+  // Set pieces
+  { e: 'Free kicks per 90',                db: 'free_kicks_per90',                     t: 'dec' },
+  { e: 'Direct free kicks per 90',         db: 'direct_free_kicks_per90',              t: 'dec' },
+  { e: 'Direct free kicks on target, %',   db: 'direct_free_kicks_on_target_pct',      t: 'dec' },
+  { e: 'Corners per 90',                   db: 'corners_per90',                        t: 'dec' },
+  { e: 'Penalty conversion, %',            db: 'penalty_conversion_pct',               t: 'dec' },
+  // Goalkeeper
+  { e: 'Conceded goals per 90',            db: 'conceded_goals_per90',                 t: 'dec' },
+  { e: 'Shots against per 90',             db: 'shots_against_per90',                  t: 'dec' },
+  { e: 'Save rate, %',                     db: 'save_rate_pct',                        t: 'dec' },
+  { e: 'xG against',                       db: 'xg_against',                           t: 'dec' },
+  { e: 'xG against per 90',               db: 'xg_against_per90',                     t: 'dec' },
+  { e: 'Prevented goals',                  db: 'prevented_goals',                      t: 'dec' },
+  { e: 'Prevented goals per 90',           db: 'prevented_goals_per90',                t: 'dec' },
+  { e: 'Back passes received as GK per 90', db: 'gk_back_passes_per90',                t: 'dec' },
+  { e: 'Exits per 90',                     db: 'gk_exits_per90',                       t: 'dec' },
+  { e: 'Aerial duels per 90.1',            db: 'gk_aerial_duels_per90',                t: 'dec' },
+  // Physical / athletic
+  { e: 'Total Distance per 90',            db: 'total_distance_per90',                 t: 'dec' },
+  { e: 'Running Distance per 90 (15-20 km/h)', db: 'running_distance_per90',           t: 'dec' },
+  { e: 'HSR Distance per 90 (20-25 km/h)', db: 'hsr_distance_per90',                  t: 'dec' },
+  { e: 'Sprinting Distance per 90 (+25 km/h)', db: 'sprint_distance_per90',            t: 'dec' },
+  { e: 'HI Distance per 90 (+20 km/h)',    db: 'hi_distance_per90',                    t: 'dec' },
+  { e: 'Meter/Min',                        db: 'meters_per_min',                       t: 'dec' },
+  { e: 'Max Speed (km/h)',                 db: 'max_speed',                            t: 'dec' },
+  { e: 'Count Medium Acceleration per 90 (1.5 m/s² to 3 m/s²)', db: 'medium_accel_per90', t: 'dec' },
+  { e: 'Count High Acceleration per 90 (+3 m/s²)',               db: 'high_accel_per90',   t: 'dec' },
+  { e: 'Count Medium Deceleration per 90 (-1.5 m/s² to -3 m/s²)', db: 'medium_decel_per90', t: 'dec' },
+  { e: 'Count High Deceleration per 90 (-3 m/s²)',               db: 'high_decel_per90',   t: 'dec' },
+  { e: 'Count HSR per 90 (20-25 km/h)',    db: 'hsr_count_per90',                      t: 'dec' },
+  { e: 'Count Sprint per 90 (+25 km/h)',   db: 'sprint_count_per90',                   t: 'dec' },
+  { e: 'Count HI per 90 (+20 km/h)',       db: 'hi_count_per90',                       t: 'dec' },
+];
+
+// ── POST /api/import/wyscout ────────────────────────────────────────────────
+app.post("/api/import/wyscout", authMiddleware, async (req, res) => {
+  const [roleRows] = await pool.query("SELECT role FROM user_roles WHERE user_id = ?", [req.user.id]);
+  const roles = roleRows.map(r => r.role);
+  if (!roles.includes('admin') && !roles.includes('importateur'))
+    return res.status(403).json({ error: "Accès refusé. Rôle importateur requis." });
+
+  const { rows } = req.body || {};
+  if (!Array.isArray(rows) || rows.length === 0)
+    return res.status(400).json({ error: "Aucune donnée à importer." });
+  if (rows.length > 5000)
+    return res.status(400).json({ error: "Maximum 5000 joueurs par import." });
+
+  const { v4: uuidv4 } = await import('uuid');
+  const userId = req.user.id;
+  let created = 0, updated = 0;
+  const errors = [];
+
+  for (const row of rows) {
+    const playerName = String(row['Player'] || '').trim();
+    if (!playerName) continue;
+
+    try {
+      const club        = String(row['Team'] || '').trim();
+      const teamInTF    = String(row['Team within selected timeframe'] || '').trim() || null;
+      const rawPos      = String(row['Position'] || '').trim().toUpperCase();
+      const posMap      = WYSCOUT_POS_MAP[rawPos] || { position: 'MC', zone: 'Milieu' };
+      const season      = String(row['season'] || '').trim() || null;
+      const division    = String(row['division'] || '').trim() || null;
+      const continent   = String(row['continent'] || '').trim() || null;
+      const country     = String(row['country'] || '').trim() || null;
+      const countryRaw  = String(row['country_raw'] || '').trim() || null;
+      const yearStart   = parseInt(row['year_start']) || null;
+      const yearEnd     = parseInt(row['year_end']) || null;
+      const srcFilename = String(row['filename'] || '').trim() || null;
+      const srcFilePath = String(row['source_file'] || '').trim() || null;
+
+      const height         = parseInt(row['Height']) || null;
+      const weight         = parseInt(row['Weight']) || null;
+      const onLoan         = String(row['On loan'] || '').toLowerCase() === 'yes' ? 1 : 0;
+      const passportCountry = String(row['Passport country'] || '').trim() || null;
+      const marketValue    = mapWyscoutMarketValue(row['Market value']);
+      const contractEnd    = mapWyscoutContractDate(row['Contract expires']);
+      const foot           = mapWyscoutFoot(row['Foot']);
+      const nationality    = String(row['Birth country'] || '').trim() || 'France';
+      const age            = parseInt(row['Age']) || null;
+      const generation     = age && yearStart ? (yearStart - age) : 2000;
+      const matchesPlayed  = parseInt(row['Matches played']) || null;
+      const minutesPlayed  = parseInt(row['Minutes played']) || null;
+
+      // ── 1. Upsert player (bio) ──────────────────────────────────────────
+      const [existByClub] = await pool.query(
+        `SELECT id FROM players WHERE user_id = ? AND LOWER(TRIM(name)) = LOWER(?) AND LOWER(TRIM(club)) = LOWER(?) LIMIT 1`,
+        [userId, playerName, club]
+      );
+      let playerId = existByClub[0]?.id || null;
+      if (!playerId) {
+        const [existByName] = await pool.query(
+          `SELECT id FROM players WHERE user_id = ? AND LOWER(TRIM(name)) = LOWER(?) LIMIT 1`,
+          [userId, playerName]
+        );
+        playerId = existByName[0]?.id || null;
+      }
+
+      if (playerId) {
+        await pool.query(
+          `UPDATE players SET
+            club = ?, position = ?, nationality = ?, foot = ?,
+            market_value = COALESCE(?, market_value),
+            contract_end = COALESCE(?, contract_end),
+            height = ?, weight = ?, on_loan = ?,
+            matches_played = ?, minutes_played = ?,
+            passport_country = ?, wyscout_season = ?, wyscout_division = ?,
+            wyscout_team_in_timeframe = ?, updated_at = NOW()
+           WHERE id = ? AND user_id = ?`,
+          [club, posMap.position, nationality, foot,
+           marketValue, contractEnd, height, weight, onLoan,
+           matchesPlayed, minutesPlayed, passportCountry,
+           season, division, teamInTF, playerId, userId]
+        );
+        updated++;
+      } else {
+        playerId = uuidv4();
+        await pool.query(
+          `INSERT INTO players (id, user_id, name, club, league, position, zone,
+            nationality, foot, generation, market_value, contract_end,
+            height, weight, on_loan, matches_played, minutes_played,
+            passport_country, wyscout_season, wyscout_division, wyscout_team_in_timeframe,
+            current_level, potential, general_opinion, ts_report_published, created_at, updated_at)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,5.0,5.0,'À revoir',0,NOW(),NOW())`,
+          [playerId, userId, playerName, club, division || '',
+           posMap.position, posMap.zone, nationality, foot,
+           generation, marketValue, contractEnd,
+           height, weight, onLoan, matchesPlayed, minutesPlayed,
+           passportCountry, season, division, teamInTF]
+        );
+        created++;
+      }
+
+      // ── 2. Upsert stats in player_wyscout_stats ─────────────────────────
+      // Build column list + values dynamically from WYSCOUT_STATS_MAP
+      const statCols = [];
+      const statVals = [];
+      for (const { e, db } of WYSCOUT_STATS_MAP) {
+        const v = wyscoutNum(row[e]);
+        statCols.push(db);
+        statVals.push(v);
+      }
+
+      const statId = uuidv4();
+      const colList = ['id', 'player_id', 'user_id', 'season', 'division', 'team',
+        'continent', 'country', 'country_raw', 'year_start', 'year_end',
+        'source_filename', 'source_file_path', ...statCols].join(', ');
+      const placeholders = Array(13 + statCols.length).fill('?').join(', ');
+      const allVals = [statId, playerId, userId, season || '', division,
+        club, continent, country, countryRaw, yearStart, yearEnd,
+        srcFilename, srcFilePath, ...statVals];
+
+      // ON DUPLICATE KEY UPDATE all stat columns
+      const updateSet = statCols.map(c => `${c} = VALUES(${c})`).join(', ')
+        + `, team = VALUES(team), continent = VALUES(continent), country = VALUES(country),`
+        + ` year_start = VALUES(year_start), year_end = VALUES(year_end),`
+        + ` source_filename = VALUES(source_filename), source_file_path = VALUES(source_file_path),`
+        + ` updated_at = NOW()`;
+
+      await pool.query(
+        `INSERT INTO player_wyscout_stats (${colList}) VALUES (${placeholders})
+         ON DUPLICATE KEY UPDATE ${updateSet}`,
+        allVals
+      );
+
+    } catch (err) {
+      errors.push({ name: playerName, error: err?.message || 'Erreur inconnue' });
+    }
+  }
+
+  return res.json({ created, updated, errors, total: rows.length });
 });
 
 async function ensureAdmin(req, res, next) {
@@ -4488,7 +5037,7 @@ app.post("/api/admin/roles/remove", authMiddleware, ensureAdmin, async (req, res
 });
 
 // DELETE /api/admin/roles/delete — remove a custom role and its permissions
-const PROTECTED_ROLES = ['admin', 'user', 'moderateur'];
+const PROTECTED_ROLES = ['admin', 'user', 'moderateur', 'importateur'];
 app.post("/api/admin/roles/delete", authMiddleware, ensureAdmin, async (req, res) => {
   const { role } = req.body || {};
   if (!role || PROTECTED_ROLES.includes(role)) {
@@ -4871,6 +5420,38 @@ app.delete("/api/organizations/:id/logo", authMiddleware, async (req, res) => {
   } catch (err) {
     console.error("[org/logo/delete] Error:", err);
     return res.status(500).json({ error: "Erreur serveur." });
+  }
+});
+
+// PATCH /api/organizations/:id — update name and/or description (owner/admin)
+app.patch("/api/organizations/:id", authMiddleware, async (req, res) => {
+  const { id } = req.params;
+  const userId = req.user.id;
+  const { name, description } = req.body || {};
+
+  try {
+    // Only owner or admin can update
+    const [memberRows] = await pool.query(
+      "SELECT role FROM organization_members WHERE organization_id = ? AND user_id = ? LIMIT 1",
+      [id, userId]
+    );
+    if (!memberRows.length || !['owner', 'admin'].includes(memberRows[0].role)) {
+      return res.status(403).json({ error: "Seuls le propriétaire et les admins peuvent modifier l'organisation." });
+    }
+
+    const updates = [];
+    const params = [];
+    if (name !== undefined) { updates.push("name = ?"); params.push(String(name).trim().slice(0, 255)); }
+    if (description !== undefined) { updates.push("description = ?"); params.push(description === '' ? null : String(description).slice(0, 2000)); }
+    if (!updates.length) return res.status(400).json({ error: "Rien à mettre à jour." });
+
+    updates.push("updated_at = NOW()");
+    params.push(id);
+    await pool.query(`UPDATE organizations SET ${updates.join(', ')} WHERE id = ?`, params);
+    const [rows] = await pool.query("SELECT * FROM organizations WHERE id = ? LIMIT 1", [id]);
+    return res.json({ ok: true, org: rows[0] });
+  } catch (err) {
+    return res.status(500).json({ error: err?.message || "Erreur serveur" });
   }
 });
 

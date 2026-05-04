@@ -1,0 +1,33 @@
+User-agent: *
+Allow: /
+
+# Pages publiques indexables
+Allow: /$
+Allow: /pricing
+Allow: /about
+Allow: /privacy
+Allow: /cgu
+Allow: /cgv
+Allow: /legal
+
+# Pages applicatives — ne pas indexer
+Disallow: /players
+Disallow: /dashboard
+Disallow: /admin
+Disallow: /account
+Disallow: /settings
+Disallow: /watchlist
+Disallow: /shadow-team
+Disallow: /squad
+Disallow: /reports
+Disallow: /community
+Disallow: /map
+Disallow: /contacts
+Disallow: /organizations
+Disallow: /auth
+Disallow: /reset-password
+Disallow: /forgot-password
+Disallow: /checkout
+Disallow: /premium-success
+
+Sitemap: https://scouty.app/sitemap.xml

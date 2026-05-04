@@ -120,7 +120,13 @@
       "Bash(powershell -Command \"\\(Get-Item 'c:\\\\Users\\\\infor\\\\scouting-hub\\\\server\\\\index.js'\\).LastWriteTime\")",
       "Bash(powershell -Command \"\\(Get-Item 'c:\\\\Users\\\\infor\\\\scouting-hub\\\\.env'\\).LastWriteTime\")",
       "Bash(node -e \"import\\('./node_modules/express/package.json', {assert:{type:'json'}}\\).then\\(m => console.log\\(m.default.version\\)\\).catch\\(\\(\\) => require\\('./node_modules/express/package.json'\\).version\\)\")",
-      "Bash(python3 -c \"import sys,json; print\\(json.load\\(sys.stdin\\)['version']\\)\")"
+      "Bash(python3 -c \"import sys,json; print\\(json.load\\(sys.stdin\\)['version']\\)\")",
+      "Bash(Get-ChildItem -Path \"c:\\\\Users\\\\infor\\\\scouting-hub\\\\tmp\" -ErrorAction SilentlyContinue)",
+      "Bash(Select-Object Name, FullName)",
+      "Bash(powershell -Command \"Get-Process -Id 12292 -ErrorAction SilentlyContinue | Select-Object StartTime\")",
+      "Bash(powershell -Command \"Get-Process -Id 7116 | Select-Object StartTime, Id, Name\")",
+      "Bash(awk 'NR==291' src/i18n/locales/fr.ts)",
+      "Bash(awk 'NR>=287 && NR<=295' src/i18n/locales/fr.ts)"
     ],
     "additionalDirectories": [
       "\\tmp"

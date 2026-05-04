@@ -172,6 +172,16 @@ export default function MapView() {
   const [mapHeight, setMapHeight] = useState(500);
   const { position: userPos, loading: geoLoading, locate } = useGeolocation();
   const [showNearby, setShowNearby] = useState(false);
+  const [pendingNearby, setPendingNearby] = useState(false);
+
+  // Auto-activate nearby view once position arrives after clicking the button
+  useEffect(() => {
+    if (pendingNearby && userPos) {
+      setShowNearby(true);
+      setFlyTarget({ center: [userPos.latitude, userPos.longitude], zoom: 7 });
+      setPendingNearby(false);
+    }
+  }, [pendingNearby, userPos]);
   const queryClient = useQueryClient();
 
   // ── Club location correction state ──
@@ -315,6 +325,18 @@ export default function MapView() {
       .sort((a, b) => a.distance - b.distance);
   }, [userPos, matchMarkers]);
 
+  // Nearby clubs from user's scouted players (sorted by distance)
+  const nearbyClubs = useMemo(() => {
+    if (!userPos || !clubMarkers.length) return [];
+    return clubMarkers
+      .map(c => ({
+        ...c,
+        distance: distanceKm(userPos.latitude, userPos.longitude, c.coords[0], c.coords[1]),
+      }))
+      .filter(c => c.distance <= NEARBY_RADIUS_KM)
+      .sort((a, b) => a.distance - b.distance);
+  }, [userPos, clubMarkers]);
+
   // Detect if search is a lat,lng coordinate
   const parsedLatLng = useMemo(() => parseLatLng(search), [search]);
 
@@ -379,9 +401,11 @@ export default function MapView() {
             className="rounded-xl gap-1.5"
             onClick={() => {
               if (userPos) {
-                setShowNearby(n => !n);
-                setFlyTarget({ center: [userPos.latitude, userPos.longitude], zoom: 8 });
+                const next = !showNearby;
+                setShowNearby(next);
+                if (next) setFlyTarget({ center: [userPos.latitude, userPos.longitude], zoom: 7 });
               } else {
+                setPendingNearby(true);
                 locate();
               }
             }}
@@ -431,10 +455,11 @@ export default function MapView() {
           <Users className="w-3.5 h-3.5" />
           {filteredClubMarkers.length} {t('map.clubs')}
         </Badge>
-        {nearbyMatches.length > 0 && (
+        {userPos && (nearbyMatches.length > 0 || nearbyClubs.length > 0) && (
           <Badge variant="outline" className="gap-1.5 border-purple-500/30 text-purple-600">
             <Navigation className="w-3.5 h-3.5" />
             {nearbyMatches.reduce((s, m) => s + m.comp.events.length, 0)} {t('map.nearby_count')}
+            {nearbyClubs.length > 0 && ` · ${nearbyClubs.length} ${t('map.clubs')}`}
           </Badge>
         )}
         {eventsLoading && <Loader2 className="w-4 h-4 animate-spin text-muted-foreground" />}
@@ -493,74 +518,32 @@ export default function MapView() {
             {/* Club markers */}
             {filteredClubMarkers.map((c, i) => (
               <Marker key={`club-${i}`} position={c.coords} icon={c.isGeolocated ? CLUB_ICON_PRECISE : CLUB_ICON}>
-                <Popup minWidth={220}>
-                  <div style={{ minWidth: 210, fontFamily: 'system-ui, sans-serif' }}>
-                    {/* Header */}
-                    <div style={{ fontWeight: 700, fontSize: 13, marginBottom: 2 }}>{c.club}</div>
-                    <div style={{ fontSize: 11, color: '#888', marginBottom: 6 }}>
-                      {c.count} {t('map.scouted_players')}
-                      {c.isGeolocated
-                        ? <span style={{ color: '#22c55e', marginLeft: 6 }}>📍 {t('map.precise_location')}</span>
-                        : <span style={{ color: '#f59e0b', marginLeft: 6 }}>⚠️ {t('map.approximate_location')}</span>
-                      }
-                    </div>
-                    {/* Players list */}
-                    <div style={{ marginBottom: 8 }}>
-                      {c.players.map((name, k) => (
-                        <div key={k} style={{ fontSize: 11 }}>• {name}</div>
-                      ))}
-                      {c.count > 5 && <div style={{ fontSize: 11, color: '#888' }}>+{c.count - 5}...</div>}
-                    </div>
-                    {/* Correction tool */}
-                    {fixingClub === c.club ? (
-                      <div style={{ borderTop: '1px solid #e5e7eb', paddingTop: 8, marginTop: 4 }}>
-                        <div style={{ fontSize: 11, fontWeight: 600, marginBottom: 6, color: '#6366f1' }}>
-                          📍 {t('map.fix_location')}
-                        </div>
-                        {/* Country */}
-                        <input
-                          type="text"
-                          placeholder={t('map.fix_country_placeholder')}
-                          value={fixCountry}
-                          onChange={e => setFixCountry(e.target.value)}
-                          style={{ width: '100%', fontSize: 11, padding: '3px 6px', borderRadius: 4, border: '1px solid #d1d5db', marginBottom: 4, boxSizing: 'border-box' }}
-                        />
-                        {/* Auto geocode */}
-                        <button
-                          onClick={() => handleAutoGeocode(c.club, fixCountry)}
-                          disabled={fixLoading}
-                          style={{ width: '100%', fontSize: 11, padding: '4px 0', background: '#6366f1', color: '#fff', border: 'none', borderRadius: 4, cursor: 'pointer', marginBottom: 6, fontWeight: 600 }}
-                        >
-                          {fixLoading ? '…' : `🔄 ${t('map.fix_auto')}`}
-                        </button>
-                        {/* Manual coords */}
-                        <div style={{ display: 'flex', gap: 4, marginBottom: 4 }}>
-                          <input type="number" placeholder="Lat" value={manualLat} onChange={e => setManualLat(e.target.value)}
-                            style={{ flex: 1, fontSize: 11, padding: '3px 6px', borderRadius: 4, border: '1px solid #d1d5db', boxSizing: 'border-box' }} />
-                          <input type="number" placeholder="Lng" value={manualLng} onChange={e => setManualLng(e.target.value)}
-                            style={{ flex: 1, fontSize: 11, padding: '3px 6px', borderRadius: 4, border: '1px solid #d1d5db', boxSizing: 'border-box' }} />
-                        </div>
-                        <button
-                          onClick={() => handleManualGeocode(c.club, fixCountry)}
-                          disabled={fixLoading || !manualLat || !manualLng}
-                          style={{ width: '100%', fontSize: 11, padding: '4px 0', background: '#10b981', color: '#fff', border: 'none', borderRadius: 4, cursor: 'pointer', marginBottom: 4, fontWeight: 600, opacity: (!manualLat || !manualLng) ? 0.5 : 1 }}
-                        >
-                          {t('map.fix_manual')}
-                        </button>
-                        <button onClick={() => setFixingClub(null)}
-                          style={{ width: '100%', fontSize: 10, padding: '2px 0', background: 'transparent', border: '1px solid #d1d5db', borderRadius: 4, cursor: 'pointer', color: '#888' }}>
-                          {t('common.cancel')}
-                        </button>
-                      </div>
-                    ) : (
-                      <button
-                        onClick={() => { setFixingClub(c.club); setFixCountry(''); setManualLat(''); setManualLng(''); }}
-                        style={{ fontSize: 10, color: '#6366f1', background: 'transparent', border: 'none', cursor: 'pointer', padding: 0, textDecoration: 'underline' }}
-                      >
-                        📍 {t('map.fix_location')}
-                      </button>
-                    )}
-                  </div>
+                <Popup minWidth={260} maxWidth={300} className="club-popup">
+                  <ClubPopup
+                    club={c}
+                    fixingClub={fixingClub}
+                    fixCountry={fixCountry}
+                    manualLat={manualLat}
+                    manualLng={manualLng}
+                    fixLoading={fixLoading}
+                    onStartFix={() => { setFixingClub(c.club); setFixCountry(''); setManualLat(''); setManualLng(''); }}
+                    onCancelFix={() => setFixingClub(null)}
+                    onFixCountryChange={setFixCountry}
+                    onManualLatChange={setManualLat}
+                    onManualLngChange={setManualLng}
+                    onAutoGeocode={() => handleAutoGeocode(c.club, fixCountry)}
+                    onManualGeocode={() => handleManualGeocode(c.club, fixCountry)}
+                    fixLocationLabel={t('map.fix_location')}
+                    fixCountryPlaceholder={t('map.fix_country_placeholder')}
+                    fixAutoLabel={t('map.fix_auto')}
+                    fixManualLabel={t('map.fix_manual')}
+                    cancelLabel={t('common.cancel')}
+                    scoutedLabel={t('map.scouted_players')}
+                    preciseLabel={t('map.precise_location')}
+                    approxLabel={t('map.approximate_location')}
+                    viewProfileLabel={t('map.view_club_profile')}
+                    moreLabel={t('map.more')}
+                  />
                 </Popup>
               </Marker>
             ))}
@@ -576,8 +559,13 @@ export default function MapView() {
                         {userPos.latitude.toFixed(4)}, {userPos.longitude.toFixed(4)}
                       </div>
                       {nearbyMatches.length > 0 && (
-                        <div style={{ fontSize: 11, marginTop: 6, color: '#a855f7', fontWeight: 600 }}>
-                          {nearbyMatches.reduce((s, m) => s + m.comp.events.length, 0)} {t('map.matches_nearby', { radius: NEARBY_RADIUS_KM })}
+                        <div style={{ fontSize: 11, marginTop: 4, color: '#a855f7', fontWeight: 600 }}>
+                          ⚽ {nearbyMatches.reduce((s, m) => s + m.comp.events.length, 0)} {t('map.matches_nearby', { radius: NEARBY_RADIUS_KM })}
+                        </div>
+                      )}
+                      {nearbyClubs.length > 0 && (
+                        <div style={{ fontSize: 11, marginTop: 4, color: '#0ea5e9', fontWeight: 600 }}>
+                          🏟 {nearbyClubs.length} {t('map.clubs')} — {nearbyClubs.reduce((s, c) => s + c.count, 0)} {t('map.scouted_players')}
                         </div>
                       )}
                     </div>
@@ -603,47 +591,105 @@ export default function MapView() {
 
         {/* Sidebar */}
         <div className="w-80 shrink-0 hidden lg:flex flex-col gap-2 overflow-y-auto pr-1">
-          {/* Nearby matches section */}
-          {userPos && nearbyMatches.length > 0 && (
+          {/* ── Nearby section — matches + clubs ── */}
+          {userPos && showNearby && (nearbyMatches.length > 0 || nearbyClubs.length > 0) && (
             <>
-              <p className="text-xs font-bold uppercase tracking-wider text-purple-500 px-1 flex items-center gap-1.5">
-                <Navigation className="w-3 h-3" />
-                {t('map.nearby_title')} ({nearbyMatches.reduce((s, m) => s + m.comp.events.length, 0)})
-              </p>
-              {nearbyMatches.map((m, i) => {
-                const hasLive = m.comp.events.some(e => isLive(e.status));
-                return (
-                  <Card
-                    key={`nearby-${i}`}
-                    className={cn(
-                      'border-purple-500/20 cursor-pointer hover:bg-purple-500/5 transition-colors',
-                      hasLive && 'ring-1 ring-destructive/30'
-                    )}
-                    onClick={() => setFlyTarget({ center: m.coords, zoom: 8 })}
-                  >
-                    <CardContent className="p-3">
-                      <div className="flex items-center gap-2 mb-1.5">
-                        <span className="text-sm">{countryFlag(m.comp.country_code)}</span>
-                        <div className="flex-1 min-w-0">
-                          <p className="text-sm font-bold truncate">{m.comp.name}</p>
-                          <p className="text-xs text-muted-foreground">{m.comp.country}</p>
-                        </div>
-                        <Badge variant="outline" className="text-[10px] shrink-0 border-purple-500/30 text-purple-600">
-                          {Math.round(m.distance)} km
-                        </Badge>
-                      </div>
-                      <div className="space-y-1">
-                        {m.comp.events.slice(0, 3).map((ev, j) => (
-                          <MatchRowCompact key={j} event={ev} />
-                        ))}
-                        {m.comp.events.length > 3 && (
-                          <p className="text-[10px] text-muted-foreground">+{m.comp.events.length - 3} {t('map.more')}</p>
+              <div className="flex items-center gap-1.5 px-1">
+                <Navigation className="w-3 h-3 text-purple-500" />
+                <p className="text-xs font-bold uppercase tracking-wider text-purple-500">
+                  {t('map.nearby_title')} — {NEARBY_RADIUS_KM} km
+                </p>
+              </div>
+
+              {/* Nearby matches */}
+              {nearbyMatches.length > 0 && (
+                <>
+                  <p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground px-1 flex items-center gap-1">
+                    ⚽ {t('map.competitions')} ({nearbyMatches.reduce((s, m) => s + m.comp.events.length, 0)})
+                  </p>
+                  {nearbyMatches.map((m, i) => {
+                    const hasLive = m.comp.events.some(e => isLive(e.status));
+                    return (
+                      <Card
+                        key={`nearby-${i}`}
+                        className={cn(
+                          'border-purple-500/20 cursor-pointer hover:bg-purple-500/5 transition-colors',
+                          hasLive && 'ring-1 ring-destructive/30'
                         )}
-                      </div>
-                    </CardContent>
-                  </Card>
-                );
-              })}
+                        onClick={() => setFlyTarget({ center: m.coords, zoom: 8 })}
+                      >
+                        <CardContent className="p-3">
+                          <div className="flex items-center gap-2 mb-1.5">
+                            <span className="text-sm">{countryFlag(m.comp.country_code)}</span>
+                            <div className="flex-1 min-w-0">
+                              <p className="text-sm font-bold truncate">{m.comp.name}</p>
+                              <p className="text-xs text-muted-foreground">{m.comp.country}</p>
+                            </div>
+                            <Badge variant="outline" className="text-[10px] shrink-0 border-purple-500/30 text-purple-600">
+                              {Math.round(m.distance)} km
+                            </Badge>
+                          </div>
+                          <div className="space-y-1">
+                            {m.comp.events.slice(0, 3).map((ev, j) => (
+                              <MatchRowCompact key={j} event={ev} />
+                            ))}
+                            {m.comp.events.length > 3 && (
+                              <p className="text-[10px] text-muted-foreground">+{m.comp.events.length - 3} {t('map.more')}</p>
+                            )}
+                          </div>
+                        </CardContent>
+                      </Card>
+                    );
+                  })}
+                </>
+              )}
+
+              {/* Nearby clubs */}
+              {nearbyClubs.length > 0 && (
+                <>
+                  <p className="text-[10px] font-semibold uppercase tracking-wider text-sky-500 px-1 flex items-center gap-1 mt-1">
+                    🏟 {t('map.my_clubs')} ({nearbyClubs.length})
+                  </p>
+                  {nearbyClubs.map((c, i) => (
+                    <Card
+                      key={`nearby-club-${i}`}
+                      className="border-sky-500/20 cursor-pointer hover:bg-sky-500/5 transition-colors"
+                      onClick={() => setFlyTarget({ center: c.coords, zoom: c.isGeolocated ? 12 : 8 })}
+                    >
+                      <CardContent className="p-3 flex items-center gap-2">
+                        <Users className="w-4 h-4 shrink-0 text-sky-500" />
+                        <div className="flex-1 min-w-0">
+                          <p className="text-sm font-semibold truncate">{c.club}</p>
+                          <p className="text-xs text-muted-foreground">
+                            {c.count} {t('map.scouted_players')}
+                            {c.isGeolocated
+                              ? <span className="ml-1 text-emerald-500">· 📍 {t('map.precise_location')}</span>
+                              : <span className="ml-1 text-amber-500">· ⚠ {t('map.approximate_location')}</span>
+                            }
+                          </p>
+                          {c.players.slice(0, 2).map((name, k) => (
+                            <p key={k} className="text-[10px] text-muted-foreground truncate">• {name}</p>
+                          ))}
+                          {c.count > 2 && (
+                            <p className="text-[10px] text-muted-foreground">+{c.count - 2} {t('map.scouted_players')}</p>
+                          )}
+                        </div>
+                        <Badge variant="outline" className="text-[10px] shrink-0 border-sky-500/30 text-sky-600">
+                          {Math.round(c.distance)} km
+                        </Badge>
+                      </CardContent>
+                    </Card>
+                  ))}
+                </>
+              )}
+
+              {/* Empty state if no nearby data despite having position */}
+              {nearbyMatches.length === 0 && nearbyClubs.length === 0 && (
+                <p className="text-xs text-muted-foreground text-center py-4">
+                  {t('map.nothing_nearby', { radius: NEARBY_RADIUS_KM })}
+                </p>
+              )}
+
               <div className="border-b border-border my-1" />
             </>
           )}
@@ -723,6 +769,132 @@ export default function MapView() {
 // ---------------------------------------------------------------------------
 // Sub-components — use inline styles for Leaflet popups (Tailwind doesn't apply in popups)
 // ---------------------------------------------------------------------------
+
+interface ClubPopupProps {
+  club: { club: string; count: number; players: string[]; country: string; isGeolocated: boolean };
+  fixingClub: string | null;
+  fixCountry: string; manualLat: string; manualLng: string; fixLoading: boolean;
+  onStartFix: () => void; onCancelFix: () => void;
+  onFixCountryChange: (v: string) => void; onManualLatChange: (v: string) => void; onManualLngChange: (v: string) => void;
+  onAutoGeocode: () => void; onManualGeocode: () => void;
+  fixLocationLabel: string; fixCountryPlaceholder: string; fixAutoLabel: string;
+  fixManualLabel: string; cancelLabel: string; scoutedLabel: string;
+  preciseLabel: string; approxLabel: string; viewProfileLabel: string; moreLabel: string;
+}
+
+function ClubPopup({ club: c, fixingClub, fixCountry, manualLat, manualLng, fixLoading,
+  onStartFix, onCancelFix, onFixCountryChange, onManualLatChange, onManualLngChange,
+  onAutoGeocode, onManualGeocode,
+  fixLocationLabel, fixCountryPlaceholder, fixAutoLabel, fixManualLabel,
+  cancelLabel, scoutedLabel, preciseLabel, approxLabel, viewProfileLabel, moreLabel,
+}: ClubPopupProps) {
+  const initial = c.club.charAt(0).toUpperCase();
+  const isFixing = fixingClub === c.club;
+
+  const s = {
+    wrap: { fontFamily: 'system-ui,-apple-system,sans-serif', width: 270, overflow: 'hidden' } as React.CSSProperties,
+    header: { background: 'linear-gradient(135deg,#6366f1 0%,#8b5cf6 100%)', padding: '14px 14px 12px', borderRadius: '8px 8px 0 0', display: 'flex', alignItems: 'center', gap: 12 } as React.CSSProperties,
+    avatar: { width: 42, height: 42, borderRadius: 10, background: 'rgba(255,255,255,.2)', border: '2px solid rgba(255,255,255,.35)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 18, fontWeight: 800, color: '#fff', flexShrink: 0 } as React.CSSProperties,
+    clubName: { fontWeight: 800, fontSize: 14, color: '#fff', lineHeight: 1.2 } as React.CSSProperties,
+    clubSub: { fontSize: 11, color: 'rgba(255,255,255,.7)', marginTop: 2 } as React.CSSProperties,
+    body: { padding: '12px 14px', background: '#fff' } as React.CSSProperties,
+    statRow: { display: 'flex', alignItems: 'center', gap: 6, marginBottom: 10 } as React.CSSProperties,
+    statPill: { display: 'inline-flex', alignItems: 'center', gap: 4, padding: '3px 8px', borderRadius: 20, fontSize: 11, fontWeight: 600 } as React.CSSProperties,
+    playerList: { marginBottom: 12 } as React.CSSProperties,
+    playerRow: { display: 'flex', alignItems: 'center', gap: 7, padding: '4px 0', borderBottom: '1px solid #f3f4f6' } as React.CSSProperties,
+    playerDot: { width: 6, height: 6, borderRadius: '50%', background: '#6366f1', flexShrink: 0 } as React.CSSProperties,
+    playerName: { fontSize: 12, color: '#374151', fontWeight: 500 } as React.CSSProperties,
+    more: { fontSize: 11, color: '#9ca3af', marginTop: 2 } as React.CSSProperties,
+    profileBtn: { display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6, width: '100%', padding: '8px 0', background: 'linear-gradient(135deg,#6366f1,#8b5cf6)', color: '#fff', border: 'none', borderRadius: 8, cursor: 'pointer', fontSize: 12, fontWeight: 700, textDecoration: 'none', marginBottom: 8 } as React.CSSProperties,
+    fixLink: { fontSize: 10, color: '#6366f1', background: 'transparent', border: 'none', cursor: 'pointer', padding: 0, textDecoration: 'underline', display: 'block', textAlign: 'center' as const } as React.CSSProperties,
+    divider: { borderTop: '1px solid #f3f4f6', marginTop: 10, paddingTop: 10 } as React.CSSProperties,
+    input: { width: '100%', fontSize: 11, padding: '5px 8px', borderRadius: 6, border: '1px solid #d1d5db', marginBottom: 6, boxSizing: 'border-box' as const, outline: 'none' } as React.CSSProperties,
+    btnPrimary: { width: '100%', fontSize: 11, padding: '6px 0', background: '#6366f1', color: '#fff', border: 'none', borderRadius: 6, cursor: 'pointer', marginBottom: 6, fontWeight: 600 } as React.CSSProperties,
+    btnSuccess: { width: '100%', fontSize: 11, padding: '6px 0', background: '#10b981', color: '#fff', border: 'none', borderRadius: 6, cursor: 'pointer', marginBottom: 4, fontWeight: 600 } as React.CSSProperties,
+    btnCancel: { width: '100%', fontSize: 10, padding: '4px 0', background: 'transparent', border: '1px solid #e5e7eb', borderRadius: 6, cursor: 'pointer', color: '#9ca3af' } as React.CSSProperties,
+  };
+
+  return (
+    <div style={s.wrap}>
+      {/* ── Header gradient ── */}
+      <div style={s.header}>
+        <div style={s.avatar}>{initial}</div>
+        <div style={{ minWidth: 0 }}>
+          <div style={s.clubName}>{c.club}</div>
+          <div style={s.clubSub}>
+            {c.country && `${c.country} · `}{c.count} {scoutedLabel}
+          </div>
+        </div>
+      </div>
+
+      {/* ── Body ── */}
+      <div style={s.body}>
+        {/* Location precision pill */}
+        <div style={s.statRow}>
+          {c.isGeolocated ? (
+            <span style={{ ...s.statPill, background: '#dcfce7', color: '#16a34a' }}>
+              📍 {preciseLabel}
+            </span>
+          ) : (
+            <span style={{ ...s.statPill, background: '#fef9c3', color: '#ca8a04' }}>
+              ⚠️ {approxLabel}
+            </span>
+          )}
+        </div>
+
+        {/* Players list */}
+        {c.players.length > 0 && (
+          <div style={s.playerList}>
+            {c.players.map((name, k) => (
+              <div key={k} style={s.playerRow}>
+                <div style={s.playerDot} />
+                <span style={s.playerName}>{name}</span>
+              </div>
+            ))}
+            {c.count > c.players.length && (
+              <div style={s.more}>+{c.count - c.players.length} {moreLabel}…</div>
+            )}
+          </div>
+        )}
+
+        {/* View profile button */}
+        {!isFixing && (
+          <a
+            href={`/club?club=${encodeURIComponent(c.club)}`}
+            style={s.profileBtn}
+          >
+            <span>👁</span> {viewProfileLabel}
+          </a>
+        )}
+
+        {/* Fix location */}
+        {isFixing ? (
+          <div style={s.divider}>
+            <div style={{ fontSize: 11, fontWeight: 700, marginBottom: 8, color: '#6366f1' }}>📍 {fixLocationLabel}</div>
+            <input type="text" placeholder={fixCountryPlaceholder} value={fixCountry}
+              onChange={e => onFixCountryChange(e.target.value)} style={s.input} />
+            <button onClick={onAutoGeocode} disabled={fixLoading} style={s.btnPrimary}>
+              {fixLoading ? '…' : `🔄 ${fixAutoLabel}`}
+            </button>
+            <div style={{ display: 'flex', gap: 6, marginBottom: 6 }}>
+              <input type="number" placeholder="Lat" value={manualLat} onChange={e => onManualLatChange(e.target.value)}
+                style={{ ...s.input, marginBottom: 0, flex: 1 }} />
+              <input type="number" placeholder="Lng" value={manualLng} onChange={e => onManualLngChange(e.target.value)}
+                style={{ ...s.input, marginBottom: 0, flex: 1 }} />
+            </div>
+            <button onClick={onManualGeocode} disabled={fixLoading || !manualLat || !manualLng}
+              style={{ ...s.btnSuccess, opacity: (!manualLat || !manualLng) ? 0.45 : 1 }}>
+              {fixManualLabel}
+            </button>
+            <button onClick={onCancelFix} style={s.btnCancel}>{cancelLabel}</button>
+          </div>
+        ) : (
+          <button onClick={onStartFix} style={s.fixLink}>📍 {fixLocationLabel}</button>
+        )}
+      </div>
+    </div>
+  );
+}
 
 function MatchRow({ event }: { event: LivescoreEvent }) {
   const live = isLive(event.status);

@@ -80,7 +80,7 @@ export default function AppSidebar({ collapsed, onToggle }: AppSidebarProps) {
 
   const playersChildPaths = ['/discover', '/watchlist', '/shadow-team'];
   const fixturesChildPaths = ['/my-matches', '/map'];
-  const clubChildPaths = ['/my-clubs'];
+  const clubChildPaths = ['/my-clubs', '/club', '/club-search'];
   const orgChildPaths = myOrgs?.map(o => `/organization/${slugify(o.name)}`) ?? [];
 
   const [clubOpenOverride, setClubOpenOverride] = useState<boolean | null>(null);
@@ -324,14 +324,14 @@ export default function AppSidebar({ collapsed, onToggle }: AppSidebarProps) {
           </Link>
         </SidebarTooltip>
 
-        {/* ── Fiche club ── */}
+        {/* ── Club ── */}
         {canView('club_profile') && (
           <FeatureGate featureKey="feature_club_profile" inline>
             <CollapsibleParent open={clubOpen} onToggleOpen={() => setClubOpenOverride(v => v === null ? !hasActiveChild(clubChildPaths) : !v)}>
-              <SidebarTooltip label={t('sidebar.club_profile')} collapsed={collapsed}>
-                <Link to="/club" className={linkClass('/club', clubChildPaths)} onClick={() => { setMobileOpen(false); setClubOpenOverride(true); }}>
+              <SidebarTooltip label={t('sidebar.club')} collapsed={collapsed}>
+                <Link to="/club-search" className={linkClass('/club-search', clubChildPaths)} onClick={() => { setMobileOpen(false); setClubOpenOverride(true); }}>
                   <Building2 className="w-4 h-4 shrink-0" />
-                  {!collapsed && t('sidebar.club_profile')}
+                  {!collapsed && t('sidebar.club')}
                 </Link>
               </SidebarTooltip>
             </CollapsibleParent>

@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { useOrgPlayers, useCurrentOrg } from '@/hooks/use-organization';
+import OrgTabBar from '@/components/OrgTabBar';
 import { getPlayerAge, getOpinionBgClass, getOpinionEmoji, getOpinionTranslationKey, ALL_OPINIONS, translateFoot, resolveLeagueName, translateCountry, type Opinion, type Position, type Foot } from '@/types/player';
 import { usePositions } from '@/hooks/use-positions';
 import { FlagIcon } from '@/components/ui/flag-icon';
@@ -231,6 +232,11 @@ export default function OrgPlayers() {
 
   return (
     <div className="max-w-7xl mx-auto">
+      {/* Tab bar */}
+      <div className="mb-4">
+        <OrgTabBar orgName={org.name as string} />
+      </div>
+
       <div className="mb-6 flex items-center justify-between">
         <div className="flex items-center gap-3">
           <div className="w-10 h-10 rounded-xl bg-primary/10 flex items-center justify-center">

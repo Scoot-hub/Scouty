@@ -2,6 +2,7 @@ import { Link } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { ArrowLeft } from 'lucide-react';
 import { Button } from '@/components/ui/button';
+import PageSEO from '@/components/PageSEO';
 import logo from '@/assets/logo.png';
 
 const content = {

@@ -42,6 +42,40 @@ function loadFilters() {
   try { return JSON.parse(sessionStorage.getItem(FILTER_KEY) ?? '{}'); } catch { return {}; }
 }
 
+// ── Animation helpers ────────────────────────────────────────────────────────
+
+function useReveal(threshold = 0.12) {
+  const ref = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    const obs = new IntersectionObserver(([entry]) => {
+      if (entry.isIntersecting) { el.classList.add('in-view'); obs.disconnect(); }
+    }, { threshold });
+    obs.observe(el);
+    return () => obs.disconnect();
+  }, [threshold]);
+  return ref;
+}
+
+function useCountUp(target: number, duration = 900) {
+  const [val, setVal] = useState(0);
+  const [started, setStarted] = useState(false);
+  useEffect(() => {
+    if (!started || target === 0) { setVal(target); return; }
+    let start: number | null = null;
+    const from = 0;
+    const step = (ts: number) => {
+      if (!start) start = ts;
+      const pct = Math.min((ts - start) / duration, 1);
+      setVal(Math.round(from + (target - from) * (1 - Math.pow(1 - pct, 3))));
+      if (pct < 1) requestAnimationFrame(step);
+    };
+    requestAnimationFrame(step);
+  }, [target, duration, started]);
+  return { val, trigger: () => setStarted(true) };
+}
+
 
 export default function Players() {
   const [searchParams] = useSearchParams();
@@ -113,6 +147,10 @@ export default function Players() {
   }, [sortDropdownOpen]);
   const [showArchived, setShowArchived] = useState(searchParams.get('view') === 'archived');
 
+  // ── Reveal refs (declared early so hooks are always in the same order) ──
+  const headerRef = useReveal(0.1);
+  const statsBarRef = useReveal(0.1);
+
   // Debounce search to avoid filtering on every keystroke
   useEffect(() => {
     const timer = setTimeout(() => setDebouncedSearch(search), 250);
@@ -175,6 +213,10 @@ export default function Players() {
     [paginatedData],
   );
   const totalFiltered = paginatedData?.pages[0]?.total ?? 0;
+
+  // ── Count-up animation (after totalFiltered is defined) ──
+  const { val: countVal, trigger: triggerCount } = useCountUp(totalFiltered);
+  useEffect(() => { if (totalFiltered > 0) triggerCount(); }, [totalFiltered]); // eslint-disable-line
 
   // Legacy: usePlayers() is still needed for features that need the full list (enrichment, duplicates, export, import)
   const { data: players = [] } = usePlayers();
@@ -706,16 +748,28 @@ export default function Players() {
   const allPositions = Object.entries(posLabels) as [Position, string][];
 
   if (isLoading) return (
-    <div className="max-w-7xl mx-auto flex items-center justify-center min-h-[40vh]">
-      <p className="text-muted-foreground">{t('common.loading')}</p>
+    <div className="max-w-7xl mx-auto space-y-4">
+      <div className="mb-6 flex items-center gap-3">
+        <div className="w-10 h-10 rounded-xl bg-muted animate-pulse" />
+        <div className="space-y-1.5">
+          <div className="h-6 w-36 rounded-lg bg-muted animate-pulse" />
+          <div className="h-3.5 w-24 rounded bg-muted animate-pulse" />
+        </div>
+      </div>
+      <div className="h-16 rounded-2xl bg-muted/60 animate-pulse" />
+      <div className="grid gap-3 grid-cols-1 md:grid-cols-2 xl:grid-cols-3">
+        {Array.from({ length: 6 }).map((_, i) => (
+          <div key={i} className="rounded-2xl bg-muted/50 h-32 animate-pulse" style={{ animationDelay: `${i * 80}ms` }} />
+        ))}
+      </div>
     </div>
   );
 
   return (
     <div className="max-w-7xl mx-auto">
       <div className="mb-6 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-        <div className="flex items-center gap-3">
-          <div className="w-10 h-10 rounded-xl bg-primary/10 flex items-center justify-center shrink-0">
+        <div ref={headerRef} className="flex items-center gap-3 reveal-left">
+          <div className="w-10 h-10 rounded-xl bg-primary/10 flex items-center justify-center shrink-0 group-hover:scale-110 transition-transform">
             <Users className="w-5 h-5 text-primary" />
           </div>
           <div>
@@ -723,7 +777,7 @@ export default function Players() {
               {showArchived ? t('players.archived_title') : t('players.title')}
             </h1>
             <p className="text-sm text-muted-foreground">
-              {totalFiltered > 1 ? t('players.found_plural', { count: totalFiltered }) : t('players.found', { count: totalFiltered })}
+              {t(totalFiltered === 1 ? 'players.found' : 'players.found_plural', { count: countVal })}
             </p>
           </div>
         </div>
@@ -1012,6 +1066,39 @@ export default function Players() {
           <ImportPlayersDialog />
         </div>
       </div>
+
+      {/* ── Stats bar ── */}
+      {!showArchived && totalFiltered > 0 && (() => {
+        const allLoaded = filtered;
+        const avgLevel = allLoaded.length ? (allLoaded.reduce((s, p) => s + p.current_level, 0) / allLoaded.length).toFixed(1) : null;
+        const avgPot   = allLoaded.length ? (allLoaded.reduce((s, p) => s + p.potential, 0) / allLoaded.length).toFixed(1) : null;
+        const withNews = allLoaded.filter(p => p.has_news).length;
+        const expiring = allLoaded.filter(p => p.contract_end && (new Date(p.contract_end).getTime() - Date.now()) / 86400000 < 180).length;
+        const stats = [
+          { label: t('players.title'), value: totalFiltered, icon: '👥', color: 'text-primary' },
+          ...(avgLevel ? [{ label: t('players.level'), value: avgLevel, icon: '⭐', color: 'text-amber-500' }] : []),
+          ...(avgPot   ? [{ label: t('players.potential'), value: avgPot, icon: '🚀', color: 'text-emerald-500' }] : []),
+          ...(withNews > 0 ? [{ label: t('players.new_badge'), value: withNews, icon: '✨', color: 'text-amber-400' }] : []),
+          ...(expiring > 0 ? [{ label: t('players.contract'), value: expiring, icon: '⚠️', color: 'text-red-400' }] : []),
+        ];
+        return (
+          <div ref={statsBarRef} className="reveal-up grid gap-2 mb-2" style={{ gridTemplateColumns: `repeat(${Math.min(stats.length, 5)}, 1fr)` }}>
+            {stats.map((s, i) => (
+              <div
+                key={s.label}
+                className="rounded-xl bg-card border border-border/60 px-3 py-2.5 flex items-center gap-2.5 hover:border-primary/30 hover:shadow-sm transition-all duration-200 reveal-scale"
+                style={{ transitionDelay: `${i * 60}ms` }}
+              >
+                <span className="text-lg leading-none">{s.icon}</span>
+                <div className="min-w-0">
+                  <p className={`text-base font-black tabular-nums leading-none ${s.color}`}>{s.value}</p>
+                  <p className="text-[10px] text-muted-foreground mt-0.5 truncate">{s.label}</p>
+                </div>
+              </div>
+            ))}
+          </div>
+        );
+      })()}
 
       <div className="flex flex-col gap-6">
         {/* Search + Sort + Filter bar */}
@@ -1653,10 +1740,15 @@ export default function Players() {
                       const bVal = b.perf[tableSortKey as keyof PerfStats] ?? -Infinity;
                       return dir * (aVal - bVal);
                     });
-                    return sorted.map(p => {
+                    return sorted.map((p, rowIdx) => {
                       const ratingColor = (p.perf.rating ?? 0) >= 7.5 ? 'text-emerald-600 dark:text-emerald-400' : (p.perf.rating ?? 0) >= 7.0 ? 'text-blue-600 dark:text-blue-400' : (p.perf.rating ?? 0) >= 6.5 ? 'text-amber-600 dark:text-amber-400' : '';
                       return (
-                        <tr key={p.id} className="border-t border-border/30 hover:bg-muted/30 transition-colors cursor-pointer" onClick={() => navigate(`/player/${p.id}`)}>
+                        <tr
+                          key={p.id}
+                          className="border-t border-border/30 hover:bg-muted/30 transition-colors cursor-pointer"
+                          style={{ animation: `reveal-up 0.4s ease both`, animationDelay: `${Math.min(rowIdx * 30, 300)}ms` }}
+                          onClick={() => navigate(`/player/${p.id}`)}
+                        >
                           <td className="px-2 py-2" onClick={e => { e.stopPropagation(); toggleSelect(p.id); }}><Checkbox checked={selectedIds.has(p.id)} /></td>
                           <td className="px-2 py-2 font-medium">
                             <div className="flex items-center gap-2">
@@ -1686,10 +1778,14 @@ export default function Players() {
             </div>
           ) : (
           <div className="grid gap-3 grid-cols-1 md:grid-cols-2 xl:grid-cols-3">
-            {filtered.map(player => {
+            {filtered.map((player, idx) => {
               const ext = (player.external_data ?? {}) as Record<string, unknown>;
               return (
-                <div key={player.id} className="relative">
+                <div
+                  key={player.id}
+                  className="relative"
+                  style={{ animation: 'reveal-scale 0.35s ease both', animationDelay: `${(idx % 6) * 55}ms` }}
+                >
                   <div className="absolute top-2 right-2 z-10 flex items-center gap-1.5" onClick={(e) => e.stopPropagation()}>
                     {hasOrg && (
                       <div className="relative">
@@ -1698,23 +1794,24 @@ export default function Players() {
                     )}
                     <Checkbox checked={selectedIds.has(player.id)} onCheckedChange={() => toggleSelect(player.id)} />
                   </div>
-                  <Card className={`card-warm overflow-hidden hover:scale-[1.02] transition-all duration-200 ${player.has_news ? 'ring-2 ring-amber-400 dark:ring-amber-500' : ''}`}>
-                    <Link to={`/player/${player.id}`} className="block group" onClick={() => player.has_news && dismissNews(player.id)}>
+                  <Card className={`card-warm overflow-hidden hover:scale-[1.015] hover:shadow-lg hover:-translate-y-0.5 transition-all duration-200 group ${player.has_news ? 'ring-2 ring-amber-400 dark:ring-amber-500 shadow-amber-400/10' : ''}`}>
+                    <Link to={`/player/${player.id}`} className="block" onClick={() => player.has_news && dismissNews(player.id)}>
                       <div className="p-3 sm:p-4">
                         <div className="flex items-center gap-2.5 sm:gap-3 mb-2.5 sm:mb-3">
                           <PlayerAvatar name={player.name} photoUrl={player.photo_url} size="lg" />
                           <div className="flex-1 min-w-0">
                             <div className="flex items-center gap-1.5 sm:gap-2 flex-wrap">
-                              <h3 className="font-bold text-sm sm:text-base truncate max-w-[140px] sm:max-w-none group-hover:text-primary transition-colors">{player.name}</h3>
+                              <h3 className="font-bold text-sm sm:text-base truncate max-w-[140px] sm:max-w-none group-hover:text-primary transition-colors duration-200">{player.name}</h3>
                               {player.task && (
                                 <span className={`shrink-0 flex items-center gap-0.5 sm:gap-1 px-1 sm:px-1.5 py-0.5 rounded-full text-[9px] sm:text-[10px] font-bold uppercase tracking-wide ${getTaskBgClass(player.task as PlayerTask)}`}>
                                   {getTaskEmoji(player.task as PlayerTask)} <span className="hidden sm:inline">{t(getTaskTranslationKey(player.task as PlayerTask))}</span>
                                 </span>
                               )}
                               {player.has_news && (
-                                <span className="shrink-0 flex items-center gap-0.5 sm:gap-1 px-1 sm:px-1.5 py-0.5 rounded-full bg-amber-100 dark:bg-amber-900/40 text-amber-700 dark:text-amber-300 text-[9px] sm:text-[10px] font-bold uppercase tracking-wide">
-                                  <Sparkles className="w-3 h-3" />
-                                  <span className="hidden sm:inline">{t('players.new_badge')}: {t(`players.news_${player.has_news}`)}</span>
+                                <span className="shrink-0 relative flex items-center gap-0.5 sm:gap-1 px-1 sm:px-1.5 py-0.5 rounded-full bg-amber-100 dark:bg-amber-900/40 text-amber-700 dark:text-amber-300 text-[9px] sm:text-[10px] font-bold uppercase tracking-wide">
+                                  <span className="absolute inset-0 rounded-full bg-amber-400/30 animate-ping opacity-75" />
+                                  <Sparkles className="w-3 h-3 relative" />
+                                  <span className="hidden sm:inline relative">{t('players.new_badge')}: {t(`players.news_${player.has_news}`)}</span>
                                 </span>
                               )}
                             </div>
@@ -1741,6 +1838,27 @@ export default function Players() {
                             <span title={t('players.level')}>{player.current_level}</span>
                             <span className="text-muted-foreground font-normal">/</span>
                             <span className="text-primary" title={t('players.potential')}>{player.potential}</span>
+                          </div>
+                        </div>
+                        {/* Level/potential bars */}
+                        <div className="mt-2 space-y-1">
+                          <div className="flex items-center gap-1.5">
+                            <span className="text-[9px] text-muted-foreground w-[34px] shrink-0">{t('players.level')}</span>
+                            <div className="flex-1 h-1.5 rounded-full bg-muted overflow-hidden">
+                              <div
+                                className="h-full rounded-full bg-primary/70 transition-all duration-700 ease-out group-hover:bg-primary"
+                                style={{ width: `${(player.current_level / 10) * 100}%` }}
+                              />
+                            </div>
+                          </div>
+                          <div className="flex items-center gap-1.5">
+                            <span className="text-[9px] text-muted-foreground w-[34px] shrink-0">{t('players.potential')}</span>
+                            <div className="flex-1 h-1.5 rounded-full bg-muted overflow-hidden">
+                              <div
+                                className="h-full rounded-full bg-emerald-500/60 transition-all duration-700 ease-out delay-75 group-hover:bg-emerald-500"
+                                style={{ width: `${(player.potential / 10) * 100}%` }}
+                              />
+                            </div>
                           </div>
                         </div>
                         {viewMode === 'detailed' && (

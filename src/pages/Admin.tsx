@@ -345,7 +345,7 @@ export default function Admin() {
     }
   };
 
-  const PROTECTED_ROLES = ['admin', 'user', 'moderateur'];
+  const PROTECTED_ROLES = ['admin', 'user', 'moderateur', 'importateur'];
 
   const createRole = async () => {
     const name = newRoleName.trim();
