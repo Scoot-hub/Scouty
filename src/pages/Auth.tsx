@@ -130,6 +130,12 @@ export default function Auth() {
         description="Connectez-vous ou créez votre compte Scouty pour accéder à la plateforme de scouting footballistique. Inscription gratuite pour scouts, recruteurs et coachs."
         noIndex
       />
+
+      {/* Language switcher — fixed top-right, never overlaps content */}
+      <div className="fixed top-4 right-4 z-50">
+        <LanguageSwitcher variant="ghost" />
+      </div>
+
       <div className="w-full max-w-sm">
         {/* Logo */}
         <div className="text-center mb-8">
@@ -143,14 +149,11 @@ export default function Auth() {
         <div className="bg-card border border-border rounded-2xl p-8 shadow-xl">
           {requires2FA ? (
             <>
-              <div className="flex items-center justify-between mb-6">
-                <div>
-                  <h1 className="text-xl font-bold">{t('auth.2fa_title')}</h1>
-                  <p className="text-sm text-muted-foreground mt-1">
-                    {twoFAMethod === 'email' ? t('auth.2fa_subtitle_email') : t('auth.2fa_subtitle')}
-                  </p>
-                </div>
-                <LanguageSwitcher variant="ghost" />
+              <div className="mb-6">
+                <h1 className="text-xl font-bold">{t('auth.2fa_title')}</h1>
+                <p className="text-sm text-muted-foreground mt-1">
+                  {twoFAMethod === 'email' ? t('auth.2fa_subtitle_email') : t('auth.2fa_subtitle')}
+                </p>
               </div>
               <form onSubmit={handle2FASubmit} className="space-y-6">
                 <div className="flex justify-center">
@@ -179,16 +182,13 @@ export default function Auth() {
             </>
           ) : (
           <>
-          <div className="flex items-center justify-between mb-6">
-            <div>
-              <h1 className="text-xl font-bold">
-                {mode === 'login' ? t('auth.signin_title') : t('auth.signup_title')}
-              </h1>
-              <p className="text-sm text-muted-foreground mt-1">
-                {mode === 'login' ? t('auth.signin_subtitle') : t('auth.signup_subtitle')}
-              </p>
-            </div>
-            <LanguageSwitcher variant="ghost" />
+          <div className="mb-6">
+            <h1 className="text-xl font-bold">
+              {mode === 'login' ? t('auth.signin_title') : t('auth.signup_title')}
+            </h1>
+            <p className="text-sm text-muted-foreground mt-1">
+              {mode === 'login' ? t('auth.signin_subtitle') : t('auth.signup_subtitle')}
+            </p>
           </div>
 
           <form onSubmit={handleSubmit} className="space-y-4">

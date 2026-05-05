@@ -61,12 +61,11 @@ export default function AppLayout() {
         <AppSidebar collapsed={collapsed} onToggle={toggleCollapsed} />
         <div className={`${collapsed ? 'lg:ml-[72px]' : 'lg:ml-64'} min-h-screen flex flex-col transition-[margin] duration-300`}>
           {isImpersonating && <ImpersonationBanner />}
-          {showNotifications && (
-            <div className="flex items-center justify-end gap-1 px-4 lg:px-8 pt-3 pb-1">
-              <CreditWidget />
-              <NotificationCenter />
-            </div>
-          )}
+          {/* On mobile this bar always occupies space to clear the fixed hamburger button */}
+          <div className={`flex items-center justify-end gap-1 px-4 lg:px-8 pt-3 pb-1 min-h-[3.5rem] lg:min-h-0 ${!showNotifications ? 'lg:hidden' : ''}`}>
+            {showNotifications && <CreditWidget />}
+            {showNotifications && <NotificationCenter />}
+          </div>
           <main className="flex-1 px-4 lg:px-8 pb-4 lg:pb-8">
             <Outlet />
           </main>

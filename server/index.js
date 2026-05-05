@@ -5644,26 +5644,37 @@ app.get("/api/admin/analytics/live", authMiddleware, ensureAdmin, async (req, re
        ORDER BY us.last_seen_at DESC`
     );
 
-    // Enrich sessions: priority = GPS client > profil utilisateur > IP géoloc
+    // ── Enrich country: GPS client > profil > IP ────────────────────────────
     for (const s of sessions) {
       if (!s.country_code && s.profile_country) {
         const code = profileCountryToCode(s.profile_country);
-        if (code) {
-          s.country_code = code;
-          s.country = s.profile_country;
-          s.country_source = 'profile';
-        }
+        if (code) { s.country_code = code; s.country = s.profile_country; s.country_source = 'profile'; }
       } else if (s.country_code) {
         s.country_source = s.geo_from_client ? 'gps' : 'ip';
       }
     }
 
+    // ── Deduplicate by user_id: count windows per user, keep most recent session ──
+    const windowCounts = new Map();
+    for (const s of sessions) windowCounts.set(s.user_id, (windowCounts.get(s.user_id) || 0) + 1);
+
+    const byUser = new Map();
+    for (const s of sessions) {
+      const existing = byUser.get(s.user_id);
+      if (!existing || new Date(s.last_seen_at) > new Date(existing.last_seen_at)) {
+        byUser.set(s.user_id, { ...s, window_count: windowCounts.get(s.user_id) || 1 });
+      }
+    }
+    const uniqueSessions = Array.from(byUser.values())
+      .sort((a, b) => new Date(b.last_seen_at).getTime() - new Date(a.last_seen_at).getTime());
+
+    // ── Breakdowns: 1 count per unique user (not per session/window) ─────────
     const deviceBreakdown = {};
     const browserBreakdown = {};
     const osBreakdown = {};
     const countryBreakdown = {};
     const categoryBreakdown = {};
-    for (const s of sessions) {
+    for (const s of uniqueSessions) {
       deviceBreakdown[s.device_type] = (deviceBreakdown[s.device_type] || 0) + 1;
       if (s.browser) browserBreakdown[s.browser] = (browserBreakdown[s.browser] || 0) + 1;
       if (s.os) osBreakdown[s.os] = (osBreakdown[s.os] || 0) + 1;
@@ -5673,19 +5684,19 @@ app.get("/api/admin/analytics/live", authMiddleware, ensureAdmin, async (req, re
       }
       if (s.page_category) categoryBreakdown[s.page_category] = (categoryBreakdown[s.page_category] || 0) + 1;
     }
-    const avgSeconds = sessions.length
-      ? Math.round(sessions.reduce((sum, s) => sum + (s.session_seconds || 0), 0) / sessions.length)
+    const avgSeconds = uniqueSessions.length
+      ? Math.round(uniqueSessions.reduce((sum, s) => sum + (s.session_seconds || 0), 0) / uniqueSessions.length)
       : 0;
 
     res.json({
-      online_count: sessions.length,
+      online_count: uniqueSessions.length,          // unique users, not windows
       avg_session_seconds: avgSeconds,
       device_breakdown: deviceBreakdown,
       browser_breakdown: browserBreakdown,
       os_breakdown: osBreakdown,
       country_breakdown: Object.values(countryBreakdown).sort((a, b) => b.count - a.count),
       category_breakdown: categoryBreakdown,
-      sessions,
+      sessions: uniqueSessions,                     // one entry per user, with window_count
     });
   } catch (err) {
     console.error("[GET /api/admin/analytics/live]", err?.message);

@@ -27,6 +27,7 @@ interface LiveSession {
   country: string | null; country_code: string | null; city: string | null; geo_from_client: number;
   country_source?: 'gps' | 'profile' | 'ip';
   profile_country?: string | null;
+  window_count?: number;
   started_at: string; last_seen_at: string; session_seconds: number;
   email: string; display_name: string; photo_url: string | null;
 }
@@ -152,7 +153,14 @@ function UserDrawer({ userId, onClose }: { userId: string; onClose: () => void }
 
             {/* Sessions */}
             <div>
-              <p className="text-xs font-semibold text-muted-foreground mb-2">Sessions récentes</p>
+              <div className="flex items-center gap-2 mb-2">
+                <p className="text-xs font-semibold text-muted-foreground">Sessions récentes</p>
+                {(data.sessions[0]?.window_count ?? 1) > 1 && (
+                  <span className="text-[10px] font-semibold px-2 py-0.5 rounded-full bg-amber-500/15 text-amber-600">
+                    {data.sessions[0].window_count} fenêtres ouvertes
+                  </span>
+                )}
+              </div>
               <div className="space-y-2">
                 {data.sessions.map((s, i) => {
                   const isActive = new Date(s.last_seen_at).getTime() > Date.now() - 120_000;
@@ -410,6 +418,11 @@ function LiveDashboard() {
                     <div className="flex items-center gap-1.5 shrink-0">
                       <DeviceIcon type={s.device_type} className="w-3.5 h-3.5 text-muted-foreground" />
                       {s.browser && <span className="text-[10px] text-muted-foreground hidden sm:inline">{s.browser}</span>}
+                      {(s.window_count ?? 1) > 1 && (
+                        <span title={`${s.window_count} fenêtres ouvertes`} className="text-[9px] font-bold px-1.5 py-0.5 rounded-full bg-amber-500/15 text-amber-600 shrink-0">
+                          ×{s.window_count}
+                        </span>
+                      )}
                     </div>
                     {/* Location */}
                     <div className="hidden lg:flex items-center gap-1 w-32 shrink-0">

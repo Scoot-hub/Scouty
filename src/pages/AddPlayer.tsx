@@ -4,7 +4,7 @@ import { useTranslation } from 'react-i18next';
 import { useQueryClient } from '@tanstack/react-query';
 import { CustomFieldsForm } from '@/components/CustomFieldsDisplay';
 import { useBulkUpsertCustomFieldValues } from '@/hooks/use-custom-fields';
-import { LEAGUES, CLUBS, NATIONALITIES, ZONES, POTENTIAL_SCALE, PLAYER_TASKS, getTaskTranslationKey, getFootTranslationKey, translateCountry, type Position, type Foot, type Zone, type PlayerTask } from '@/types/player';
+import { LEAGUES, CLUBS, NATIONALITIES, ZONES, POTENTIAL_SCALE, PLAYER_TASKS, getTaskTranslationKey, getFootTranslationKey, translateCountry, getFlag, type Position, type Foot, type Zone, type PlayerTask } from '@/types/player';
 import { usePositions } from '@/hooks/use-positions';
 import { useMergedClubsAndLeagues, useResolveClubLeague } from '@/hooks/use-club-directory';
 import { useUpsertPlayer, useAddReport } from '@/hooks/use-players';

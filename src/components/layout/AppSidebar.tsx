@@ -173,7 +173,7 @@ export default function AppSidebar({ collapsed, onToggle }: AppSidebarProps) {
   }
 
   const sidebar = (
-    <div className="flex flex-col h-full">
+    <div className="flex flex-col h-full" style={{ paddingTop: 'env(safe-area-inset-top)', paddingBottom: 'env(safe-area-inset-bottom)' }}>
       {/* Logo + collapse toggle */}
       {collapsed ? (
         <div className="py-4 flex flex-col items-center gap-2 px-2">
@@ -690,7 +690,8 @@ export default function AppSidebar({ collapsed, onToggle }: AppSidebarProps) {
       {/* Mobile toggle */}
       <button
         onClick={() => setMobileOpen(!mobileOpen)}
-        className="lg:hidden fixed top-4 left-4 z-50 p-2 rounded-xl bg-card shadow-md border border-border"
+        className="lg:hidden fixed z-50 p-2 rounded-xl bg-card shadow-md border border-border"
+        style={{ top: 'calc(env(safe-area-inset-top) + 1rem)', left: 'calc(env(safe-area-inset-left) + 1rem)' }}
       >
         {mobileOpen ? <X className="w-5 h-5" /> : <Menu className="w-5 h-5" />}
       </button>

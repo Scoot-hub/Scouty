@@ -82,7 +82,7 @@ export default function NotificationCenter() {
           <div className="fixed inset-0 z-40" onClick={() => setOpen(false)} />
 
           {/* Panel */}
-          <div className="absolute right-0 top-full mt-2 w-[380px] max-w-[calc(100vw-2rem)] bg-popover border border-border rounded-xl shadow-xl z-50 overflow-hidden">
+          <div className="absolute right-0 top-full mt-2 w-[380px] max-w-[calc(100vw-1rem)] bg-popover border border-border rounded-xl shadow-xl z-50 overflow-hidden">
             {/* Header */}
             <div className="flex items-center justify-between px-4 py-3 border-b border-border">
               <h3 className="text-sm font-bold">{t('notifications.title')}</h3>
@@ -105,7 +105,7 @@ export default function NotificationCenter() {
             </div>
 
             {/* List */}
-            <div className="max-h-[400px] overflow-y-auto">
+            <div className="max-h-[min(400px,55vh)] overflow-y-auto">
               {notifications.length === 0 ? (
                 <div className="flex flex-col items-center justify-center py-12 text-center">
                   <Inbox className="w-10 h-10 text-muted-foreground/30 mb-3" />

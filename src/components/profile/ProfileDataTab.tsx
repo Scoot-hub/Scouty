@@ -445,7 +445,7 @@ export default function ProfileDataTab({
 
                     {/* Radar fullscreen dialog */}
                     <Dialog open={radarFullscreen} onOpenChange={setRadarFullscreen}>
-                      <DialogContent className="max-w-3xl overflow-hidden">
+                      <DialogContent className="max-w-xl overflow-hidden">
                         <DialogHeader>
                           <DialogTitle>{t('profile.perf_radar_title')} — {player.name}</DialogTitle>
                         </DialogHeader>

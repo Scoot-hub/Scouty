@@ -64,7 +64,7 @@ export default function CookieBanner() {
   if (!visible) return null;
 
   return (
-    <div className="fixed bottom-0 left-0 right-0 z-50 p-3 sm:p-4 animate-in slide-in-from-bottom-4 duration-300">
+    <div className="fixed left-0 right-0 z-50 p-3 sm:p-4 animate-in slide-in-from-bottom-4 duration-300" style={{ bottom: 'env(safe-area-inset-bottom)' }}>
       <div className="max-w-2xl mx-auto bg-card border border-border rounded-2xl shadow-xl overflow-hidden">
         {/* Header */}
         <div className="p-5">

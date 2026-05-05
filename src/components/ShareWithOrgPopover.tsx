@@ -3,6 +3,7 @@ import { useTranslation } from 'react-i18next';
 import { useMyOrganizations } from '@/hooks/use-organization';
 import { useSharePlayerWithOrg, useUnsharePlayerFromOrg, usePlayerOrgShares } from '@/hooks/use-players';
 import { Checkbox } from '@/components/ui/checkbox';
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { Building2, Loader2 } from 'lucide-react';
 import { toast } from 'sonner';
 
@@ -100,7 +101,7 @@ export function ShareWithOrgPopover({ playerId, compact = false, className }: Sh
 
       {open && (
         <div
-          className="absolute right-0 top-full mt-1 z-50 w-64 rounded-md border bg-popover p-2 text-popover-foreground shadow-md"
+          className="absolute right-0 top-full mt-1 z-50 w-56 max-w-[calc(100vw-2rem)] rounded-md border bg-popover p-2 text-popover-foreground shadow-md"
           onClick={(e) => { e.preventDefault(); e.stopPropagation(); }}
         >
           <p className="text-xs font-medium text-muted-foreground px-2 pb-2 border-b mb-2">
@@ -164,19 +165,12 @@ export function BulkShareDialog({ playerIds, open, onOpenChange, onDone }: BulkS
   if (!orgs.length) return null;
 
   return (
-    <div
-      className={`fixed inset-0 z-50 flex items-center justify-center ${open ? '' : 'pointer-events-none hidden'}`}
-      onClick={() => onOpenChange(false)}
-    >
-      <div className="fixed inset-0 bg-black/40" />
-      <div
-        className="relative z-50 w-80 rounded-xl border bg-popover p-4 text-popover-foreground shadow-lg"
-        onClick={(e) => e.stopPropagation()}
-      >
-        <p className="text-sm font-semibold mb-3">
-          {t('players.choose_org')}
-        </p>
-        <p className="text-xs text-muted-foreground mb-4">
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="max-w-sm">
+        <DialogHeader>
+          <DialogTitle>{t('players.choose_org')}</DialogTitle>
+        </DialogHeader>
+        <p className="text-xs text-muted-foreground -mt-2">
           {t('players.add_to_org')} ({playerIds.length})
         </p>
         <div className="space-y-1.5 max-h-60 overflow-y-auto">
@@ -192,7 +186,7 @@ export function BulkShareDialog({ playerIds, open, onOpenChange, onDone }: BulkS
             </button>
           ))}
         </div>
-      </div>
-    </div>
+      </DialogContent>
+    </Dialog>
   );
 }

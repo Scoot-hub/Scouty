@@ -379,6 +379,8 @@ export default function About() {
     finally { setSending(false); }
   };
 
+  useEffect(() => { window.scrollTo({ top: 0, behavior: 'instant' }); }, []);
+
   useEffect(() => {
     const handleScroll = () => setScrollY(window.scrollY);
     window.addEventListener('scroll', handleScroll, { passive: true });
@@ -889,7 +891,7 @@ export default function About() {
                             <Select value={form.role} onValueChange={v => setField('role', v)}>
                               <SelectTrigger><SelectValue placeholder={t('contact.placeholder_role')} /></SelectTrigger>
                               <SelectContent>
-                                {['scout', 'recruiter', 'coach', 'director', 'agent', 'analyst', 'other'].map(r => (
+                                {['scout', 'recruteur', 'directeur_sportif', 'agent', 'analyste', 'club', 'autre'].map(r => (
                                   <SelectItem key={r} value={r}>{t(`contact.role_${r}`)}</SelectItem>
                                 ))}
                               </SelectContent>
@@ -900,7 +902,7 @@ export default function About() {
                             <Select value={form.need} onValueChange={v => setField('need', v)}>
                               <SelectTrigger><SelectValue placeholder={t('contact.placeholder_need')} /></SelectTrigger>
                               <SelectContent>
-                                {['demo', 'pricing', 'partnership', 'support', 'other'].map(n => (
+                                {['demo', 'information', 'partenariat', 'tarifs', 'support', 'autre'].map(n => (
                                   <SelectItem key={n} value={n}>{t(`contact.need_${n}`)}</SelectItem>
                                 ))}
                               </SelectContent>

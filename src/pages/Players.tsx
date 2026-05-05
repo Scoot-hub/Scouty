@@ -923,7 +923,7 @@ export default function Players() {
           )}
           {/* Duplicate detection dialog */}
           <Dialog open={duplicateDialogOpen} onOpenChange={setDuplicateDialogOpen}>
-            <DialogContent className="max-w-2xl max-h-[80vh] overflow-y-auto">
+            <DialogContent className="max-w-xl max-h-[85vh] overflow-y-auto">
               <DialogHeader>
                 <DialogTitle className="flex items-center gap-2">
                   <Copy className="w-5 h-5 text-primary" />
@@ -1986,7 +1986,7 @@ export default function Players() {
 
       {/* Compare Dialog */}
       <Dialog open={compareDialogOpen} onOpenChange={setCompareDialogOpen}>
-        <DialogContent className="max-w-4xl max-h-[85vh] overflow-y-auto">
+        <DialogContent className="max-w-2xl max-h-[85vh] overflow-y-auto">
           <DialogHeader>
             <DialogTitle>{t('players.compare_dialog_title')} ({selectedIds.size})</DialogTitle>
           </DialogHeader>

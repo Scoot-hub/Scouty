@@ -328,9 +328,13 @@ export default function HelpCenter() {
     }
   }, [guide]);
 
-  // Focus chat input when switching to assistant tab
+  // Focus chat input when switching to assistant tab — desktop only
+  // (on mobile, auto-focus triggers the virtual keyboard before the user decides to type)
   useEffect(() => {
-    if (open && tab === 'assistant') inputRef.current?.focus();
+    if (open && tab === 'assistant') {
+      const isTouchDevice = window.matchMedia('(pointer: coarse)').matches;
+      if (!isTouchDevice) inputRef.current?.focus();
+    }
   }, [open, tab]);
 
   // Init welcome message
@@ -422,11 +426,12 @@ export default function HelpCenter() {
           if (!open) setTab(hasGuide && !isCurrentPageSeen ? 'guide' : 'assistant');
         }}
         className={cn(
-          'fixed bottom-6 right-6 z-50 w-14 h-14 rounded-full shadow-xl flex items-center justify-center transition-all duration-300 hover:scale-105',
+          'fixed z-50 w-14 h-14 rounded-full shadow-xl flex items-center justify-center transition-all duration-300 hover:scale-105',
           open
             ? 'bg-muted text-muted-foreground hover:bg-muted/80'
             : 'bg-primary text-primary-foreground hover:bg-primary/90'
         )}
+        style={{ bottom: 'calc(env(safe-area-inset-bottom) + 1rem)', right: 'calc(env(safe-area-inset-right) + 1rem)' }}
       >
         {open ? (
           <X className="w-6 h-6" />
@@ -443,10 +448,14 @@ export default function HelpCenter() {
       {/* Panel */}
       <div
         className={cn(
-          'fixed bottom-24 right-6 z-50 w-[400px] max-w-[calc(100vw-2rem)] rounded-2xl border border-border bg-card shadow-2xl flex flex-col overflow-hidden transition-all duration-300 origin-bottom-right',
+          'fixed z-50 w-[min(400px,calc(100vw-1rem))] rounded-2xl border border-border bg-card shadow-2xl flex flex-col overflow-hidden transition-all duration-300 origin-bottom-right',
           open ? 'scale-100 opacity-100 pointer-events-auto' : 'scale-95 opacity-0 pointer-events-none'
         )}
-        style={{ height: '520px' }}
+        style={{
+          height: 'min(520px, calc(100dvh - 7rem))',
+          bottom: 'calc(env(safe-area-inset-bottom) + 5.5rem)',
+          right: 'calc(env(safe-area-inset-right) + 1rem)',
+        }}
       >
         {/* Header with tabs */}
         <div className="border-b border-border bg-gradient-to-r from-primary/10 to-accent/10">

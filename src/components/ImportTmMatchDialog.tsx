@@ -259,7 +259,7 @@ export function ImportTmMatchDialog({ externalOpen, onExternalOpenChange }: { ex
           </Button>
         </DialogTrigger>
       )}
-      <DialogContent className="max-w-2xl">
+      <DialogContent className="max-w-xl max-h-[90vh] flex flex-col overflow-hidden">
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2">
             <Sparkles className="w-5 h-5 text-primary" />
@@ -269,12 +269,12 @@ export function ImportTmMatchDialog({ externalOpen, onExternalOpenChange }: { ex
         </DialogHeader>
 
         {/* URL input */}
-        <div className="flex gap-2">
+        <div className="flex flex-col sm:flex-row gap-2">
           <Input
             value={tmUrl}
             onChange={e => setTmUrl(e.target.value)}
             placeholder="https://www.transfermarkt.fr/spielbericht/index/spielbericht/..."
-            className="flex-1 text-sm"
+            className="flex-1 text-sm min-w-0"
             disabled={loading || importing}
             onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); handleLoadMatch(); } }}
           />
@@ -282,7 +282,7 @@ export function ImportTmMatchDialog({ externalOpen, onExternalOpenChange }: { ex
             size="sm"
             onClick={handleLoadMatch}
             disabled={loading || !tmUrl.trim() || importing}
-            className="shrink-0 gap-1.5"
+            className="shrink-0 gap-1.5 sm:w-auto w-full"
           >
             {loading ? <Loader2 className="w-4 h-4 animate-spin" /> : <Swords className="w-4 h-4" />}
             {loading ? t('player_form.tm_match_loading') : t('player_form.tm_match_import_btn')}

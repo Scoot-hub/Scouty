@@ -5,7 +5,7 @@ import { CustomFieldsForm } from '@/components/CustomFieldsDisplay';
 import { useCustomFields, useCustomFieldValues, useBulkUpsertCustomFieldValues } from '@/hooks/use-custom-fields';
 import { usePlayer, useUpsertPlayer } from '@/hooks/use-players';
 import { parseScoutingNotes, serializeScoutingNotes } from '@/lib/scouting-notes';
-import { LEAGUES, CLUBS, NATIONALITIES, ZONES, POTENTIAL_SCALE, PLAYER_TASKS, getTaskTranslationKey, getFootTranslationKey, resolveLeagueName, translateCountry, type Position, type Foot, type PlayerTask } from '@/types/player';
+import { LEAGUES, CLUBS, NATIONALITIES, ZONES, POTENTIAL_SCALE, PLAYER_TASKS, getTaskTranslationKey, getFootTranslationKey, resolveLeagueName, translateCountry, getFlag, type Position, type Foot, type PlayerTask } from '@/types/player';
 import { useMergedClubsAndLeagues, useResolveClubLeague } from '@/hooks/use-club-directory';
 import { usePositions } from '@/hooks/use-positions';
 import { Card, CardContent } from '@/components/ui/card';

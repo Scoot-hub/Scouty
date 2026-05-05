@@ -5,7 +5,17 @@
 @layer base {
   html {
     overflow-y: scroll;
+    overflow-x: hidden;
     scrollbar-gutter: stable;
+  }
+
+  body {
+    overflow-x: hidden;
+    /* iOS safe areas for edge-to-edge display (notch / Dynamic Island / home bar) */
+    padding-top: env(safe-area-inset-top);
+    padding-bottom: env(safe-area-inset-bottom);
+    padding-left: env(safe-area-inset-left);
+    padding-right: env(safe-area-inset-right);
   }
 
   :root {
@@ -475,4 +485,10 @@
 }
 .animate-spin-once {
   animation: spin-once 0.6s cubic-bezier(0.22, 1, 0.36, 1) forwards;
+}
+
+/* ── iOS safe area helpers ───────────────────────────────────────────────── */
+/* Fill notch / Dynamic Island area with background color */
+html {
+  background: hsl(var(--background));
 }

@@ -2060,7 +2060,7 @@ export default function PlayerProfile() {
 
       {/* Video player dialog */}
       <Dialog open={!!playingVideo} onOpenChange={(o) => { if (!o) setPlayingVideo(null); }}>
-        <DialogContent className="max-w-3xl p-0 overflow-hidden">
+        <DialogContent className="max-w-xl p-0 overflow-hidden">
           <DialogHeader className="p-4 pb-2">
             <DialogTitle className="flex items-center gap-2 text-base">
               <Video className="w-4 h-4 text-primary" />
