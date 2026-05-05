@@ -4,6 +4,7 @@ import * as XLSX from 'xlsx';
 import {
   Upload, FileSpreadsheet, X, AlertCircle, CheckCircle2, Lock,
   ArrowRight, Loader2, RefreshCw, ChevronDown, ChevronUp, Info,
+  Users, Zap, ShieldCheck, Download,
 } from 'lucide-react';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
@@ -12,6 +13,7 @@ import { cn } from '@/lib/utils';
 import { useMyPermissions, useIsAdmin } from '@/hooks/use-admin';
 import { Link } from 'react-router-dom';
 import { toast } from 'sonner';
+import { ImportPlayersDialog } from '@/components/ImportPlayersDialog';
 
 // ── Wyscout column signatures ────────────────────────────────────────────────
 const WYSCOUT_REQUIRED = ['Player', 'Team', 'Position', 'xG', 'Duels per 90'];
@@ -79,6 +81,73 @@ interface ImportResult {
 }
 
 const API = (import.meta.env.API_URL || '/api').replace(/\/$/, '');
+
+// ── Template Excel standard ──────────────────────────────────────────────────
+// Colonnes dans l'ordre attendu par l'import, avec noms que le fuzzy-matcher reconnaît
+const TEMPLATE_COLUMNS: { header: string; example: string; comment: string }[] = [
+  { header: 'Joueur',            example: 'Kylian Mbappé',     comment: 'Nom complet du joueur (obligatoire)' },
+  { header: 'Année naissance',   example: '2000',              comment: 'Année de naissance (ex: 1998) ou âge' },
+  { header: 'Nationalité',       example: 'France',            comment: 'Pays de nationalité' },
+  { header: 'Pied',              example: 'Droitier',          comment: 'Droitier | Gaucher | Ambidextre' },
+  { header: 'Club',              example: 'Real Madrid',       comment: 'Club actuel' },
+  { header: 'Championnat',       example: 'Liga',              comment: 'Nom du championnat / ligue' },
+  { header: 'Zone',              example: 'Europe',            comment: 'Zone géographique' },
+  { header: 'Poste',             example: 'ATT',               comment: 'GK | DC | LD | LG | MDef | MC | MO | AD | AG | ATT' },
+  { header: 'Poste secondaire',  example: 'AD',                comment: 'Poste secondaire (même valeurs)' },
+  { header: 'Rôle',              example: 'Avant-centre',      comment: 'Description libre du profil' },
+  { header: 'Niveau actuel',     example: '7',                 comment: 'Note actuelle sur 10' },
+  { header: 'Potentiel',         example: '9',                 comment: 'Potentiel estimé sur 10' },
+  { header: 'Avis général',      example: 'À suivre',          comment: 'À suivre | À revoir | Défavorable' },
+  { header: 'Fin de contrat',    example: '2026',              comment: 'Année, date (jj/mm/aaaa) ou vide' },
+  { header: 'Notes',             example: 'Excellent pressing',comment: 'Commentaires libres' },
+  { header: 'TS Report ?',       example: 'Non',               comment: 'Rapport publié : Oui | Non' },
+  { header: 'Avis 1',            example: 'À suivre',          comment: 'Avis scout 1 (À suivre | À revoir | Défavorable)' },
+  { header: 'Rapport 1',         example: 'https://drive.google.com/…', comment: 'Lien Google Drive ou titre du rapport 1' },
+  { header: 'Avis 2',            example: '',                  comment: 'Avis scout 2' },
+  { header: 'Rapport 2',         example: '',                  comment: 'Lien ou titre rapport 2' },
+  { header: 'Avis 3',            example: '',                  comment: 'Avis scout 3' },
+  { header: 'Rapport 3',         example: '',                  comment: 'Lien ou titre rapport 3' },
+];
+
+function downloadImportTemplate() {
+  const wb = XLSX.utils.book_new();
+
+  // ── Feuille 1 : Modèle à remplir ──
+  const headers = TEMPLATE_COLUMNS.map(c => c.header);
+  const examples = TEMPLATE_COLUMNS.map(c => c.example);
+  const comments = TEMPLATE_COLUMNS.map(c => c.comment);
+
+  const ws = XLSX.utils.aoa_to_sheet([headers, examples]);
+
+  // Style header row : fond coloré + gras (largeurs de colonnes)
+  ws['!cols'] = TEMPLATE_COLUMNS.map(c => ({ wch: Math.max(c.header.length, c.example.length, 18) }));
+
+  // Freeze first row
+  ws['!freeze'] = { xSplit: 0, ySplit: 1 };
+
+  // Add comment row as row 3 (grey hint)
+  XLSX.utils.sheet_add_aoa(ws, [comments], { origin: 'A3' });
+
+  XLSX.utils.book_append_sheet(wb, ws, 'Modèle import');
+
+  // ── Feuille 2 : Valeurs autorisées ──
+  const refData = [
+    ['Champ', 'Valeurs autorisées'],
+    ['Pied', 'Droitier · Gaucher · Ambidextre'],
+    ['Poste / Poste secondaire', 'GK · DC · LD · LG · MDef · MC · MO · AD · AG · ATT'],
+    ['Avis général / Avis 1-3', 'À suivre · À revoir · Défavorable'],
+    ['TS Report ?', 'Oui · Non · 1 · 0'],
+    ['Niveau actuel', 'Nombre entre 0 et 10'],
+    ['Potentiel', 'Nombre entre 0 et 10'],
+    ['Année naissance', 'Année (ex: 2001) ou âge (ex: 23)'],
+    ['Fin de contrat', "Année (2026), date (30/06/2026) ou format Excel"],
+  ];
+  const wsRef = XLSX.utils.aoa_to_sheet(refData);
+  wsRef['!cols'] = [{ wch: 30 }, { wch: 60 }];
+  XLSX.utils.book_append_sheet(wb, wsRef, 'Valeurs autorisées');
+
+  XLSX.writeFile(wb, 'modele_import_joueurs.xlsx');
+}
 
 export default function DataImport() {
   const { t } = useTranslation();
@@ -271,7 +340,7 @@ export default function DataImport() {
 
   // ── Render ───────────────────────────────────────────────────────────────
   return (
-    <div className="w-full max-w-5xl mx-auto space-y-6">
+    <div className="w-full max-w-5xl mx-auto space-y-8">
 
       {/* Header */}
       <div className="flex items-center gap-3">
@@ -282,22 +351,101 @@ export default function DataImport() {
           <h1 className="text-xl font-bold">{t('data_import.title')}</h1>
           <p className="text-sm text-muted-foreground">{t('data_import.subtitle')}</p>
         </div>
-        {step !== 'upload' && (
-          <div className="ml-auto flex items-center gap-2">
-            <Badge variant="secondary" className="font-mono">{fileName}</Badge>
-            {fileSize > 0 && (
-              <Badge variant={fileSize > SIZE_WARN_MB * 1024 * 1024 ? 'outline' : 'secondary'}
-                className={fileSize > 10 * 1024 * 1024 ? 'border-orange-400 text-orange-600' : fileSize > SIZE_WARN_MB * 1024 * 1024 ? 'border-amber-400 text-amber-600' : ''}>
-                {formatMB(fileSize)} Mo
-              </Badge>
-            )}
-            <Button variant="ghost" size="sm" onClick={reset}>
-              <X className="w-4 h-4 mr-1" />
-              {t('data_import.change_file')}
-            </Button>
-          </div>
-        )}
       </div>
+
+      {/* ── Section 1 : Import standard (accessible à tous) ── */}
+      <div className="space-y-3">
+        <div className="flex items-center gap-2">
+          <div className="w-7 h-7 rounded-lg bg-green-500/10 flex items-center justify-center">
+            <Users className="w-4 h-4 text-green-600 dark:text-green-400" />
+          </div>
+          <div>
+            <h2 className="text-sm font-semibold">Import standard</h2>
+            <p className="text-xs text-muted-foreground">Accessible à tous les utilisateurs autorisés</p>
+          </div>
+        </div>
+
+        <Card className="border-green-200/60 dark:border-green-800/30">
+          <CardHeader className="pb-3">
+            <CardTitle className="text-sm font-medium flex items-center gap-2">
+              <ShieldCheck className="w-4 h-4 text-green-500" />
+              Import de joueurs depuis votre fichier
+            </CardTitle>
+            <CardDescription className="text-xs">
+              Importez vos joueurs depuis n'importe quel fichier Excel ou CSV. Le système détecte automatiquement les colonnes et vous permet d'ajuster la correspondance avant d'importer.
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="pt-0">
+            <div className="flex flex-wrap items-center gap-3 p-4 rounded-xl bg-muted/40 border border-dashed">
+              <div className="flex-1 min-w-0">
+                <p className="text-sm font-medium">Votre fichier Excel / CSV</p>
+                <p className="text-xs text-muted-foreground mt-0.5">
+                  Colonnes détectées automatiquement · Correspondance personnalisable · Champs custom supportés · Rapports inclus
+                </p>
+              </div>
+              <div className="flex items-center gap-2 shrink-0">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="gap-2 rounded-xl border-green-300 dark:border-green-700 text-green-700 dark:text-green-400 hover:bg-green-50 dark:hover:bg-green-950/20"
+                  onClick={downloadImportTemplate}
+                >
+                  <Download className="w-4 h-4" />
+                  Télécharger le modèle
+                </Button>
+                <ImportPlayersDialog />
+              </div>
+            </div>
+          </CardContent>
+        </Card>
+      </div>
+
+      {/* ── Section 2 : Import Wyscout Pro ── */}
+      <div className="space-y-3">
+        <div className="flex items-center gap-2">
+          <div className="w-7 h-7 rounded-lg bg-primary/10 flex items-center justify-center">
+            <Zap className="w-4 h-4 text-primary" />
+          </div>
+          <div>
+            <h2 className="text-sm font-semibold flex items-center gap-2">
+              Import Wyscout
+              <Badge className="text-[10px] px-1.5 py-0 bg-primary/10 text-primary border-primary/20">PRO</Badge>
+            </h2>
+            <p className="text-xs text-muted-foreground">Réservé aux importateurs qualifiés de données publiques</p>
+          </div>
+        </div>
+
+        {!canImport ? (
+          <Card className="border-muted">
+            <CardContent className="py-8 flex flex-col items-center gap-3 text-center">
+              <div className="w-10 h-10 rounded-xl bg-muted flex items-center justify-center">
+                <Lock className="w-5 h-5 text-muted-foreground" />
+              </div>
+              <div>
+                <p className="text-sm font-medium">Accès réservé</p>
+                <p className="text-xs text-muted-foreground mt-0.5 max-w-sm">
+                  Cette section nécessite la permission <code className="bg-muted px-1 rounded text-[10px]">data_import:import</code>. Contactez votre administrateur pour obtenir l'accès.
+                </p>
+              </div>
+            </CardContent>
+          </Card>
+        ) : (
+          <>
+            {step !== 'upload' && (
+              <div className="flex items-center gap-2 flex-wrap">
+                <Badge variant="secondary" className="font-mono">{fileName}</Badge>
+                {fileSize > 0 && (
+                  <Badge variant={fileSize > SIZE_WARN_MB * 1024 * 1024 ? 'outline' : 'secondary'}
+                    className={fileSize > 10 * 1024 * 1024 ? 'border-orange-400 text-orange-600' : fileSize > SIZE_WARN_MB * 1024 * 1024 ? 'border-amber-400 text-amber-600' : ''}>
+                    {formatMB(fileSize)} Mo
+                  </Badge>
+                )}
+                <Button variant="ghost" size="sm" onClick={reset} className="ml-auto">
+                  <X className="w-4 h-4 mr-1" />
+                  {t('data_import.change_file')}
+                </Button>
+              </div>
+            )}
 
       {/* Step 1 — Upload */}
       {step === 'upload' && (
@@ -632,6 +780,9 @@ export default function DataImport() {
           </div>
         </>
       )}
+          </>
+        )}
+      </div>
     </div>
   );
 }

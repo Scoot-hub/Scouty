@@ -7,13 +7,13 @@ import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/com
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Switch } from '@/components/ui/switch';
-import { Badge } from '@/components/ui/badge';
 import { Navigate, Link } from 'react-router-dom';
 import { toast } from 'sonner';
 import {
   Settings, Mail, Trash2, ToggleLeft, Loader2, ArrowLeft, AlertTriangle,
   Shield, Users, CalendarDays, MessageSquare, Heart, Building2, Globe, Search, Database, Ticket, Bell, Archive,
   UserX, Play, RefreshCw, CheckCircle2, XCircle, Clock,
+  Newspaper, Trophy, Eye, Star, Zap, Camera, FileText,
 } from 'lucide-react';
 import {
   AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent,
@@ -29,15 +29,27 @@ function authFetchInit(): RequestInit {
 // ── Feature flags config ────────────────────────────────────────────────────
 
 const FEATURES = [
-  { key: 'feature_booking', icon: CalendarDays, color: 'text-blue-500' },
-  { key: 'feature_affiliate', icon: Heart, color: 'text-pink-500' },
-  { key: 'feature_community', icon: MessageSquare, color: 'text-purple-500' },
-  { key: 'feature_discover', icon: Search, color: 'text-green-500' },
-  { key: 'feature_map', icon: Globe, color: 'text-amber-500' },
-  { key: 'feature_fixtures', icon: CalendarDays, color: 'text-emerald-500' },
-  { key: 'feature_contacts', icon: Users, color: 'text-indigo-500' },
-  { key: 'feature_shadow_team', icon: Shield, color: 'text-orange-500' },
-  { key: 'feature_club_profile', icon: Building2, color: 'text-teal-500' },
+  { key: 'feature_players',          icon: Users,         color: 'text-blue-500',    sub: false },
+  { key: 'feature_watchlist',        icon: Eye,           color: 'text-cyan-500',    sub: true  },
+  { key: 'feature_shadow_team',      icon: Shield,        color: 'text-orange-500',  sub: true  },
+  { key: 'feature_fixtures',         icon: CalendarDays,  color: 'text-emerald-500', sub: false },
+  { key: 'feature_my_matches',       icon: CalendarDays,  color: 'text-emerald-400', sub: true  },
+  { key: 'feature_championships',    icon: Trophy,        color: 'text-yellow-500',  sub: false },
+  { key: 'feature_my_championships', icon: Star,          color: 'text-yellow-400',  sub: true  },
+  { key: 'feature_news',             icon: Newspaper,     color: 'text-slate-500',   sub: false },
+  { key: 'feature_buzz',             icon: Zap,           color: 'text-orange-400',  sub: true  },
+  { key: 'feature_instagram',        icon: Camera,        color: 'text-pink-400',    sub: true  },
+  { key: 'feature_editorial',        icon: FileText,      color: 'text-slate-400',   sub: true  },
+  { key: 'feature_community',        icon: MessageSquare, color: 'text-purple-500',  sub: false },
+  { key: 'feature_club_profile',     icon: Building2,     color: 'text-teal-500',    sub: false },
+  { key: 'feature_my_clubs',         icon: Heart,         color: 'text-red-400',     sub: true  },
+  { key: 'feature_contacts',         icon: Users,         color: 'text-indigo-500',  sub: false },
+  { key: 'feature_discover',         icon: Search,        color: 'text-green-500',   sub: false },
+  { key: 'feature_map',              icon: Globe,         color: 'text-amber-500',   sub: false },
+  { key: 'feature_booking',          icon: CalendarDays,  color: 'text-blue-400',    sub: false },
+  { key: 'feature_affiliate',        icon: Heart,         color: 'text-pink-500',    sub: false },
+  { key: 'feature_data_import',      icon: Database,      color: 'text-gray-500',    sub: false },
+  { key: 'feature_my_tickets',       icon: Ticket,        color: 'text-orange-500',  sub: false },
 ] as const;
 
 // ── Purge data config ───────────────────────────────────────────────────────
@@ -241,27 +253,26 @@ export default function AdminSettings() {
           <CardDescription>{t('admin_settings.features_desc')}</CardDescription>
         </CardHeader>
         <CardContent>
-          <div className="space-y-3">
+          <div className="space-y-0.5">
             {FEATURES.map(f => {
               const enabled = isFlagEnabled(f.key);
               return (
-                <div key={f.key} className="flex items-center justify-between py-2 px-3 rounded-lg hover:bg-muted/50 transition-colors">
+                <div
+                  key={f.key}
+                  className={`flex items-center justify-between py-2 rounded-lg hover:bg-muted/50 transition-colors ${f.sub ? 'pl-8 pr-3' : 'px-3'}`}
+                >
                   <div className="flex items-center gap-3">
-                    <f.icon className={`w-4 h-4 ${f.color}`} />
+                    {f.sub && <span className="w-px h-4 bg-border rounded-full shrink-0 -ml-4 mr-1" />}
+                    <f.icon className={`w-4 h-4 shrink-0 ${f.color}`} />
                     <div>
-                      <p className="text-sm font-medium">{t(`admin_settings.flag_${f.key}`)}</p>
+                      <p className={`font-medium ${f.sub ? 'text-xs' : 'text-sm'}`}>{t(`admin_settings.flag_${f.key}`)}</p>
                       <p className="text-[11px] text-muted-foreground">{t(`admin_settings.flag_${f.key}_desc`)}</p>
                     </div>
                   </div>
-                  <div className="flex items-center gap-2">
-                    <Badge variant={enabled ? 'default' : 'secondary'} className="text-[10px]">
-                      {enabled ? t('admin_settings.enabled') : t('admin_settings.disabled')}
-                    </Badge>
-                    <Switch
-                      checked={enabled}
-                      onCheckedChange={checked => toggleFlag.mutate({ key: f.key, enabled: checked })}
-                    />
-                  </div>
+                  <Switch
+                    checked={enabled}
+                    onCheckedChange={checked => toggleFlag.mutate({ key: f.key, enabled: checked })}
+                  />
                 </div>
               );
             })}

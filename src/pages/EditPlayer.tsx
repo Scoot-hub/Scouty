@@ -83,8 +83,10 @@ export default function EditPlayer() {
   const { clubs: mergedClubs, leagues: mergedLeagues, clubToLeague } = useMergedClubsAndLeagues(CLUBS, LEAGUES);
   const resolveClubLeague = useResolveClubLeague();
   const nationalityOptions = useMemo(() =>
-    NATIONALITIES.map(n => ({ label: translateCountry(n, i18n.language), value: n }))
-      .sort((a, b) => a.label.localeCompare(b.label, i18n.language)),
+    NATIONALITIES
+      .map(n => ({ label: translateCountry(n, i18n.language), value: n, flag: getFlag(n) }))
+      .sort((a, b) => a.label.localeCompare(b.label, i18n.language))
+      .map(o => ({ label: `${o.flag}  ${o.label}`, value: o.value })),
     [i18n.language]);
   const [customFieldValues, setCustomFieldValues] = useState<Record<string, string>>({});
   const [name, setName] = useState('');

@@ -1,9 +1,11 @@
 import { useMemo, useState, useEffect, useRef } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
-import { MapContainer, TileLayer, Marker, Popup, Circle, useMap } from 'react-leaflet';
+import { MapContainer, TileLayer, Marker, Popup, Circle, useMap, useMapEvents } from 'react-leaflet';
 import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
+import { useAuth } from '@/contexts/AuthContext';
+import { supabase } from '@/integrations/supabase/client';
 import {
   useEventsForDay,
   type LivescoreCompetition,
@@ -21,7 +23,7 @@ import { Button } from '@/components/ui/button';
 import { cn } from '@/lib/utils';
 import { useGeolocation, distanceKm } from '@/hooks/use-geolocation';
 import { useUiPreferences } from '@/contexts/UiPreferencesContext';
-import { useQueryClient } from '@tanstack/react-query';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { toast } from 'sonner';
 
 // ---------------------------------------------------------------------------
@@ -107,7 +109,28 @@ const USER_ICON = L.divIcon({
   </div>`,
 });
 
-const NEARBY_RADIUS_KM_DEFAULT = 150;
+const NEARBY_RADIUS_KM_DEFAULT = 50;
+
+// ---------------------------------------------------------------------------
+// Cluster icon — shows the number of clubs grouped at this point
+// ---------------------------------------------------------------------------
+function createClusterIcon(count: number, hasApprox: boolean) {
+  const size = count > 99 ? 44 : count > 20 ? 38 : count > 9 ? 34 : 30;
+  const bg = hasApprox ? '#f59e0b' : '#3b82f6';
+  const fs = count > 99 ? 10 : count > 9 ? 12 : 14;
+  return L.divIcon({
+    className: '',
+    iconSize: [size, size],
+    iconAnchor: [size / 2, size / 2],
+    html: `<div style="width:${size}px;height:${size}px;border-radius:50%;background:${bg};border:3px solid white;box-shadow:0 2px 8px rgba(0,0,0,.35);display:flex;align-items:center;justify-content:center;font-weight:800;font-size:${fs}px;color:white;">${count}</div>`,
+  });
+}
+
+// Tracks map zoom and calls onZoom whenever it changes
+function ZoomTracker({ onZoom }: { onZoom: (z: number) => void }) {
+  useMapEvents({ zoom: e => onZoom(e.target.getZoom()), zoomend: e => onZoom(e.target.getZoom()) });
+  return null;
+}
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -144,6 +167,39 @@ function hashStr(s: string): number {
   return h;
 }
 
+// Country full name → ISO 3166-1 alpha-2 (for fallback club positioning)
+const COUNTRY_NAME_TO_ISO: Record<string, string> = {
+  'france':'FR','germany':'DE','spain':'ES','italy':'IT','england':'ENG','portugal':'PT',
+  'netherlands':'NL','belgium':'BE','scotland':'SCO','wales':'WAL','northern ireland':'NIR',
+  'ireland':'IE','switzerland':'CH','austria':'AT','sweden':'SE','norway':'NO','denmark':'DK',
+  'poland':'PL','czech republic':'CZ','hungary':'HU','romania':'RO','croatia':'HR','serbia':'RS',
+  'slovakia':'SK','slovenia':'SI','greece':'GR','turkey':'TR','russia':'RU','ukraine':'UA',
+  'brazil':'BR','argentina':'AR','colombia':'CO','chile':'CL','uruguay':'UY','ecuador':'EC',
+  'united states':'US','mexico':'MX','canada':'CA','japan':'JP','south korea':'KR','china':'CN',
+  'australia':'AU','saudi arabia':'SA','uae':'AE','united arab emirates':'AE','qatar':'QA',
+  'morocco':'MA','egypt':'EG','nigeria':'NG','south africa':'ZA','ghana':'GH','cameroon':'CM',
+  'senegal':'SN','ivory coast':'CI','côte d\'ivoire':'CI','mali':'ML','algeria':'DZ','tunisia':'TN',
+  'israel':'IL','iran':'IR','india':'IN','usa':'US',
+};
+function countryToIso(name: string): string {
+  if (!name) return '';
+  const lower = name.toLowerCase().trim();
+  if (COUNTRY_NAME_TO_ISO[lower]) return COUNTRY_NAME_TO_ISO[lower];
+  // Try 2-char ISO prefix heuristic for less common countries
+  const upper2 = name.toUpperCase().slice(0, 2);
+  if (COUNTRY_COORDS[upper2]) return upper2;
+  return '';
+}
+
+// Generates a short acronym from a club name: "Olympique Lyonnais" → "OL"
+function getClubAcronym(name: string): string {
+  const stop = new Set(['de','du','des','le','la','les','et','l','d','of','the','fc','sc','ac','us','as','rc','ogc','aj','sm','sl','cf','sd','rb','bv','sv','fk','sk','nk','hnk','gnk','tj']);
+  const words = name.replace(/['']/g, '').split(/[\s\-\/]+/).filter(Boolean);
+  const significant = words.filter(w => !stop.has(w.toLowerCase()));
+  const base = significant.length > 0 ? significant : words;
+  return base.map(w => w[0].toUpperCase()).join('').slice(0, 3) || name.slice(0, 2).toUpperCase();
+}
+
 // ---------------------------------------------------------------------------
 // Fly-to sub-component
 // ---------------------------------------------------------------------------
@@ -167,8 +223,27 @@ function MapResizer() {
   return null;
 }
 
+// Captures map clicks when active (VPN / manual position mode)
+function MapClickHandler({ active, onPick }: { active: boolean; onPick: (lat: number, lng: number) => void }) {
+  const map = useMap();
+  useMapEvents({ click: e => { if (active) onPick(e.latlng.lat, e.latlng.lng); } });
+  useEffect(() => {
+    const el = map.getContainer();
+    el.style.cursor = active ? 'crosshair' : '';
+    return () => { el.style.cursor = ''; };
+  }, [active, map]);
+  return null;
+}
+
 // ---------------------------------------------------------------------------
-// Main Component
+// ---------------------------------------------------------------------------
+// Selected-pin type (replaces Leaflet Popup — rendered outside the map DOM)
+// ---------------------------------------------------------------------------
+type SelectedPin =
+  | { type: 'club'; club: { club: string; count: number; players: string[]; country: string; isGeolocated: boolean }; logoUrl: string | null }
+  | { type: 'match'; comp: import('@/hooks/use-api-football').LivescoreCompetition }
+  | { type: 'user'; lat: number; lng: number; nearbyMatches: number; nearbyClubs: number; nearbyPlayers: number; isManual: boolean };
+
 // ---------------------------------------------------------------------------
 // Parse "lat, lng" string (e.g. "48.85, 2.35")
 function parseLatLng(s: string): [number, number] | null {
@@ -182,12 +257,28 @@ function parseLatLng(s: string): [number, number] | null {
 
 export default function MapView() {
   const { t, i18n } = useTranslation();
+  const { user } = useAuth();
   const [searchParams] = useSearchParams();
   const [dayOffset, setDayOffset] = useState(0);
   const selectedDate = getDateString(dayOffset);
   const { data: eventsData, isLoading: eventsLoading } = useEventsForDay(selectedDate);
   const { data: players = [] } = usePlayers();
   const { data: clubLocations = [] } = useClubLocations();
+  const { data: clubLogosRaw = [] } = useQuery<{ club_name: string; logo_url: string; name_fr?: string; name_en?: string; name_es?: string }[]>({
+    queryKey: ['club-logos'],
+    queryFn: () => fetch('/api/club-logos').then(r => r.json()),
+    staleTime: 7 * 24 * 60 * 60 * 1000,
+  });
+  const { data: userProfile } = useQuery<{ country?: string | null; nationality?: string | null }>({
+    queryKey: ['profile-country', user?.id],
+    queryFn: async () => {
+      if (!user?.id) return {};
+      const { data } = await supabase.from('profiles').select('country').eq('user_id', user.id).single();
+      return (data as { country?: string | null }) ?? {};
+    },
+    enabled: !!user?.id,
+    staleTime: 10 * 60 * 1000,
+  });
   const [search, setSearch] = useState(() => searchParams.get('q') || '');
   const [flyTarget, setFlyTarget] = useState<{ center: [number, number]; zoom: number } | null>(null);
   const containerRef = useRef<HTMLDivElement>(null);
@@ -197,22 +288,37 @@ export default function MapView() {
   const [pendingNearby, setPendingNearby] = useState(false);
   const [nearbyRadiusKm, setNearbyRadiusKm] = useState(NEARBY_RADIUS_KM_DEFAULT);
 
-  // On mount: if ?q= param provided, try to fly to it (lat,lng or country name)
+  // On mount: if ?q= param provided, fly to it; otherwise fly to user's profile country
   useEffect(() => {
     const q = searchParams.get('q');
-    if (!q) return;
-    // Try lat,lng format
-    const parsed = parseLatLng(q);
-    if (parsed) { setFlyTarget({ center: parsed, zoom: 14 }); return; }
-    // Try country name lookup
-    const lower = q.toLowerCase().trim();
+    if (q) {
+      const parsed = parseLatLng(q);
+      if (parsed) { setFlyTarget({ center: parsed, zoom: 14 }); return; }
+      const lower = q.toLowerCase().trim();
+      const coords = COUNTRY_NAME_COORDS[lower];
+      if (coords) { setFlyTarget({ center: coords, zoom: 6 }); return; }
+      for (const [name, c] of Object.entries(COUNTRY_NAME_COORDS)) {
+        if (lower.includes(name) || name.includes(lower)) { setFlyTarget({ center: c, zoom: 6 }); return; }
+      }
+    }
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Fly to profile country once profile data is loaded (only if no ?q= and no manual fly)
+  useEffect(() => {
+    if (searchParams.get('q')) return;
+    if (userProfile === undefined) return; // still loading
+    if (!userProfile?.country) {
+      setFlyTarget({ center: [50, 10], zoom: 5 });
+      return;
+    }
+    const lower = userProfile.country.toLowerCase().trim();
     const coords = COUNTRY_NAME_COORDS[lower];
     if (coords) { setFlyTarget({ center: coords, zoom: 6 }); return; }
-    // Partial match fallback (e.g. "England" → "england")
     for (const [name, c] of Object.entries(COUNTRY_NAME_COORDS)) {
       if (lower.includes(name) || name.includes(lower)) { setFlyTarget({ center: c, zoom: 6 }); return; }
     }
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+    setFlyTarget({ center: [50, 10], zoom: 5 });
+  }, [userProfile]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Auto-activate nearby view once position arrives after clicking the button
   useEffect(() => {
@@ -239,12 +345,25 @@ export default function MapView() {
   const radiusStep = distanceUnit === 'mi' ? 15 : 25;
   const handleRadiusChange = (v: number) => setNearbyRadiusKm(unitToKm(v));
 
+  const [mapZoom, setMapZoom] = useState(5);
+
+  // ── Manual / VPN position state ──
+  const [manualPos, setManualPos] = useState<{ latitude: number; longitude: number; accuracy: number } | null>(null);
+  const [manualLocMode, setManualLocMode] = useState(false);
+  const [showManualPanel, setShowManualPanel] = useState(false);
+  const [manualLatInput, setManualLatInput] = useState('');
+  const [manualLngInput, setManualLngInput] = useState('');
+
+  // Effective position: manual overrides GPS
+  const effectivePos = manualPos ?? userPos;
+
   // ── Club location correction state ──
   const [fixingClub, setFixingClub] = useState<string | null>(null);
   const [fixCountry, setFixCountry] = useState('');
   const [manualLat, setManualLat] = useState('');
   const [manualLng, setManualLng] = useState('');
   const [fixLoading, setFixLoading] = useState(false);
+  const [selectedPin, setSelectedPin] = useState<SelectedPin | null>(null);
 
   const API = (import.meta.env.API_URL || '/api').replace(/\/$/, '');
 
@@ -289,10 +408,27 @@ export default function MapView() {
   const clubCoordMap = useMemo(() => {
     const m = new Map<string, [number, number]>();
     for (const c of clubLocations) {
-      m.set(c.club_name.toLowerCase(), [c.lat, c.lng]);
+      const lat = Number(c.lat);
+      const lng = Number(c.lng);
+      if (!isNaN(lat) && !isNaN(lng) && lat !== 0 && lng !== 0) {
+        m.set(c.club_name.toLowerCase(), [lat, lng]);
+      }
     }
     return m;
   }, [clubLocations]);
+
+  // Build a lookup: normalized club name → logo_url (all name variants)
+  const clubLogoMap = useMemo(() => {
+    const m = new Map<string, string>();
+    for (const c of clubLogosRaw) {
+      if (!c.logo_url) continue;
+      m.set(c.club_name.toLowerCase(), c.logo_url);
+      if (c.name_fr) m.set(c.name_fr.toLowerCase(), c.logo_url);
+      if (c.name_en) m.set(c.name_en.toLowerCase(), c.logo_url);
+      if (c.name_es) m.set(c.name_es.toLowerCase(), c.logo_url);
+    }
+    return m;
+  }, [clubLogosRaw]);
 
   // Calculate available height for the map area
   useEffect(() => {
@@ -307,9 +443,21 @@ export default function MapView() {
     return () => window.removeEventListener('resize', update);
   }, []);
 
-  // Aggregate clubs from user's players
+  // Aggregate clubs from user's players — country comes from clubLocations (authoritative)
+  // NOT from player nationality (a Czech player at Lyon ≠ Lyon is in Czech Republic)
   const playerClubs = useMemo(() => {
-    const clubs = new Map<string, { club: string; country: string; count: number; players: string[] }>();
+    // Build club country map from geocoded data (source of truth)
+    const geocodedCountry = new Map<string, string>();
+    for (const c of clubLocations) {
+      geocodedCountry.set(c.club_name.toLowerCase(), c.country || '');
+    }
+
+    const clubs = new Map<string, {
+      club: string; country: string; count: number;
+      players: string[]; logoUrl: string | null;
+      natCounts: Map<string, number>;
+    }>();
+
     for (const p of players) {
       if (!p.club) continue;
       const key = p.club.toLowerCase();
@@ -317,12 +465,31 @@ export default function MapView() {
       if (existing) {
         existing.count++;
         if (existing.players.length < 5) existing.players.push(p.name);
+        if (p.nationality) existing.natCounts.set(p.nationality, (existing.natCounts.get(p.nationality) || 0) + 1);
       } else {
-        clubs.set(key, { club: p.club, country: p.nationality || '', count: 1, players: [p.name] });
+        const natCounts = new Map<string, number>();
+        if (p.nationality) natCounts.set(p.nationality, 1);
+        clubs.set(key, {
+          club: p.club,
+          country: geocodedCountry.get(key) || '',
+          count: 1,
+          players: [p.name],
+          logoUrl: clubLogoMap.get(key) ?? null,
+          natCounts,
+        });
       }
     }
-    return Array.from(clubs.values());
-  }, [players]);
+
+    return Array.from(clubs.values()).map(c => {
+      // If we have the geocoded country, use it; otherwise use majority player nationality as last resort
+      if (c.country) return c;
+      if (c.natCounts.size > 0) {
+        const top = Array.from(c.natCounts.entries()).sort((a, b) => b[1] - a[1])[0][0];
+        return { ...c, country: top };
+      }
+      return c;
+    });
+  }, [players, clubLogoMap, clubLocations]);
 
   // Build match markers from competitions
   const matchMarkers = useMemo(() => {
@@ -353,12 +520,12 @@ export default function MapView() {
   const clubMarkers = useMemo(() => {
     return playerClubs
       .map(c => {
-        // 1. Real geocoded coordinates
+        // 1. Real geocoded coordinates (precise)
         const real = clubCoordMap.get(c.club.toLowerCase());
         if (real) return { ...c, coords: real, isGeolocated: true };
-        // 2. Country centroid + deterministic jitter
-        const code = c.country?.toUpperCase().slice(0, 2);
-        const base = COUNTRY_COORDS[code];
+        // 2. Country centroid + deterministic jitter (approximate)
+        const iso = countryToIso(c.country);
+        const base = COUNTRY_COORDS[iso];
         if (!base) return null;
         const h = hashStr(c.club);
         const jx = ((h % 100) / 100) * 2 - 1;
@@ -370,27 +537,27 @@ export default function MapView() {
 
   // Nearby matches (sorted by distance to user)
   const nearbyMatches = useMemo(() => {
-    if (!userPos || !matchMarkers.length) return [];
+    if (!effectivePos || !matchMarkers.length) return [];
     return matchMarkers
       .map(m => ({
         ...m,
-        distance: distanceKm(userPos.latitude, userPos.longitude, m.coords[0], m.coords[1]),
+        distance: distanceKm(effectivePos.latitude, effectivePos.longitude, m.coords[0], m.coords[1]),
       }))
       .filter(m => m.distance <= nearbyRadiusKm)
       .sort((a, b) => a.distance - b.distance);
-  }, [userPos, matchMarkers, nearbyRadiusKm]);
+  }, [effectivePos, matchMarkers, nearbyRadiusKm]);
 
   // Nearby clubs from user's scouted players (sorted by distance)
   const nearbyClubs = useMemo(() => {
-    if (!userPos || !clubMarkers.length) return [];
+    if (!effectivePos || !clubMarkers.length) return [];
     return clubMarkers
       .map(c => ({
         ...c,
-        distance: distanceKm(userPos.latitude, userPos.longitude, c.coords[0], c.coords[1]),
+        distance: distanceKm(effectivePos.latitude, effectivePos.longitude, c.coords[0], c.coords[1]),
       }))
       .filter(c => c.distance <= nearbyRadiusKm)
       .sort((a, b) => a.distance - b.distance);
-  }, [userPos, clubMarkers, nearbyRadiusKm]);
+  }, [effectivePos, clubMarkers, nearbyRadiusKm]);
 
   // Detect if search is a lat,lng coordinate
   const parsedLatLng = useMemo(() => parseLatLng(search), [search]);
@@ -415,6 +582,34 @@ export default function MapView() {
       c.country.toLowerCase().includes(q)
     );
   }, [clubMarkers, search, parsedLatLng]);
+
+  // Grid-based clustering: group clubs into geographic cells based on zoom level
+  const clusteredClubMarkers = useMemo(() => {
+    type CM = typeof filteredClubMarkers[number];
+    type ClusterItem = CM & { isCluster: boolean; clusterSize: number; clusterMembers: CM[] };
+
+    const gridDeg =
+      mapZoom <= 3 ? 20 : mapZoom <= 4 ? 12 : mapZoom <= 5 ? 8 :
+      mapZoom <= 6 ? 5  : mapZoom <= 7 ? 3  : mapZoom <= 8 ? 1.5 :
+      mapZoom <= 9 ? 0.8 : mapZoom <= 10 ? 0.3 : 0;
+
+    if (gridDeg === 0) {
+      return filteredClubMarkers.map(c => ({ ...c, isCluster: false, clusterSize: 1, clusterMembers: [c] })) as ClusterItem[];
+    }
+    const grid = new Map<string, CM[]>();
+    for (const c of filteredClubMarkers) {
+      const key = `${Math.floor(c.coords[1] / gridDeg)},${Math.floor(c.coords[0] / gridDeg)}`;
+      const arr = grid.get(key) || [];
+      arr.push(c);
+      grid.set(key, arr);
+    }
+    return Array.from(grid.values()).map(members => {
+      if (members.length === 1) return { ...members[0], isCluster: false, clusterSize: 1, clusterMembers: members };
+      const lat = members.reduce((s, c) => s + c.coords[0], 0) / members.length;
+      const lng = members.reduce((s, c) => s + c.coords[1], 0) / members.length;
+      return { ...members[0], coords: [lat, lng] as [number, number], isCluster: true, clusterSize: members.length, clusterMembers: members, isGeolocated: members.every(c => c.isGeolocated) };
+    }) as ClusterItem[];
+  }, [filteredClubMarkers, mapZoom]);
 
   const dateLabel = new Date(selectedDate + 'T00:00:00').toLocaleDateString(
     i18n.language === 'es' ? 'es-ES' : i18n.language === 'en' ? 'en-GB' : 'fr-FR',
@@ -451,14 +646,14 @@ export default function MapView() {
             </button>
           </div>
           <Button
-            variant={userPos && showNearby ? 'default' : 'outline'}
+            variant={effectivePos && showNearby ? 'default' : 'outline'}
             size="sm"
             className="rounded-xl gap-1.5 shrink-0"
             onClick={() => {
-              if (userPos) {
+              if (effectivePos) {
                 const next = !showNearby;
                 setShowNearby(next);
-                if (next) setFlyTarget({ center: [userPos.latitude, userPos.longitude], zoom: 7 });
+                if (next) setFlyTarget({ center: [effectivePos.latitude, effectivePos.longitude], zoom: 7 });
               } else {
                 setPendingNearby(true);
                 locate();
@@ -467,11 +662,78 @@ export default function MapView() {
             disabled={geoLoading}
           >
             {geoLoading ? <Loader2 className="w-4 h-4 animate-spin" /> : <Crosshair className="w-4 h-4" />}
-            {userPos ? t('map.nearby') : t('map.locate_me')}
+            {effectivePos ? t('map.nearby') : t('map.locate_me')}
           </Button>
 
+          {/* VPN / Manual position button */}
+          <div className="relative shrink-0">
+            <Button
+              variant={manualPos ? 'default' : 'outline'}
+              size="sm"
+              className={cn('rounded-xl gap-1.5', manualPos && 'bg-amber-500 border-amber-500 hover:bg-amber-600 text-white', manualLocMode && 'animate-pulse')}
+              onClick={() => setShowManualPanel(p => !p)}
+              title="Position manuelle (VPN)"
+            >
+              <LocateFixed className="w-4 h-4" />
+              {manualPos ? `${manualPos.latitude.toFixed(2)}, ${manualPos.longitude.toFixed(2)}` : 'VPN'}
+            </Button>
+            {showManualPanel && (
+              <div className="absolute top-full right-0 mt-1 bg-popover border border-border rounded-xl shadow-xl p-3 z-50 w-64 space-y-2">
+                <p className="text-xs font-semibold text-foreground">Position manuelle (VPN)</p>
+                <Button
+                  variant={manualLocMode ? 'default' : 'outline'}
+                  size="sm"
+                  className="w-full h-7 text-xs gap-1.5"
+                  onClick={() => { setManualLocMode(m => !m); setShowManualPanel(false); }}
+                >
+                  <MapPin className="w-3 h-3" />
+                  {manualLocMode ? 'Annuler le placement' : 'Cliquer sur la carte'}
+                </Button>
+                <div className="flex gap-1 items-center">
+                  <input
+                    type="number"
+                    placeholder="Lat"
+                    value={manualLatInput}
+                    onChange={e => setManualLatInput(e.target.value)}
+                    className="flex-1 text-xs border border-border rounded-lg px-2 py-1 h-7 bg-background min-w-0"
+                  />
+                  <input
+                    type="number"
+                    placeholder="Lng"
+                    value={manualLngInput}
+                    onChange={e => setManualLngInput(e.target.value)}
+                    className="flex-1 text-xs border border-border rounded-lg px-2 py-1 h-7 bg-background min-w-0"
+                  />
+                  <Button
+                    size="sm"
+                    className="h-7 text-xs px-2 shrink-0"
+                    onClick={() => {
+                      const lat = parseFloat(manualLatInput.replace(',', '.'));
+                      const lng = parseFloat(manualLngInput.replace(',', '.'));
+                      if (isNaN(lat) || isNaN(lng) || lat < -90 || lat > 90 || lng < -180 || lng > 180) return;
+                      setManualPos({ latitude: lat, longitude: lng, accuracy: 0 });
+                      setShowNearby(true);
+                      setFlyTarget({ center: [lat, lng], zoom: 7 });
+                      setShowManualPanel(false);
+                    }}
+                  >
+                    OK
+                  </Button>
+                </div>
+                {manualPos && (
+                  <button
+                    className="w-full text-xs text-muted-foreground hover:text-destructive transition-colors text-left py-0.5"
+                    onClick={() => { setManualPos(null); setManualLocMode(false); setShowManualPanel(false); }}
+                  >
+                    × Effacer la position manuelle
+                  </button>
+                )}
+              </div>
+            )}
+          </div>
+
           {/* Radius slider — visible only when nearby mode is active */}
-          {userPos && showNearby && (
+          {effectivePos && showNearby && (
             <div className="flex items-center gap-2 bg-muted/50 rounded-xl px-3 py-1.5 shrink-0">
               <SlidersHorizontal className="w-3.5 h-3.5 text-purple-500 shrink-0" />
               <input
@@ -530,11 +792,12 @@ export default function MapView() {
           <Users className="w-3.5 h-3.5" />
           {filteredClubMarkers.length} {t('map.clubs')}
         </Badge>
-        {userPos && (nearbyMatches.length > 0 || nearbyClubs.length > 0) && (
+        {effectivePos && (nearbyMatches.length > 0 || nearbyClubs.length > 0) && (
           <Badge variant="outline" className="gap-1.5 border-purple-500/30 text-purple-600">
             <Navigation className="w-3.5 h-3.5" />
             {nearbyMatches.reduce((s, m) => s + m.comp.events.length, 0)} {t('map.nearby_count')}
             {nearbyClubs.length > 0 && ` · ${nearbyClubs.length} ${t('map.clubs')}`}
+            {manualPos && <span className="ml-1 text-amber-500 font-bold">· VPN</span>}
           </Badge>
         )}
         {eventsLoading && <Loader2 className="w-4 h-4 animate-spin text-muted-foreground" />}
@@ -543,10 +806,19 @@ export default function MapView() {
       {/* Map + Sidebar */}
       <div ref={containerRef} className="flex gap-4" style={{ height: mapHeight }}>
         {/* Map — explicit pixel height */}
-        <div className="flex-1 rounded-2xl overflow-hidden border border-border shadow-lg" style={{ height: mapHeight }}>
+        <div className="relative flex-1 rounded-2xl border border-border shadow-lg" style={{ height: mapHeight, overflow: 'visible' }}>
+          {/* Click-mode overlay */}
+          {manualLocMode && (
+            <div className="absolute inset-x-0 top-2 z-[1000] flex justify-center pointer-events-none">
+              <div className="bg-amber-500 text-white text-xs font-semibold px-4 py-2 rounded-full shadow-lg flex items-center gap-2">
+                <MapPin className="w-3.5 h-3.5" />
+                Cliquez sur la carte pour vous positionner
+              </div>
+            </div>
+          )}
           <MapContainer
-            center={[30, 10]}
-            zoom={3}
+            center={[50, 10]}
+            zoom={5}
             minZoom={2}
             maxZoom={12}
             scrollWheelZoom={true}
@@ -559,96 +831,60 @@ export default function MapView() {
             />
 
             {flyTarget && <FlyTo center={flyTarget.center} zoom={flyTarget.zoom} />}
+            <MapClickHandler
+              active={manualLocMode}
+              onPick={(lat, lng) => {
+                setManualPos({ latitude: lat, longitude: lng, accuracy: 0 });
+                setManualLocMode(false);
+                setShowNearby(true);
+                setFlyTarget({ center: [lat, lng], zoom: 7 });
+              }}
+            />
 
             {/* Match markers */}
             {filteredMatchMarkers.map((m, i) => {
               const hasLive = m.comp.events.some(e => isLive(e.status));
               return (
-                <Marker key={`match-${i}`} position={m.coords} icon={hasLive ? MATCH_LIVE_ICON : MATCH_ICON}>
-                  <Popup maxWidth={320}>
-                    <div style={{ minWidth: 250 }}>
-                      <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
-                        <span style={{ fontSize: 16 }}>{countryFlag(m.comp.country_code)}</span>
-                        <div>
-                          <div style={{ fontWeight: 700, fontSize: 13 }}>{m.comp.name}</div>
-                          <div style={{ fontSize: 11, color: '#888' }}>{m.comp.country}</div>
-                        </div>
-                      </div>
-                      <div style={{ maxHeight: 200, overflowY: 'auto' }}>
-                        {m.comp.events.slice(0, 8).map((ev, j) => (
-                          <MatchRow key={j} event={ev} />
-                        ))}
-                        {m.comp.events.length > 8 && (
-                          <div style={{ fontSize: 11, color: '#888', textAlign: 'center', marginTop: 4 }}>
-                            +{m.comp.events.length - 8} {t('map.more')}
-                          </div>
-                        )}
-                      </div>
-                    </div>
-                  </Popup>
-                </Marker>
+                <Marker key={`match-${i}`} position={m.coords} icon={hasLive ? MATCH_LIVE_ICON : MATCH_ICON}
+                  eventHandlers={{ click: () => setSelectedPin({ type: 'match', comp: m.comp }) }}
+                />
               );
             })}
 
-            {/* Club markers */}
-            {filteredClubMarkers.map((c, i) => (
-              <Marker key={`club-${i}`} position={c.coords} icon={c.isGeolocated ? CLUB_ICON_PRECISE : CLUB_ICON}>
-                <Popup minWidth={260} maxWidth={300} className="club-popup">
-                  <ClubPopup
-                    club={c}
-                    fixingClub={fixingClub}
-                    fixCountry={fixCountry}
-                    manualLat={manualLat}
-                    manualLng={manualLng}
-                    fixLoading={fixLoading}
-                    onStartFix={() => { setFixingClub(c.club); setFixCountry(''); setManualLat(''); setManualLng(''); }}
-                    onCancelFix={() => setFixingClub(null)}
-                    onFixCountryChange={setFixCountry}
-                    onManualLatChange={setManualLat}
-                    onManualLngChange={setManualLng}
-                    onAutoGeocode={() => handleAutoGeocode(c.club, fixCountry)}
-                    onManualGeocode={() => handleManualGeocode(c.club, fixCountry)}
-                    fixLocationLabel={t('map.fix_location')}
-                    fixCountryPlaceholder={t('map.fix_country_placeholder')}
-                    fixAutoLabel={t('map.fix_auto')}
-                    fixManualLabel={t('map.fix_manual')}
-                    cancelLabel={t('common.cancel')}
-                    scoutedLabel={t('map.scouted_players')}
-                    preciseLabel={t('map.precise_location')}
-                    approxLabel={t('map.approximate_location')}
-                    viewProfileLabel={t('map.view_club_profile')}
-                    moreLabel={t('map.more')}
-                  />
-                </Popup>
-              </Marker>
-            ))}
+            {/* Club markers — grid-clustered based on zoom level */}
+            <ZoomTracker onZoom={setMapZoom} />
+            {clusteredClubMarkers.map((c, i) =>
+              c.isCluster ? (
+                <ClusterMarker
+                  key={`cluster-${i}`}
+                  position={c.coords}
+                  count={c.clusterSize}
+                  hasApprox={!c.isGeolocated}
+                  members={c.clusterMembers}
+                />
+              ) : (
+                <Marker key={`club-${i}`} position={c.coords} icon={c.isGeolocated ? CLUB_ICON_PRECISE : CLUB_ICON}
+                  eventHandlers={{ click: () => setSelectedPin({ type: 'club', club: c, logoUrl: c.logoUrl }) }}
+                />
+              )
+            )}
 
             {/* User location marker + radius */}
-            {userPos && (
+            {effectivePos && (
               <>
-                <Marker position={[userPos.latitude, userPos.longitude]} icon={USER_ICON}>
-                  <Popup>
-                    <div style={{ minWidth: 160, textAlign: 'center' }}>
-                      <div style={{ fontWeight: 700, fontSize: 13 }}>{t('map.your_position')}</div>
-                      <div style={{ fontSize: 11, color: '#888', marginTop: 2 }}>
-                        {userPos.latitude.toFixed(4)}, {userPos.longitude.toFixed(4)}
-                      </div>
-                      {nearbyMatches.length > 0 && (
-                        <div style={{ fontSize: 11, marginTop: 4, color: '#a855f7', fontWeight: 600 }}>
-                          ⚽ {nearbyMatches.reduce((s, m) => s + m.comp.events.length, 0)} {t('map.matches_nearby', { radius: nearbyRadiusDisplay })}
-                        </div>
-                      )}
-                      {nearbyClubs.length > 0 && (
-                        <div style={{ fontSize: 11, marginTop: 4, color: '#0ea5e9', fontWeight: 600 }}>
-                          🏟 {nearbyClubs.length} {t('map.clubs')} — {nearbyClubs.reduce((s, c) => s + c.count, 0)} {t('map.scouted_players')}
-                        </div>
-                      )}
-                    </div>
-                  </Popup>
-                </Marker>
+                <Marker position={[effectivePos.latitude, effectivePos.longitude]} icon={USER_ICON}
+                  eventHandlers={{ click: () => setSelectedPin({
+                    type: 'user',
+                    lat: effectivePos.latitude, lng: effectivePos.longitude,
+                    nearbyMatches: nearbyMatches.reduce((s, m) => s + m.comp.events.length, 0),
+                    nearbyClubs: nearbyClubs.length,
+                    nearbyPlayers: nearbyClubs.reduce((s, c) => s + c.count, 0),
+                    isManual: !!manualPos,
+                  }) }}
+                />
                 {showNearby && (
                   <Circle
-                    center={[userPos.latitude, userPos.longitude]}
+                    center={[effectivePos.latitude, effectivePos.longitude]}
                     radius={nearbyRadiusKm * 1000}
                     pathOptions={{
                       color: '#a855f7',
@@ -667,7 +903,7 @@ export default function MapView() {
         {/* Sidebar */}
         <div className="w-80 shrink-0 hidden lg:flex flex-col gap-2 overflow-y-auto">
           {/* ── Nearby section — matches + clubs ── */}
-          {userPos && showNearby && (nearbyMatches.length > 0 || nearbyClubs.length > 0) && (
+          {effectivePos && showNearby && (nearbyMatches.length > 0 || nearbyClubs.length > 0) && (
             <>
               <div className="flex items-center gap-1.5 px-1">
                 <Navigation className="w-3 h-3 text-purple-500" />
@@ -837,8 +1073,129 @@ export default function MapView() {
           )}
         </div>
       </div>
+
+      {/* ── Floating info panel (replaces Leaflet Popup) ── */}
+      {selectedPin && (
+        <div
+          className="fixed z-[9999] top-4 right-4 w-72 rounded-2xl shadow-2xl border border-border bg-background overflow-hidden animate-in slide-in-from-right-2 duration-200"
+          style={{ maxHeight: 'calc(100vh - 32px)', overflowY: 'auto' }}
+        >
+          {/* Close button */}
+          <button
+            onClick={() => setSelectedPin(null)}
+            className="absolute top-2 right-2 z-10 w-6 h-6 rounded-full bg-black/20 hover:bg-black/40 flex items-center justify-center text-white transition-colors"
+          >
+            <svg width="10" height="10" viewBox="0 0 10 10" fill="currentColor">
+              <path d="M1 1l8 8M9 1l-8 8" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/>
+            </svg>
+          </button>
+
+          {selectedPin.type === 'club' && (
+            <ClubPopup
+              club={selectedPin.club}
+              logoUrl={selectedPin.logoUrl}
+              fixingClub={fixingClub}
+              fixCountry={fixCountry}
+              manualLat={manualLat}
+              manualLng={manualLng}
+              fixLoading={fixLoading}
+              onStartFix={() => { setFixingClub(selectedPin.club.club); setFixCountry(''); setManualLat(''); setManualLng(''); }}
+              onCancelFix={() => setFixingClub(null)}
+              onFixCountryChange={setFixCountry}
+              onManualLatChange={setManualLat}
+              onManualLngChange={setManualLng}
+              onAutoGeocode={() => handleAutoGeocode(selectedPin.club.club, fixCountry)}
+              onManualGeocode={() => handleManualGeocode(selectedPin.club.club, fixCountry)}
+              fixLocationLabel={t('map.fix_location')}
+              fixCountryPlaceholder={t('map.fix_country_placeholder')}
+              fixAutoLabel={t('map.fix_auto')}
+              fixManualLabel={t('map.fix_manual')}
+              cancelLabel={t('common.cancel')}
+              scoutedLabel={t('map.scouted_players')}
+              preciseLabel={t('map.precise_location')}
+              approxLabel={t('map.approximate_location')}
+              viewProfileLabel={t('map.view_club_profile')}
+              moreLabel={t('map.more')}
+            />
+          )}
+
+          {selectedPin.type === 'match' && (
+            <div>
+              <div style={{ background: 'linear-gradient(135deg,#22c55e,#16a34a)', padding: '14px 36px 12px 14px', display: 'flex', alignItems: 'center', gap: 10 }}>
+                <span style={{ fontSize: 18 }}>{countryFlag(selectedPin.comp.country_code)}</span>
+                <div>
+                  <div style={{ fontWeight: 800, fontSize: 13, color: '#fff' }}>{selectedPin.comp.name}</div>
+                  <div style={{ fontSize: 11, color: 'rgba(255,255,255,.75)' }}>{selectedPin.comp.country}</div>
+                </div>
+              </div>
+              <div style={{ padding: '10px 14px', maxHeight: 320, overflowY: 'auto' }}>
+                {selectedPin.comp.events.slice(0, 10).map((ev, j) => (
+                  <MatchRow key={j} event={ev} />
+                ))}
+                {selectedPin.comp.events.length > 10 && (
+                  <div style={{ fontSize: 11, color: '#888', textAlign: 'center', marginTop: 6 }}>
+                    +{selectedPin.comp.events.length - 10} {t('map.more')}
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+
+          {selectedPin.type === 'user' && (
+            <div>
+              <div style={{ background: 'linear-gradient(135deg,hsl(280,80%,55%),hsl(260,70%,45%))', padding: '14px 36px 12px 14px' }}>
+                <div style={{ fontWeight: 800, fontSize: 13, color: '#fff' }}>
+                  {selectedPin.isManual ? '📍 Position manuelle (VPN)' : t('map.your_position')}
+                </div>
+                <div style={{ fontSize: 11, color: 'rgba(255,255,255,.75)', marginTop: 2 }}>
+                  {selectedPin.lat.toFixed(4)}, {selectedPin.lng.toFixed(4)}
+                </div>
+              </div>
+              <div style={{ padding: '12px 14px', display: 'flex', flexDirection: 'column', gap: 6 }}>
+                {selectedPin.nearbyMatches > 0 && (
+                  <div style={{ fontSize: 12, color: '#a855f7', fontWeight: 600 }}>
+                    ⚽ {selectedPin.nearbyMatches} {t('map.matches_nearby', { radius: nearbyRadiusDisplay })}
+                  </div>
+                )}
+                {selectedPin.nearbyClubs > 0 && (
+                  <div style={{ fontSize: 12, color: '#0ea5e9', fontWeight: 600 }}>
+                    🏟 {selectedPin.nearbyClubs} {t('map.clubs')} — {selectedPin.nearbyPlayers} {t('map.scouted_players')}
+                  </div>
+                )}
+                {selectedPin.nearbyMatches === 0 && selectedPin.nearbyClubs === 0 && (
+                  <div style={{ fontSize: 12, color: '#888' }}>{t('map.no_nearby')}</div>
+                )}
+              </div>
+            </div>
+          )}
+        </div>
+      )}
     </div>
   );
+}
+
+// ---------------------------------------------------------------------------
+// ClusterMarker — clicking zooms into the cluster bounds
+// ---------------------------------------------------------------------------
+function ClusterMarker({
+  position, count, hasApprox, members,
+}: {
+  position: [number, number];
+  count: number;
+  hasApprox: boolean;
+  members: { coords: [number, number] }[];
+}) {
+  const map = useMap();
+  const icon = useMemo(() => createClusterIcon(count, hasApprox), [count, hasApprox]);
+  const handleClick = () => {
+    if (members.length < 2) return;
+    const lats = members.map(m => m.coords[0]);
+    const lngs = members.map(m => m.coords[1]);
+    const sw: [number, number] = [Math.min(...lats), Math.min(...lngs)];
+    const ne: [number, number] = [Math.max(...lats), Math.max(...lngs)];
+    map.flyToBounds([sw, ne], { padding: [60, 60], maxZoom: 12, duration: 0.6 });
+  };
+  return <Marker position={position} icon={icon} eventHandlers={{ click: handleClick }} />;
 }
 
 // ---------------------------------------------------------------------------
@@ -847,6 +1204,7 @@ export default function MapView() {
 
 interface ClubPopupProps {
   club: { club: string; count: number; players: string[]; country: string; isGeolocated: boolean };
+  logoUrl: string | null;
   fixingClub: string | null;
   fixCountry: string; manualLat: string; manualLng: string; fixLoading: boolean;
   onStartFix: () => void; onCancelFix: () => void;
@@ -857,13 +1215,14 @@ interface ClubPopupProps {
   preciseLabel: string; approxLabel: string; viewProfileLabel: string; moreLabel: string;
 }
 
-function ClubPopup({ club: c, fixingClub, fixCountry, manualLat, manualLng, fixLoading,
+function ClubPopup({ club: c, logoUrl, fixingClub, fixCountry, manualLat, manualLng, fixLoading,
   onStartFix, onCancelFix, onFixCountryChange, onManualLatChange, onManualLngChange,
   onAutoGeocode, onManualGeocode,
   fixLocationLabel, fixCountryPlaceholder, fixAutoLabel, fixManualLabel,
   cancelLabel, scoutedLabel, preciseLabel, approxLabel, viewProfileLabel, moreLabel,
 }: ClubPopupProps) {
-  const initial = c.club.charAt(0).toUpperCase();
+  const acronym = getClubAcronym(c.club);
+  const [logoError, setLogoError] = useState(false);
   const isFixing = fixingClub === c.club;
 
   const s = {
@@ -893,7 +1252,18 @@ function ClubPopup({ club: c, fixingClub, fixCountry, manualLat, manualLng, fixL
     <div style={s.wrap}>
       {/* ── Header gradient ── */}
       <div style={s.header}>
-        <div style={s.avatar}>{initial}</div>
+        <div style={s.avatar}>
+          {logoUrl && !logoError ? (
+            <img
+              src={logoUrl}
+              alt={c.club}
+              onError={() => setLogoError(true)}
+              style={{ width: 30, height: 30, objectFit: 'contain' }}
+            />
+          ) : (
+            <span style={{ fontSize: acronym.length > 2 ? 12 : 15 }}>{acronym}</span>
+          )}
+        </div>
         <div style={{ minWidth: 0 }}>
           <div style={s.clubName}>{c.club}</div>
           <div style={s.clubSub}>

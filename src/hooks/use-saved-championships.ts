@@ -10,6 +10,9 @@ export interface SavedChampionship {
   championship_logo: string | null;
   sofascore_id: number | null;
   created_at: string;
+  player_count: number;
+  club_count: number;
+  top_club: string | null;
 }
 
 export function useSavedChampionships() {

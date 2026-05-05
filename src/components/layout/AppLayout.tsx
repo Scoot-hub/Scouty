@@ -12,6 +12,7 @@ import ScrollRestoration from '@/components/ScrollRestoration';
 import { OperationBannerProvider } from '@/contexts/OperationBannerContext';
 import OperationBanner from '@/components/OperationBanner';
 import { useUiPreferences } from '@/contexts/UiPreferencesContext';
+import { useSessionTracker } from '@/hooks/use-session-tracker';
 
 function ImpersonationBanner() {
   const { t } = useTranslation();
@@ -36,6 +37,11 @@ function ImpersonationBanner() {
   );
 }
 
+function SessionTracker() {
+  useSessionTracker();
+  return null;
+}
+
 export default function AppLayout() {
   const { isImpersonating } = useAuth();
   const { showNotifications, showChatbot } = useUiPreferences();
@@ -50,6 +56,7 @@ export default function AppLayout() {
 
   return (
     <OperationBannerProvider>
+      <SessionTracker />
       <div className="min-h-screen w-full">
         <AppSidebar collapsed={collapsed} onToggle={toggleCollapsed} />
         <div className={`${collapsed ? 'lg:ml-[72px]' : 'lg:ml-64'} min-h-screen flex flex-col transition-[margin] duration-300`}>

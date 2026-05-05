@@ -151,12 +151,20 @@ export default function OrgPlayers() {
       });
     }
     if (selectedContractRanges.length) result = result.filter(p => selectedContractRanges.includes(getContractKey(p.contract_end)));
+    const richness = (p: typeof result[0]) =>
+      (p.external_data && typeof p.external_data === 'object' && Object.keys(p.external_data).length > 0 ? 4 : 0) +
+      (p.photo_url ? 2 : 0) +
+      (p.transfermarkt_id ? 2 : 0) +
+      (p.club ? 1 : 0) +
+      (p.market_value ? 1 : 0) +
+      ((p as any).notes ? 1 : 0) +
+      ((p as any).height > 0 ? 1 : 0);
     switch (sort) {
-      case 'name': result.sort((a, b) => a.name.localeCompare(b.name)); break;
-      case 'age-asc': result.sort((a, b) => b.generation - a.generation); break;
-      case 'age-desc': result.sort((a, b) => a.generation - b.generation); break;
-      case 'level': result.sort((a, b) => b.current_level - a.current_level); break;
-      case 'potential': result.sort((a, b) => b.potential - a.potential); break;
+      case 'name': result.sort((a, b) => { const d = richness(b) - richness(a); return d !== 0 ? d : a.name.localeCompare(b.name); }); break;
+      case 'age-asc': result.sort((a, b) => { const d = richness(b) - richness(a); return d !== 0 ? d : b.generation - a.generation; }); break;
+      case 'age-desc': result.sort((a, b) => { const d = richness(b) - richness(a); return d !== 0 ? d : a.generation - b.generation; }); break;
+      case 'level': result.sort((a, b) => { const d = b.current_level - a.current_level; return d !== 0 ? d : richness(b) - richness(a); }); break;
+      case 'potential': result.sort((a, b) => { const d = b.potential - a.potential; return d !== 0 ? d : richness(b) - richness(a); }); break;
       case 'recent': result.sort((a, b) => new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime()); break;
       case 'contract': result.sort((a, b) => { const aDate = a.contract_end ? new Date(a.contract_end).getTime() : Infinity; const bDate = b.contract_end ? new Date(b.contract_end).getTime() : Infinity; return aDate - bDate; }); break;
     }

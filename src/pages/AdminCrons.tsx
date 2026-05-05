@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useEffect, useRef, useCallback } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useIsAdmin } from '@/hooks/use-admin';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
@@ -6,10 +6,11 @@ import { Navigate, Link } from 'react-router-dom';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
+import { Slider } from '@/components/ui/slider';
 import { toast } from 'sonner';
 import {
   ArrowLeft, Clock, CheckCircle2, XCircle, Play, RefreshCw, Loader2,
-  CalendarDays, FileWarning, Trash2, Crown, UserX, Zap,
+  CalendarDays, FileWarning, Trash2, Crown, UserX, Zap, Gauge, Timer, Minus,
 } from 'lucide-react';
 
 function authInit(): RequestInit {
@@ -62,6 +63,201 @@ function duration(log: CronLog): string {
   const ms = new Date(log.finished_at).getTime() - new Date(log.started_at).getTime();
   if (ms < 1000) return `${ms}ms`;
   return `${(ms / 1000).toFixed(1)}s`;
+}
+
+function fmtMs(ms: number): string {
+  if (ms >= 1000) return `${(ms / 1000).toFixed(ms % 1000 === 0 ? 0 : 1)}s`;
+  return `${ms}ms`;
+}
+
+type ScrapeSettings = Record<string, number>;
+
+const PRESETS = [
+  { label: 'Rapide',     icon: Gauge, player: 500,   user: 2000,  buzz: 200  },
+  { label: 'Normal',     icon: Timer, player: 2000,  user: 5000,  buzz: 500  },
+  { label: 'Lent',       icon: Minus, player: 5000,  user: 10000, buzz: 1500 },
+  { label: 'Très lent',  icon: Minus, player: 10000, user: 20000, buzz: 3000 },
+];
+
+interface SliderRowProps {
+  label: string;
+  settingKey: string;
+  min: number;
+  max: number;
+  step: number;
+  value: number;
+  onChange: (key: string, val: number) => void;
+  saved: boolean;
+}
+
+function SliderRow({ label, settingKey, min, max, step, value, onChange, saved }: SliderRowProps) {
+  return (
+    <div className="space-y-2">
+      <div className="flex items-center justify-between text-sm">
+        <span className="font-medium text-foreground">{label}</span>
+        <div className="flex items-center gap-2">
+          {saved && (
+            <span className="text-xs text-green-600 dark:text-green-400 font-medium">Sauvegardé ✓</span>
+          )}
+          <span className="tabular-nums text-muted-foreground text-xs w-16 text-right">{fmtMs(value)}</span>
+        </div>
+      </div>
+      <Slider
+        min={min}
+        max={max}
+        step={step}
+        value={[value]}
+        onValueChange={([v]) => onChange(settingKey, v)}
+        className="w-full"
+      />
+      <div className="flex justify-between text-[10px] text-muted-foreground/60">
+        <span>{fmtMs(min)}</span>
+        <span>{fmtMs(max)}</span>
+      </div>
+    </div>
+  );
+}
+
+function ScrapeThrottleCard() {
+  const [settings, setSettings] = useState<ScrapeSettings>({
+    scrape_delay_player_ms: 2000,
+    scrape_delay_user_ms: 5000,
+    scrape_delay_buzz_ms: 500,
+  });
+  const [savedKeys, setSavedKeys] = useState<Set<string>>(new Set());
+  const debounceRefs = useRef<Record<string, ReturnType<typeof setTimeout>>>({});
+
+  useEffect(() => {
+    fetch('/api/admin/scrape-settings', authInit())
+      .then(r => r.ok ? r.json() : {})
+      .then((data: ScrapeSettings) => {
+        setSettings(prev => ({ ...prev, ...data }));
+      })
+      .catch(() => {});
+  }, []);
+
+  const save = useCallback(async (key: string, value: number) => {
+    try {
+      const res = await fetch('/api/admin/scrape-settings', {
+        method: 'POST',
+        ...authInit(),
+        body: JSON.stringify({ key, value }),
+      });
+      if (!res.ok) throw new Error();
+      setSavedKeys(s => new Set(s).add(key));
+      setTimeout(() => setSavedKeys(s => { const n = new Set(s); n.delete(key); return n; }), 2500);
+    } catch {
+      toast.error('Erreur lors de la sauvegarde');
+    }
+  }, []);
+
+  const handleChange = useCallback((key: string, val: number) => {
+    setSettings(prev => ({ ...prev, [key]: val }));
+    clearTimeout(debounceRefs.current[key]);
+    debounceRefs.current[key] = setTimeout(() => save(key, val), 800);
+  }, [save]);
+
+  const applyPreset = useCallback((preset: typeof PRESETS[0]) => {
+    const updates: ScrapeSettings = {
+      scrape_delay_player_ms: preset.player,
+      scrape_delay_user_ms: preset.user,
+      scrape_delay_buzz_ms: preset.buzz,
+    };
+    setSettings(prev => ({ ...prev, ...updates }));
+    for (const [key, val] of Object.entries(updates)) {
+      clearTimeout(debounceRefs.current[key]);
+      save(key, val);
+    }
+  }, [save]);
+
+  return (
+    <Card>
+      <CardHeader className="pb-3">
+        <div className="flex items-center gap-3">
+          <div className="w-8 h-8 rounded-lg bg-muted flex items-center justify-center shrink-0">
+            <Gauge className="w-4 h-4 text-primary" />
+          </div>
+          <div>
+            <CardTitle className="text-sm font-semibold">Throttle du scraping</CardTitle>
+            <CardDescription className="text-xs mt-0.5">
+              Délais entre les appels aux APIs externes. Augmentez si vous voyez des erreurs 429.
+            </CardDescription>
+          </div>
+        </div>
+      </CardHeader>
+      <CardContent className="space-y-6">
+        {/* Presets */}
+        <div className="flex flex-wrap gap-2">
+          {PRESETS.map(preset => {
+            const Icon = preset.icon;
+            return (
+              <Button
+                key={preset.label}
+                variant="outline"
+                size="sm"
+                className="h-7 text-xs gap-1.5"
+                onClick={() => applyPreset(preset)}
+              >
+                <Icon className="w-3 h-3" />
+                {preset.label}
+              </Button>
+            );
+          })}
+        </div>
+
+        {/* Group 1: Enrichissement nocturne */}
+        <div className="space-y-4">
+          <div className="flex items-center gap-2">
+            <Zap className="w-3.5 h-3.5 text-purple-500" />
+            <span className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">Enrichissement nocturne</span>
+          </div>
+          <SliderRow
+            label="Délai entre chaque joueur"
+            settingKey="scrape_delay_player_ms"
+            min={0}
+            max={10000}
+            step={250}
+            value={settings.scrape_delay_player_ms ?? 2000}
+            onChange={handleChange}
+            saved={savedKeys.has('scrape_delay_player_ms')}
+          />
+          <SliderRow
+            label="Délai entre chaque utilisateur"
+            settingKey="scrape_delay_user_ms"
+            min={0}
+            max={30000}
+            step={1000}
+            value={settings.scrape_delay_user_ms ?? 5000}
+            onChange={handleChange}
+            saved={savedKeys.has('scrape_delay_user_ms')}
+          />
+        </div>
+
+        {/* Group 2: Buzz Football */}
+        <div className="space-y-4">
+          <div className="flex items-center gap-2">
+            <Zap className="w-3.5 h-3.5 text-orange-500" />
+            <span className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">Buzz Football</span>
+          </div>
+          <SliderRow
+            label="Délai entre flux RSS"
+            settingKey="scrape_delay_buzz_ms"
+            min={0}
+            max={5000}
+            step={100}
+            value={settings.scrape_delay_buzz_ms ?? 500}
+            onChange={handleChange}
+            saved={savedKeys.has('scrape_delay_buzz_ms')}
+          />
+        </div>
+
+        {/* Hint */}
+        <p className="text-[11px] text-muted-foreground/70 italic border-t pt-3">
+          Ces délais s'appliquent aux prochaines exécutions. Augmentez-les si vous voyez des erreurs 429 (rate limit) dans la console.
+        </p>
+      </CardContent>
+    </Card>
+  );
 }
 
 export default function AdminCrons() {
@@ -125,6 +321,9 @@ export default function AdminCrons() {
           <p className="text-sm text-muted-foreground">{t('crons.subtitle')}</p>
         </div>
       </div>
+
+      {/* Scrape throttle controls */}
+      <ScrapeThrottleCard />
 
       {/* Job cards */}
       <div className="grid gap-4">

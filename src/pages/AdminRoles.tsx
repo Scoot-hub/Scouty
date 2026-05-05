@@ -39,8 +39,14 @@ const PAGE_ACTIONS: Record<string, string[]> = {
   club_profile:   ['view', 'follow', 'unfollow', 'view_squad'],
   user_profile:   ['view', 'edit'],
   admin:          ['view', 'manage_users', 'manage_roles', 'impersonate', 'toggle_premium', 'reset_password', 'delete_user', 'view_analytics', 'manage_tickets'],
-  data_import:    ['view', 'import'],
-  editorial:      ['view', 'create', 'edit', 'delete', 'publish'],
+  data_import:      ['view', 'import'],
+  editorial:        ['view', 'create', 'edit', 'delete', 'publish'],
+  news:             ['view'],
+  buzz:             ['view'],
+  instagram:        ['view'],
+  championships:    ['view', 'follow', 'unfollow'],
+  my_championships: ['view', 'unfollow'],
+  my_tickets:       ['view', 'create'],
 };
 
 const ALL_PAGES = Object.keys(PAGE_ACTIONS) as (keyof typeof PAGE_ACTIONS)[];

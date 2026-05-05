@@ -121,6 +121,27 @@ const jwtSecret = process.env.API_JWT_SECRET || "change-this-secret";
 
 const pool = mysql.createPool(createDbPoolConfig());
 
+// ── Scrape settings cache (60s TTL to avoid DB spam on every request) ─────
+let _scrapeCache = null;
+let _scrapeCacheAt = 0;
+async function getScrapeSettings() {
+  const now = Date.now();
+  if (_scrapeCache && now - _scrapeCacheAt < 60_000) return _scrapeCache;
+  const [rows] = await pool.query(
+    "SELECT setting_key, setting_value FROM app_settings WHERE setting_key LIKE 'scrape_%'"
+  ).catch(() => [[]]);
+  const s = {};
+  for (const r of rows) s[r.setting_key] = parseInt(r.setting_value, 10) || 0;
+  _scrapeCache = s;
+  _scrapeCacheAt = now;
+  return s;
+}
+async function scrapeDelay(key, defaultMs) {
+  const s = await getScrapeSettings();
+  const v = s[key];
+  return (v && v > 0) ? v : defaultMs;
+}
+
 // In-memory progress tracker for enrich-all (keyed by userId)
 const enrichAllProgress = new Map();
 
@@ -433,7 +454,7 @@ app.get("/api/stripe/session-status", async (req, res) => {
 
 const ALLOWED_TABLES = {
   users: ["id", "email", "created_at", "last_sign_in_at"],
-  profiles: ["id", "user_id", "full_name", "club", "role", "social_x", "social_instagram", "social_linkedin", "social_public", "social_facebook", "social_snapchat", "social_tiktok", "social_telegram", "social_whatsapp", "photo_url", "first_name", "last_name", "company", "siret", "phone", "civility", "address", "date_of_birth", "reference_club", "referred_by", "created_at", "updated_at"],
+  profiles: ["id", "user_id", "full_name", "club", "role", "social_x", "social_instagram", "social_linkedin", "social_public", "social_facebook", "social_snapchat", "social_tiktok", "social_telegram", "social_whatsapp", "photo_url", "first_name", "last_name", "company", "siret", "phone", "civility", "address", "country", "date_of_birth", "reference_club", "referred_by", "created_at", "updated_at"],
   players: [
     "id", "name", "photo_url", "generation", "nationality", "foot", "club", "league", "zone", "position", "position_secondaire", "role",
     "current_level", "potential", "general_opinion", "contract_end", "notes", "ts_report_published", "date_of_birth", "market_value",
@@ -722,9 +743,94 @@ function buildWhereClause(table, filters = [], userId) {
   };
 }
 
+// ── Analytics helpers ────────────────────────────────────────────────────────
+
+// Map a page URL to a navigation pole category
+function categorizePageUrl(url) {
+  if (!url) return 'other';
+  const p = url.split('?')[0].toLowerCase();
+  if (p === '/' || p === '/dashboard') return 'dashboard';
+  if (p.startsWith('/discover') || p.startsWith('/watchlist') || p.startsWith('/shadow-team') || p.startsWith('/player')) return 'players';
+  if (p.startsWith('/championships') || p.startsWith('/my-championships')) return 'championships';
+  if (p.startsWith('/club') || p.startsWith('/my-clubs')) return 'clubs';
+  if (p.startsWith('/community')) return 'community';
+  if (p.startsWith('/buzz') || p.startsWith('/x') || p.startsWith('/instagram') || p.startsWith('/editorial') || p.startsWith('/news')) return 'news';
+  if (p.startsWith('/my-matches') || p.startsWith('/map') || p.startsWith('/match')) return 'matches';
+  if (p.startsWith('/organization')) return 'organizations';
+  if (p.startsWith('/account') || p.startsWith('/settings')) return 'account';
+  return 'other';
+}
+
+// In-memory IP→geo cache (avoids re-fetching for the same IP within a process lifetime)
+const _geoCache = new Map(); // ip → { country, country_code, city, lat, lon } | null
+const PRIVATE_IP = /^(127\.|10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.|::1$|localhost)/;
+
+async function geolocateIp(ip) {
+  if (!ip || PRIVATE_IP.test(ip)) return null;
+  if (_geoCache.has(ip)) return _geoCache.get(ip);
+  try {
+    const r = await fetch(`http://ip-api.com/json/${ip}?fields=country,countryCode,city,lat,lon&lang=en`, { signal: AbortSignal.timeout(3000) });
+    if (!r.ok) { _geoCache.set(ip, null); return null; }
+    const d = await r.json();
+    const geo = d.countryCode ? { country: d.country || null, country_code: d.countryCode || null, city: d.city || null, lat: d.lat || null, lon: d.lon || null } : null;
+    if (_geoCache.size > 2000) _geoCache.clear(); // simple eviction
+    _geoCache.set(ip, geo);
+    return geo;
+  } catch {
+    _geoCache.set(ip, null);
+    return null;
+  }
+}
+
 // DB schema is managed via schema.sql — runtime migrations ensure columns exist.
 async function runMigrations() { return _legacyRunMigrations(); }
 async function _legacyRunMigrations() {
+  // Ensure club_geocoding_cache table exists (Nominatim results — permanent TTL)
+  try {
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS club_geocoding_cache (
+        cache_key    VARCHAR(512) NOT NULL PRIMARY KEY,
+        lat          DECIMAL(9,6) NOT NULL,
+        lng          DECIMAL(9,6) NOT NULL,
+        cached_at    TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+    `);
+  } catch (err) {
+    if (!err?.message?.includes('already exists')) console.warn('[warn] club_geocoding_cache migration:', err?.message);
+  }
+
+  // Add geo columns to user_sessions (idempotent)
+  for (const col of [
+    "ALTER TABLE `user_sessions` ADD COLUMN `country`      VARCHAR(100) NULL",
+    "ALTER TABLE `user_sessions` ADD COLUMN `country_code` CHAR(2)      NULL",
+    "ALTER TABLE `user_sessions` ADD COLUMN `city`         VARCHAR(100) NULL",
+    "ALTER TABLE `user_sessions` ADD COLUMN `latitude`     DECIMAL(9,6) NULL",
+    "ALTER TABLE `user_sessions` ADD COLUMN `longitude`    DECIMAL(9,6) NULL",
+    "ALTER TABLE `user_sessions` ADD COLUMN `page_category` VARCHAR(30)  NULL",
+    "ALTER TABLE `user_sessions` ADD COLUMN `geo_from_client` TINYINT(1) NOT NULL DEFAULT 0",
+  ]) {
+    try { await pool.query(col); } catch (e) { if (e?.errno !== 1060) console.warn('[migration] user_sessions geo:', e?.message); }
+  }
+
+  // Create session_page_time table — tracks seconds spent per page pole per session
+  try {
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS session_page_time (
+        user_id      CHAR(36)    NOT NULL,
+        session_id   VARCHAR(64) NOT NULL,
+        category     VARCHAR(30) NOT NULL,
+        seconds_spent INT        NOT NULL DEFAULT 30,
+        last_updated  DATETIME   NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        PRIMARY KEY (user_id, session_id, category),
+        INDEX idx_spt_user (user_id),
+        INDEX idx_spt_category (category),
+        FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+    `);
+  } catch (err) {
+    if (!err?.message?.includes('already exists')) console.warn('[migration] session_page_time:', err?.message);
+  }
+
   // Ensure password_reset_tokens table exists
   try {
     await pool.query(`
@@ -1366,6 +1472,8 @@ async function _legacyRunMigrations() {
   }
   // referred_by – separate migration so failures in the loop above don't skip it
   try { await pool.query("ALTER TABLE profiles ADD COLUMN referred_by CHAR(36) NULL"); } catch (err) { if (err?.errno !== 1060) console.warn("[warn] referred_by migration:", err?.message); }
+  // country – for map localisation
+  try { await pool.query("ALTER TABLE profiles ADD COLUMN country VARCHAR(100) NULL"); } catch (err) { if (err?.errno !== 1060) console.warn("[warn] profiles.country migration:", err?.message); }
 
   // org logo_url + description
   try { await pool.query("ALTER TABLE organizations ADD COLUMN logo_url TEXT NULL"); } catch (err) { if (err?.errno !== 1060) console.warn("[warn] org logo_url migration:", err?.message); }
@@ -1515,6 +1623,32 @@ async function _legacyRunMigrations() {
   }
 
   await migrateLegacyProfilePhotosToDb();
+
+  // ── User sessions (live analytics / heartbeat) ──
+  try {
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS user_sessions (
+        id CHAR(36) PRIMARY KEY,
+        user_id CHAR(36) NOT NULL,
+        session_id VARCHAR(64) NOT NULL,
+        device_type ENUM('desktop','mobile','tablet') NOT NULL DEFAULT 'desktop',
+        browser VARCHAR(50) NULL,
+        os VARCHAR(100) NULL,
+        screen_width INT NULL,
+        screen_height INT NULL,
+        language VARCHAR(10) NULL,
+        current_page VARCHAR(255) NULL,
+        ip_address VARCHAR(45) NULL,
+        started_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        last_seen_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE KEY uk_user_session (user_id, session_id),
+        INDEX idx_last_seen (last_seen_at),
+        FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+      )
+    `);
+  } catch (err) {
+    if (!err?.message?.includes("already exists")) console.warn("[warn] user_sessions migration:", err?.message);
+  }
 
   console.log("[startup] Legacy migrations complete");
 }
@@ -3259,6 +3393,7 @@ app.get("/api/players", authMiddleware, async (req, res) => {
     const goalsMin = req.query.goalsMin ? parseInt(req.query.goalsMin) : null;
     const assistsMin = req.query.assistsMin ? parseInt(req.query.assistsMin) : null;
     const minutesMin = req.query.minutesMin ? parseInt(req.query.minutesMin) : null;
+    const updatedSince = req.query.updatedSince ? parseInt(req.query.updatedSince) : null;
     const sort = req.query.sort || "name";
 
     const hasTaskCol = await playersHasColumn("task");
@@ -3361,15 +3496,43 @@ app.get("/api/players", authMiddleware, async (req, res) => {
       clauses.push("CAST(JSON_EXTRACT(`external_data`, '$.performance_stats.stats.minutes') AS UNSIGNED) >= ?");
       params.push(minutesMin);
     }
+    if (updatedSince !== null && updatedSince > 0) {
+      clauses.push("`updated_at` >= DATE_SUB(NOW(), INTERVAL ? DAY)");
+      params.push(updatedSince);
+    }
 
     const whereSql = `WHERE ${clauses.join(" AND ")}`;
 
     // ── Sorting ──
-    // has_news players always on top (if column exists), then by chosen sort
+    // Priority 1 (always): has_news players on top
+    // Priority 2 (always): data-richness score — players with the most data (excl. Wyscout) first
+    //   Weights: external_data (enriched) = 4, photo_url = 2, transfermarkt_id = 2, each other nullable field = 1
+    //   Fields with NOT NULL DEFAULT only score when set to a non-default value
+    // Priority 3: user-chosen sort (tiebreaker within each richness tier)
+    const DATA_RICHNESS_SCORE = `(
+      CASE WHEN \`external_data\` IS NOT NULL AND \`external_data\` NOT IN ('', 'null', '{}') THEN 4 ELSE 0 END +
+      CASE WHEN \`photo_url\`         IS NOT NULL AND \`photo_url\` != ''         THEN 2 ELSE 0 END +
+      CASE WHEN \`transfermarkt_id\`  IS NOT NULL AND \`transfermarkt_id\` != ''  THEN 2 ELSE 0 END +
+      CASE WHEN \`club\`              IS NOT NULL AND \`club\` != ''              THEN 1 ELSE 0 END +
+      CASE WHEN \`league\`            IS NOT NULL AND \`league\` != ''            THEN 1 ELSE 0 END +
+      CASE WHEN \`contract_end\`      IS NOT NULL                                 THEN 1 ELSE 0 END +
+      CASE WHEN \`market_value\`      IS NOT NULL AND \`market_value\` != ''      THEN 1 ELSE 0 END +
+      CASE WHEN \`date_of_birth\`     IS NOT NULL                                 THEN 1 ELSE 0 END +
+      CASE WHEN \`notes\`             IS NOT NULL AND \`notes\` != ''             THEN 1 ELSE 0 END +
+      CASE WHEN \`height\`            IS NOT NULL AND \`height\` > 0              THEN 1 ELSE 0 END +
+      CASE WHEN \`weight\`            IS NOT NULL AND \`weight\` > 0              THEN 1 ELSE 0 END +
+      CASE WHEN \`position_secondaire\` IS NOT NULL AND \`position_secondaire\` != '' THEN 1 ELSE 0 END +
+      CASE WHEN \`role\`              IS NOT NULL AND \`role\` != ''              THEN 1 ELSE 0 END +
+      CASE WHEN \`passport_country\`  IS NOT NULL AND \`passport_country\` != '' THEN 1 ELSE 0 END +
+      CASE WHEN \`general_opinion\`   NOT IN ('À revoir', 'A revoir', '')         THEN 1 ELSE 0 END +
+      CASE WHEN \`current_level\`     IS NOT NULL AND \`current_level\` != 5.0   THEN 1 ELSE 0 END
+    ) DESC`;
+
     const orderParts = [];
     if (hasNewsCol) {
       orderParts.push("CASE WHEN `has_news` IS NOT NULL AND `has_news` != '' THEN 0 ELSE 1 END ASC");
     }
+    orderParts.push(DATA_RICHNESS_SCORE);
     switch (sort) {
       case "name": orderParts.push("`name` ASC"); break;
       case "age-asc": orderParts.push("`generation` DESC"); break;
@@ -3966,7 +4129,15 @@ app.post("/api/rpc/get_org_players", authMiddleware, async (req, res) => {
        JOIN players p ON p.id = pos.player_id
        LEFT JOIN profiles pr ON pr.user_id = p.user_id
        WHERE pos.organization_id = ?
-       ORDER BY p.name`,
+       ORDER BY
+         (CASE WHEN p.external_data IS NOT NULL AND p.external_data NOT IN ('','null','{}') THEN 4 ELSE 0 END +
+          CASE WHEN p.photo_url IS NOT NULL AND p.photo_url != '' THEN 2 ELSE 0 END +
+          CASE WHEN p.transfermarkt_id IS NOT NULL AND p.transfermarkt_id != '' THEN 2 ELSE 0 END +
+          CASE WHEN p.club IS NOT NULL AND p.club != '' THEN 1 ELSE 0 END +
+          CASE WHEN p.market_value IS NOT NULL THEN 1 ELSE 0 END +
+          CASE WHEN p.height IS NOT NULL AND p.height > 0 THEN 1 ELSE 0 END +
+          CASE WHEN p.notes IS NOT NULL AND p.notes != '' THEN 1 ELSE 0 END) DESC,
+         p.name ASC`,
       [orgId],
     );
 
@@ -5358,6 +5529,207 @@ app.post("/api/admin/organizations/update-member-role", authMiddleware, ensureAd
   }
 });
 
+// POST /api/analytics/heartbeat — session tracking (all authenticated users)
+app.post("/api/analytics/heartbeat", authMiddleware, async (req, res) => {
+  try {
+    const userId = req.user.id;
+    const { session_id, device_type, browser, os, screen_width, screen_height, language, current_page, started_at, geo_lat, geo_lon } = req.body;
+    if (!session_id) return res.status(400).json({ error: "session_id required" });
+    const ip = (req.headers["x-forwarded-for"] || "").split(",")[0].trim() || req.socket?.remoteAddress || null;
+    const id = require("crypto").randomUUID();
+    const safeDevice = ["desktop", "mobile", "tablet"].includes(device_type) ? device_type : "desktop";
+    const sessionStart = started_at ? new Date(started_at) : new Date();
+    const category = categorizePageUrl(current_page);
+    const hasClientGeo = geo_lat != null && geo_lon != null;
+
+    // Upsert session row (geo columns filled later async, or from client coords)
+    const [result] = await pool.query(
+      `INSERT INTO user_sessions
+         (id, user_id, session_id, device_type, browser, os, screen_width, screen_height,
+          language, current_page, page_category, ip_address, started_at, last_seen_at,
+          latitude, longitude, geo_from_client)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW(), ?, ?, ?)
+       ON DUPLICATE KEY UPDATE
+         device_type      = VALUES(device_type),
+         browser          = VALUES(browser),
+         os               = VALUES(os),
+         screen_width     = VALUES(screen_width),
+         screen_height    = VALUES(screen_height),
+         language         = VALUES(language),
+         current_page     = VALUES(current_page),
+         page_category    = VALUES(page_category),
+         ip_address       = VALUES(ip_address),
+         last_seen_at     = NOW(),
+         latitude         = IF(VALUES(geo_from_client) = 1, VALUES(latitude), latitude),
+         longitude        = IF(VALUES(geo_from_client) = 1, VALUES(longitude), longitude),
+         geo_from_client  = IF(VALUES(geo_from_client) = 1, 1, geo_from_client)`,
+      [id, userId, session_id, safeDevice, browser || null, os || null,
+       screen_width || null, screen_height || null, language || null,
+       current_page || null, category, ip, sessionStart,
+       hasClientGeo ? geo_lat : null, hasClientGeo ? geo_lon : null, hasClientGeo ? 1 : 0]
+    );
+
+    // Track time per section (non-blocking)
+    if (category) {
+      pool.query(
+        `INSERT INTO session_page_time (user_id, session_id, category, seconds_spent, last_updated)
+         VALUES (?, ?, ?, 30, NOW())
+         ON DUPLICATE KEY UPDATE seconds_spent = seconds_spent + 30, last_updated = NOW()`,
+        [userId, session_id, category]
+      ).catch(() => {});
+    }
+
+    // Geolocate from IP on new session (first insert only), async, non-blocking
+    const isNewSession = result.affectedRows === 1;
+    if (isNewSession && !hasClientGeo) {
+      geolocateIp(ip).then(geo => {
+        if (!geo) return;
+        pool.query(
+          `UPDATE user_sessions SET country = ?, country_code = ?, city = ?, latitude = ?, longitude = ?
+           WHERE user_id = ? AND session_id = ? AND geo_from_client = 0`,
+          [geo.country, geo.country_code, geo.city, geo.lat, geo.lon, userId, session_id]
+        ).catch(() => {});
+      }).catch(() => {});
+    }
+
+    res.json({ ok: true });
+  } catch (err) {
+    console.error("[POST /api/analytics/heartbeat]", err?.message);
+    res.status(500).json({ error: "Server error" });
+  }
+});
+
+// Country name → ISO-2 code for profile.country fallback
+const PROFILE_COUNTRY_TO_CODE = {
+  'france':'FR','allemagne':'DE','germany':'DE','espagne':'ES','spain':'ES','italie':'IT','italy':'IT',
+  'angleterre':'GB','england':'GB','royaume-uni':'GB','united kingdom':'GB','grande-bretagne':'GB',
+  'portugal':'PT','pays-bas':'NL','netherlands':'NL','belgique':'BE','belgium':'BE',
+  'suisse':'CH','switzerland':'CH','autriche':'AT','austria':'AT','suède':'SE','sweden':'SE',
+  'norvège':'NO','norway':'NO','danemark':'DK','denmark':'DK','finlande':'FI','finland':'FI',
+  'pologne':'PL','poland':'PL','tchéquie':'CZ','republique tcheque':'CZ','czech republic':'CZ','czechia':'CZ',
+  'hongrie':'HU','hungary':'HU','roumanie':'RO','romania':'RO','croatie':'HR','croatia':'HR',
+  'serbie':'RS','serbia':'RS','ukraine':'UA','russie':'RU','russia':'RU','turquie':'TR','turkey':'TR',
+  'grèce':'GR','greece':'GR','brésil':'BR','brazil':'BR','argentine':'AR','argentina':'AR',
+  'colombie':'CO','colombia':'CO','mexique':'MX','mexico':'MX','états-unis':'US','united states':'US',
+  'usa':'US','canada':'CA','australie':'AU','australia':'AU','japon':'JP','japan':'JP',
+  'corée du sud':'KR','south korea':'KR','chine':'CN','china':'CN','maroc':'MA','morocco':'MA',
+  'égypte':'EG','egypt':'EG','nigeria':'NG','afrique du sud':'ZA','south africa':'ZA',
+  'arabie saoudite':'SA','saudi arabia':'SA','qatar':'QA','émirats arabes unis':'AE',
+  'uae':'AE','united arab emirates':'AE','israël':'IL','israel':'IL','irlande':'IE','ireland':'IE',
+  'écosse':'GB','scotland':'GB','pays de galles':'GB','wales':'GB','luxembourg':'LU','luxembourg':'LU',
+};
+function profileCountryToCode(name) {
+  if (!name) return null;
+  return PROFILE_COUNTRY_TO_CODE[name.toLowerCase().trim()] || null;
+}
+
+// GET /api/admin/analytics/live — currently online users (last 2 min)
+app.get("/api/admin/analytics/live", authMiddleware, ensureAdmin, async (req, res) => {
+  try {
+    const [sessions] = await pool.query(
+      `SELECT
+         us.user_id, us.session_id, us.device_type, us.browser, us.os,
+         us.screen_width, us.screen_height, us.language, us.current_page, us.page_category,
+         us.ip_address, us.country, us.country_code, us.city, us.geo_from_client,
+         us.started_at, us.last_seen_at,
+         TIMESTAMPDIFF(SECOND, us.started_at, us.last_seen_at) AS session_seconds,
+         u.email,
+         COALESCE(p.full_name, u.email) AS display_name,
+         p.photo_url,
+         p.country AS profile_country
+       FROM user_sessions us
+       JOIN users u ON u.id = us.user_id
+       LEFT JOIN profiles p ON p.user_id = us.user_id
+       WHERE us.last_seen_at >= NOW() - INTERVAL 2 MINUTE
+       ORDER BY us.last_seen_at DESC`
+    );
+
+    // Enrich sessions: priority = GPS client > profil utilisateur > IP géoloc
+    for (const s of sessions) {
+      if (!s.country_code && s.profile_country) {
+        const code = profileCountryToCode(s.profile_country);
+        if (code) {
+          s.country_code = code;
+          s.country = s.profile_country;
+          s.country_source = 'profile';
+        }
+      } else if (s.country_code) {
+        s.country_source = s.geo_from_client ? 'gps' : 'ip';
+      }
+    }
+
+    const deviceBreakdown = {};
+    const browserBreakdown = {};
+    const osBreakdown = {};
+    const countryBreakdown = {};
+    const categoryBreakdown = {};
+    for (const s of sessions) {
+      deviceBreakdown[s.device_type] = (deviceBreakdown[s.device_type] || 0) + 1;
+      if (s.browser) browserBreakdown[s.browser] = (browserBreakdown[s.browser] || 0) + 1;
+      if (s.os) osBreakdown[s.os] = (osBreakdown[s.os] || 0) + 1;
+      if (s.country_code) {
+        if (!countryBreakdown[s.country_code]) countryBreakdown[s.country_code] = { count: 0, country: s.country, country_code: s.country_code };
+        countryBreakdown[s.country_code].count++;
+      }
+      if (s.page_category) categoryBreakdown[s.page_category] = (categoryBreakdown[s.page_category] || 0) + 1;
+    }
+    const avgSeconds = sessions.length
+      ? Math.round(sessions.reduce((sum, s) => sum + (s.session_seconds || 0), 0) / sessions.length)
+      : 0;
+
+    res.json({
+      online_count: sessions.length,
+      avg_session_seconds: avgSeconds,
+      device_breakdown: deviceBreakdown,
+      browser_breakdown: browserBreakdown,
+      os_breakdown: osBreakdown,
+      country_breakdown: Object.values(countryBreakdown).sort((a, b) => b.count - a.count),
+      category_breakdown: categoryBreakdown,
+      sessions,
+    });
+  } catch (err) {
+    console.error("[GET /api/admin/analytics/live]", err?.message);
+    res.status(500).json({ error: "Server error" });
+  }
+});
+
+// GET /api/admin/analytics/live/:userId — detailed session history for one user
+app.get("/api/admin/analytics/live/:userId", authMiddleware, ensureAdmin, async (req, res) => {
+  try {
+    const { userId } = req.params;
+    const [sessions] = await pool.query(
+      `SELECT us.*, u.email, COALESCE(p.full_name, u.email) AS display_name, p.photo_url,
+              p.country AS profile_country,
+              TIMESTAMPDIFF(SECOND, us.started_at, us.last_seen_at) AS session_seconds
+       FROM user_sessions us
+       JOIN users u ON u.id = us.user_id
+       LEFT JOIN profiles p ON p.user_id = us.user_id
+       WHERE us.user_id = ?
+       ORDER BY us.last_seen_at DESC
+       LIMIT 20`,
+      [userId]
+    );
+    // Apply profile country fallback
+    for (const s of sessions) {
+      if (!s.country_code && s.profile_country) {
+        const code = profileCountryToCode(s.profile_country);
+        if (code) { s.country_code = code; s.country = s.profile_country; s.country_source = 'profile'; }
+      } else if (s.country_code) {
+        s.country_source = s.geo_from_client ? 'gps' : 'ip';
+      }
+    }
+    const [[user]] = await pool.query(
+      `SELECT u.email, u.last_sign_in_at, COALESCE(p.full_name, u.email) AS display_name, p.photo_url, p.country AS profile_country
+       FROM users u LEFT JOIN profiles p ON p.user_id = u.id WHERE u.id = ?`,
+      [userId]
+    );
+    res.json({ user: user || null, sessions });
+  } catch (err) {
+    console.error("[GET /api/admin/analytics/live/:userId]", err?.message);
+    res.status(500).json({ error: "Server error" });
+  }
+});
+
 // GET /api/admin/analytics — comprehensive dashboard KPIs
 app.get("/api/admin/analytics", authMiddleware, ensureAdmin, async (req, res) => {
   try {
@@ -5441,6 +5813,27 @@ app.get("/api/admin/analytics", authMiddleware, ensureAdmin, async (req, res) =>
     // --- Opinion breakdown ---
     const [opinionBreakdown] = await pool.query("SELECT general_opinion, COUNT(*) as count FROM players GROUP BY general_opinion ORDER BY count DESC");
 
+    // --- Time by section (avg seconds per category across all sessions in range) ---
+    const sessionDateFilter = days ? `AND us.started_at >= DATE_SUB(NOW(), INTERVAL ${days} DAY)` : '';
+    const [timeBySection] = await pool.query(
+      `SELECT spt.category, ROUND(AVG(spt.seconds_spent)) as avg_seconds, SUM(spt.seconds_spent) as total_seconds, COUNT(DISTINCT spt.user_id) as user_count
+       FROM session_page_time spt
+       JOIN user_sessions us ON us.user_id = spt.user_id AND us.session_id = spt.session_id
+       WHERE 1=1 ${sessionDateFilter}
+       GROUP BY spt.category
+       ORDER BY total_seconds DESC`
+    ).catch(() => [[]]);
+
+    // --- Location breakdown (top countries from sessions in range) ---
+    const [locationBreakdown] = await pool.query(
+      `SELECT country, country_code, COUNT(DISTINCT user_id) as user_count, MAX(geo_from_client) as has_precise_geo
+       FROM user_sessions
+       WHERE country_code IS NOT NULL ${sessionDateFilter.replace('us.', '')}
+       GROUP BY country_code, country
+       ORDER BY user_count DESC
+       LIMIT 30`
+    ).catch(() => [[]]);
+
     res.json({
       users: { total_users: +total_users, new_users: +new_users, active_users: +active_users, active_today: +active_today, active_7d: +active_7d, active_30d: +active_30d, users_2fa: +users_2fa },
       subscriptions: { premium_users: +premium_users, new_premium: +new_premium, churned: +churned, plan_breakdown: planBreakdown },
@@ -5454,6 +5847,8 @@ app.get("/api/admin/analytics", authMiddleware, ensureAdmin, async (req, res) =>
       timeSeries: { users: userTimeSeries, players: playerTimeSeries, premium: premiumTimeSeries },
       topUsers,
       opinionBreakdown,
+      timeBySection,
+      locationBreakdown,
     });
   } catch (err) {
     console.error("[admin/analytics] Error:", err);
@@ -5918,12 +6313,44 @@ app.post("/api/admin/feature-flags", authMiddleware, ensureAdmin, async (req, re
   }
 });
 
+// GET /api/admin/scrape-settings
+app.get('/api/admin/scrape-settings', authMiddleware, ensureAdmin, async (req, res) => {
+  try {
+    const [rows] = await pool.query(
+      "SELECT setting_key, setting_value FROM app_settings WHERE setting_key LIKE 'scrape_%'"
+    );
+    const settings = {};
+    for (const r of rows) settings[r.setting_key] = parseInt(r.setting_value, 10) || 0;
+    res.json(settings);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// POST /api/admin/scrape-settings
+app.post('/api/admin/scrape-settings', authMiddleware, ensureAdmin, async (req, res) => {
+  try {
+    const { key, value } = req.body;
+    if (!key || !key.startsWith('scrape_')) return res.status(400).json({ error: 'Invalid key' });
+    const ms = Math.max(0, Math.min(60000, parseInt(value, 10) || 0));
+    await pool.query(
+      'INSERT INTO app_settings (setting_key, setting_value) VALUES (?, ?) ON DUPLICATE KEY UPDATE setting_value = VALUES(setting_value)',
+      [key, String(ms)]
+    );
+    _scrapeCache = null; // invalidate cache immediately
+    res.json({ ok: true, key, value: ms });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // Public endpoint: check if a feature is enabled (used by frontend)
 app.get("/api/feature-flags", async (_req, res) => {
   try {
     const [rows] = await pool.query("SELECT setting_key, setting_value FROM app_settings WHERE setting_key LIKE 'feature_%'");
     const flags = {};
     for (const r of rows) flags[r.setting_key] = r.setting_value === '1';
+    res.set('Cache-Control', 'public, max-age=3600');
     return res.json(flags);
   } catch {
     return res.json({});
@@ -6073,6 +6500,7 @@ app.get("/api/admin/credits", authMiddleware, ensureAdmin, async (req, res) => {
 app.get("/api/club-logos", async (_req, res) => {
   try {
     const [rows] = await pool.query("SELECT club_name, logo_url, name_fr, name_en, name_es FROM club_logos");
+    res.set('Cache-Control', 'public, max-age=604800');
     return res.json(rows);
   } catch (err) {
     console.error("[club-logos] GET error:", err);
@@ -6291,6 +6719,16 @@ app.get("/api/club-search", async (req, res) => {
 
 // ── Nominatim geocoding helper (OpenStreetMap, no API key required) ─────────
 async function geocodeClub(clubName, country) {
+  // ── Check persistent cache first (coords never change) ──────────────────
+  const cacheKey = `${clubName}|${country || ''}`.toLowerCase();
+  try {
+    const [cached] = await pool.query(
+      'SELECT lat, lng FROM club_geocoding_cache WHERE cache_key = ? LIMIT 1',
+      [cacheKey]
+    );
+    if (cached.length > 0) return { lat: parseFloat(cached[0].lat), lng: parseFloat(cached[0].lng) };
+  } catch { /* graceful */ }
+
   const HDRS = { 'User-Agent': 'ScoutyApp/1.0 (contact@scouty.app)', 'Accept-Language': 'fr,en' };
   const query = async (q) => {
     try {
@@ -6314,7 +6752,6 @@ async function geocodeClub(clubName, country) {
     .replace(/^(AS|FC|AC|SC|OGC|US|AJ|SM|RC|AO|SL|CF|SD|RB|BV|SV|VfB|VfL|TSG|FSV|SG|FK|SK|NK|HNK|GNK|MFK|TJ|Stade|Sporting|Athletic|Racing|Real|Atlético|Inter|United|City|Town|Rovers|Wanderers|Dynamo|Lokomotiv|Spartak|Zenit|Slavia|Rapid)\s+/i, '')
     .replace(/\s+/g, ' ').trim();
   const tries = [
-    // Try with "football" first to hit sports leisure entries
     country ? `${clubName} football ${country}` : `${clubName} football`,
     country ? `${clubName} ${country}` : clubName,
     stripped !== clubName && country ? `${stripped} football ${country}` : null,
@@ -6324,7 +6761,14 @@ async function geocodeClub(clubName, country) {
   for (const q of tries) {
     const data = await query(q);
     const r = pick(data);
-    if (r) return r;
+    if (r) {
+      // Persist result — stadium coordinates are effectively permanent
+      pool.query(
+        'INSERT INTO club_geocoding_cache (cache_key, lat, lng) VALUES (?, ?, ?) ON DUPLICATE KEY UPDATE lat = VALUES(lat), lng = VALUES(lng), cached_at = NOW()',
+        [cacheKey, r.lat, r.lng]
+      ).catch(() => {});
+      return r;
+    }
   }
   return null;
 }
@@ -6501,10 +6945,13 @@ app.get("/api/club-tm-history/:clubId", async (req, res) => {
   const cacheKey = `club_history_${clubId}`;
   try {
     const [cached] = await pool.query(
-      "SELECT response_data FROM api_football_cache WHERE cache_key = ? AND created_at > DATE_SUB(NOW(), INTERVAL 24 HOUR) LIMIT 1",
+      "SELECT response_data FROM api_football_cache WHERE cache_key = ? AND created_at > DATE_SUB(NOW(), INTERVAL 30 DAY) LIMIT 1",
       [cacheKey]
     );
-    if (cached.length > 0) return res.json(JSON.parse(cached[0].response_data));
+    if (cached.length > 0) {
+      res.set('Cache-Control', 'public, max-age=2592000');
+      return res.json(JSON.parse(cached[0].response_data));
+    }
   } catch {}
 
   try {
@@ -6564,6 +7011,7 @@ app.get("/api/club-tm-history/:clubId", async (req, res) => {
       [cacheKey, JSON.stringify(result)]
     ).catch(() => {});
 
+    res.set('Cache-Control', 'public, max-age=2592000');
     return res.json(result);
   } catch (err) {
     console.error("[club-tm-history] Error:", err.message);
@@ -6588,6 +7036,7 @@ app.get("/api/player-tm-injuries/:tmId", async (req, res) => {
       [cacheKey]
     );
     if (cached.length > 0) {
+      res.set('Cache-Control', 'public, max-age=604800');
       return res.json(typeof cached[0].response_json === "string" ? JSON.parse(cached[0].response_json) : cached[0].response_json);
     }
   } catch {}
@@ -6632,12 +7081,13 @@ app.get("/api/player-tm-injuries/:tmId", async (req, res) => {
     try {
       await pool.query(
         `INSERT INTO api_football_cache (cache_key, response_json, fetched_at, expires_at)
-         VALUES (?, ?, NOW(), DATE_ADD(NOW(), INTERVAL 24 HOUR))
-         ON DUPLICATE KEY UPDATE response_json = VALUES(response_json), fetched_at = NOW(), expires_at = DATE_ADD(NOW(), INTERVAL 24 HOUR)`,
+         VALUES (?, ?, NOW(), DATE_ADD(NOW(), INTERVAL 7 DAY))
+         ON DUPLICATE KEY UPDATE response_json = VALUES(response_json), fetched_at = NOW(), expires_at = DATE_ADD(NOW(), INTERVAL 7 DAY)`,
         [cacheKey, JSON.stringify(result)]
       );
     } catch {}
 
+    res.set('Cache-Control', 'public, max-age=604800');
     return res.json(result);
   } catch (err) {
     console.error("[player-tm-injuries] Error:", err.message);
@@ -6662,6 +7112,7 @@ app.get("/api/player-tm-market-value/:tmId", async (req, res) => {
       [cacheKey]
     );
     if (cached.length > 0) {
+      res.set('Cache-Control', 'public, max-age=604800');
       return res.json(typeof cached[0].response_json === "string" ? JSON.parse(cached[0].response_json) : cached[0].response_json);
     }
   } catch {}
@@ -6704,12 +7155,13 @@ app.get("/api/player-tm-market-value/:tmId", async (req, res) => {
     try {
       await pool.query(
         `INSERT INTO api_football_cache (cache_key, response_json, fetched_at, expires_at)
-         VALUES (?, ?, NOW(), DATE_ADD(NOW(), INTERVAL 24 HOUR))
-         ON DUPLICATE KEY UPDATE response_json = VALUES(response_json), fetched_at = NOW(), expires_at = DATE_ADD(NOW(), INTERVAL 24 HOUR)`,
+         VALUES (?, ?, NOW(), DATE_ADD(NOW(), INTERVAL 7 DAY))
+         ON DUPLICATE KEY UPDATE response_json = VALUES(response_json), fetched_at = NOW(), expires_at = DATE_ADD(NOW(), INTERVAL 7 DAY)`,
         [cacheKey, JSON.stringify(result)]
       );
     } catch {}
 
+    res.set('Cache-Control', 'public, max-age=604800');
     return res.json(result);
   } catch (err) {
     console.error("[player-tm-market-value] Error:", err.message);
@@ -6725,6 +7177,7 @@ app.get("/api/league-logos", async (_req, res) => {
        FROM league_name_mappings
        WHERE api_league_logo IS NOT NULL AND api_league_logo != ''`
     );
+    res.set('Cache-Control', 'public, max-age=604800');
     return res.json(rows);
   } catch (err) {
     console.error("[league-logos] GET error:", err);
@@ -10533,6 +10986,39 @@ app.post("/api/functions/:name", authMiddleware, async (req, res) => {
       return res.status(400).json({ error: "Missing endpoint" });
     }
 
+    // TTL per endpoint type (minutes)
+    const TSDB_TTL = {
+      searchteams: 1440,       // 24h — team names don't change
+      lookupteam: 1440,
+      lookuphonours: 129600,   // 90 days — trophies are historical
+      lookupmilestones: 129600,
+      eventslast: 180,         // 3h — recent results
+      eventsnext: 180,         // 3h — upcoming fixtures
+      eventspastleague: 720,   // 12h — past season data
+      eventsseason: 720,
+      searchevents: 60,        // 1h — live-ish data
+      lookupplayer: 10080,     // 7 days — player profile
+      searchplayers: 10080,
+    };
+    const baseEndpoint = endpoint.split('?')[0].replace(/\.php$/, '');
+    const ttlMinutes = TSDB_TTL[baseEndpoint] ?? 360; // default 6h
+
+    const sortedParams = Object.entries(params || {}).sort(([a], [b]) => a.localeCompare(b));
+    const cacheKey = `tsdb:${endpoint}:${sortedParams.map(([k, v]) => `${k}=${v}`).join(':')}`;
+
+    // Check cache
+    try {
+      const [cached] = await pool.query(
+        'SELECT response_json FROM api_football_cache WHERE cache_key = ? AND expires_at > NOW() LIMIT 1',
+        [cacheKey]
+      );
+      if (cached.length > 0) {
+        const json = cached[0].response_json;
+        res.set('Cache-Control', `public, max-age=${ttlMinutes * 60}`);
+        return res.json(typeof json === 'string' ? JSON.parse(json) : json);
+      }
+    } catch { /* graceful */ }
+
     try {
       const search = new URLSearchParams(params || {});
       const url = `https://www.thesportsdb.com/api/v1/json/${apiKey}/${endpoint}.php?${search.toString()}`;
@@ -10552,6 +11038,14 @@ app.post("/api/functions/:name", authMiddleware, async (req, res) => {
           return res.status(response.status).json({ error: `TheSportsDB returned ${response.status}` });
         }
         const data = await response.json();
+        // Persist to cache
+        pool.query(
+          `INSERT INTO api_football_cache (cache_key, response_json, fetched_at, expires_at)
+           VALUES (?, ?, NOW(), DATE_ADD(NOW(), INTERVAL ? MINUTE))
+           ON DUPLICATE KEY UPDATE response_json = VALUES(response_json), fetched_at = NOW(), expires_at = DATE_ADD(NOW(), INTERVAL ? MINUTE)`,
+          [cacheKey, JSON.stringify(data), ttlMinutes, ttlMinutes]
+        ).catch(() => {});
+        res.set('Cache-Control', `public, max-age=${ttlMinutes * 60}`);
         return res.json(data);
       }
       // All retries exhausted
@@ -11029,87 +11523,155 @@ app.post("/api/functions/:name", authMiddleware, async (req, res) => {
     const { tournamentId } = req.body || {};
     if (!tournamentId) return res.status(400).json({ error: "Missing tournamentId" });
 
-    const SOFA_HEADERS = {
-      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
-      'Accept': 'application/json, text/plain, */*',
-      'Accept-Language': 'fr-FR,fr;q=0.9,en-US;q=0.8,en;q=0.7',
-      'Referer': 'https://www.sofascore.com/',
-      'Origin': 'https://www.sofascore.com',
-      'Cache-Control': 'no-cache',
+    // Sofascore tournament ID → ESPN league slug
+    const SOFA_TO_ESPN = {
+      34: 'fra.1', 182: 'fra.2',
+      17: 'eng.1', 18: 'eng.2', 49: 'eng.3',
+      8: 'esp.1', 547: 'esp.2',
+      23: 'ita.1', 53: 'ita.2',
+      35: 'ger.1', 44: 'ger.2',
+      238: 'por.1', 370: 'por.2',
+      37: 'ned.1', 131: 'ned.2',
+      38: 'bel.1', 391: 'bel.2',
+      52: 'tur.1',
+      215: 'sui.1',
+      271: 'den.1',
+      40: 'swe.1',
+      200: 'nor.1',
+      45: 'aut.1',
+      36: 'sco.1',
+      202: 'pol.1',
+      170: 'rou.1',
+      185: 'gre.1',
+      218: 'ukr.1',
+      242: 'usa.1',
+      11621: 'mex.1',
+      155: 'arg.1',
+      955: 'ksa.1',
+      180: 'kor.1',
+      196: 'jpn.1',
+      7: 'UEFA.CHAMPIONS',
+      679: 'UEFA.EUROPA',
+      17015: 'UEFA.CONFERENCE',
+      16: 'FIFA.WORLD',
+      1: 'UEFA.EURO',
+      133: 'CONMEBOL.AMERICA',
     };
-    const opts = { headers: SOFA_HEADERS, signal: AbortSignal.timeout(12000) };
-    const apiBase = 'https://api.sofascore.com/api/v1';
 
-    // Check DB cache first (24h TTL)
-    const cacheKey = `sofascore_league_${tournamentId}`;
+    // Infer promotion/relegation zone from position
+    function getZone(slug, pos, total) {
+      const r = (a, b) => pos >= a && pos <= b;
+      if (slug === 'fra.1') {
+        if (r(1,3)) return 'champions_league';
+        if (pos === 4) return 'europa_league';
+        if (pos === 5) return 'conference_league';
+        if (pos >= total - 2) return 'relegation';
+      } else if (slug === 'fra.2') {
+        if (r(1,2)) return 'promotion';
+        if (pos === 3) return 'promotion_playoff';
+        if (pos >= total - 2) return 'relegation';
+      } else if (slug === 'eng.1' || slug === 'esp.1' || slug === 'ita.1') {
+        if (r(1,4)) return 'champions_league';
+        if (pos === 5) return 'europa_league';
+        if (pos === 6) return 'conference_league';
+        if (pos >= total - 2) return 'relegation';
+      } else if (slug === 'ger.1') {
+        if (r(1,4)) return 'champions_league';
+        if (pos === 5) return 'europa_league';
+        if (pos === 6) return 'conference_league';
+        if (pos === total - 2) return 'relegation_playoff';
+        if (pos >= total - 1) return 'relegation';
+      } else if (slug === 'por.1') {
+        if (r(1,2)) return 'champions_league';
+        if (pos === 3) return 'europa_league';
+        if (pos === 4) return 'conference_league';
+        if (pos >= total - 2) return 'relegation';
+      } else if (slug === 'ned.1') {
+        if (pos === 1) return 'champions_league';
+        if (pos === 2) return 'europa_league';
+        if (pos === 3) return 'conference_league';
+        if (pos >= total - 1) return 'relegation';
+      } else {
+        // Generic fallback: top 1 = winner, bottom 3 = relegation
+        if (pos === 1) return 'champions_league';
+        if (pos >= total - 2) return 'relegation';
+      }
+      return null;
+    }
+
+    const espnSlug = SOFA_TO_ESPN[Number(tournamentId)];
+    const cacheKey = `standings_espn_${tournamentId}`;
+
+    // Check cache (6h TTL)
     try {
       const [cached] = await pool.query(
         'SELECT response_json FROM api_football_cache WHERE cache_key = ? AND expires_at > NOW()',
         [cacheKey]
       );
       if (cached.length > 0) {
-        return res.json(JSON.parse(cached[0].response_json));
+        const v = cached[0].response_json;
+        return res.json(typeof v === 'string' ? JSON.parse(v) : v);
       }
-    } catch { /* cache miss, continue */ }
+    } catch { /* cache miss */ }
+
+    if (!espnSlug) {
+      return res.json({ teams: [], season: null, source: 'none' });
+    }
 
     try {
-      // 1. Fetch seasons to get the current one
-      const seasonsResp = await fetch(`${apiBase}/unique-tournament/${tournamentId}/seasons`, opts);
-      if (!seasonsResp.ok) {
-        console.warn(`[sofascore] seasons ${seasonsResp.status} for tournament ${tournamentId}`);
-        return res.status(seasonsResp.status).json({ error: `SofaScore returned ${seasonsResp.status}` });
-      }
-      const seasonsData = await seasonsResp.json();
-      const currentSeason = seasonsData?.seasons?.[0]; // first = most recent
-      if (!currentSeason) return res.json({ teams: [], season: null });
-
-      // 2. Fetch standings to get teams
-      await new Promise(r => setTimeout(r, 500));
-      const standingsResp = await fetch(
-        `${apiBase}/unique-tournament/${tournamentId}/season/${currentSeason.id}/standings/total`,
-        opts
+      const espnResp = await fetch(
+        `https://site.api.espn.com/apis/v2/sports/soccer/${espnSlug}/standings`,
+        { headers: { Accept: 'application/json' }, signal: AbortSignal.timeout(10000) }
       );
-      let teams = [];
-      if (standingsResp.ok) {
-        const standingsData = await standingsResp.json();
-        const rows = standingsData?.standings?.[0]?.rows ?? [];
-        teams = rows.map(r => ({
-          id: r.team?.id,
-          name: r.team?.name,
-          shortName: r.team?.shortName,
-          position: r.position,
-          points: r.points,
-          played: r.matches,
-          wins: r.wins,
-          draws: r.draws,
-          losses: r.losses,
-          goalsFor: r.scoresFor,
-          goalsAgainst: r.scoresAgainst,
-        }));
-      } else {
-        console.warn(`[sofascore] standings ${standingsResp.status} for ${tournamentId}/${currentSeason.id}`);
+      if (!espnResp.ok) {
+        console.warn(`[espn-standings] ${espnResp.status} for ${espnSlug}`);
+        return res.status(espnResp.status).json({ error: `ESPN returned ${espnResp.status}` });
       }
 
-      const result = {
-        tournamentId: Number(tournamentId),
-        season: { id: currentSeason.id, name: currentSeason.name, year: currentSeason.year },
-        teams,
-      };
+      const espnData = await espnResp.json();
+      const seasonName =
+        espnData?.children?.[0]?.standings?.[0]?.seasonDisplayName ??
+        espnData?.season?.displayName ??
+        String(espnData?.season?.year ?? '');
+      const entries = espnData?.children?.[0]?.standings?.[0]?.entries ?? [];
 
-      // Cache for 24h
+      const teams = entries.map(e => {
+        const stat = n => { const s = e.stats?.find(x => x.name === n); return s ? Math.round(Number(s.value)) : null; };
+        const pos = stat('rank') ?? 0;
+        return {
+          id: e.team?.id,
+          name: e.team?.displayName,
+          shortName: e.team?.shortDisplayName ?? e.team?.abbreviation,
+          logoUrl: e.team?.logos?.[0]?.href ?? null,
+          position: pos,
+          points: stat('points') ?? 0,
+          played: stat('gamesPlayed') ?? 0,
+          wins: stat('wins') ?? 0,
+          draws: stat('ties') ?? 0,
+          losses: stat('losses') ?? 0,
+          goalsFor: stat('pointsFor') ?? 0,
+          goalsAgainst: stat('pointsAgainst') ?? 0,
+          description: getZone(espnSlug, pos, entries.length),
+          promotionDescription: null,
+        };
+      });
+
+      const result = { tournamentId: Number(tournamentId), season: { name: seasonName }, teams, source: 'espn' };
+
+      // Cache 6h
       try {
-        const expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString().slice(0, 19).replace('T', ' ');
+        const exp = new Date(Date.now() + 6 * 3600 * 1000).toISOString().slice(0, 19).replace('T', ' ');
         await pool.query(
           `INSERT INTO api_football_cache (cache_key, response_json, expires_at) VALUES (?, ?, ?)
            ON DUPLICATE KEY UPDATE response_json = VALUES(response_json), expires_at = VALUES(expires_at), fetched_at = NOW()`,
-          [cacheKey, JSON.stringify(result), expiresAt]
+          [cacheKey, JSON.stringify(result), exp]
         );
-      } catch { /* cache write failure is non-critical */ }
+      } catch { /* non-critical */ }
 
       return res.json(result);
     } catch (err) {
-      console.error('[sofascore] Error:', err?.message);
-      return res.status(502).json({ error: 'SofaScore fetch failed', detail: err?.message });
+      console.error('[espn-standings] Error:', err?.message);
+      return res.status(502).json({ error: 'ESPN fetch failed', detail: err?.message });
     }
   }
 
@@ -11456,7 +12018,27 @@ pool.query(`CREATE TABLE IF NOT EXISTS user_saved_championships (
 app.get("/api/saved-championships", authMiddleware, async (req, res) => {
   try {
     const [rows] = await pool.query(
-      "SELECT * FROM user_saved_championships WHERE user_id = ? ORDER BY championship_name ASC",
+      `SELECT
+         usc.*,
+         COUNT(DISTINCT cp.player_id)                                          AS player_count,
+         COUNT(DISTINCT NULLIF(TRIM(p.club), ''))                              AS club_count,
+         (SELECT p2.club
+          FROM championship_players cp2
+          JOIN players p2 ON p2.id = cp2.player_id
+          WHERE cp2.user_id = usc.user_id
+            AND cp2.championship_name = usc.championship_name
+            AND TRIM(p2.club) != ''
+          GROUP BY p2.club
+          ORDER BY COUNT(*) DESC
+          LIMIT 1)                                                              AS top_club
+       FROM user_saved_championships usc
+       LEFT JOIN championship_players cp
+         ON cp.championship_name = usc.championship_name AND cp.user_id = usc.user_id
+       LEFT JOIN players p
+         ON p.id = cp.player_id
+       WHERE usc.user_id = ?
+       GROUP BY usc.id
+       ORDER BY usc.championship_name ASC`,
       [req.user.id]
     );
     return res.json(rows);
@@ -11592,6 +12174,77 @@ function normalizeSofascoreArticle(raw) {
   return { title, description: desc, article_url: url, image_url: image, category: cat, author, published_at: pubDate, external_id: extId, tags };
 }
 
+// ── Lightweight RSS parser (no external dependency) ──────────────────────────
+function parseRSSItems(xml) {
+  const items = [];
+  const itemRe = /<item[^>]*>([\s\S]*?)<\/item>/g;
+  const getTag = (str, tag) => {
+    const m = str.match(new RegExp(`<${tag}[^>]*>(?:<!\\[CDATA\\[)?([\\s\\S]*?)(?:\\]\\]>)?<\\/${tag}>`, 'i'));
+    return m ? m[1].trim() : '';
+  };
+  let m;
+  while ((m = itemRe.exec(xml)) !== null) {
+    const raw = m[1];
+    const imgM = raw.match(/<media:content[^>]+url="([^"]+)"/) ||
+                 raw.match(/<media:thumbnail[^>]+url="([^"]+)"/) ||
+                 raw.match(/<enclosure[^>]+url="([^"]+)"/) ||
+                 raw.match(/<image:loc[^>]*>([^<]+)<\/image:loc>/);
+    items.push({
+      title:       getTag(raw, 'title'),
+      link:        getTag(raw, 'link'),
+      description: getTag(raw, 'description'),
+      pubDate:     getTag(raw, 'pubDate') || getTag(raw, 'dc:date'),
+      author:      getTag(raw, 'author') || getTag(raw, 'dc:creator'),
+      image:       imgM ? imgM[1].trim() : null,
+      category:    getTag(raw, 'category'),
+    });
+  }
+  return items;
+}
+
+// ── RSS news fetcher — free, reliable primary source ─────────────────────────
+async function fetchNewsFromRSS() {
+  const feeds = [
+    { url: 'https://www.lequipe.fr/rss/actu_rss_Football.xml',      source: 'lequipe',     label: "L'Équipe" },
+    { url: 'https://www.footmercato.net/flux-rss.xml',               source: 'footmercato', label: 'Foot Mercato' },
+    { url: 'https://rmcsport.bfmtv.com/rss/football/',               source: 'rmc',         label: 'RMC Sport' },
+    { url: 'https://www.maxifoot.fr/football/rss/',                  source: 'maxifoot',    label: 'Maxifoot' },
+    { url: 'https://www.goal.com/feeds/fr/news',                     source: 'goal',        label: 'Goal.com' },
+  ];
+  const articles = [];
+  for (const feed of feeds) {
+    try {
+      const res = await fetch(feed.url, {
+        headers: { 'User-Agent': 'Scouty/1.0 RSS Reader', 'Accept': 'application/rss+xml, application/xml, text/xml' },
+        signal: AbortSignal.timeout(8000),
+      });
+      if (!res.ok) continue;
+      const xml = await res.text();
+      const items = parseRSSItems(xml);
+      for (const item of items.slice(0, 20)) {
+        if (!item.title || !item.link) continue;
+        articles.push({
+          external_id:  item.link,
+          title:        item.title,
+          description:  item.description ? item.description.replace(/<[^>]+>/g, '').slice(0, 500) : null,
+          article_url:  item.link,
+          image_url:    item.image || null,
+          category:     item.category || 'Football',
+          published_at: item.pubDate ? new Date(item.pubDate).toISOString() : new Date().toISOString(),
+          source:       feed.source,
+          source_label: feed.label,
+          author:       item.author || null,
+          tags:         [],
+        });
+      }
+      console.log(`[news/rss] ${feed.label}: ${items.length} articles`);
+    } catch (err) {
+      console.warn(`[news/rss] ${feed.label} failed:`, err?.message);
+    }
+  }
+  return articles.length > 0 ? articles : null;
+}
+
 async function fetchNewsSofascoreDirect() {
   // Try known Sofascore internal API patterns
   const candidates = [
@@ -11619,60 +12272,73 @@ async function fetchNewsSofascoreDirect() {
 
 async function fetchNewsWithApify() {
   const apiKey = process.env.APIFY_API_KEY;
-  if (!apiKey) return null;
+  if (!apiKey) { console.warn('[news/apify] APIFY_API_KEY not set'); return null; }
 
   try {
-    // Use apify/website-content-crawler to render the JS-heavy page
-    const actorId = 'apify~website-content-crawler';
+    // playwright-scraper supports pageFunction; website-content-crawler does NOT
+    const actorId = 'apify~playwright-scraper';
+    console.log('[news/apify] Starting Apify playwright-scraper run...');
     const runRes = await fetch(
-      `https://api.apify.com/v2/acts/${actorId}/run-sync-get-dataset-items?token=${apiKey}&timeout=120&memory=1024`,
+      `https://api.apify.com/v2/acts/${actorId}/run-sync-get-dataset-items?timeout=120&memory=1024`,
       {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${apiKey}`,   // new-format API keys use Bearer header
+        },
         body: JSON.stringify({
-          startUrls: [{ url: 'https://www.sofascore.com/fr/news?category=football-fr' }],
-          maxCrawlingDepth: 0,
-          maxResults: 30,
-          saveMarkdown: false,
-          saveHtml: false,
-          proxyConfiguration: { useApifyProxy: true },
-          // Custom extractor for article cards
-          pageFunction: `async ({ page, enqueueLinks, request, log }) => {
-            await page.waitForTimeout(3000);
-            const articles = await page.evaluate(() => {
-              const sel = 'article, [class*="ArticleCard"], [class*="article-card"], [class*="news-card"], [data-testid*="article"]';
+          startUrls: [{ url: 'https://www.sofascore.com/fr/news' }],
+          maxRequestsPerCrawl: 1,
+          pageFunction: `async ({ page }) => {
+            await page.waitForTimeout(4000);
+            return page.evaluate(() => {
+              const sel = 'article,[class*="ArticleCard"],[class*="article-card"],[class*="news-card"],[data-testid*="article"]';
               return Array.from(document.querySelectorAll(sel)).slice(0, 30).map(el => ({
-                title: (el.querySelector('h1,h2,h3,h4,[class*="title"]') || {}).textContent?.trim() || '',
-                description: (el.querySelector('p,[class*="description"],[class*="excerpt"],[class*="subtitle"]') || {}).textContent?.trim() || '',
-                image_url: (el.querySelector('img') || {}).src || '',
-                article_url: (el.querySelector('a') || {}).href || window.location.href,
-                category: (el.querySelector('[class*="category"],[class*="tag"],[class*="badge"]') || {}).textContent?.trim() || 'Football',
-                published_at: (el.querySelector('time') || {}).getAttribute?.('datetime') || new Date().toISOString(),
-                author: (el.querySelector('[class*="author"]') || {}).textContent?.trim() || null,
-              })).filter(a => a.title && a.article_url !== window.location.href);
+                title:        (el.querySelector('h1,h2,h3,h4,[class*=\\'title\\']') || {}).textContent?.trim() || '',
+                description:  (el.querySelector('p,[class*=\\'desc\\'],[class*=\\'excerpt\\'],[class*=\\'subtitle\\']') || {}).textContent?.trim() || '',
+                image_url:    el.querySelector('img')?.src || '',
+                article_url:  el.querySelector('a')?.href || '',
+                category:     (el.querySelector('[class*=\\'category\\'],[class*=\\'tag\\'],[class*=\\'badge\\']') || {}).textContent?.trim() || 'Football',
+                published_at: el.querySelector('time')?.getAttribute('datetime') || new Date().toISOString(),
+                author:       (el.querySelector('[class*=\\'author\\']') || {}).textContent?.trim() || null,
+              })).filter(a => a.title && a.article_url && !a.article_url.includes('/fr/news'));
             });
-            return articles;
           }`,
+          proxyConfiguration: { useApifyProxy: true },
         }),
-        signal: AbortSignal.timeout(130000),
+        signal: AbortSignal.timeout(140000),
       }
     );
-    if (!runRes.ok) { console.warn('[news] Apify run failed:', runRes.status); return null; }
+
+    if (!runRes.ok) {
+      const errText = await runRes.text().catch(() => '');
+      console.warn(`[news/apify] Run failed: HTTP ${runRes.status} — ${errText.slice(0, 200)}`);
+      return null;
+    }
+
     const items = await runRes.json();
-    const flat = items.flat ? items.flat() : items;
-    const articles = flat.filter(a => a?.title).map(a => ({
-      ...a,
-      external_id: a.article_url,
-      tags: [],
-      source: 'sofascore',
+    const flat = Array.isArray(items) ? items.flat() : [];
+    const articles = flat.filter(a => a?.title && a?.article_url).map(a => ({
+      external_id:  a.article_url,
+      title:        String(a.title).trim(),
+      description:  a.description || null,
+      image_url:    a.image_url || null,
+      article_url:  a.article_url,
+      category:     a.category || 'Football',
+      published_at: a.published_at || new Date().toISOString(),
+      author:       a.author || null,
+      source:       'sofascore',
+      tags:         [],
     }));
+
     if (articles.length > 0) {
-      console.log(`[news] Apify succeeded: ${articles.length} articles`);
+      console.log(`[news/apify] Succeeded: ${articles.length} articles`);
       return articles;
     }
+    console.warn('[news/apify] Run succeeded but returned 0 articles');
     return null;
   } catch (err) {
-    console.warn('[news] Apify error:', err?.message);
+    console.warn('[news/apify] Error:', err?.message);
     return null;
   }
 }
@@ -11717,19 +12383,178 @@ async function saveNewsArticles(articles) {
 
 async function runNewsScrape() {
   console.log('[news] Starting news scrape...');
-  let articles = await fetchNewsSofascoreDirect();
-  if (!articles || articles.length === 0) {
-    console.log('[news] Direct API returned nothing, trying Apify...');
+
+  // 1. RSS feeds — free, reliable, multiple French football sources
+  let articles = await fetchNewsFromRSS();
+  if (articles && articles.length > 0) {
+    console.log(`[news] RSS source returned ${articles.length} articles`);
+    const saved = await saveNewsArticles(articles);
+    console.log(`[news] RSS scrape done: ${saved} saved/updated`);
+    return saved;
+  }
+
+  // 2. Sofascore direct API (often blocked but worth trying)
+  console.log('[news] RSS returned nothing, trying Sofascore direct API...');
+  articles = await fetchNewsSofascoreDirect();
+  if (articles && articles.length > 0) {
+    const saved = await saveNewsArticles(articles);
+    console.log(`[news] Sofascore direct done: ${saved} saved/updated`);
+    return saved;
+  }
+
+  // 3. Apify playwright scraper (paid, last resort)
+  if (process.env.APIFY_API_KEY) {
+    console.log('[news] Trying Apify playwright scraper...');
     articles = await fetchNewsWithApify();
+    if (articles && articles.length > 0) {
+      const saved = await saveNewsArticles(articles);
+      console.log(`[news] Apify scrape done: ${saved} saved/updated`);
+      return saved;
+    }
   }
-  if (!articles || articles.length === 0) {
-    console.log('[news] No articles found from any source.');
-    return 0;
-  }
-  const saved = await saveNewsArticles(articles);
-  console.log(`[news] Scrape done: ${saved} articles saved/updated.`);
-  return saved;
+
+  console.log('[news] No articles found from any source.');
+  return 0;
 }
+
+// ── Apify single-URL content fetcher ─────────────────────────────────────────
+async function fetchArticleContentWithApify(articleUrl) {
+  const apiKey = process.env.APIFY_API_KEY;
+  if (!apiKey) return null;
+  try {
+    const actorId = 'apify~website-content-crawler';
+    const runRes = await fetch(
+      `https://api.apify.com/v2/acts/${actorId}/run-sync-get-dataset-items?timeout=60&memory=512`,
+      {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${apiKey}`,
+        },
+        body: JSON.stringify({
+          startUrls: [{ url: articleUrl }],
+          maxCrawlDepth: 0,
+          maxCrawlPages: 1,
+          crawlerType: 'playwright:chrome',
+          saveMarkdown: true,
+          saveHtml: false,
+          proxyConfiguration: { useApifyProxy: true },
+        }),
+        signal: AbortSignal.timeout(75000),
+      }
+    );
+    if (!runRes.ok) return null;
+    const items = await runRes.json();
+    const item = Array.isArray(items) ? items[0] : null;
+    if (!item) return null;
+    return {
+      html: item.html || null,
+      markdown: item.markdown || item.text || null,
+      title: item.title || null,
+    };
+  } catch (err) {
+    console.warn('[news/apify] fetch error:', err?.message);
+    return null;
+  }
+}
+
+// ── GET /api/news/unified — merged news_articles + football_buzz ──────────────
+app.get("/api/news/unified", authMiddleware, async (req, res) => {
+  try {
+    const limit  = Math.min(parseInt(req.query.limit) || 20, 60);
+    const offset = Math.max(parseInt(req.query.offset) || 0, 0);
+    const search = (req.query.search || '').trim();
+    const category = (req.query.category || '').trim();
+    const typeFilter = (req.query.type || '').trim(); // 'article' | 'buzz' | ''
+
+    const artClauses = ['1=1']; const artParams = [];
+    const buzzClauses = ['1=1']; const buzzParams = [];
+
+    if (search) {
+      artClauses.push('(na.title LIKE ? OR na.description LIKE ?)');
+      artParams.push(`%${search}%`, `%${search}%`);
+      buzzClauses.push('fb.content LIKE ?');
+      buzzParams.push(`%${search}%`);
+    }
+    if (category) {
+      artClauses.push('na.category = ?');
+      artParams.push(category);
+    }
+
+    const artWhere  = artClauses.join(' AND ');
+    const buzzWhere = buzzClauses.join(' AND ');
+
+    // Build UNION query (articles + buzz), skip buzz if type=article, skip articles if type=buzz
+    let unionParts = [];
+    if (typeFilter !== 'buzz') {
+      unionParts.push(`
+        SELECT na.id, 'article' AS type, na.title, na.description AS excerpt,
+               na.image_url, na.article_url AS url, na.category, na.author,
+               na.published_at, na.source,
+               CASE WHEN na.content IS NOT NULL AND na.content != '' THEN 1 ELSE 0 END AS has_content
+        FROM news_articles na WHERE ${artWhere}
+      `);
+    }
+    if (typeFilter !== 'article') {
+      unionParts.push(`
+        SELECT fb.id, 'buzz' AS type, fb.source_name AS title, fb.content AS excerpt,
+               fb.image_url, fb.external_url AS url, NULL AS category, fb.source_handle AS author,
+               fb.published_at, 'footballbuzz' AS source,
+               1 AS has_content
+        FROM football_buzz fb WHERE ${buzzWhere}
+      `);
+    }
+
+    if (!unionParts.length) return res.json({ items: [], total: 0, categories: [] });
+
+    const unionSql = unionParts.join(' UNION ALL ');
+    const allParams = [...artParams, ...buzzParams];
+
+    const [[{ total }]] = await pool.query(`SELECT COUNT(*) as total FROM (${unionSql}) u`, allParams);
+    const [rows] = await pool.query(
+      `SELECT * FROM (${unionSql}) u ORDER BY published_at DESC LIMIT ? OFFSET ?`,
+      [...allParams, limit, offset]
+    );
+
+    const [cats] = await pool.query(
+      "SELECT DISTINCT category, COUNT(*) as count FROM news_articles WHERE category IS NOT NULL GROUP BY category ORDER BY count DESC LIMIT 20"
+    );
+
+    return res.json({ items: rows, total, categories: cats });
+  } catch (err) {
+    console.error('[GET /api/news/unified]', err?.message);
+    return res.status(500).json({ error: err?.message });
+  }
+});
+
+// ── GET /api/news/content/:id — fetch (and cache) full article content via Apify
+app.get("/api/news/content/:id", authMiddleware, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const [[row]] = await pool.query(
+      'SELECT id, title, description, content, article_url, image_url, author, published_at, source, category FROM news_articles WHERE id = ?',
+      [id]
+    );
+    if (!row) return res.status(404).json({ error: 'Article introuvable' });
+
+    // Content already cached
+    if (row.content) return res.json({ content: row.content, cached: true });
+
+    // Fetch via Apify
+    const apifyResult = await fetchArticleContentWithApify(row.article_url);
+    if (!apifyResult) return res.json({ content: null, cached: false, fallback_url: row.article_url });
+
+    // Prefer markdown over raw HTML for clean display
+    const content = apifyResult.markdown || apifyResult.html || null;
+    if (content) {
+      await pool.query('UPDATE news_articles SET content = ? WHERE id = ?', [content.slice(0, 65000), id]);
+    }
+    return res.json({ content, cached: false });
+  } catch (err) {
+    console.error('[GET /api/news/content/:id]', err?.message);
+    return res.status(500).json({ error: err?.message });
+  }
+});
 
 // ── GET /api/news — public listing with filters ───────────────────────────────
 app.get("/api/news", async (req, res) => {
@@ -11884,26 +12709,31 @@ async function fetchBuzzSource(source) {
 
 async function runBuzzScrape() {
   console.log('[buzz] Starting buzz scrape...');
-  const results = await Promise.allSettled(BUZZ_SOURCES.map(fetchBuzzSource));
-  let saved = 0;
-  for (const r of results) {
-    if (r.status !== 'fulfilled') continue;
-    for (const item of r.value) {
-      const hash = buzzHash(item.content, item.link);
-      const score = computeBuzzScore(item.content, item.source, item.published);
-      const isHot = score >= 120 ? 1 : 0;
-      try {
-        await pool.query(
-          `INSERT INTO football_buzz (id, source_name, source_handle, source_color, content, image_url, external_url, buzz_score, is_hot, published_at, content_hash)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-           ON DUPLICATE KEY UPDATE buzz_score = ?, is_hot = ?, scraped_at = NOW()`,
-          [uuidv4(), item.source.name, item.source.handle, item.source.color,
-           item.content, item.image_url, item.link, score, isHot, item.published, hash,
-           score, isHot]
-        );
-        saved++;
-      } catch {}
+  const allItems = [];
+  for (let i = 0; i < BUZZ_SOURCES.length; i++) {
+    const items = await fetchBuzzSource(BUZZ_SOURCES[i]);
+    allItems.push(...items);
+    if (i < BUZZ_SOURCES.length - 1) {
+      const buzzDelayMs = await scrapeDelay('scrape_delay_buzz_ms', 500);
+      await new Promise(r => setTimeout(r, buzzDelayMs));
     }
+  }
+  let saved = 0;
+  for (const item of allItems) {
+    const hash = buzzHash(item.content, item.link);
+    const score = computeBuzzScore(item.content, item.source, item.published);
+    const isHot = score >= 120 ? 1 : 0;
+    try {
+      await pool.query(
+        `INSERT INTO football_buzz (id, source_name, source_handle, source_color, content, image_url, external_url, buzz_score, is_hot, published_at, content_hash)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         ON DUPLICATE KEY UPDATE buzz_score = ?, is_hot = ?, scraped_at = NOW()`,
+        [uuidv4(), item.source.name, item.source.handle, item.source.color,
+         item.content, item.image_url, item.link, score, isHot, item.published, hash,
+         score, isHot]
+      );
+      saved++;
+    } catch {}
   }
   // Clean up buzz older than 7 days
   await pool.query("DELETE FROM football_buzz WHERE published_at < DATE_SUB(NOW(), INTERVAL 7 DAY)").catch(() => {});
@@ -12085,8 +12915,9 @@ async function cronEnrichUser(userId) {
         errors++;
         console.error(`[cron-enrich] Error for ${p.name} (user ${userId}):`, e.message);
       }
-      // Rate-limit: 2s between players to respect external APIs
-      await new Promise(r => setTimeout(r, 2000));
+      // Rate-limit: configurable delay between players (default 2s)
+      const playerDelayMs = await scrapeDelay('scrape_delay_player_ms', 2000);
+      await new Promise(r => setTimeout(r, playerDelayMs));
     }
 
     await pool.query(
@@ -12147,15 +12978,83 @@ async function runNightlyEnrichment() {
     for (const user of premiumUsers) {
       console.log(`[cron-enrich] Processing user ${user.email} (plan: ${user.plan_type})`);
       await cronEnrichUser(user.id);
-      // Pause between users to spread API load
+      // Pause between users to spread API load (configurable)
       if (premiumUsers.length > 1) {
-        await new Promise(r => setTimeout(r, 5000));
+        const userDelayMs = await scrapeDelay('scrape_delay_user_ms', 5000);
+        await new Promise(r => setTimeout(r, userDelayMs));
       }
     }
 
     console.log('[cron-enrich] Nightly enrichment complete');
   } catch (err) {
     console.error('[cron-enrich] Fatal error:', err.message);
+  }
+}
+
+// ── Image migration: download external URLs → BLOB in uploaded_images ────────
+async function runImageBlobMigration({ limit = 50 } = {}) {
+  const label = '[img-migration]';
+  try {
+    // Find players with external photo_url (not already in DB)
+    const [players] = await pool.query(
+      `SELECT id, photo_url FROM players
+       WHERE photo_url IS NOT NULL
+         AND photo_url != ''
+         AND photo_url NOT LIKE '/api/images/%'
+         AND photo_url NOT LIKE '/uploads/%'
+       LIMIT ?`,
+      [limit]
+    );
+    let migrated = 0;
+    for (const p of players) {
+      try {
+        const resp = await fetch(p.photo_url, { signal: AbortSignal.timeout(8000) });
+        if (!resp.ok) continue;
+        const buf = Buffer.from(await resp.arrayBuffer());
+        if (buf.length > 5 * 1024 * 1024) continue; // skip > 5MB
+        const mime = resp.headers.get('content-type') || 'image/jpeg';
+        const imageId = `player-photo-${p.id}`;
+        await pool.query(
+          `INSERT INTO uploaded_images (id, data, mime_type) VALUES (?, ?, ?)
+           ON DUPLICATE KEY UPDATE data = VALUES(data), mime_type = VALUES(mime_type), created_at = NOW()`,
+          [imageId, buf, mime]
+        );
+        await pool.query('UPDATE players SET photo_url = ? WHERE id = ?', [`/api/images/${imageId}`, p.id]);
+        migrated++;
+      } catch { /* skip on error — will retry next run */ }
+    }
+
+    // Same for org logos stored as external URLs
+    const [orgs] = await pool.query(
+      `SELECT id, logo_url FROM organizations
+       WHERE logo_url IS NOT NULL
+         AND logo_url != ''
+         AND logo_url NOT LIKE '/api/images/%'
+         AND logo_url NOT LIKE '/uploads/%'
+       LIMIT ?`,
+      [Math.max(1, Math.floor(limit / 5))]
+    );
+    for (const o of orgs) {
+      try {
+        const resp = await fetch(o.logo_url, { signal: AbortSignal.timeout(8000) });
+        if (!resp.ok) continue;
+        const buf = Buffer.from(await resp.arrayBuffer());
+        if (buf.length > 5 * 1024 * 1024) continue;
+        const mime = resp.headers.get('content-type') || 'image/png';
+        const imageId = `org-logo-${o.id}`;
+        await pool.query(
+          `INSERT INTO uploaded_images (id, data, mime_type) VALUES (?, ?, ?)
+           ON DUPLICATE KEY UPDATE data = VALUES(data), mime_type = VALUES(mime_type), created_at = NOW()`,
+          [imageId, buf, mime]
+        );
+        await pool.query('UPDATE organizations SET logo_url = ? WHERE id = ?', [`/api/images/${imageId}`, o.id]);
+        migrated++;
+      } catch {}
+    }
+
+    if (migrated > 0) console.log(`${label} Migrated ${migrated} images to DB BLOB`);
+  } catch (e) {
+    console.error(`${label} Error:`, e.message);
   }
 }
 
@@ -12169,9 +13068,24 @@ if (!isVercel && cron) {
   console.log('[startup] Cron scheduled: buzz-scrape every 30 minutes');
   // Initial buzz on startup
   runBuzzScrape().catch(e => console.warn('[buzz] Initial scrape error:', e.message));
+  // Image migration: download external player/org photos to DB BLOB (50/run, hourly)
+  cron.schedule('0 * * * *', () => runImageBlobMigration({ limit: 50 }), { timezone: 'Europe/Paris' });
+  console.log('[startup] Cron scheduled: image blob migration every hour');
 }
 
 // ── Admin endpoint: cron enrichment logs & manual trigger ───────────────────
+
+app.post("/api/admin/run-image-migration", authMiddleware, async (req, res) => {
+  try {
+    const [roles] = await pool.query('SELECT role FROM user_roles WHERE user_id = ?', [req.user.id]);
+    if (!roles.some(r => r.role === 'admin')) return res.status(403).json({ error: 'Admin only' });
+    const limit = Math.min(parseInt(req.body?.limit) || 200, 500);
+    runImageBlobMigration({ limit }).catch(() => {});
+    return res.json({ ok: true, message: `Migration lancée (limit ${limit})` });
+  } catch (err) {
+    return res.status(500).json({ error: err.message });
+  }
+});
 
 app.get("/api/admin/cron-enrichment-logs", authMiddleware, async (req, res) => {
   try {

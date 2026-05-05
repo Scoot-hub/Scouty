@@ -182,3 +182,8 @@ export function translateCountry(frenchKey: string, lang: string): string {
   if (lang === 'fr') return canonical;
   return TRANSLATIONS[lang]?.[canonical] ?? canonical;
 }
+
+/** Sorted list of all French country names (canonical keys). */
+export const COUNTRY_LIST: string[] = Object.keys(EN).sort((a, b) =>
+  a.localeCompare(b, 'fr', { sensitivity: 'base' })
+);

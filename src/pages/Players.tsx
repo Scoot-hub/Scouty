@@ -30,7 +30,7 @@ import { ImportTmMatchDialog } from '@/components/ImportTmMatchDialog';
 import { AddToWatchlistDialog } from '@/components/AddToWatchlistDialog';
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from '@/components/ui/dropdown-menu';
 import { supabase } from '@/integrations/supabase/client';
-import { Search, RotateCcw, Users, RefreshCw, ChevronDown, ChevronUp, SlidersHorizontal, Download, X, LayoutGrid, List, Table2, Building2, Swords, Eye, Zap, Check, Sparkles, Copy, Trash2, FileText, Upload, FilePlus, ClipboardList, Trophy, TrendingUp, BarChart3 } from 'lucide-react';
+import { Search, RotateCcw, Users, RefreshCw, ChevronDown, ChevronUp, SlidersHorizontal, Download, X, LayoutGrid, List, Table2, Building2, Swords, Eye, Zap, Check, Sparkles, Copy, Trash2, FileText, Upload, FilePlus, ClipboardList, Trophy, TrendingUp, BarChart3, CalendarDays } from 'lucide-react';
 import { getPlayerPerfStats, CHART_COLORS } from '@/lib/player-stats';
 const LazyCompareRadar = lazy(() => import('@/components/charts/CompareRadarChart'));
 import { toast } from 'sonner';
@@ -134,6 +134,7 @@ export default function Players() {
   const [deletingDuplicates, setDeletingDuplicates] = useState(false);
   const [filtersOpen, setFiltersOpen] = useState<boolean>(() => loadFilters().filtersOpen ?? false);
   const [viewMode, setViewMode] = useState<'compact' | 'detailed' | 'table'>(() => loadFilters().viewMode ?? 'compact');
+  const [updatedSince, setUpdatedSince] = useState<string>(() => loadFilters().updatedSince ?? '');
   const [debouncedSearch, setDebouncedSearch] = useState(search);
   const sentinelRef = useRef<HTMLDivElement>(null);
 
@@ -163,10 +164,10 @@ export default function Players() {
       search, opinions, positions, selectedLeagues, selectedClubs, selectedRoles,
       ageMin, ageMax, levelMin, levelMax, potMin, potMax,
       selectedContractRanges, selectedTasks, sort, filtersOpen, extraFiltersOpen, viewMode,
-      ratingMin, ratingMax, goalsMin, assistsMin, minutesMin,
+      ratingMin, ratingMax, goalsMin, assistsMin, minutesMin, updatedSince,
       xgMin, xaMin, duelsWonPctMin, shotsOnMin, interceptionsMin, dribblesSuccessPctMin,
     }));
-  }, [search, opinions, positions, selectedLeagues, selectedClubs, selectedRoles, ageMin, ageMax, levelMin, levelMax, potMin, potMax, selectedContractRanges, selectedTasks, sort, filtersOpen, extraFiltersOpen, viewMode, ratingMin, ratingMax, goalsMin, assistsMin, minutesMin, xgMin, xaMin, duelsWonPctMin, shotsOnMin, interceptionsMin, dribblesSuccessPctMin]);
+  }, [search, opinions, positions, selectedLeagues, selectedClubs, selectedRoles, ageMin, ageMax, levelMin, levelMax, potMin, potMax, selectedContractRanges, selectedTasks, sort, filtersOpen, extraFiltersOpen, viewMode, ratingMin, ratingMax, goalsMin, assistsMin, minutesMin, updatedSince, xgMin, xaMin, duelsWonPctMin, shotsOnMin, interceptionsMin, dribblesSuccessPctMin]);
 
   const queryClient = useQueryClient();
 
@@ -196,8 +197,9 @@ export default function Players() {
     goalsMin: goalsMin || undefined,
     assistsMin: assistsMin || undefined,
     minutesMin: minutesMin || undefined,
+    updatedSince: updatedSince || undefined,
     sort: sort || undefined,
-  }), [debouncedSearch, showArchived, opinions, positions, selectedLeagues, selectedClubs, selectedRoles, selectedTasks, levelMin, levelMax, potMin, potMax, ageMin, ageMax, selectedContractRanges, ratingMin, ratingMax, goalsMin, assistsMin, minutesMin, sort, leagueParam, positionParam, opinionParam]);
+  }), [debouncedSearch, showArchived, opinions, positions, selectedLeagues, selectedClubs, selectedRoles, selectedTasks, levelMin, levelMax, potMin, potMax, ageMin, ageMax, selectedContractRanges, ratingMin, ratingMax, goalsMin, assistsMin, minutesMin, updatedSince, sort, leagueParam, positionParam, opinionParam]);
 
   const {
     data: paginatedData,
@@ -727,6 +729,7 @@ export default function Players() {
     setGoalsMin(''); setAssistsMin(''); setMinutesMin('');
     setXgMin(''); setXaMin(''); setDuelsWonPctMin('');
     setShotsOnMin(''); setInterceptionsMin(''); setDribblesSuccessPctMin('');
+    setUpdatedSince('');
   };
 
   const activeFilterCount =
@@ -743,14 +746,15 @@ export default function Players() {
     + (duelsWonPctMin ? 1 : 0)
     + (shotsOnMin ? 1 : 0)
     + (interceptionsMin ? 1 : 0)
-    + (dribblesSuccessPctMin ? 1 : 0);
+    + (dribblesSuccessPctMin ? 1 : 0)
+    + (updatedSince ? 1 : 0);
 
   const allOpinions = ALL_OPINIONS;
   const allPositions = Object.entries(posLabels) as [Position, string][];
 
   if (isLoading) return (
     <div className="max-w-7xl mx-auto space-y-4">
-      <div className="mb-6 flex items-center gap-3">
+      <div className="mb-3 flex items-center gap-3">
         <div className="w-10 h-10 rounded-xl bg-muted animate-pulse" />
         <div className="space-y-1.5">
           <div className="h-6 w-36 rounded-lg bg-muted animate-pulse" />
@@ -768,7 +772,7 @@ export default function Players() {
 
   return (
     <div className="max-w-7xl mx-auto">
-      <div className="mb-6 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+      <div className="mb-3 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
         <div ref={headerRef} className="flex items-center gap-3 reveal-left">
           <div className="w-10 h-10 rounded-xl bg-primary/10 flex items-center justify-center shrink-0 group-hover:scale-110 transition-transform">
             <Users className="w-5 h-5 text-primary" />
@@ -1103,7 +1107,7 @@ export default function Players() {
         );
       })()}
 
-      <div className="flex flex-col gap-6">
+      <div className="flex flex-col gap-3">
         {/* Search + Sort + Filter bar */}
         <Card className="card-warm">
           <CardContent className="p-4 space-y-3">
@@ -1274,6 +1278,34 @@ export default function Players() {
             {/* Collapsible filter panel */}
             {filtersOpen && (
               <div className="pt-4 border-t border-border/40 space-y-5">
+
+                {/* Date de modification */}
+                <div className="space-y-2">
+                  <p className="text-[10px] font-black uppercase tracking-wider text-muted-foreground flex items-center gap-1.5">
+                    <CalendarDays className="w-3 h-3" />
+                    Modifié depuis
+                  </p>
+                  <div className="flex flex-wrap gap-1.5">
+                    {([
+                      { label: 'Tout', value: '' },
+                      { label: "Aujourd'hui", value: '1' },
+                      { label: '7 jours', value: '7' },
+                      { label: '30 jours', value: '30' },
+                      { label: '3 mois', value: '90' },
+                      { label: '6 mois', value: '180' },
+                      { label: '1 an', value: '365' },
+                    ] as { label: string; value: string }[]).map(opt => (
+                      <button
+                        key={opt.value}
+                        type="button"
+                        onClick={() => setUpdatedSince(opt.value)}
+                        className={`px-2.5 py-1 rounded-full text-[11px] font-semibold border transition-colors ${updatedSince === opt.value ? 'bg-primary text-primary-foreground border-primary' : 'border-border bg-background text-foreground hover:bg-muted'}`}
+                      >
+                        {opt.label}
+                      </button>
+                    ))}
+                  </div>
+                </div>
 
                 {/* Primary filters — ligne 1 : Poste, Âge, Niveau, Potentiel */}
                 <div className="grid grid-cols-2 md:grid-cols-4 gap-4">

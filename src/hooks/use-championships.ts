@@ -177,6 +177,8 @@ export interface SofascoreTeam {
   losses?: number;
   goalsFor?: number;
   goalsAgainst?: number;
+  description?: string | null;
+  promotionDescription?: string | null;
 }
 
 export interface ChampionshipPlayerLink {
@@ -366,7 +368,8 @@ export function useSofascoreLeague(sofascoreId: number | null) {
         season: data.season,
         teams: (data.teams ?? []).map((t: Record<string, unknown>) => ({
           ...t,
-          logoUrl: t.id ? getTeamLogoUrl(t.id) : '',
+          // Use the ESPN CDN logo when provided; fall back to Sofascore for legacy cache entries
+          logoUrl: (t.logoUrl as string) || (t.id ? getTeamLogoUrl(t.id as number) : ''),
         })),
       };
     },

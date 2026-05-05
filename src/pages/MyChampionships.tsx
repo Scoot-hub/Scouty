@@ -3,12 +3,14 @@ import { useTranslation } from 'react-i18next';
 import { useNavigate } from 'react-router-dom';
 import { useSavedChampionships, useUnsaveChampionship } from '@/hooks/use-saved-championships';
 import { LeagueLogo } from '@/components/ui/league-logo';
+import { FlagIcon } from '@/components/ui/flag-icon';
 import { Card, CardContent } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Badge } from '@/components/ui/badge';
 import { toast } from 'sonner';
-import { Trophy, Search, Star, StarOff, ChevronRight, Globe, ArrowRight } from 'lucide-react';
+import { Trophy, Search, Star, StarOff, ChevronRight, ArrowRight, Users, Building2, Crown } from 'lucide-react';
+import { cn } from '@/lib/utils';
 
 export default function MyChampionships() {
   const { t } = useTranslation();
@@ -31,7 +33,7 @@ export default function MyChampionships() {
   };
 
   return (
-    <div className="max-w-3xl mx-auto space-y-6">
+    <div className="max-w-4xl mx-auto space-y-6">
       {/* Header */}
       <div className="flex items-center justify-between gap-3">
         <div className="flex items-center gap-3">
@@ -74,9 +76,9 @@ export default function MyChampionships() {
 
       {/* List */}
       {isLoading ? (
-        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
           {[...Array(4)].map((_, i) => (
-            <div key={i} className="h-24 rounded-2xl bg-muted/30 animate-pulse" />
+            <div key={i} className="h-36 rounded-2xl bg-muted/30 animate-pulse" />
           ))}
         </div>
       ) : filtered.length === 0 ? (
@@ -98,42 +100,48 @@ export default function MyChampionships() {
           </CardContent>
         </Card>
       ) : (
-        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
           {filtered.map(champ => (
             <Card
               key={champ.id}
               className="group card-warm overflow-hidden hover:border-primary/30 transition-all hover:shadow-md cursor-pointer"
               onClick={() => navigate(`/championships?search=${encodeURIComponent(champ.championship_name)}`)}
             >
-              <CardContent className="p-4">
-                <div className="flex items-center gap-3">
+              <CardContent className="p-0">
+                {/* Top band with logo */}
+                <div className="relative flex items-center gap-4 px-4 pt-4 pb-3">
                   {/* Logo */}
-                  <div className="w-11 h-11 rounded-xl bg-muted/40 flex items-center justify-center shrink-0">
+                  <div className="w-14 h-14 rounded-xl bg-muted/40 flex items-center justify-center shrink-0 border border-border/40">
                     {champ.championship_logo ? (
                       <img
                         src={champ.championship_logo}
                         alt={champ.championship_name}
-                        className="w-9 h-9 object-contain"
-                        onError={e => { (e.target as HTMLImageElement).style.display = 'none'; }}
+                        className="w-11 h-11 object-contain"
+                        onError={e => {
+                          (e.target as HTMLImageElement).style.display = 'none';
+                          (e.target as HTMLImageElement).nextElementSibling?.removeAttribute('style');
+                        }}
                       />
-                    ) : (
-                      <LeagueLogo league={champ.championship_name} size="sm" />
-                    )}
+                    ) : null}
+                    <span style={champ.championship_logo ? { display: 'none' } : {}}>
+                      <LeagueLogo league={champ.championship_name} size="md" />
+                    </span>
                   </div>
 
-                  {/* Info */}
+                  {/* Name + country */}
                   <div className="flex-1 min-w-0">
-                    <p className="font-bold text-sm truncate group-hover:text-primary transition-colors">
+                    <p className="font-bold text-sm truncate group-hover:text-primary transition-colors leading-tight">
                       {champ.championship_name}
                     </p>
                     {champ.championship_country && (
-                      <p className="text-xs text-muted-foreground flex items-center gap-1 mt-0.5">
-                        <Globe className="w-3 h-3" />
-                        {champ.championship_country}
-                      </p>
+                      <div className="flex items-center gap-1.5 mt-1">
+                        <FlagIcon nationality={champ.championship_country} size="sm" />
+                        <span className="text-xs text-muted-foreground">{champ.championship_country}</span>
+                      </div>
                     )}
                   </div>
 
+                  {/* Actions */}
                   <div className="flex items-center gap-1 shrink-0">
                     <button
                       onClick={e => { e.stopPropagation(); handleUnsave(champ.championship_name); }}
@@ -143,6 +151,44 @@ export default function MyChampionships() {
                       <StarOff className="w-4 h-4" />
                     </button>
                     <ChevronRight className="w-4 h-4 text-muted-foreground/40 group-hover:text-primary transition-colors" />
+                  </div>
+                </div>
+
+                {/* Stats row */}
+                <div className="flex items-stretch border-t border-border/40 divide-x divide-border/40">
+                  {/* Players */}
+                  <div className="flex-1 flex items-center gap-2 px-3 py-2.5">
+                    <div className="w-6 h-6 rounded-lg bg-primary/10 flex items-center justify-center shrink-0">
+                      <Users className="w-3.5 h-3.5 text-primary" />
+                    </div>
+                    <div>
+                      <p className="text-sm font-bold leading-none">{champ.player_count ?? 0}</p>
+                      <p className="text-[10px] text-muted-foreground mt-0.5">{t('my_championships.stat_players')}</p>
+                    </div>
+                  </div>
+
+                  {/* Clubs */}
+                  <div className="flex-1 flex items-center gap-2 px-3 py-2.5">
+                    <div className="w-6 h-6 rounded-lg bg-sky-500/10 flex items-center justify-center shrink-0">
+                      <Building2 className="w-3.5 h-3.5 text-sky-500" />
+                    </div>
+                    <div>
+                      <p className="text-sm font-bold leading-none">{champ.club_count ?? 0}</p>
+                      <p className="text-[10px] text-muted-foreground mt-0.5">{t('my_championships.stat_clubs')}</p>
+                    </div>
+                  </div>
+
+                  {/* Top club */}
+                  <div className="flex-1 flex items-center gap-2 px-3 py-2.5 min-w-0">
+                    <div className="w-6 h-6 rounded-lg bg-yellow-500/10 flex items-center justify-center shrink-0">
+                      <Crown className="w-3.5 h-3.5 text-yellow-500" />
+                    </div>
+                    <div className="min-w-0">
+                      <p className={cn('text-sm font-bold leading-none truncate', !champ.top_club && 'text-muted-foreground/40')}>
+                        {champ.top_club ?? '—'}
+                      </p>
+                      <p className="text-[10px] text-muted-foreground mt-0.5">{t('my_championships.stat_top_club')}</p>
+                    </div>
                   </div>
                 </div>
               </CardContent>

@@ -1,19 +1,461 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useIsAdmin } from '@/hooks/use-admin';
 import { useQuery } from '@tanstack/react-query';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
+import { Button } from '@/components/ui/button';
 import { Navigate, Link } from 'react-router-dom';
 import {
   Users, Crown, TrendingUp, BarChart3, Zap, Star, Building2,
   CalendarDays, Eye, FileText, MessageSquare, Shield, ArrowLeft,
-  Activity, UserPlus, CreditCard, Sparkles, Target, Contact
+  Activity, UserPlus, CreditCard, Sparkles, Target, Contact,
+  Monitor, Smartphone, Tablet, Globe, Clock, Radio, RefreshCw,
+  ChevronRight, X as XIcon,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { getOpinionTranslationKey, type Opinion } from '@/types/player';
 
 const API_BASE = (import.meta.env.API_URL || '/api').replace(/\/$/, '');
+
+// ── Live session types ────────────────────────────────────────────────────────
+
+interface LiveSession {
+  user_id: string; session_id: string; device_type: 'desktop' | 'mobile' | 'tablet';
+  browser: string | null; os: string | null; screen_width: number | null; screen_height: number | null;
+  language: string | null; current_page: string | null; page_category: string | null; ip_address: string | null;
+  country: string | null; country_code: string | null; city: string | null; geo_from_client: number;
+  country_source?: 'gps' | 'profile' | 'ip';
+  profile_country?: string | null;
+  started_at: string; last_seen_at: string; session_seconds: number;
+  email: string; display_name: string; photo_url: string | null;
+}
+interface LiveData {
+  online_count: number; avg_session_seconds: number;
+  device_breakdown: Record<string, number>;
+  browser_breakdown: Record<string, number>;
+  os_breakdown: Record<string, number>;
+  country_breakdown: { country: string; country_code: string; count: number }[];
+  category_breakdown: Record<string, number>;
+  sessions: LiveSession[];
+}
+interface UserSessionDetail {
+  user: { email: string; last_sign_in_at: string; display_name: string; photo_url: string | null } | null;
+  sessions: (LiveSession & { session_seconds: number })[];
+}
+
+function useLive() {
+  return useQuery<LiveData>({
+    queryKey: ['admin-analytics-live'],
+    queryFn: async () => {
+      const res = await fetch(`${API_BASE}/admin/analytics/live`, { credentials: 'include' });
+      if (!res.ok) throw new Error('Failed');
+      return res.json();
+    },
+    staleTime: 0,
+    refetchInterval: 15_000,
+  });
+}
+
+function useUserSession(userId: string | null) {
+  return useQuery<UserSessionDetail>({
+    queryKey: ['admin-analytics-live-user', userId],
+    queryFn: async () => {
+      const res = await fetch(`${API_BASE}/admin/analytics/live/${userId}`, { credentials: 'include' });
+      if (!res.ok) throw new Error('Failed');
+      return res.json();
+    },
+    enabled: !!userId,
+    staleTime: 10_000,
+    refetchInterval: 15_000,
+  });
+}
+
+// ── Live section components ───────────────────────────────────────────────────
+
+function fmtDuration(seconds: number): string {
+  if (seconds < 60) return `${seconds}s`;
+  if (seconds < 3600) return `${Math.floor(seconds / 60)}m ${seconds % 60}s`;
+  return `${Math.floor(seconds / 3600)}h ${Math.floor((seconds % 3600) / 60)}m`;
+}
+
+const DEVICE_ICONS: Record<string, React.ElementType> = {
+  desktop: Monitor, mobile: Smartphone, tablet: Tablet,
+};
+
+function DeviceIcon({ type, className }: { type: string; className?: string }) {
+  const Icon = DEVICE_ICONS[type] || Monitor;
+  return <Icon className={className} />;
+}
+
+function LiveKpiBar({ label, breakdown, total }: { label: string; breakdown: Record<string, number>; total: number }) {
+  const colors = ['bg-primary', 'bg-sky-500', 'bg-orange-500', 'bg-emerald-500', 'bg-purple-500', 'bg-pink-500'];
+  const entries = Object.entries(breakdown).sort((a, b) => b[1] - a[1]);
+  return (
+    <div>
+      <p className="text-xs font-semibold text-muted-foreground mb-2">{label}</p>
+      <div className="flex rounded-full overflow-hidden h-2 mb-2 bg-muted">
+        {entries.map(([k, v], i) => (
+          <div key={k} className={cn(colors[i % colors.length], 'transition-all')}
+            style={{ width: `${Math.round((v / Math.max(total, 1)) * 100)}%` }} />
+        ))}
+      </div>
+      <div className="flex flex-wrap gap-x-3 gap-y-1">
+        {entries.map(([k, v], i) => (
+          <span key={k} className="flex items-center gap-1 text-xs text-muted-foreground">
+            <span className={cn('w-2 h-2 rounded-full shrink-0', colors[i % colors.length])} />
+            {k} <span className="font-medium text-foreground">{v}</span>
+          </span>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function UserDrawer({ userId, onClose }: { userId: string; onClose: () => void }) {
+  const { data, isLoading } = useUserSession(userId);
+  const [tick, setTick] = useState(0);
+  useEffect(() => { const t = setInterval(() => setTick(v => v + 1), 1000); return () => clearInterval(t); }, []);
+
+  return (
+    <div className="fixed inset-y-0 right-0 w-full sm:w-[420px] z-50 flex flex-col bg-background border-l shadow-2xl">
+      <div className="flex items-center justify-between px-5 py-4 border-b">
+        <h2 className="font-bold text-base">Détails de la session</h2>
+        <button onClick={onClose} className="p-1.5 rounded-lg hover:bg-muted transition-colors">
+          <XIcon className="w-4 h-4" />
+        </button>
+      </div>
+      <div className="flex-1 overflow-y-auto p-5 space-y-5">
+        {isLoading ? (
+          <div className="flex justify-center py-12"><div className="animate-spin w-6 h-6 border-2 border-primary border-t-transparent rounded-full" /></div>
+        ) : !data ? null : (
+          <>
+            {/* User info */}
+            <div className="flex items-center gap-3">
+              {data.user?.photo_url ? (
+                <img src={data.user.photo_url} className="w-12 h-12 rounded-full object-cover" alt="" />
+              ) : (
+                <div className="w-12 h-12 rounded-full bg-primary/10 flex items-center justify-center text-lg font-bold text-primary">
+                  {(data.user?.display_name || '?')[0].toUpperCase()}
+                </div>
+              )}
+              <div>
+                <p className="font-semibold">{data.user?.display_name}</p>
+                <p className="text-xs text-muted-foreground">{data.user?.email}</p>
+                {data.user?.last_sign_in_at && (
+                  <p className="text-[10px] text-muted-foreground/60 mt-0.5">
+                    Dernière connexion : {new Date(data.user.last_sign_in_at).toLocaleString('fr-FR')}
+                  </p>
+                )}
+              </div>
+            </div>
+
+            {/* Sessions */}
+            <div>
+              <p className="text-xs font-semibold text-muted-foreground mb-2">Sessions récentes</p>
+              <div className="space-y-2">
+                {data.sessions.map((s, i) => {
+                  const isActive = new Date(s.last_seen_at).getTime() > Date.now() - 120_000;
+                  const elapsed = isActive
+                    ? Math.floor((Date.now() - new Date(s.started_at).getTime()) / 1000)
+                    : s.session_seconds;
+                  return (
+                    <div key={s.session_id} className={cn('rounded-xl border p-3 space-y-2', isActive ? 'border-green-500/30 bg-green-500/5' : 'bg-muted/30')}>
+                      <div className="flex items-center justify-between">
+                        <div className="flex items-center gap-1.5">
+                          {isActive && <span className="w-2 h-2 rounded-full bg-green-500 animate-pulse" />}
+                          <DeviceIcon type={s.device_type} className="w-3.5 h-3.5 text-muted-foreground" />
+                          <span className="text-xs font-medium">{s.device_type}</span>
+                          {s.browser && <Badge variant="outline" className="text-[10px] px-1.5">{s.browser}</Badge>}
+                          {s.os && <Badge variant="outline" className="text-[10px] px-1.5">{s.os}</Badge>}
+                        </div>
+                        <span className="text-[10px] text-muted-foreground font-mono">{fmtDuration(elapsed)}</span>
+                      </div>
+                      {s.screen_width && (
+                        <p className="text-[10px] text-muted-foreground">Écran : {s.screen_width}×{s.screen_height}</p>
+                      )}
+                      {s.current_page && (
+                        <p className="text-[10px] text-muted-foreground font-mono truncate">Page : {s.current_page}</p>
+                      )}
+                      {s.country_code && (
+                        <div className="flex items-center gap-1">
+                          <CountryFlag code={s.country_code} size={12} />
+                          <span className="text-[10px] text-muted-foreground">
+                            {s.city ? `${s.city}, ` : ''}{s.country || s.country_code}
+                          </span>
+                          {s.country_source === 'gps' && <span className="text-[9px] text-emerald-500 font-semibold">📍 GPS</span>}
+                          {s.country_source === 'profile' && <span className="text-[9px] text-sky-500 font-semibold">👤 Profil</span>}
+                          {s.country_source === 'ip' && <span className="text-[9px] text-muted-foreground/50">~ IP</span>}
+                        </div>
+                      )}
+                      {!s.country_code && s.profile_country && (
+                        <p className="text-[10px] text-muted-foreground/50">Profil : {s.profile_country} (code inconnu)</p>
+                      )}
+                      {s.ip_address && (
+                        <p className="text-[10px] text-muted-foreground">IP : {s.ip_address}</p>
+                      )}
+                      <p className="text-[10px] text-muted-foreground/60">
+                        Début : {new Date(s.started_at).toLocaleString('fr-FR')}
+                      </p>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function LiveDashboard() {
+  const { data, isLoading, isFetching, refetch, dataUpdatedAt } = useLive();
+  const [selectedUser, setSelectedUser] = useState<string | null>(null);
+  const [tick, setTick] = useState(0);
+  useEffect(() => { const t = setInterval(() => setTick(v => v + 1), 1000); return () => clearInterval(t); }, []);
+
+  const secondsSinceUpdate = dataUpdatedAt ? Math.floor((Date.now() - dataUpdatedAt) / 1000) : 0;
+
+  if (isLoading || !data) return (
+    <div className="flex justify-center py-16"><div className="animate-spin w-8 h-8 border-2 border-primary border-t-transparent rounded-full" /></div>
+  );
+
+  const d = data;
+  const sessions = d.sessions ?? [];
+
+  return (
+    <div className="space-y-6">
+      {/* Refresh bar */}
+      <div className="flex items-center justify-between">
+        <div className="flex items-center gap-2 text-xs text-muted-foreground">
+          <Radio className="w-3.5 h-3.5 text-green-500 animate-pulse" />
+          Actualisé il y a {secondsSinceUpdate}s — toutes les 15s
+          {isFetching && <RefreshCw className="w-3 h-3 animate-spin ml-1" />}
+        </div>
+        <Button variant="outline" size="sm" onClick={() => refetch()} className="rounded-xl gap-1.5 text-xs h-7">
+          <RefreshCw className="w-3 h-3" /> Actualiser
+        </Button>
+      </div>
+
+      {/* KPI cards */}
+      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+        <Card className="card-warm border-none">
+          <CardContent className="p-4 flex items-center gap-3">
+            <div className="w-10 h-10 rounded-xl bg-green-500/15 flex items-center justify-center shrink-0">
+              <Radio className="w-5 h-5 text-green-500" />
+            </div>
+            <div>
+              <p className="text-2xl font-extrabold">{d.online_count}</p>
+              <p className="text-xs text-muted-foreground">En ligne</p>
+            </div>
+          </CardContent>
+        </Card>
+        <Card className="card-warm border-none">
+          <CardContent className="p-4 flex items-center gap-3">
+            <div className="w-10 h-10 rounded-xl bg-primary/10 flex items-center justify-center shrink-0">
+              <Clock className="w-5 h-5 text-primary" />
+            </div>
+            <div>
+              <p className="text-2xl font-extrabold">{fmtDuration(d.avg_session_seconds)}</p>
+              <p className="text-xs text-muted-foreground">Durée moy.</p>
+            </div>
+          </CardContent>
+        </Card>
+        <Card className="card-warm border-none">
+          <CardContent className="p-4 flex items-center gap-3">
+            <div className="w-10 h-10 rounded-xl bg-sky-500/10 flex items-center justify-center shrink-0">
+              <Monitor className="w-5 h-5 text-sky-500" />
+            </div>
+            <div>
+              <p className="text-2xl font-extrabold">{(d.device_breakdown ?? {})['desktop'] ?? 0}</p>
+              <p className="text-xs text-muted-foreground">Desktop</p>
+            </div>
+          </CardContent>
+        </Card>
+        <Card className="card-warm border-none">
+          <CardContent className="p-4 flex items-center gap-3">
+            <div className="w-10 h-10 rounded-xl bg-orange-500/10 flex items-center justify-center shrink-0">
+              <Smartphone className="w-5 h-5 text-orange-500" />
+            </div>
+            <div>
+              <p className="text-2xl font-extrabold">{((d.device_breakdown ?? {})['mobile'] ?? 0) + ((d.device_breakdown ?? {})['tablet'] ?? 0)}</p>
+              <p className="text-xs text-muted-foreground">Mobile / Tablette</p>
+            </div>
+          </CardContent>
+        </Card>
+      </div>
+
+      {/* Breakdown bars */}
+      {sessions.length > 0 && (
+        <>
+          <div className="grid sm:grid-cols-3 gap-4">
+            <Card className="card-warm border-none">
+              <CardContent className="p-4">
+                <LiveKpiBar label="Appareils" breakdown={d.device_breakdown ?? {}} total={d.online_count} />
+              </CardContent>
+            </Card>
+            <Card className="card-warm border-none">
+              <CardContent className="p-4">
+                <LiveKpiBar label="Navigateurs" breakdown={d.browser_breakdown ?? {}} total={d.online_count} />
+              </CardContent>
+            </Card>
+            <Card className="card-warm border-none">
+              <CardContent className="p-4">
+                <LiveKpiBar label="Systèmes" breakdown={d.os_breakdown ?? {}} total={d.online_count} />
+              </CardContent>
+            </Card>
+          </div>
+
+          <div className="grid sm:grid-cols-2 gap-4">
+            {/* Country breakdown */}
+            {(d.country_breakdown ?? []).length > 0 && (
+              <Card className="card-warm border-none">
+                <CardHeader className="pb-2">
+                  <CardTitle className="text-sm font-semibold flex items-center gap-2">
+                    <Globe className="w-4 h-4 text-primary" />
+                    Provenance géographique
+                  </CardTitle>
+                </CardHeader>
+                <CardContent className="p-4 pt-0 space-y-1.5">
+                  {(d.country_breakdown ?? []).slice(0, 8).map(c => (
+                    <div key={c.country_code} className="flex items-center gap-2">
+                      <CountryFlag code={c.country_code} size={14} />
+                      <span className="text-xs flex-1 truncate">{c.country}</span>
+                      <div className="flex items-center gap-1.5">
+                        <div className="h-1.5 rounded-full bg-primary/20 w-20 overflow-hidden">
+                          <div className="h-full bg-primary rounded-full" style={{ width: `${Math.round((c.count / d.online_count) * 100)}%` }} />
+                        </div>
+                        <span className="text-xs font-medium w-4 text-right">{c.count}</span>
+                      </div>
+                    </div>
+                  ))}
+                </CardContent>
+              </Card>
+            )}
+
+            {/* Section breakdown */}
+            {Object.keys(d.category_breakdown ?? {}).length > 0 && (
+              <Card className="card-warm border-none">
+                <CardHeader className="pb-2">
+                  <CardTitle className="text-sm font-semibold flex items-center gap-2">
+                    <Activity className="w-4 h-4 text-primary" />
+                    Section en cours
+                  </CardTitle>
+                </CardHeader>
+                <CardContent className="p-4 pt-0 space-y-1.5">
+                  {Object.entries(d.category_breakdown ?? {})
+                    .sort((a, b) => b[1] - a[1])
+                    .map(([cat, count]) => {
+                      const meta = SECTION_META[cat] ?? SECTION_META.other;
+                      return (
+                        <div key={cat} className="flex items-center gap-2">
+                          <span className="text-sm">{meta.emoji}</span>
+                          <span className="text-xs flex-1">{meta.label}</span>
+                          <div className="flex items-center gap-1.5">
+                            <div className="h-1.5 rounded-full bg-muted w-20 overflow-hidden">
+                              <div className={cn('h-full rounded-full', meta.color)} style={{ width: `${Math.round((count / d.online_count) * 100)}%` }} />
+                            </div>
+                            <span className="text-xs font-medium w-4 text-right">{count}</span>
+                          </div>
+                        </div>
+                      );
+                    })}
+                </CardContent>
+              </Card>
+            )}
+          </div>
+        </>
+      )}
+
+      {/* Users table */}
+      <Card className="card-warm border-none">
+        <CardHeader className="pb-3">
+          <CardTitle className="text-sm font-semibold flex items-center gap-2">
+            <Users className="w-4 h-4 text-primary" />
+            Utilisateurs actifs ({sessions.length})
+          </CardTitle>
+        </CardHeader>
+        <CardContent className="p-0">
+          {sessions.length === 0 ? (
+            <div className="text-center py-12 text-muted-foreground text-sm">
+              <Radio className="w-8 h-8 mx-auto mb-3 opacity-20" />
+              Aucun utilisateur connecté actuellement.
+            </div>
+          ) : (
+            <div className="divide-y divide-border/50">
+              {sessions.map(s => {
+                const elapsed = Math.floor((Date.now() - new Date(s.started_at).getTime()) / 1000);
+                return (
+                  <button key={s.session_id}
+                    onClick={() => setSelectedUser(s.user_id === selectedUser ? null : s.user_id)}
+                    className="w-full flex items-center gap-3 px-5 py-3 hover:bg-muted/40 transition-colors text-left">
+                    {/* Avatar */}
+                    <div className="relative shrink-0">
+                      {s.photo_url ? (
+                        <img src={s.photo_url} className="w-8 h-8 rounded-full object-cover" alt="" />
+                      ) : (
+                        <div className="w-8 h-8 rounded-full bg-primary/10 flex items-center justify-center text-xs font-bold text-primary">
+                          {(s.display_name || s.email)[0].toUpperCase()}
+                        </div>
+                      )}
+                      <span className="absolute -bottom-0.5 -right-0.5 w-2.5 h-2.5 rounded-full bg-green-500 border-2 border-background" />
+                    </div>
+                    {/* Info */}
+                    <div className="flex-1 min-w-0">
+                      <p className="text-sm font-medium truncate">{s.display_name}</p>
+                      <p className="text-[11px] text-muted-foreground truncate">{s.email}</p>
+                    </div>
+                    {/* Device + browser */}
+                    <div className="flex items-center gap-1.5 shrink-0">
+                      <DeviceIcon type={s.device_type} className="w-3.5 h-3.5 text-muted-foreground" />
+                      {s.browser && <span className="text-[10px] text-muted-foreground hidden sm:inline">{s.browser}</span>}
+                    </div>
+                    {/* Location */}
+                    <div className="hidden lg:flex items-center gap-1 w-32 shrink-0">
+                      {s.country_code ? (
+                        <>
+                          <CountryFlag code={s.country_code} size={14} />
+                          <span className="text-[10px] text-muted-foreground truncate">{s.city || s.country || s.country_code}</span>
+                          {s.country_source === 'gps' && <span title="Position GPS précise (carte)" className="text-[9px] text-emerald-500 font-bold shrink-0">📍</span>}
+                          {s.country_source === 'profile' && <span title="Pays du profil utilisateur" className="text-[9px] text-sky-500 font-bold shrink-0">👤</span>}
+                          {s.country_source === 'ip' && <span title="Estimation par IP" className="text-[8px] text-muted-foreground/50 shrink-0">~</span>}
+                        </>
+                      ) : (
+                        <span className="text-[10px] text-muted-foreground/40">—</span>
+                      )}
+                    </div>
+                    {/* Page / Section */}
+                    <div className="hidden md:block w-28 shrink-0">
+                      {s.page_category && SECTION_META[s.page_category] ? (
+                        <span className="text-[10px] font-medium text-muted-foreground">{SECTION_META[s.page_category].emoji} {SECTION_META[s.page_category].label}</span>
+                      ) : (
+                        <p className="text-[10px] text-muted-foreground font-mono truncate">{s.current_page || '—'}</p>
+                      )}
+                    </div>
+                    {/* Duration */}
+                    <div className="shrink-0 text-right">
+                      <p className="text-xs font-mono font-medium">{fmtDuration(elapsed)}</p>
+                    </div>
+                    <ChevronRight className="w-4 h-4 text-muted-foreground/40 shrink-0" />
+                  </button>
+                );
+              })}
+            </div>
+          )}
+        </CardContent>
+      </Card>
+
+      {/* User detail drawer */}
+      {selectedUser && (
+        <>
+          <div className="fixed inset-0 bg-black/30 z-40" onClick={() => setSelectedUser(null)} />
+          <UserDrawer userId={selectedUser} onClose={() => setSelectedUser(null)} />
+        </>
+      )}
+    </div>
+  );
+}
 
 type Range = '1d' | '7d' | '30d' | '90d' | '1y' | 'all';
 
@@ -39,6 +481,35 @@ interface Analytics {
   timeSeries: { users: { period: string; count: number }[]; players: { period: string; count: number }[]; premium: { period: string; count: number }[] };
   topUsers: { email: string; player_count: number }[];
   opinionBreakdown: { general_opinion: string; count: number }[];
+  timeBySection: { category: string; avg_seconds: number; total_seconds: number; user_count: number }[];
+  locationBreakdown: { country: string; country_code: string; user_count: number; has_precise_geo: number }[];
+}
+
+// ── Section pole constants ────────────────────────────────────────────────────
+const SECTION_META: Record<string, { label: string; color: string; emoji: string }> = {
+  players:       { label: 'Joueurs',        color: 'bg-primary',     emoji: '⚽' },
+  championships: { label: 'Championnats',   color: 'bg-sky-500',     emoji: '🏆' },
+  clubs:         { label: 'Clubs',          color: 'bg-emerald-500', emoji: '🏟️' },
+  community:     { label: 'Communauté',     color: 'bg-violet-500',  emoji: '👥' },
+  news:          { label: 'Actualités',     color: 'bg-orange-500',  emoji: '📰' },
+  matches:       { label: 'Matchs',         color: 'bg-red-500',     emoji: '📋' },
+  organizations: { label: 'Organisations', color: 'bg-teal-500',    emoji: '🏢' },
+  dashboard:     { label: 'Tableau de bord', color: 'bg-yellow-500', emoji: '📊' },
+  account:       { label: 'Compte',         color: 'bg-pink-500',    emoji: '👤' },
+  other:         { label: 'Autre',          color: 'bg-muted-foreground', emoji: '•' },
+};
+
+function fmtSeconds(s: number): string {
+  if (s < 60) return `${s}s`;
+  if (s < 3600) return `${Math.floor(s / 60)}m`;
+  return `${Math.floor(s / 3600)}h${Math.floor((s % 3600) / 60)}m`;
+}
+
+function CountryFlag({ code, size = 16 }: { code: string; size?: number }) {
+  const lower = code.toLowerCase();
+  return (
+    <span className={`fi fi-${lower} rounded-sm shrink-0`} style={{ width: size, height: Math.round(size * 0.75), display: 'inline-block' }} />
+  );
 }
 
 function useAnalytics(range: Range) {
@@ -111,6 +582,7 @@ export default function AdminAnalytics() {
   const { t, i18n } = useTranslation();
   const { data: isAdmin, isLoading: adminLoading } = useIsAdmin();
   const [range, setRange] = useState<Range>('30d');
+  const [activeTab, setActiveTab] = useState<'live' | 'stats'>('live');
   const { data, isLoading } = useAnalytics(range);
 
   if (adminLoading) return null;
@@ -127,7 +599,7 @@ export default function AdminAnalytics() {
   const pct = (a: number, b: number) => b > 0 ? `${Math.round((a / b) * 100)}%` : '—';
 
   return (
-    <div className="max-w-7xl mx-auto space-y-8">
+    <div className="max-w-7xl mx-auto space-y-6">
       {/* Header */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
         <div className="flex items-center gap-3">
@@ -143,24 +615,40 @@ export default function AdminAnalytics() {
           </div>
         </div>
 
-        {/* Range selector */}
-        <div className="flex items-center gap-1 bg-muted/50 rounded-xl p-1">
-          {RANGES.map(r => (
-            <button
-              key={r.value}
-              onClick={() => setRange(r.value)}
-              className={cn(
-                'px-3 py-1.5 rounded-lg text-xs font-medium transition-all',
-                range === r.value ? 'bg-primary text-primary-foreground shadow-sm' : 'text-muted-foreground hover:text-foreground hover:bg-muted'
-              )}
-            >
-              {t(r.label)}
-            </button>
-          ))}
-        </div>
+        {activeTab === 'stats' && (
+          <div className="flex items-center gap-1 bg-muted/50 rounded-xl p-1">
+            {RANGES.map(r => (
+              <button key={r.value} onClick={() => setRange(r.value)}
+                className={cn('px-3 py-1.5 rounded-lg text-xs font-medium transition-all',
+                  range === r.value ? 'bg-primary text-primary-foreground shadow-sm' : 'text-muted-foreground hover:text-foreground hover:bg-muted')}>
+                {t(r.label)}
+              </button>
+            ))}
+          </div>
+        )}
       </div>
 
-      {isLoading || !data ? (
+      {/* Tab switcher */}
+      <div className="flex gap-1 bg-muted/40 rounded-xl p-1 w-fit">
+        <button onClick={() => setActiveTab('live')}
+          className={cn('flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-all',
+            activeTab === 'live' ? 'bg-card shadow-sm text-foreground' : 'text-muted-foreground hover:text-foreground')}>
+          <Radio className="w-4 h-4 text-green-500" />
+          Live
+        </button>
+        <button onClick={() => setActiveTab('stats')}
+          className={cn('flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-all',
+            activeTab === 'stats' ? 'bg-card shadow-sm text-foreground' : 'text-muted-foreground hover:text-foreground')}>
+          <BarChart3 className="w-4 h-4 text-primary" />
+          Statistiques
+        </button>
+      </div>
+
+      {/* Live tab */}
+      {activeTab === 'live' && <LiveDashboard />}
+
+      {/* Stats tab */}
+      {activeTab === 'stats' && (isLoading || !data ? (
         <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
           {Array.from({ length: 8 }).map((_, i) => (
             <Card key={i} className="border-none"><CardContent className="p-5"><div className="h-16 bg-muted/50 rounded-xl animate-pulse" /></CardContent></Card>
@@ -422,8 +910,92 @@ export default function AdminAnalytics() {
               </CardContent>
             </Card>
           )}
+
+          {/* Section 8: Time spent by section */}
+          {(data.timeBySection ?? []).length > 0 && (
+            <Card className="border-none card-warm">
+              <CardHeader className="pb-2">
+                <CardTitle className="text-sm font-bold flex items-center gap-2">
+                  <Clock className="w-4 h-4 text-primary" />
+                  Temps passé par pôle ({rangeLabel})
+                </CardTitle>
+              </CardHeader>
+              <CardContent>
+                {/* KPI row — top 4 sections */}
+                <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-5">
+                  {(data.timeBySection ?? []).slice(0, 4).map(s => {
+                    const meta = SECTION_META[s.category] ?? SECTION_META.other;
+                    return (
+                      <div key={s.category} className="bg-muted/40 rounded-xl p-3 text-center">
+                        <p className="text-lg mb-0.5">{meta.emoji}</p>
+                        <p className="text-xl font-extrabold font-mono">{fmtSeconds(Math.round(s.avg_seconds))}</p>
+                        <p className="text-[10px] text-muted-foreground">{meta.label}</p>
+                        <p className="text-[10px] text-muted-foreground/60">{s.user_count} utilisateur{s.user_count > 1 ? 's' : ''}</p>
+                      </div>
+                    );
+                  })}
+                </div>
+                {/* Full bar chart */}
+                <div className="space-y-2">
+                  {(() => {
+                    const maxTotal = Math.max(...(data.timeBySection ?? []).map(s => s.total_seconds), 1);
+                    return (data.timeBySection ?? []).map(s => {
+                      const meta = SECTION_META[s.category] ?? SECTION_META.other;
+                      const pctWidth = Math.round((s.total_seconds / maxTotal) * 100);
+                      return (
+                        <div key={s.category} className="flex items-center gap-3">
+                          <span className="text-sm w-5 text-center">{meta.emoji}</span>
+                          <span className="text-xs w-28 shrink-0">{meta.label}</span>
+                          <div className="flex-1 h-2 bg-muted rounded-full overflow-hidden">
+                            <div className={cn('h-full rounded-full transition-all', meta.color)} style={{ width: `${pctWidth}%` }} />
+                          </div>
+                          <span className="text-xs font-mono w-12 text-right text-muted-foreground">{fmtSeconds(Math.round(s.avg_seconds))}/user</span>
+                        </div>
+                      );
+                    });
+                  })()}
+                </div>
+              </CardContent>
+            </Card>
+          )}
+
+          {/* Section 9: Geographic breakdown */}
+          {(data.locationBreakdown ?? []).length > 0 && (
+            <Card className="border-none card-warm">
+              <CardHeader className="pb-2">
+                <CardTitle className="text-sm font-bold flex items-center gap-2">
+                  <Globe className="w-4 h-4 text-primary" />
+                  Provenance géographique ({rangeLabel})
+                </CardTitle>
+              </CardHeader>
+              <CardContent>
+                <div className="space-y-2">
+                  {(() => {
+                    const maxUsers = Math.max(...(data.locationBreakdown ?? []).map(l => l.user_count), 1);
+                    return (data.locationBreakdown ?? []).map((l, i) => (
+                      <div key={l.country_code} className="flex items-center gap-3">
+                        <span className="text-xs text-muted-foreground w-5 text-right shrink-0">{i + 1}</span>
+                        <CountryFlag code={l.country_code} size={16} />
+                        <span className="text-xs flex-1 truncate">{l.country}</span>
+                        <div className="flex-1 max-w-[160px] h-1.5 bg-muted rounded-full overflow-hidden">
+                          <div className="h-full bg-primary rounded-full" style={{ width: `${Math.round((l.user_count / maxUsers) * 100)}%` }} />
+                        </div>
+                        <span className="text-xs font-mono font-medium w-8 text-right">{l.user_count}</span>
+                        {l.has_precise_geo === 1 && (
+                          <span title="Géolocalisation précise disponible" className="text-[9px] text-emerald-500 font-medium">GPS</span>
+                        )}
+                      </div>
+                    ));
+                  })()}
+                </div>
+                <p className="text-[10px] text-muted-foreground/60 mt-3">
+                  Basé sur l'IP (géolocalisation approximative). Le badge <span className="text-emerald-500 font-medium">GPS</span> indique qu'au moins un utilisateur de ce pays a partagé sa position précise depuis la carte.
+                </p>
+              </CardContent>
+            </Card>
+          )}
         </>
-      )}
+      ))}
     </div>
   );
 }

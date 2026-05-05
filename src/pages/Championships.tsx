@@ -268,7 +268,7 @@ function ChampionshipDetail({
   const isSaved = savedChamps.some(s => s.championship_name === champ.name);
   const [justSaved, setJustSaved] = useState(false);
   const [playerSearch, setPlayerSearch] = useState('');
-  const [tab, setTab] = useState<'clubs' | 'players'>('clubs');
+  const [tab, setTab] = useState<'standings' | 'clubs' | 'players'>('standings');
   const [selectedClub, setSelectedClub] = useState<SelectedClub | null>(null);
   const animTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -423,6 +423,16 @@ function ChampionshipDetail({
       {/* Tabs */}
       <div className="flex gap-1 border-b">
         <button
+          onClick={() => setTab('standings')}
+          className={cn(
+            'px-4 py-2 text-sm font-medium border-b-2 transition-colors -mb-px',
+            tab === 'standings' ? 'border-primary text-foreground' : 'border-transparent text-muted-foreground hover:text-foreground',
+          )}
+        >
+          <Trophy className="w-4 h-4 inline mr-1.5 -mt-0.5" />
+          {t('championships.standings')}
+        </button>
+        <button
           onClick={() => setTab('clubs')}
           className={cn(
             'px-4 py-2 text-sm font-medium border-b-2 transition-colors -mb-px',
@@ -443,6 +453,147 @@ function ChampionshipDetail({
           {t('championships.linked_players')} ({allLinkedPlayers.length})
         </button>
       </div>
+
+      {/* ── Standings tab ── */}
+      {tab === 'standings' && (
+        <div className="space-y-4">
+          {sofaLoading ? (
+            <div className="space-y-2">
+              {[...Array(10)].map((_, i) => <div key={i} className="h-11 rounded-lg bg-muted animate-pulse" />)}
+            </div>
+          ) : !hasStandings ? (
+            <div className="text-center py-16 text-muted-foreground">
+              <Trophy className="w-10 h-10 mx-auto mb-3 opacity-20" />
+              <p className="text-sm">{t('championships.no_standings')}</p>
+              {!champ.sofascoreId && (
+                <p className="text-xs mt-1 opacity-60">{t('championships.no_sofascore_id')}</p>
+              )}
+            </div>
+          ) : (
+            <>
+              {/* Season label */}
+              {(sofaData as any)?.season?.name && (
+                <div className="flex items-center justify-between text-xs text-muted-foreground">
+                  <span className="font-medium">{(sofaData as any).season.name}</span>
+                  <a
+                    href={`https://www.sofascore.com/fr/football/tournament/${champ.sofascoreId}`}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="flex items-center gap-1 hover:text-foreground transition-colors"
+                  >
+                    Source : Sofascore ↗
+                  </a>
+                </div>
+              )}
+
+              {/* Standings table */}
+              <div className="overflow-x-auto rounded-xl border">
+                <table className="w-full text-sm">
+                  <thead>
+                    <tr className="bg-muted/50 text-muted-foreground text-xs border-b">
+                      <th className="text-left px-3 py-2.5 w-8 font-semibold">#</th>
+                      <th className="text-left px-3 py-2.5 font-semibold">{t('championships.team')}</th>
+                      <th className="text-center px-2 py-2.5 font-semibold w-10 hidden sm:table-cell" title="Joueurs scoutés"><Users className="w-3 h-3 inline" /></th>
+                      <th className="text-center px-2 py-2.5 font-semibold w-8">MJ</th>
+                      <th className="text-center px-2 py-2.5 font-semibold w-8 hidden sm:table-cell">V</th>
+                      <th className="text-center px-2 py-2.5 font-semibold w-8 hidden sm:table-cell">N</th>
+                      <th className="text-center px-2 py-2.5 font-semibold w-8 hidden sm:table-cell">D</th>
+                      <th className="text-center px-2 py-2.5 font-semibold w-14 hidden md:table-cell">B+/B-</th>
+                      <th className="text-center px-2 py-2.5 font-semibold w-8 hidden md:table-cell">Diff</th>
+                      <th className="text-center px-2 py-2.5 font-bold w-10">Pts</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-border/40">
+                    {teams.map((team, i) => {
+                      const myCount = clubPlayerCount(team.name);
+                      const isSelected = selectedClub?.name === team.name;
+                      const pos = team.position ?? i + 1;
+                      const gd = (team.goalsFor ?? 0) - (team.goalsAgainst ?? 0);
+
+                      // Zone color based on description or promotionDescription
+                      const desc = (team.description ?? team.promotionDescription ?? '').toLowerCase();
+                      const zoneColor =
+                        desc.includes('champion') || desc === 'champions league' || desc.includes('champions_league') ? 'bg-blue-500' :
+                        desc.includes('europa') && !desc.includes('conference') ? 'bg-orange-400' :
+                        desc.includes('conference') ? 'bg-green-400' :
+                        desc.includes('relega') ? 'bg-red-500' :
+                        desc.includes('playoff') || desc.includes('play-off') ? 'bg-yellow-400' :
+                        null;
+
+                      return (
+                        <tr
+                          key={team.id ?? i}
+                          onClick={() => { setSelectedClub(isSelected ? null : { name: team.name, logoUrl: team.logoUrl }); setTab('clubs'); }}
+                          className={cn(
+                            'cursor-pointer transition-colors hover:bg-muted/30',
+                            isSelected && 'bg-primary/5',
+                          )}
+                        >
+                          {/* Position with zone indicator */}
+                          <td className="px-3 py-2.5">
+                            <div className="flex items-center gap-1.5">
+                              {zoneColor && <span className={cn('w-1 h-5 rounded-full shrink-0', zoneColor)} />}
+                              <span className={cn('font-mono text-xs font-semibold w-4 text-center', pos === 1 ? 'text-yellow-600' : 'text-muted-foreground')}>{pos}</span>
+                            </div>
+                          </td>
+
+                          {/* Team */}
+                          <td className="px-3 py-2.5">
+                            <div className="flex items-center gap-2.5">
+                              <ClubLogo src={team.logoUrl} name={team.name} size="sm" />
+                              <span className={cn('font-medium truncate max-w-[140px] sm:max-w-none', pos === 1 && 'font-bold')}>{team.name}</span>
+                            </div>
+                          </td>
+
+                          {/* Scouted players */}
+                          <td className="text-center px-2 py-2.5 hidden sm:table-cell">
+                            {myCount > 0 ? (
+                              <span className="inline-flex items-center justify-center min-w-[20px] h-5 px-1.5 rounded-full bg-primary/15 text-primary text-[11px] font-bold">
+                                {myCount}
+                              </span>
+                            ) : <span className="text-muted-foreground/30 text-xs">—</span>}
+                          </td>
+
+                          <td className="text-center px-2 py-2.5 text-muted-foreground text-xs">{team.played ?? '—'}</td>
+                          <td className="text-center px-2 py-2.5 text-muted-foreground text-xs hidden sm:table-cell">{team.wins ?? '—'}</td>
+                          <td className="text-center px-2 py-2.5 text-muted-foreground text-xs hidden sm:table-cell">{team.draws ?? '—'}</td>
+                          <td className="text-center px-2 py-2.5 text-muted-foreground text-xs hidden sm:table-cell">{team.losses ?? '—'}</td>
+
+                          {/* Goals */}
+                          <td className="text-center px-2 py-2.5 text-muted-foreground text-xs hidden md:table-cell">
+                            {team.goalsFor ?? '—'} / {team.goalsAgainst ?? '—'}
+                          </td>
+
+                          {/* Goal diff */}
+                          <td className="text-center px-2 py-2.5 text-xs hidden md:table-cell">
+                            <span className={cn('font-medium', gd > 0 ? 'text-emerald-600' : gd < 0 ? 'text-red-500' : 'text-muted-foreground')}>
+                              {gd > 0 ? `+${gd}` : gd}
+                            </span>
+                          </td>
+
+                          {/* Points */}
+                          <td className="text-center px-2 py-2.5">
+                            <span className={cn('font-bold text-sm', pos === 1 && 'text-yellow-600')}>{team.points ?? '—'}</span>
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+
+              {/* Legend */}
+              <div className="flex flex-wrap gap-3 text-[11px] text-muted-foreground px-1">
+                <span className="flex items-center gap-1.5"><span className="w-2.5 h-2.5 rounded-full bg-blue-500 shrink-0" />Ligue des champions</span>
+                <span className="flex items-center gap-1.5"><span className="w-2.5 h-2.5 rounded-full bg-orange-400 shrink-0" />Europa League</span>
+                <span className="flex items-center gap-1.5"><span className="w-2.5 h-2.5 rounded-full bg-green-400 shrink-0" />Conférence League</span>
+                <span className="flex items-center gap-1.5"><span className="w-2.5 h-2.5 rounded-full bg-yellow-400 shrink-0" />Barrages</span>
+                <span className="flex items-center gap-1.5"><span className="w-2.5 h-2.5 rounded-full bg-red-500 shrink-0" />Relégation</span>
+              </div>
+            </>
+          )}
+        </div>
+      )}
 
       {/* Clubs tab */}
       {tab === 'clubs' && (

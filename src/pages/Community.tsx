@@ -600,6 +600,7 @@ export default function Community() {
       return (data || []) as unknown as { id: string; post_id: string; user_id: string | null; author_name: string; content: string; created_at: string }[];
     },
     enabled: postIds.length > 0,
+    staleTime: 5 * 60 * 1000,
   });
   const repliesByPost = allReplies.reduce<Record<string, typeof allReplies>>((acc, r) => {
     (acc[r.post_id] ||= []).push(r);

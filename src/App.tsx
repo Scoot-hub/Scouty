@@ -60,6 +60,8 @@ const ClubProfile = lazy(() => import("@/pages/ClubProfile"));
 const ClubSearch = lazy(() => import("@/pages/ClubSearch"));
 const MyClubs = lazy(() => import("@/pages/MyClubs"));
 const Privacy = lazy(() => import("@/pages/Privacy"));
+const CookiesPolicy = lazy(() => import("@/pages/CookiesPolicy"));
+const Accessibility = lazy(() => import("@/pages/Accessibility"));
 const AdminAnalytics = lazy(() => import("@/pages/AdminAnalytics"));
 const AdminCredits = lazy(() => import("@/pages/AdminCredits"));
 const AdminCrons = lazy(() => import("@/pages/AdminCrons"));
@@ -106,6 +108,8 @@ const App = () => (
             <Route path="/cgu" element={<CGU />} />
             <Route path="/about" element={<About />} />
             <Route path="/privacy" element={<Privacy />} />
+            <Route path="/cookies" element={<CookiesPolicy />} />
+            <Route path="/accessibility" element={<Accessibility />} />
 
             {/* Protected routes */}
             <Route element={<ProtectedRoute />}>

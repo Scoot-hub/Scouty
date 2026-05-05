@@ -10,7 +10,8 @@ import { Badge } from '@/components/ui/badge';
 import { Input } from '@/components/ui/input';
 import { Separator } from '@/components/ui/separator';
 import { toast } from 'sonner';
-import { Crown, Mail, Lock, Building2, User, CalendarDays, ExternalLink, Loader2, Shield, ShieldCheck, ShieldOff, Download, Trash2, AlertTriangle, CreditCard, Camera, Phone, MapPin, Briefcase, Zap } from 'lucide-react';
+import { Crown, Mail, Lock, Building2, User, CalendarDays, ExternalLink, Loader2, Shield, ShieldCheck, ShieldOff, Download, Trash2, AlertTriangle, CreditCard, Camera, Phone, MapPin, Briefcase, Zap, Globe, Info } from 'lucide-react';
+import { COUNTRY_LIST } from '@/data/country-names';
 import { useCredits } from '@/hooks/use-credits';
 import { Progress } from '@/components/ui/progress';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from '@/components/ui/dialog';
@@ -86,6 +87,7 @@ export default function Account() {
   const [phone, setPhone] = useState('');
   const [civility, setCivility] = useState('');
   const [address, setAddress] = useState('');
+  const [country, setCountry] = useState('');
   const [dob, setDob] = useState('');
   const [referenceClub, setReferenceClub] = useState('');
   const [photoUrl, setPhotoUrl] = useState('');
@@ -130,6 +132,7 @@ export default function Account() {
       setPhone(profile.phone || '');
       setCivility(profile.civility || '');
       setAddress(profile.address || '');
+      setCountry((profile as any).country || '');
       setDob(profile.date_of_birth ? profile.date_of_birth.slice(0, 10) : '');
       setReferenceClub(profile.reference_club || '');
       setPhotoUrl(profile.photo_url || '');
@@ -159,6 +162,7 @@ export default function Account() {
         phone: phone.trim() || null,
         civility: civility || null,
         address: address.trim() || null,
+        country: country.trim() || null,
         date_of_birth: dob || null,
         reference_club: referenceClub.trim() || null,
         social_x: socialX.trim() || null,
@@ -540,12 +544,34 @@ export default function Account() {
             </div>
           </div>
 
-          {/* Address */}
-          <div>
-            <label className="text-xs font-medium text-muted-foreground flex items-center gap-1.5">
-              <MapPin className="w-3 h-3" />{t('account.address')}
-            </label>
-            <Input className="mt-1" value={address} onChange={e => setAddress(e.target.value)} placeholder={t('account.address_placeholder')} />
+          {/* Address + Country */}
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label className="text-xs font-medium text-muted-foreground flex items-center gap-1.5">
+                <MapPin className="w-3 h-3" />{t('account.address')}
+              </label>
+              <Input className="mt-1" value={address} onChange={e => setAddress(e.target.value)} placeholder={t('account.address_placeholder')} />
+            </div>
+            <div>
+              <label className="text-xs font-medium text-muted-foreground flex items-center gap-1.5">
+                <Globe className="w-3 h-3" />{t('account.country')}
+              </label>
+              <Input
+                className="mt-1"
+                list="country-list"
+                value={country}
+                onChange={e => setCountry(e.target.value)}
+                placeholder={t('account.country_placeholder')}
+                autoComplete="off"
+              />
+              <datalist id="country-list">
+                {COUNTRY_LIST.map(c => <option key={c} value={c} />)}
+              </datalist>
+              <p className="text-[10px] text-muted-foreground mt-1 flex items-center gap-1">
+                <Info className="w-3 h-3 shrink-0" />
+                {t('account.country_hint')}
+              </p>
+            </div>
           </div>
 
           <Separator />

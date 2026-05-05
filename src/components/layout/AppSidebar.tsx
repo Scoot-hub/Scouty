@@ -209,14 +209,16 @@ export default function AppSidebar({ collapsed, onToggle }: AppSidebarProps) {
         {/* ── Joueurs ── */}
         {shouldShow('players') && (
           <div className={restrictedClass('players')}>
-            <CollapsibleParent open={playersOpen} onToggleOpen={() => setPlayersOpenOverride(v => v === null ? !hasActiveChild(playersChildPaths) : !v)}>
-              <SidebarTooltip label={t('sidebar.players')} collapsed={collapsed}>
-                <Link to="/players" className={linkClass('/players', playersChildPaths)} onClick={() => { setMobileOpen(false); setPlayersOpenOverride(true); }}>
-                  <Users className="w-4 h-4 shrink-0" />
-                  {!collapsed && t('sidebar.players')}
-                </Link>
-              </SidebarTooltip>
-            </CollapsibleParent>
+            <FeatureGate featureKey="feature_players" inline>
+              <CollapsibleParent open={playersOpen} onToggleOpen={() => setPlayersOpenOverride(v => v === null ? !hasActiveChild(playersChildPaths) : !v)}>
+                <SidebarTooltip label={t('sidebar.players')} collapsed={collapsed}>
+                  <Link to="/players" className={linkClass('/players', playersChildPaths)} onClick={() => { setMobileOpen(false); setPlayersOpenOverride(true); }}>
+                    <Users className="w-4 h-4 shrink-0" />
+                    {!collapsed && t('sidebar.players')}
+                  </Link>
+                </SidebarTooltip>
+              </CollapsibleParent>
+            </FeatureGate>
           </div>
         )}
 
@@ -237,10 +239,12 @@ export default function AppSidebar({ collapsed, onToggle }: AppSidebarProps) {
             )}
             {shouldShow('watchlist') && (
               <div className={restrictedClass('watchlist')}>
-                <Link to="/watchlist" className={subLinkClass(isActive('/watchlist'))} onClick={() => setMobileOpen(false)}>
-                  <Eye className="w-3.5 h-3.5" />
-                  {t('sidebar.watchlist')}
-                </Link>
+                <FeatureGate featureKey="feature_watchlist" inline>
+                  <Link to="/watchlist" className={subLinkClass(isActive('/watchlist'))} onClick={() => setMobileOpen(false)}>
+                    <Eye className="w-3.5 h-3.5" />
+                    {t('sidebar.watchlist')}
+                  </Link>
+                </FeatureGate>
               </div>
             )}
             {shouldShow('shadow_team') && (
@@ -334,10 +338,12 @@ export default function AppSidebar({ collapsed, onToggle }: AppSidebarProps) {
           <div className="pl-7 space-y-0.5">
             {shouldShow('my_matches') && (
               <div className={restrictedClass('my_matches')}>
-                <Link to="/my-matches" className={subLinkClass(isActive('/my-matches'))} onClick={() => setMobileOpen(false)}>
-                  <MapPinned className="w-3.5 h-3.5" />
-                  {t('sidebar.my_matches')}
-                </Link>
+                <FeatureGate featureKey="feature_my_matches" inline>
+                  <Link to="/my-matches" className={subLinkClass(isActive('/my-matches'))} onClick={() => setMobileOpen(false)}>
+                    <MapPinned className="w-3.5 h-3.5" />
+                    {t('sidebar.my_matches')}
+                  </Link>
+                </FeatureGate>
               </div>
             )}
             {shouldShow('map') && (
@@ -354,21 +360,33 @@ export default function AppSidebar({ collapsed, onToggle }: AppSidebarProps) {
         )}
 
         {/* ── Championnats ── */}
-        <CollapsibleParent open={champOpen} onToggleOpen={() => setChampOpenOverride(v => v === null ? !hasActiveChild(champChildPaths) : !v)}>
-          <SidebarTooltip label={t('sidebar.championships')} collapsed={collapsed}>
-            <Link to="/championships" className={linkClass('/championships', champChildPaths)} onClick={() => { setMobileOpen(false); setChampOpenOverride(true); }}>
-              <Trophy className="w-4 h-4 shrink-0" />
-              {!collapsed && t('sidebar.championships')}
-            </Link>
-          </SidebarTooltip>
-        </CollapsibleParent>
+        {shouldShow('championships') && (
+          <div className={restrictedClass('championships')}>
+            <FeatureGate featureKey="feature_championships" inline>
+              <CollapsibleParent open={champOpen} onToggleOpen={() => setChampOpenOverride(v => v === null ? !hasActiveChild(champChildPaths) : !v)}>
+                <SidebarTooltip label={t('sidebar.championships')} collapsed={collapsed}>
+                  <Link to="/championships" className={linkClass('/championships', champChildPaths)} onClick={() => { setMobileOpen(false); setChampOpenOverride(true); }}>
+                    <Trophy className="w-4 h-4 shrink-0" />
+                    {!collapsed && t('sidebar.championships')}
+                  </Link>
+                </SidebarTooltip>
+              </CollapsibleParent>
+            </FeatureGate>
+          </div>
+        )}
 
-        {!collapsed && champOpen && (
+        {!collapsed && shouldShow('championships') && canView('championships') && champOpen && (
           <div className="pl-7 space-y-0.5">
-            <Link to="/my-championships" className={subLinkClass(isActive('/my-championships'))} onClick={() => setMobileOpen(false)}>
-              <Star className="w-3.5 h-3.5 text-yellow-500" />
-              {t('sidebar.my_championships')}
-            </Link>
+            {shouldShow('my_championships') && (
+              <div className={restrictedClass('my_championships')}>
+                <FeatureGate featureKey="feature_my_championships" inline>
+                  <Link to="/my-championships" className={subLinkClass(isActive('/my-championships'))} onClick={() => setMobileOpen(false)}>
+                    <Star className="w-3.5 h-3.5 text-yellow-500" />
+                    {t('sidebar.my_championships')}
+                  </Link>
+                </FeatureGate>
+              </div>
+            )}
           </div>
         )}
 
@@ -392,10 +410,12 @@ export default function AppSidebar({ collapsed, onToggle }: AppSidebarProps) {
           <div className="pl-7 space-y-0.5">
             {shouldShow('my_clubs') && (
               <div className={restrictedClass('my_clubs')}>
-                <Link to="/my-clubs" className={subLinkClass(isActive('/my-clubs'))} onClick={() => setMobileOpen(false)}>
-                  <Heart className="w-3.5 h-3.5" />
-                  {t('sidebar.my_clubs')}
-                </Link>
+                <FeatureGate featureKey="feature_my_clubs" inline>
+                  <Link to="/my-clubs" className={subLinkClass(isActive('/my-clubs'))} onClick={() => setMobileOpen(false)}>
+                    <Heart className="w-3.5 h-3.5" />
+                    {t('sidebar.my_clubs')}
+                  </Link>
+                </FeatureGate>
               </div>
             )}
           </div>
@@ -404,53 +424,63 @@ export default function AppSidebar({ collapsed, onToggle }: AppSidebarProps) {
         {/* ── Actualités (collapsible) ── */}
         {shouldShow('news') && (
           <div className={restrictedClass('news')}>
-            <CollapsibleParent open={newsOpen} onToggleOpen={() => setNewsOpenOverride(v => v === null ? !hasActiveChild(newsChildPaths) : !v)}>
-              <SidebarTooltip label={t('sidebar.news')} collapsed={collapsed}>
-                <Link to="/news" className={linkClass('/news', newsChildPaths)} onClick={() => { setMobileOpen(false); setNewsOpenOverride(true); }}>
-                  <Newspaper className="w-4 h-4 shrink-0" />
-                  {!collapsed && t('sidebar.news')}
-                </Link>
-              </SidebarTooltip>
-            </CollapsibleParent>
+            <FeatureGate featureKey="feature_news" inline>
+              <CollapsibleParent open={newsOpen} onToggleOpen={() => setNewsOpenOverride(v => v === null ? !hasActiveChild(newsChildPaths) : !v)}>
+                <SidebarTooltip label={t('sidebar.news')} collapsed={collapsed}>
+                  <Link to="/news" className={linkClass('/news', newsChildPaths)} onClick={() => { setMobileOpen(false); setNewsOpenOverride(true); }}>
+                    <Newspaper className="w-4 h-4 shrink-0" />
+                    {!collapsed && t('sidebar.news')}
+                  </Link>
+                </SidebarTooltip>
+              </CollapsibleParent>
+            </FeatureGate>
           </div>
         )}
 
         {!collapsed && shouldShow('news') && canView('news') && newsOpen && (
           <div className="pl-7 space-y-0.5">
-            {/* X */}
-            <Link to="/x" className={subLinkClass(isActive('/x'))} onClick={() => setMobileOpen(false)}>
-              <Twitter className="w-3.5 h-3.5 text-sky-500" />
-              {t('sidebar.x')}
-            </Link>
             {/* Football Buzz */}
-            <Link to="/buzz" className={subLinkClass(isActive('/buzz'))} onClick={() => setMobileOpen(false)}>
-              <Zap className="w-3.5 h-3.5 text-orange-500" />
-              {t('sidebar.buzz')}
-            </Link>
+            {shouldShow('buzz') && (
+              <div className={restrictedClass('buzz')}>
+                <FeatureGate featureKey="feature_buzz" inline>
+                  <Link to="/buzz" className={subLinkClass(isActive('/buzz'))} onClick={() => setMobileOpen(false)}>
+                    <Zap className="w-3.5 h-3.5 text-orange-500" />
+                    {t('sidebar.buzz')}
+                  </Link>
+                </FeatureGate>
+              </div>
+            )}
             {/* Instagram */}
-            <Link to="/instagram" className={subLinkClass(isActive('/instagram'))} onClick={() => setMobileOpen(false)}>
-              <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="url(#ig-grad)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                <defs>
-                  <linearGradient id="ig-grad" x1="0%" y1="0%" x2="100%" y2="100%">
-                    <stop offset="0%" stopColor="#f09433" />
-                    <stop offset="50%" stopColor="#dc2743" />
-                    <stop offset="100%" stopColor="#bc1888" />
-                  </linearGradient>
-                </defs>
-                <rect x="2" y="2" width="20" height="20" rx="5" ry="5" />
-                <path d="M16 11.37A4 4 0 1 1 12.63 8 4 4 0 0 1 16 11.37z" />
-                <line x1="17.5" y1="6.5" x2="17.51" y2="6.5" />
-              </svg>
-              {t('sidebar.instagram')}
-            </Link>
+            {shouldShow('instagram') && (
+              <div className={restrictedClass('instagram')}>
+                <FeatureGate featureKey="feature_instagram" inline>
+                  <Link to="/instagram" className={subLinkClass(isActive('/instagram'))} onClick={() => setMobileOpen(false)}>
+                    <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="url(#ig-grad)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                      <defs>
+                        <linearGradient id="ig-grad" x1="0%" y1="0%" x2="100%" y2="100%">
+                          <stop offset="0%" stopColor="#f09433" />
+                          <stop offset="50%" stopColor="#dc2743" />
+                          <stop offset="100%" stopColor="#bc1888" />
+                        </linearGradient>
+                      </defs>
+                      <rect x="2" y="2" width="20" height="20" rx="5" ry="5" />
+                      <path d="M16 11.37A4 4 0 1 1 12.63 8 4 4 0 0 1 16 11.37z" />
+                      <line x1="17.5" y1="6.5" x2="17.51" y2="6.5" />
+                    </svg>
+                    {t('sidebar.instagram')}
+                  </Link>
+                </FeatureGate>
+              </div>
+            )}
             {/* Articles + sous-item Créer */}
             {shouldShow('editorial') && (
               <div className={restrictedClass('editorial')}>
+                <FeatureGate featureKey="feature_editorial" inline>
                 <Link to="/editorial" className={subLinkClass(isActive('/editorial') && !isActive('/editorial/new'))} onClick={() => setMobileOpen(false)}>
                   <PenLine className="w-3.5 h-3.5" />
                   {t('sidebar.editorial')}
                 </Link>
-                {/* Créer un article — sous-menu de Articles, rédacteurs seulement */}
+                </FeatureGate>
                 {canAction('editorial', 'create') && (
                   <div className="pl-4 mt-0.5">
                     <Link to="/editorial/new" className={subLinkSmClass(isActive('/editorial/new'))} onClick={() => setMobileOpen(false)}>
@@ -500,12 +530,14 @@ export default function AppSidebar({ collapsed, onToggle }: AppSidebarProps) {
         {/* ── Import de données ── */}
         {shouldShow('data_import') && (
           <div className={restrictedClass('data_import')}>
-            <SidebarTooltip label={t('sidebar.data_import')} collapsed={collapsed}>
-              <Link to="/data-import" className={linkClass('/data-import')} onClick={() => setMobileOpen(false)}>
-                <FileSpreadsheet className="w-4 h-4 shrink-0" />
-                {!collapsed && t('sidebar.data_import')}
-              </Link>
-            </SidebarTooltip>
+            <FeatureGate featureKey="feature_data_import" inline>
+              <SidebarTooltip label={t('sidebar.data_import')} collapsed={collapsed}>
+                <Link to="/data-import" className={linkClass('/data-import')} onClick={() => setMobileOpen(false)}>
+                  <FileSpreadsheet className="w-4 h-4 shrink-0" />
+                  {!collapsed && t('sidebar.data_import')}
+                </Link>
+              </SidebarTooltip>
+            </FeatureGate>
           </div>
         )}
 
@@ -586,17 +618,23 @@ export default function AppSidebar({ collapsed, onToggle }: AppSidebarProps) {
             </div>
           )}
 
-          <SidebarTooltip label={t('sidebar.my_tickets')} collapsed={collapsed}>
-            <Link to="/my-tickets" className={footerLinkClass('/my-tickets')} onClick={() => setMobileOpen(false)}>
-              <MessageSquare className="w-3.5 h-3.5 shrink-0" />
-              {!collapsed && t('sidebar.my_tickets')}
-              {myTicketUnread > 0 && (
-                <span className="ml-auto bg-primary text-primary-foreground text-[9px] rounded-full min-w-[18px] h-[18px] flex items-center justify-center font-bold px-1">
-                  {myTicketUnread}
-                </span>
-              )}
-            </Link>
-          </SidebarTooltip>
+          {shouldShow('my_tickets') && (
+            <div className={restrictedClass('my_tickets')}>
+              <FeatureGate featureKey="feature_my_tickets" inline>
+                <SidebarTooltip label={t('sidebar.my_tickets')} collapsed={collapsed}>
+                  <Link to="/my-tickets" className={footerLinkClass('/my-tickets')} onClick={() => setMobileOpen(false)}>
+                    <MessageSquare className="w-3.5 h-3.5 shrink-0" />
+                    {!collapsed && t('sidebar.my_tickets')}
+                    {myTicketUnread > 0 && (
+                      <span className="ml-auto bg-primary text-primary-foreground text-[9px] rounded-full min-w-[18px] h-[18px] flex items-center justify-center font-bold px-1">
+                        {myTicketUnread}
+                      </span>
+                    )}
+                  </Link>
+                </SidebarTooltip>
+              </FeatureGate>
+            </div>
+          )}
 
           <SidebarTooltip label={t('sidebar.signout')} collapsed={collapsed}>
             <button onClick={handleSignOut} className={footerBtnClass}>
@@ -621,11 +659,23 @@ export default function AppSidebar({ collapsed, onToggle }: AppSidebarProps) {
                 <Link to="/legal" className="block text-[10px] text-sidebar-muted hover:text-sidebar-foreground transition-colors" onClick={() => { setMobileOpen(false); setLegalOpen(false); }}>
                   {t('footer.legal')}
                 </Link>
+                <Link to="/cgv" className="block text-[10px] text-sidebar-muted hover:text-sidebar-foreground transition-colors" onClick={() => { setMobileOpen(false); setLegalOpen(false); }}>
+                  {t('footer.cgv')}
+                </Link>
+                <Link to="/cgu" className="block text-[10px] text-sidebar-muted hover:text-sidebar-foreground transition-colors" onClick={() => { setMobileOpen(false); setLegalOpen(false); }}>
+                  {t('footer.cgu')}
+                </Link>
                 <Link to="/about" className="block text-[10px] text-sidebar-muted hover:text-sidebar-foreground transition-colors" onClick={() => { setMobileOpen(false); setLegalOpen(false); }}>
                   {t('footer.about')}
                 </Link>
                 <Link to="/privacy" className="block text-[10px] text-sidebar-muted hover:text-sidebar-foreground transition-colors" onClick={() => { setMobileOpen(false); setLegalOpen(false); }}>
                   {t('footer.privacy')}
+                </Link>
+                <Link to="/cookies" className="block text-[10px] text-sidebar-muted hover:text-sidebar-foreground transition-colors" onClick={() => { setMobileOpen(false); setLegalOpen(false); }}>
+                  {t('footer.cookies')}
+                </Link>
+                <Link to="/accessibility" className="block text-[10px] text-sidebar-muted hover:text-sidebar-foreground transition-colors" onClick={() => { setMobileOpen(false); setLegalOpen(false); }}>
+                  {t('footer.accessibility')}
                 </Link>
               </div>
             )}

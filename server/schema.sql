@@ -36,6 +36,7 @@ CREATE TABLE IF NOT EXISTS profiles (
   phone VARCHAR(30) NULL,
   civility ENUM('M.','Mme','Non précisé') NULL DEFAULT NULL,
   address TEXT NULL,
+  country VARCHAR(100) NULL,
   date_of_birth DATE NULL,
   reference_club VARCHAR(200) NULL,
   social_x VARCHAR(100) NULL,
@@ -636,6 +637,13 @@ CREATE TABLE IF NOT EXISTS api_football_cache (
   INDEX idx_cache_expires (expires_at)
 );
 
+CREATE TABLE IF NOT EXISTS club_geocoding_cache (
+  cache_key    VARCHAR(512) NOT NULL PRIMARY KEY,
+  lat          DECIMAL(9,6) NOT NULL,
+  lng          DECIMAL(9,6) NOT NULL,
+  cached_at    TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
 CREATE TABLE IF NOT EXISTS thesportsdb_team_cache (
   club_name VARCHAR(255) NOT NULL PRIMARY KEY,
   tsdb_team_id INT NOT NULL,
@@ -708,5 +716,313 @@ CREATE TABLE IF NOT EXISTS user_integrations (
   created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   UNIQUE KEY uniq_user_service (user_id, service),
+  FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+);
+
+-- ── Session analytics ──────────────────────────────────────────────────────
+
+CREATE TABLE IF NOT EXISTS user_sessions (
+  id CHAR(36) PRIMARY KEY,
+  user_id CHAR(36) NOT NULL,
+  session_id VARCHAR(64) NOT NULL,
+  device_type ENUM('desktop','mobile','tablet') NOT NULL DEFAULT 'desktop',
+  browser VARCHAR(50) NULL,
+  os VARCHAR(100) NULL,
+  screen_width INT NULL,
+  screen_height INT NULL,
+  language VARCHAR(10) NULL,
+  current_page VARCHAR(255) NULL,
+  page_category VARCHAR(30) NULL,
+  ip_address VARCHAR(45) NULL,
+  country VARCHAR(100) NULL,
+  country_code CHAR(2) NULL,
+  city VARCHAR(100) NULL,
+  latitude DECIMAL(9,6) NULL,
+  longitude DECIMAL(9,6) NULL,
+  geo_from_client TINYINT(1) NOT NULL DEFAULT 0,
+  started_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  last_seen_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  UNIQUE KEY uk_user_session (user_id, session_id),
+  INDEX idx_last_seen (last_seen_at),
+  INDEX idx_country (country_code),
+  FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+);
+
+-- Tracks cumulative time (seconds) per page pole per session
+CREATE TABLE IF NOT EXISTS session_page_time (
+  user_id      CHAR(36)    NOT NULL,
+  session_id   VARCHAR(64) NOT NULL,
+  category     VARCHAR(30) NOT NULL,
+  seconds_spent INT        NOT NULL DEFAULT 30,
+  last_updated  DATETIME   NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (user_id, session_id, category),
+  INDEX idx_spt_user (user_id),
+  INDEX idx_spt_category (category),
+  FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+);
+
+-- ── News & Buzz ────────────────────────────────────────────────────────────────
+
+CREATE TABLE IF NOT EXISTS news_articles (
+  id CHAR(36) PRIMARY KEY,
+  external_id VARCHAR(255) NULL,
+  title VARCHAR(1000) NOT NULL,
+  description TEXT NULL,
+  content TEXT NULL,
+  image_url TEXT NULL,
+  article_url TEXT NOT NULL,
+  category VARCHAR(100) NULL,
+  tags JSON NULL,
+  author VARCHAR(255) NULL,
+  published_at DATETIME NOT NULL,
+  source VARCHAR(50) NOT NULL DEFAULT 'sofascore',
+  scraped_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  UNIQUE KEY uniq_news_url (article_url(191)),
+  INDEX idx_news_published (published_at DESC),
+  INDEX idx_news_category (category),
+  INDEX idx_news_source (source, published_at)
+);
+
+CREATE TABLE IF NOT EXISTS football_buzz (
+  id CHAR(36) PRIMARY KEY,
+  source_name VARCHAR(100) NOT NULL,
+  source_handle VARCHAR(100) NOT NULL,
+  source_color VARCHAR(20) NOT NULL DEFAULT '#3B82F6',
+  content TEXT NOT NULL,
+  image_url TEXT NULL,
+  external_url TEXT NOT NULL,
+  buzz_score INT NOT NULL DEFAULT 0,
+  is_hot TINYINT(1) NOT NULL DEFAULT 0,
+  published_at DATETIME NOT NULL,
+  scraped_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  content_hash CHAR(64) NOT NULL,
+  UNIQUE KEY uniq_buzz_hash (content_hash),
+  INDEX idx_buzz_score (buzz_score DESC, published_at DESC),
+  INDEX idx_buzz_date (published_at DESC)
+);
+
+-- ── Championships ─────────────────────────────────────────────────────────────
+
+CREATE TABLE IF NOT EXISTS user_saved_championships (
+  id CHAR(36) PRIMARY KEY,
+  user_id CHAR(36) NOT NULL,
+  championship_name VARCHAR(255) NOT NULL,
+  championship_country VARCHAR(100) NULL,
+  championship_logo TEXT NULL,
+  sofascore_id INT NULL,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  UNIQUE KEY uniq_user_champ (user_id, championship_name(191)),
+  INDEX idx_saved_champs_user (user_id),
+  FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+);
+
+-- ── Club staff cache ──────────────────────────────────────────────────────────
+
+CREATE TABLE IF NOT EXISTS club_staff_cache (
+  id CHAR(36) PRIMARY KEY,
+  club_name VARCHAR(255) NOT NULL,
+  sofascore_team_id INT NULL,
+  sofascore_team_slug VARCHAR(255) NULL,
+  coach_id INT NULL,
+  coach_name VARCHAR(255) NULL,
+  coach_slug VARCHAR(255) NULL,
+  coach_photo_url TEXT NULL,
+  coach_nationality VARCHAR(100) NULL,
+  coach_date_born DATE NULL,
+  coach_sofascore_url TEXT NULL,
+  president_name VARCHAR(255) NULL,
+  president_photo_url TEXT NULL,
+  president_wikidata_id VARCHAR(50) NULL,
+  fetched_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  UNIQUE KEY uniq_club_staff_name (club_name(191)),
+  INDEX idx_club_staff_fetched (fetched_at)
+);
+
+-- ── Editorial articles ────────────────────────────────────────────────────────
+
+CREATE TABLE IF NOT EXISTS editorial_articles (
+  id CHAR(36) PRIMARY KEY,
+  user_id CHAR(36) NOT NULL,
+  title VARCHAR(500) NOT NULL,
+  slug VARCHAR(500) NOT NULL,
+  content LONGTEXT NOT NULL,
+  banner_url TEXT NULL,
+  keywords JSON NULL,
+  status ENUM('draft','published','archived') NOT NULL DEFAULT 'draft',
+  views INT NOT NULL DEFAULT 0,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  UNIQUE KEY uniq_editorial_slug (slug(191)),
+  INDEX idx_editorial_user (user_id),
+  INDEX idx_editorial_status (status, created_at),
+  FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+);
+
+-- ── Scout opinions (par organisation) ────────────────────────────────────────
+
+CREATE TABLE IF NOT EXISTS scout_opinions (
+  id CHAR(36) PRIMARY KEY,
+  player_id CHAR(36) NOT NULL,
+  organization_id CHAR(36) NOT NULL,
+  user_id CHAR(36) NOT NULL,
+  current_level DECIMAL(3,1) NOT NULL DEFAULT 5.0,
+  potential DECIMAL(3,1) NOT NULL DEFAULT 5.0,
+  opinion VARCHAR(20) NOT NULL DEFAULT 'À revoir',
+  notes TEXT NULL,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  INDEX idx_scout_opinions_player (player_id),
+  INDEX idx_scout_opinions_org (organization_id),
+  INDEX idx_scout_opinions_user (user_id),
+  FOREIGN KEY (player_id) REFERENCES players(id) ON DELETE CASCADE,
+  FOREIGN KEY (organization_id) REFERENCES organizations(id) ON DELETE CASCADE,
+  FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+);
+
+-- ── Wyscout statistical import ────────────────────────────────────────────────
+-- 130+ colonnes de statistiques par joueur / saison / division
+
+CREATE TABLE IF NOT EXISTS player_wyscout_stats (
+  id CHAR(36) PRIMARY KEY,
+  player_id CHAR(36) NOT NULL,
+  user_id CHAR(36) NOT NULL,
+  season VARCHAR(20) NOT NULL,
+  division VARCHAR(20) NULL,
+  team VARCHAR(255) NULL,
+  continent VARCHAR(100) NULL,
+  country VARCHAR(100) NULL,
+  country_raw VARCHAR(100) NULL,
+  year_start SMALLINT NULL,
+  year_end SMALLINT NULL,
+  source_filename TEXT NULL,
+  source_file_path TEXT NULL,
+  -- Base counting stats
+  matches_played INT NULL,
+  minutes_played INT NULL,
+  goals INT NULL,
+  xg DECIMAL(6,2) NULL,
+  assists INT NULL,
+  xa DECIMAL(6,2) NULL,
+  yellow_cards INT NULL,
+  red_cards INT NULL,
+  shots INT NULL,
+  np_goals INT NULL,
+  head_goals INT NULL,
+  conceded_goals INT NULL,
+  shots_against INT NULL,
+  clean_sheets INT NULL,
+  penalties_taken INT NULL,
+  -- Defensive per-90
+  defensive_actions_per90 DECIMAL(6,2) NULL,
+  defensive_duels_per90 DECIMAL(6,2) NULL,
+  defensive_duels_won_pct DECIMAL(5,2) NULL,
+  aerial_duels_per90 DECIMAL(6,2) NULL,
+  aerial_duels_won_pct DECIMAL(5,2) NULL,
+  sliding_tackles_per90 DECIMAL(6,2) NULL,
+  padj_sliding_tackles DECIMAL(6,2) NULL,
+  shots_blocked_per90 DECIMAL(6,2) NULL,
+  interceptions_per90 DECIMAL(6,2) NULL,
+  padj_interceptions DECIMAL(6,2) NULL,
+  fouls_per90 DECIMAL(6,2) NULL,
+  yellow_cards_per90 DECIMAL(6,2) NULL,
+  red_cards_per90 DECIMAL(6,2) NULL,
+  duels_per90 DECIMAL(6,2) NULL,
+  duels_won_pct DECIMAL(5,2) NULL,
+  -- Attacking per-90
+  attacking_actions_per90 DECIMAL(6,2) NULL,
+  goals_per90 DECIMAL(6,2) NULL,
+  np_goals_per90 DECIMAL(6,2) NULL,
+  xg_per90 DECIMAL(6,2) NULL,
+  head_goals_per90 DECIMAL(6,2) NULL,
+  shots_per90 DECIMAL(6,2) NULL,
+  shots_on_target_pct DECIMAL(5,2) NULL,
+  goal_conversion_pct DECIMAL(5,2) NULL,
+  assists_per90 DECIMAL(6,2) NULL,
+  xa_per90 DECIMAL(6,2) NULL,
+  crosses_per90 DECIMAL(6,2) NULL,
+  crosses_accurate_pct DECIMAL(5,2) NULL,
+  crosses_left_per90 DECIMAL(6,2) NULL,
+  crosses_left_accurate_pct DECIMAL(5,2) NULL,
+  crosses_right_per90 DECIMAL(6,2) NULL,
+  crosses_right_accurate_pct DECIMAL(5,2) NULL,
+  crosses_to_box_per90 DECIMAL(6,2) NULL,
+  dribbles_per90 DECIMAL(6,2) NULL,
+  dribbles_success_pct DECIMAL(5,2) NULL,
+  offensive_duels_per90 DECIMAL(6,2) NULL,
+  offensive_duels_won_pct DECIMAL(5,2) NULL,
+  touches_in_box_per90 DECIMAL(6,2) NULL,
+  progressive_runs_per90 DECIMAL(6,2) NULL,
+  accelerations_per90 DECIMAL(6,2) NULL,
+  received_passes_per90 DECIMAL(6,2) NULL,
+  received_long_passes_per90 DECIMAL(6,2) NULL,
+  fouls_suffered_per90 DECIMAL(6,2) NULL,
+  -- Passing per-90
+  passes_per90 DECIMAL(6,2) NULL,
+  passes_accurate_pct DECIMAL(5,2) NULL,
+  forward_passes_per90 DECIMAL(6,2) NULL,
+  forward_passes_accurate_pct DECIMAL(5,2) NULL,
+  back_passes_per90 DECIMAL(6,2) NULL,
+  back_passes_accurate_pct DECIMAL(5,2) NULL,
+  lateral_passes_per90 DECIMAL(6,2) NULL,
+  lateral_passes_accurate_pct DECIMAL(5,2) NULL,
+  short_medium_passes_per90 DECIMAL(6,2) NULL,
+  short_medium_passes_accurate_pct DECIMAL(5,2) NULL,
+  long_passes_per90 DECIMAL(6,2) NULL,
+  long_passes_accurate_pct DECIMAL(5,2) NULL,
+  avg_pass_length DECIMAL(5,2) NULL,
+  avg_long_pass_length DECIMAL(5,2) NULL,
+  shot_assists_per90 DECIMAL(6,2) NULL,
+  second_assists_per90 DECIMAL(6,2) NULL,
+  third_assists_per90 DECIMAL(6,2) NULL,
+  smart_passes_per90 DECIMAL(6,2) NULL,
+  smart_passes_accurate_pct DECIMAL(5,2) NULL,
+  key_passes_per90 DECIMAL(6,2) NULL,
+  passes_final_third_per90 DECIMAL(6,2) NULL,
+  passes_final_third_accurate_pct DECIMAL(5,2) NULL,
+  passes_penalty_area_per90 DECIMAL(6,2) NULL,
+  passes_penalty_area_accurate_pct DECIMAL(5,2) NULL,
+  through_passes_per90 DECIMAL(6,2) NULL,
+  through_passes_accurate_pct DECIMAL(5,2) NULL,
+  deep_completions_per90 DECIMAL(6,2) NULL,
+  deep_completed_crosses_per90 DECIMAL(6,2) NULL,
+  progressive_passes_per90 DECIMAL(6,2) NULL,
+  progressive_passes_accurate_pct DECIMAL(5,2) NULL,
+  -- Set pieces
+  free_kicks_per90 DECIMAL(6,2) NULL,
+  direct_free_kicks_per90 DECIMAL(6,2) NULL,
+  direct_free_kicks_on_target_pct DECIMAL(5,2) NULL,
+  corners_per90 DECIMAL(6,2) NULL,
+  penalty_conversion_pct DECIMAL(5,2) NULL,
+  -- Goalkeeper
+  conceded_goals_per90 DECIMAL(6,2) NULL,
+  shots_against_per90 DECIMAL(6,2) NULL,
+  save_rate_pct DECIMAL(5,2) NULL,
+  xg_against DECIMAL(6,2) NULL,
+  xg_against_per90 DECIMAL(6,2) NULL,
+  prevented_goals DECIMAL(6,2) NULL,
+  prevented_goals_per90 DECIMAL(6,2) NULL,
+  gk_back_passes_per90 DECIMAL(6,2) NULL,
+  gk_exits_per90 DECIMAL(6,2) NULL,
+  gk_aerial_duels_per90 DECIMAL(6,2) NULL,
+  -- Physical / athletic
+  total_distance_per90 DECIMAL(8,2) NULL,
+  running_distance_per90 DECIMAL(8,2) NULL,
+  hsr_distance_per90 DECIMAL(8,2) NULL,
+  sprint_distance_per90 DECIMAL(8,2) NULL,
+  hi_distance_per90 DECIMAL(8,2) NULL,
+  meters_per_min DECIMAL(6,2) NULL,
+  max_speed DECIMAL(5,2) NULL,
+  medium_accel_per90 DECIMAL(6,2) NULL,
+  high_accel_per90 DECIMAL(6,2) NULL,
+  medium_decel_per90 DECIMAL(6,2) NULL,
+  high_decel_per90 DECIMAL(6,2) NULL,
+  hsr_count_per90 DECIMAL(6,2) NULL,
+  sprint_count_per90 DECIMAL(6,2) NULL,
+  hi_count_per90 DECIMAL(6,2) NULL,
+  -- Meta
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  UNIQUE KEY uniq_player_season_div (player_id, season(20), division(20)),
+  FOREIGN KEY (player_id) REFERENCES players(id) ON DELETE CASCADE,
   FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
 );
