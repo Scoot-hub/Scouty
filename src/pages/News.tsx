@@ -1,4 +1,5 @@
 import { useState, useCallback, useRef, useEffect } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { useQuery } from '@tanstack/react-query';
 import { useIsAdmin } from '@/hooks/use-admin';
@@ -12,8 +13,9 @@ import { cn } from '@/lib/utils';
 import {
   Search, RefreshCw, Newspaper, ExternalLink, Calendar,
   Filter, X, ChevronLeft, ChevronRight, User, Clock,
-  Zap, ArrowLeft, Loader2, BookOpen, AlertCircle,
+  Zap, ArrowLeft, Loader2, BookOpen, AlertCircle, PenLine,
 } from 'lucide-react';
+import { Link } from 'react-router-dom';
 
 const API = (import.meta.env.API_URL || '/api').replace(/\/$/, '');
 
@@ -21,7 +23,7 @@ const API = (import.meta.env.API_URL || '/api').replace(/\/$/, '');
 
 interface UnifiedItem {
   id: string;
-  type: 'article' | 'buzz';
+  type: 'article' | 'buzz' | 'editorial';
   title: string;
   excerpt: string | null;
   image_url: string | null;
@@ -55,7 +57,7 @@ function timeAgo(dateStr: string) {
 
 function sourceLabel(source: string) {
   const map: Record<string, string> = {
-    sofascore: 'Sofascore', footballbuzz: 'Football Buzz',
+    sofascore: 'Sofascore', footballbuzz: 'Football Buzz', internal: 'Éditorial Scouty',
     'l-equipe': "L'Équipe", 'france-football': 'France Football',
   };
   return map[source] || source;
@@ -84,6 +86,7 @@ function ArticleReader({ state, onClose }: { state: ReaderState; onClose: () => 
 
   const { item, content, loading, error, fallback_url } = state;
   const isBuzz = item.type === 'buzz';
+  const isEditorial = item.type === 'editorial';
 
   return (
     <>
@@ -107,6 +110,10 @@ function ArticleReader({ state, onClose }: { state: ReaderState; onClose: () => 
             {item.source === 'footballbuzz' ? (
               <Badge className="bg-orange-500/15 text-orange-600 border-orange-200 gap-1 text-[10px]">
                 <Zap className="w-3 h-3" /> Football Buzz
+              </Badge>
+            ) : isEditorial ? (
+              <Badge className="bg-primary/15 text-primary gap-1 text-[10px]">
+                <PenLine className="w-3 h-3" /> Éditorial Scouty
               </Badge>
             ) : (
               <Badge variant="outline" className="text-[10px]">{sourceLabel(item.source)}</Badge>
@@ -227,13 +234,21 @@ function ArticleReader({ state, onClose }: { state: ReaderState; onClose: () => 
         {/* Footer CTA */}
         <div className="shrink-0 border-t px-6 py-4 flex items-center justify-between gap-3 bg-muted/30">
           <p className="text-[10px] text-muted-foreground">
-            {isBuzz ? 'Source : Football Buzz' : `Source : ${sourceLabel(item.source)} · ${item.url}`}
+            {isBuzz ? 'Source : Football Buzz' : isEditorial ? 'Article interne Scouty' : `Source : ${sourceLabel(item.source)} · ${item.url}`}
           </p>
-          <a href={item.url} target="_blank" rel="noopener noreferrer">
-            <Button size="sm" className="gap-2 text-xs">
-              <ExternalLink className="w-3.5 h-3.5" /> Voir la source
-            </Button>
-          </a>
+          {isEditorial ? (
+            <Link to={`/editorial/${item.id}`} onClick={onClose}>
+              <Button size="sm" className="gap-2 text-xs">
+                <PenLine className="w-3.5 h-3.5" /> Voir l'article
+              </Button>
+            </Link>
+          ) : (
+            <a href={item.url} target="_blank" rel="noopener noreferrer">
+              <Button size="sm" className="gap-2 text-xs">
+                <ExternalLink className="w-3.5 h-3.5" /> Voir la source
+              </Button>
+            </a>
+          )}
         </div>
       </div>
     </>
@@ -267,18 +282,19 @@ function ArticleContentRenderer({ content }: { content: string }) {
 function FeaturedCard({ item, onClick }: { item: UnifiedItem; onClick: () => void }) {
   const [imgError, setImgError] = useState(false);
   const isBuzz = item.type === 'buzz';
-  return (
-    <button
-      onClick={onClick}
-      className="group w-full text-left block relative rounded-2xl overflow-hidden aspect-[16/7] shadow-xl hover:shadow-2xl transition-all duration-300 focus:outline-none focus:ring-2 focus:ring-primary"
-    >
+  const isEditorial = item.type === 'editorial';
+
+  const content = (
+    <div className="group relative rounded-2xl overflow-hidden aspect-[16/7] shadow-xl hover:shadow-2xl transition-all duration-300 cursor-pointer">
       {item.image_url && !imgError ? (
         <img src={item.image_url} alt={item.title}
           className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-700"
           onError={() => setImgError(true)} />
       ) : (
         <div className="w-full h-full bg-gradient-to-br from-primary/30 via-primary/10 to-accent/20 flex items-center justify-center">
-          {isBuzz ? <Zap className="w-20 h-20 text-orange-400/30" /> : <Newspaper className="w-20 h-20 text-primary/20" />}
+          {isBuzz ? <Zap className="w-20 h-20 text-orange-400/30" />
+           : isEditorial ? <PenLine className="w-20 h-20 text-primary/20" />
+           : <Newspaper className="w-20 h-20 text-primary/20" />}
         </div>
       )}
       <div className="absolute inset-0 bg-gradient-to-t from-black/90 via-black/40 to-transparent" />
@@ -287,7 +303,8 @@ function FeaturedCard({ item, onClick }: { item: UnifiedItem; onClick: () => voi
         <div className="flex items-center gap-2 flex-wrap">
           <Badge className="bg-primary text-primary-foreground text-xs font-bold px-2.5 py-1">À la une</Badge>
           {isBuzz && <Badge className="bg-orange-500 text-white text-xs gap-1"><Zap className="w-3 h-3" /> Football Buzz</Badge>}
-          {item.category && <Badge variant="outline" className="border-white/30 text-white text-xs">{item.category}</Badge>}
+          {isEditorial && <Badge className="bg-white/20 text-white text-xs gap-1"><PenLine className="w-3 h-3" /> Éditorial</Badge>}
+          {item.category && !isEditorial && <Badge variant="outline" className="border-white/30 text-white text-xs">{item.category}</Badge>}
         </div>
         <h2 className="text-xl md:text-3xl font-black text-white leading-tight line-clamp-2 group-hover:text-primary/90 transition-colors">
           {item.title}
@@ -299,25 +316,30 @@ function FeaturedCard({ item, onClick }: { item: UnifiedItem; onClick: () => voi
           <span className="flex items-center gap-1.5"><Clock className="w-3.5 h-3.5" />{timeAgo(item.published_at)}</span>
           {item.author && <span className="flex items-center gap-1.5"><User className="w-3.5 h-3.5" />{item.author}</span>}
           <span className="ml-auto flex items-center gap-1 font-medium text-white/80 group-hover:text-white transition-colors">
-            <BookOpen className="w-3.5 h-3.5" /> Lire {item.has_content ? 'l\'article' : 'le résumé'}
+            <BookOpen className="w-3.5 h-3.5" /> Lire l'article
           </span>
         </div>
       </div>
-    </button>
+    </div>
   );
+
+  if (isEditorial) return <Link to={`/editorial/${item.id}`}>{content}</Link>;
+  return <div onClick={onClick}>{content}</div>;
 }
 
 function ItemCard({ item, onClick }: { item: UnifiedItem; onClick: () => void }) {
   const [imgError, setImgError] = useState(false);
   const isBuzz = item.type === 'buzz';
-  return (
-    <button
-      onClick={onClick}
-      className="group flex flex-col rounded-xl overflow-hidden border border-border/50 bg-card hover:border-primary/30 hover:shadow-xl transition-all duration-300 h-full w-full text-left focus:outline-none focus:ring-2 focus:ring-primary"
-    >
-      {/* Image / Buzz badge */}
-      <div className={cn('relative overflow-hidden shrink-0', isBuzz ? 'min-h-[60px] bg-gradient-to-br from-orange-500/10 to-amber-500/5' : 'aspect-[16/9] bg-muted')}>
-        {!isBuzz && item.image_url && !imgError ? (
+  const isEditorial = item.type === 'editorial';
+
+  const content = (
+    <div className="group flex flex-col rounded-xl overflow-hidden border border-border/50 bg-card hover:border-primary/30 hover:shadow-xl transition-all duration-300 h-full cursor-pointer">
+      {/* Image / type badge */}
+      <div className={cn('relative overflow-hidden shrink-0',
+        isBuzz ? 'min-h-[60px] bg-gradient-to-br from-orange-500/10 to-amber-500/5'
+        : isEditorial ? 'min-h-[60px] bg-gradient-to-br from-primary/10 to-accent/5'
+        : 'aspect-[16/9] bg-muted')}>
+        {!isBuzz && !isEditorial && item.image_url && !imgError ? (
           <img src={item.image_url} alt={item.title}
             className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-500"
             onError={() => setImgError(true)} />
@@ -327,19 +349,20 @@ function ItemCard({ item, onClick }: { item: UnifiedItem; onClick: () => void })
             <span className="text-xs font-semibold text-orange-600 dark:text-orange-400">Football Buzz</span>
             {item.author && <span className="text-[10px] text-muted-foreground ml-auto">@{item.author}</span>}
           </div>
+        ) : isEditorial ? (
+          <div className="flex items-center gap-2 px-4 py-3">
+            <PenLine className="w-4 h-4 text-primary shrink-0" />
+            <span className="text-xs font-semibold text-primary">Éditorial Scouty</span>
+            {item.author && <span className="text-[10px] text-muted-foreground ml-auto">{item.author}</span>}
+          </div>
         ) : (
           <div className="w-full h-full flex items-center justify-center bg-gradient-to-br from-primary/10 to-accent/10">
             <Newspaper className="w-10 h-10 text-primary/20" />
           </div>
         )}
-        {!isBuzz && item.category && (
+        {!isBuzz && !isEditorial && item.category && (
           <div className="absolute top-2.5 left-2.5">
             <Badge className="text-[10px] px-2 py-0.5 font-bold">{item.category}</Badge>
-          </div>
-        )}
-        {item.has_content === 1 && (
-          <div className="absolute top-2.5 right-2.5">
-            <span className="bg-emerald-500/90 text-white text-[9px] px-1.5 py-0.5 rounded-full font-medium">Contenu complet</span>
           </div>
         )}
       </div>
@@ -357,8 +380,11 @@ function ItemCard({ item, onClick }: { item: UnifiedItem; onClick: () => void })
           </span>
         </div>
       </div>
-    </button>
+    </div>
   );
+
+  if (isEditorial) return <Link to={`/editorial/${item.id}`} className="block h-full">{content}</Link>;
+  return <div onClick={onClick} className="h-full">{content}</div>;
 }
 
 // ── Skeleton loaders ──────────────────────────────────────────────────────────
@@ -376,11 +402,12 @@ function CardSkeleton() {
 // ── Main page ─────────────────────────────────────────────────────────────────
 
 const PAGE_SIZE = 12;
-type TypeFilter = '' | 'article' | 'buzz';
+type TypeFilter = '' | 'article' | 'buzz' | 'editorial';
 
 export default function News() {
   const { t } = useTranslation();
   const { data: isAdmin } = useIsAdmin();
+  const navigate = useNavigate();
 
   const [search, setSearch]     = useState('');
   const [category, setCategory] = useState('');
@@ -408,7 +435,14 @@ export default function News() {
   });
 
   const openReader = useCallback(async (item: UnifiedItem) => {
-    // Buzz posts: content is already available (the `excerpt` IS the content)
+    // Editorial articles → full dedicated page with reactions & share
+    if (item.type === 'editorial') {
+      // url field contains the article id for internal articles
+      navigate(`/editorial/${item.id}`);
+      return;
+    }
+
+    // Buzz posts: content is already in DB
     if (item.type === 'buzz') {
       setReader({ item, content: item.excerpt, loading: false, error: null, fallback_url: item.url });
       return;
@@ -441,7 +475,7 @@ export default function News() {
     } catch {
       setReader({ item, content: null, loading: false, error: 'Erreur lors du chargement via Apify.', fallback_url: item.url });
     }
-  }, []);
+  }, [navigate]);
 
   const handleRefresh = useCallback(async () => {
     if (!isAdmin) return;
@@ -499,11 +533,12 @@ export default function News() {
 
         {/* Type toggle */}
         <div className="flex items-center gap-1 bg-muted/50 rounded-lg p-1">
-          {([['', 'Tous'], ['article', 'Articles'], ['buzz', 'Buzz']] as [TypeFilter, string][]).map(([v, label]) => (
+          {([['', 'Tous'], ['article', 'Sofascore'], ['buzz', 'Buzz'], ['editorial', 'Éditorial']] as [TypeFilter, string][]).map(([v, label]) => (
             <button key={v} onClick={() => { setTypeFilter(v); setPage(0); }}
               className={cn('px-3 py-1 rounded-md text-xs font-medium transition-all',
                 typeFilter === v ? 'bg-card shadow text-foreground' : 'text-muted-foreground hover:text-foreground')}>
               {v === 'buzz' && <Zap className="w-3 h-3 inline mr-1 text-orange-500" />}
+              {v === 'editorial' && <PenLine className="w-3 h-3 inline mr-1 text-primary" />}
               {label}
             </button>
           ))}

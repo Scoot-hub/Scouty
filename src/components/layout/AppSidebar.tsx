@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { Link, useLocation, useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import {
-  Users, Menu, X, LogOut, Settings, Shield, UserCircle, Eye, Sparkles, Building2, CalendarDays, CalendarCheck, Shirt, ClipboardList, ChevronLeft, ChevronRight, ChevronDown, Route, MapPinned, Gift, Search, Globe, Heart, MessageSquare, Info, Trophy, FileSpreadsheet, Newspaper, PenLine, Plus, Zap, Twitter, Star
+  Users, Menu, X, LogOut, Settings, Shield, UserCircle, Eye, Sparkles, Building2, CalendarDays, CalendarCheck, Shirt, ClipboardList, ChevronLeft, ChevronRight, ChevronDown, Route, MapPinned, Gift, Search, Globe, Heart, MessageSquare, Info, Trophy, FileSpreadsheet, Newspaper, PenLine, Plus, Zap, Twitter, Star, Lock,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { useAuth } from '@/contexts/AuthContext';
@@ -11,6 +11,7 @@ import { useUiPreferences } from '@/contexts/UiPreferencesContext';
 import { useMyOrganizations, slugify } from '@/hooks/use-organization';
 import { useAdminTicketUnreadCount, useMyTickets } from '@/hooks/use-tickets';
 import { FeatureGate } from '@/components/FeatureGate';
+import { usePageAccessInfo } from '@/hooks/use-page-access-info';
 import logo from '@/assets/logo.png';
 
 interface AppSidebarProps {
@@ -26,6 +27,67 @@ function SidebarTooltip({ label, collapsed, children }: { label: string; collaps
       <div className="absolute left-full top-1/2 -translate-y-1/2 ml-2 px-2.5 py-1.5 rounded-lg bg-sidebar-accent text-sidebar-accent-foreground text-xs font-medium whitespace-nowrap opacity-0 pointer-events-none group-hover/tip:opacity-100 transition-opacity duration-150 z-50 shadow-lg">
         {label}
       </div>
+    </div>
+  );
+}
+
+function RestrictedWrapper({
+  pageKey,
+  canView,
+  requiredRoles,
+  children,
+}: {
+  pageKey: string;
+  canView: boolean;
+  requiredRoles: string[];
+  children: React.ReactNode;
+}) {
+  const { t } = useTranslation();
+  const [mousePos, setMousePos] = useState<{ x: number; y: number } | null>(null);
+
+  if (canView) return <>{children}</>;
+
+  return (
+    <div
+      onMouseEnter={(e) => setMousePos({ x: e.clientX, y: e.clientY })}
+      onMouseMove={(e) => setMousePos({ x: e.clientX, y: e.clientY })}
+      onMouseLeave={() => setMousePos(null)}
+    >
+      {/* Grayed content — pointer-events-none so clicks are blocked */}
+      <div className="opacity-40 pointer-events-none select-none">
+        {children}
+      </div>
+
+      {/* Tooltip fixed to mouse position — outside sidebar overflow */}
+      {mousePos && (
+        <div
+          className="fixed z-[9999] pointer-events-none"
+          style={{ left: mousePos.x + 14, top: mousePos.y - 12 }}
+        >
+          <div className="bg-popover border border-border rounded-xl shadow-xl p-3 min-w-[160px] max-w-[220px]">
+            <div className="flex items-center gap-1.5 mb-2">
+              <div className="w-5 h-5 rounded-md bg-amber-500/15 flex items-center justify-center shrink-0">
+                <Lock className="w-3 h-3 text-amber-500" />
+              </div>
+              <span className="text-xs font-bold text-popover-foreground">{t('sidebar.access_restricted')}</span>
+            </div>
+            {requiredRoles.length > 0 ? (
+              <>
+                <p className="text-[11px] text-muted-foreground mb-1.5">{t('sidebar.required_roles')}</p>
+                <div className="flex flex-wrap gap-1">
+                  {requiredRoles.map(role => (
+                    <span key={role} className="text-[10px] px-1.5 py-0.5 rounded-full bg-primary/10 text-primary font-semibold capitalize">
+                      {role}
+                    </span>
+                  ))}
+                </div>
+              </>
+            ) : (
+              <p className="text-[11px] text-muted-foreground">{t('sidebar.contact_admin_access')}</p>
+            )}
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -59,6 +121,7 @@ export default function AppSidebar({ collapsed, onToggle }: AppSidebarProps) {
   const { data: myOrgs } = useMyOrganizations();
   const { t } = useTranslation();
   const { hideRestrictedElements } = useUiPreferences();
+  const { data: pageAccessInfo } = usePageAccessInfo();
 
   const WHITELIST_ONLY = new Set(['admin', 'data_import']);
   const canView = (pageKey: string): boolean => {
@@ -208,7 +271,7 @@ export default function AppSidebar({ collapsed, onToggle }: AppSidebarProps) {
 
         {/* ── Joueurs ── */}
         {shouldShow('players') && (
-          <div className={restrictedClass('players')}>
+          <RestrictedWrapper pageKey="players" canView={canView('players')} requiredRoles={pageAccessInfo?.['players'] ?? []}>
             <FeatureGate featureKey="feature_players" inline>
               <CollapsibleParent open={playersOpen} onToggleOpen={() => setPlayersOpenOverride(v => v === null ? !hasActiveChild(playersChildPaths) : !v)}>
                 <SidebarTooltip label={t('sidebar.players')} collapsed={collapsed}>
@@ -219,13 +282,13 @@ export default function AppSidebar({ collapsed, onToggle }: AppSidebarProps) {
                 </SidebarTooltip>
               </CollapsibleParent>
             </FeatureGate>
-          </div>
+          </RestrictedWrapper>
         )}
 
         {!collapsed && shouldShow('players') && canView('players') && playersOpen && (
           <div className="pl-7 space-y-0.5">
             {shouldShow('discover') && (
-              <div className={restrictedClass('discover')}>
+              <RestrictedWrapper pageKey="discover" canView={canView('discover')} requiredRoles={pageAccessInfo?.['discover'] ?? []}>
                 <FeatureGate featureKey="feature_discover" inline>
                   <Link to="/discover" className={subLinkClass(isActive('/discover'))} onClick={() => setMobileOpen(false)}>
                     <Search className="w-3.5 h-3.5" />
@@ -235,34 +298,34 @@ export default function AppSidebar({ collapsed, onToggle }: AppSidebarProps) {
                     </span>
                   </Link>
                 </FeatureGate>
-              </div>
+              </RestrictedWrapper>
             )}
             {shouldShow('watchlist') && (
-              <div className={restrictedClass('watchlist')}>
+              <RestrictedWrapper pageKey="watchlist" canView={canView('watchlist')} requiredRoles={pageAccessInfo?.['watchlist'] ?? []}>
                 <FeatureGate featureKey="feature_watchlist" inline>
                   <Link to="/watchlist" className={subLinkClass(isActive('/watchlist'))} onClick={() => setMobileOpen(false)}>
                     <Eye className="w-3.5 h-3.5" />
                     {t('sidebar.watchlist')}
                   </Link>
                 </FeatureGate>
-              </div>
+              </RestrictedWrapper>
             )}
             {shouldShow('shadow_team') && (
-              <div className={restrictedClass('shadow_team')}>
+              <RestrictedWrapper pageKey="shadow_team" canView={canView('shadow_team')} requiredRoles={pageAccessInfo?.['shadow_team'] ?? []}>
                 <FeatureGate featureKey="feature_shadow_team" inline>
                   <Link to="/shadow-team" className={subLinkClass(isActive('/shadow-team'))} onClick={() => setMobileOpen(false)}>
                     <Shirt className="w-3.5 h-3.5" />
                     {t('sidebar.shadow_team')}
                   </Link>
                 </FeatureGate>
-              </div>
+              </RestrictedWrapper>
             )}
           </div>
         )}
 
         {/* ── Organisation ── */}
         {shouldShow('organization') && (
-          <div className={restrictedClass('organization')}>
+          <RestrictedWrapper pageKey="organization" canView={canView('organization')} requiredRoles={pageAccessInfo?.['organization'] ?? []}>
             <CollapsibleParent open={orgOpen} onToggleOpen={() => setOrgOpenOverride(v => v === null ? !hasActiveChild(orgChildPaths) : !v)}>
               <SidebarTooltip label={t('sidebar.organization')} collapsed={collapsed}>
                 <Link to="/organization" className={linkClass('/organization', orgChildPaths)} onClick={() => { setMobileOpen(false); setOrgOpenOverride(true); }}>
@@ -271,7 +334,7 @@ export default function AppSidebar({ collapsed, onToggle }: AppSidebarProps) {
                 </Link>
               </SidebarTooltip>
             </CollapsibleParent>
-          </div>
+          </RestrictedWrapper>
         )}
 
         {!collapsed && shouldShow('organization') && canView('organization') && orgOpen && myOrgs && myOrgs.length > 0 && (
@@ -320,7 +383,7 @@ export default function AppSidebar({ collapsed, onToggle }: AppSidebarProps) {
 
         {/* ── Calendrier / Fixtures ── */}
         {shouldShow('fixtures') && (
-          <div className={restrictedClass('fixtures')}>
+          <RestrictedWrapper pageKey="fixtures" canView={canView('fixtures')} requiredRoles={pageAccessInfo?.['fixtures'] ?? []}>
             <FeatureGate featureKey="feature_fixtures" inline>
               <CollapsibleParent open={fixturesOpen} onToggleOpen={() => setFixturesOpenOverride(v => v === null ? !hasActiveChild(fixturesChildPaths) : !v)}>
                 <SidebarTooltip label={t('sidebar.fixtures')} collapsed={collapsed}>
@@ -331,37 +394,37 @@ export default function AppSidebar({ collapsed, onToggle }: AppSidebarProps) {
                 </SidebarTooltip>
               </CollapsibleParent>
             </FeatureGate>
-          </div>
+          </RestrictedWrapper>
         )}
 
         {!collapsed && shouldShow('fixtures') && canView('fixtures') && fixturesOpen && (
           <div className="pl-7 space-y-0.5">
             {shouldShow('my_matches') && (
-              <div className={restrictedClass('my_matches')}>
+              <RestrictedWrapper pageKey="my_matches" canView={canView('my_matches')} requiredRoles={pageAccessInfo?.['my_matches'] ?? []}>
                 <FeatureGate featureKey="feature_my_matches" inline>
                   <Link to="/my-matches" className={subLinkClass(isActive('/my-matches'))} onClick={() => setMobileOpen(false)}>
                     <MapPinned className="w-3.5 h-3.5" />
                     {t('sidebar.my_matches')}
                   </Link>
                 </FeatureGate>
-              </div>
+              </RestrictedWrapper>
             )}
             {shouldShow('map') && (
-              <div className={restrictedClass('map')}>
+              <RestrictedWrapper pageKey="map" canView={canView('map')} requiredRoles={pageAccessInfo?.['map'] ?? []}>
                 <FeatureGate featureKey="feature_map" inline>
                   <Link to="/map" className={subLinkClass(isActive('/map'))} onClick={() => setMobileOpen(false)}>
                     <Globe className="w-3.5 h-3.5" />
                     {t('sidebar.map')}
                   </Link>
                 </FeatureGate>
-              </div>
+              </RestrictedWrapper>
             )}
           </div>
         )}
 
         {/* ── Championnats ── */}
         {shouldShow('championships') && (
-          <div className={restrictedClass('championships')}>
+          <RestrictedWrapper pageKey="championships" canView={canView('championships')} requiredRoles={pageAccessInfo?.['championships'] ?? []}>
             <FeatureGate featureKey="feature_championships" inline>
               <CollapsibleParent open={champOpen} onToggleOpen={() => setChampOpenOverride(v => v === null ? !hasActiveChild(champChildPaths) : !v)}>
                 <SidebarTooltip label={t('sidebar.championships')} collapsed={collapsed}>
@@ -372,27 +435,27 @@ export default function AppSidebar({ collapsed, onToggle }: AppSidebarProps) {
                 </SidebarTooltip>
               </CollapsibleParent>
             </FeatureGate>
-          </div>
+          </RestrictedWrapper>
         )}
 
         {!collapsed && shouldShow('championships') && canView('championships') && champOpen && (
           <div className="pl-7 space-y-0.5">
             {shouldShow('my_championships') && (
-              <div className={restrictedClass('my_championships')}>
+              <RestrictedWrapper pageKey="my_championships" canView={canView('my_championships')} requiredRoles={pageAccessInfo?.['my_championships'] ?? []}>
                 <FeatureGate featureKey="feature_my_championships" inline>
                   <Link to="/my-championships" className={subLinkClass(isActive('/my-championships'))} onClick={() => setMobileOpen(false)}>
                     <Star className="w-3.5 h-3.5 text-yellow-500" />
                     {t('sidebar.my_championships')}
                   </Link>
                 </FeatureGate>
-              </div>
+              </RestrictedWrapper>
             )}
           </div>
         )}
 
         {/* ── Club ── */}
         {shouldShow('club_profile') && (
-          <div className={restrictedClass('club_profile')}>
+          <RestrictedWrapper pageKey="club_profile" canView={canView('club_profile')} requiredRoles={pageAccessInfo?.['club_profile'] ?? []}>
             <FeatureGate featureKey="feature_club_profile" inline>
               <CollapsibleParent open={clubOpen} onToggleOpen={() => setClubOpenOverride(v => v === null ? !hasActiveChild(clubChildPaths) : !v)}>
                 <SidebarTooltip label={t('sidebar.club')} collapsed={collapsed}>
@@ -403,27 +466,27 @@ export default function AppSidebar({ collapsed, onToggle }: AppSidebarProps) {
                 </SidebarTooltip>
               </CollapsibleParent>
             </FeatureGate>
-          </div>
+          </RestrictedWrapper>
         )}
 
         {!collapsed && shouldShow('club_profile') && canView('club_profile') && clubOpen && (
           <div className="pl-7 space-y-0.5">
             {shouldShow('my_clubs') && (
-              <div className={restrictedClass('my_clubs')}>
+              <RestrictedWrapper pageKey="my_clubs" canView={canView('my_clubs')} requiredRoles={pageAccessInfo?.['my_clubs'] ?? []}>
                 <FeatureGate featureKey="feature_my_clubs" inline>
                   <Link to="/my-clubs" className={subLinkClass(isActive('/my-clubs'))} onClick={() => setMobileOpen(false)}>
                     <Heart className="w-3.5 h-3.5" />
                     {t('sidebar.my_clubs')}
                   </Link>
                 </FeatureGate>
-              </div>
+              </RestrictedWrapper>
             )}
           </div>
         )}
 
         {/* ── Actualités (collapsible) ── */}
         {shouldShow('news') && (
-          <div className={restrictedClass('news')}>
+          <RestrictedWrapper pageKey="news" canView={canView('news')} requiredRoles={pageAccessInfo?.['news'] ?? []}>
             <FeatureGate featureKey="feature_news" inline>
               <CollapsibleParent open={newsOpen} onToggleOpen={() => setNewsOpenOverride(v => v === null ? !hasActiveChild(newsChildPaths) : !v)}>
                 <SidebarTooltip label={t('sidebar.news')} collapsed={collapsed}>
@@ -434,25 +497,25 @@ export default function AppSidebar({ collapsed, onToggle }: AppSidebarProps) {
                 </SidebarTooltip>
               </CollapsibleParent>
             </FeatureGate>
-          </div>
+          </RestrictedWrapper>
         )}
 
         {!collapsed && shouldShow('news') && canView('news') && newsOpen && (
           <div className="pl-7 space-y-0.5">
             {/* Football Buzz */}
             {shouldShow('buzz') && (
-              <div className={restrictedClass('buzz')}>
+              <RestrictedWrapper pageKey="buzz" canView={canView('buzz')} requiredRoles={pageAccessInfo?.['buzz'] ?? []}>
                 <FeatureGate featureKey="feature_buzz" inline>
                   <Link to="/buzz" className={subLinkClass(isActive('/buzz'))} onClick={() => setMobileOpen(false)}>
                     <Zap className="w-3.5 h-3.5 text-orange-500" />
                     {t('sidebar.buzz')}
                   </Link>
                 </FeatureGate>
-              </div>
+              </RestrictedWrapper>
             )}
             {/* Instagram */}
             {shouldShow('instagram') && (
-              <div className={restrictedClass('instagram')}>
+              <RestrictedWrapper pageKey="instagram" canView={canView('instagram')} requiredRoles={pageAccessInfo?.['instagram'] ?? []}>
                 <FeatureGate featureKey="feature_instagram" inline>
                   <Link to="/instagram" className={subLinkClass(isActive('/instagram'))} onClick={() => setMobileOpen(false)}>
                     <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="url(#ig-grad)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -470,11 +533,11 @@ export default function AppSidebar({ collapsed, onToggle }: AppSidebarProps) {
                     {t('sidebar.instagram')}
                   </Link>
                 </FeatureGate>
-              </div>
+              </RestrictedWrapper>
             )}
             {/* Articles + sous-item Créer */}
             {shouldShow('editorial') && (
-              <div className={restrictedClass('editorial')}>
+              <RestrictedWrapper pageKey="editorial" canView={canView('editorial')} requiredRoles={pageAccessInfo?.['editorial'] ?? []}>
                 <FeatureGate featureKey="feature_editorial" inline>
                 <Link to="/editorial" className={subLinkClass(isActive('/editorial') && !isActive('/editorial/new'))} onClick={() => setMobileOpen(false)}>
                   <PenLine className="w-3.5 h-3.5" />
@@ -489,14 +552,14 @@ export default function AppSidebar({ collapsed, onToggle }: AppSidebarProps) {
                     </Link>
                   </div>
                 )}
-              </div>
+              </RestrictedWrapper>
             )}
           </div>
         )}
 
         {/* ── Communauté ── */}
         {shouldShow('community') && (
-          <div className={restrictedClass('community')}>
+          <RestrictedWrapper pageKey="community" canView={canView('community')} requiredRoles={pageAccessInfo?.['community'] ?? []}>
             <FeatureGate featureKey="feature_community" inline>
               <SidebarTooltip label={t('sidebar.community')} collapsed={collapsed}>
                 <Link to="/community" className={linkClass('/community')} onClick={() => setMobileOpen(false)}>
@@ -510,12 +573,12 @@ export default function AppSidebar({ collapsed, onToggle }: AppSidebarProps) {
                 </Link>
               </SidebarTooltip>
             </FeatureGate>
-          </div>
+          </RestrictedWrapper>
         )}
 
         {/* ── Booking ── */}
         {shouldShow('booking') && (
-          <div className={restrictedClass('booking')}>
+          <RestrictedWrapper pageKey="booking" canView={canView('booking')} requiredRoles={pageAccessInfo?.['booking'] ?? []}>
             <FeatureGate featureKey="feature_booking" inline>
               <SidebarTooltip label={t('sidebar.booking')} collapsed={collapsed}>
                 <Link to="/booking" className={linkClass('/booking')} onClick={() => setMobileOpen(false)}>
@@ -524,12 +587,12 @@ export default function AppSidebar({ collapsed, onToggle }: AppSidebarProps) {
                 </Link>
               </SidebarTooltip>
             </FeatureGate>
-          </div>
+          </RestrictedWrapper>
         )}
 
         {/* ── Import de données ── */}
         {shouldShow('data_import') && (
-          <div className={restrictedClass('data_import')}>
+          <RestrictedWrapper pageKey="data_import" canView={canView('data_import')} requiredRoles={pageAccessInfo?.['data_import'] ?? []}>
             <FeatureGate featureKey="feature_data_import" inline>
               <SidebarTooltip label={t('sidebar.data_import')} collapsed={collapsed}>
                 <Link to="/data-import" className={linkClass('/data-import')} onClick={() => setMobileOpen(false)}>
@@ -538,12 +601,12 @@ export default function AppSidebar({ collapsed, onToggle }: AppSidebarProps) {
                 </Link>
               </SidebarTooltip>
             </FeatureGate>
-          </div>
+          </RestrictedWrapper>
         )}
 
         {/* ── Affiliation ── */}
         {shouldShow('affiliate') && (
-          <div className={restrictedClass('affiliate')}>
+          <RestrictedWrapper pageKey="affiliate" canView={canView('affiliate')} requiredRoles={pageAccessInfo?.['affiliate'] ?? []}>
             <FeatureGate featureKey="feature_affiliate" inline>
               <SidebarTooltip label={t('sidebar.affiliate')} collapsed={collapsed}>
                 <Link to="/affiliate" className={linkClass('/affiliate')} onClick={() => setMobileOpen(false)}>
@@ -552,7 +615,7 @@ export default function AppSidebar({ collapsed, onToggle }: AppSidebarProps) {
                 </Link>
               </SidebarTooltip>
             </FeatureGate>
-          </div>
+          </RestrictedWrapper>
         )}
       </nav>
 
@@ -608,18 +671,18 @@ export default function AppSidebar({ collapsed, onToggle }: AppSidebarProps) {
           </SidebarTooltip>
 
           {shouldShow('settings') && (
-            <div className={restrictedClass('settings')}>
+            <RestrictedWrapper pageKey="settings" canView={canView('settings')} requiredRoles={pageAccessInfo?.['settings'] ?? []}>
               <SidebarTooltip label={t('sidebar.settings')} collapsed={collapsed}>
                 <Link to="/settings" className={footerLinkClass('/settings')} onClick={() => setMobileOpen(false)}>
                   <Settings className="w-3.5 h-3.5 shrink-0" />
                   {!collapsed && t('sidebar.settings')}
                 </Link>
               </SidebarTooltip>
-            </div>
+            </RestrictedWrapper>
           )}
 
           {shouldShow('my_tickets') && (
-            <div className={restrictedClass('my_tickets')}>
+            <RestrictedWrapper pageKey="my_tickets" canView={canView('my_tickets')} requiredRoles={pageAccessInfo?.['my_tickets'] ?? []}>
               <FeatureGate featureKey="feature_my_tickets" inline>
                 <SidebarTooltip label={t('sidebar.my_tickets')} collapsed={collapsed}>
                   <Link to="/my-tickets" className={footerLinkClass('/my-tickets')} onClick={() => setMobileOpen(false)}>
@@ -633,7 +696,7 @@ export default function AppSidebar({ collapsed, onToggle }: AppSidebarProps) {
                   </Link>
                 </SidebarTooltip>
               </FeatureGate>
-            </div>
+            </RestrictedWrapper>
           )}
 
           <SidebarTooltip label={t('sidebar.signout')} collapsed={collapsed}>

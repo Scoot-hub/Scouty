@@ -553,8 +553,15 @@ function OrganizationDashboard({ org, userId }: { org: Record<string, unknown>; 
                     className="flex items-center gap-3 px-4 py-3 rounded-xl bg-muted/30 border border-border/40 hover:bg-muted/50 hover:border-primary/20 transition-colors cursor-pointer group"
                     onClick={() => setSelectedMember(member)}
                   >
-                    <div className="w-9 h-9 rounded-full bg-primary/10 flex items-center justify-center shrink-0 text-xs font-bold text-primary group-hover:bg-primary/20 transition-colors">
-                      {initials}
+                    <div className="w-9 h-9 rounded-full bg-primary/10 flex items-center justify-center shrink-0 text-xs font-bold text-primary group-hover:bg-primary/20 transition-colors overflow-hidden">
+                      {member.profile?.photo_url ? (
+                        <img
+                          src={member.profile.photo_url as string}
+                          alt={initials}
+                          className="w-full h-full object-cover"
+                          onError={e => { (e.currentTarget as HTMLImageElement).style.display = 'none'; }}
+                        />
+                      ) : initials}
                     </div>
                     <div className="flex-1 min-w-0">
                       <p className="text-sm font-semibold truncate">
@@ -626,8 +633,18 @@ function OrganizationDashboard({ org, userId }: { org: Record<string, unknown>; 
                       </DialogHeader>
                       <div className="flex flex-col items-center gap-4 py-2">
                         {/* Avatar */}
-                        <div className="w-20 h-20 rounded-full bg-primary/10 flex items-center justify-center text-2xl font-bold text-primary">
-                          {memberInitials}
+                        <div className="w-20 h-20 rounded-full bg-primary/10 flex items-center justify-center text-2xl font-bold text-primary overflow-hidden ring-4 ring-background shadow-md">
+                          {p?.photo_url ? (
+                            <img
+                              src={p.photo_url as string}
+                              alt={memberInitials}
+                              className="w-full h-full object-cover"
+                              onError={e => {
+                                (e.currentTarget as HTMLImageElement).style.display = 'none';
+                                (e.currentTarget.parentElement as HTMLElement).innerText = memberInitials;
+                              }}
+                            />
+                          ) : memberInitials}
                         </div>
 
                         {/* Name + role badge */}

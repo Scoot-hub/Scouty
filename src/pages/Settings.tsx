@@ -6,11 +6,12 @@ import { CustomFieldsManager } from '@/components/CustomFieldsManager';
 import { useCustomFields, useDeleteCustomField } from '@/hooks/use-custom-fields';
 import { useIsPremium } from '@/hooks/use-admin';
 import { useIntegrations, useSaveIntegration, useDeleteIntegration, useTestIntegration } from '@/hooks/use-integrations';
+import { useNotificationPrefs, useSaveNotificationPrefs } from '@/hooks/use-notification-prefs';
 import {
   Settings2, Globe, Pencil, Trash2, Eye, EyeOff, BellOff, MessageSquareOff,
   Type, Hash, ListOrdered, Link2, ToggleLeft, User, CalendarDays, Trophy,
   Plus, GripVertical, ShieldAlert, Plug, CheckCircle2, XCircle, Loader2,
-  KeyRound, ExternalLink, Crown,
+  KeyRound, ExternalLink, Crown, Bell, Mail, BellRing,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -27,6 +28,7 @@ import {
 import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from '@/components/ui/select';
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 
 // ── Integration modules definition ──────────────────────────────────────────
 
@@ -39,7 +41,7 @@ interface ModuleDef {
   keyPlaceholder: string;
   keyLabel: string;
   color: string;
-  logo: string; // emoji fallback
+  logo: string;
   enriches: string[];
 }
 
@@ -107,6 +109,39 @@ const TYPE_META: Record<string, { icon: React.ElementType; color: string }> = {
   championship: { icon: Trophy,        color: 'text-yellow-500 bg-yellow-500/10' },
 };
 
+// ── Notification toggle row ──────────────────────────────────────────────────
+
+function NotifRow({
+  icon: Icon,
+  title,
+  desc,
+  checked,
+  onCheckedChange,
+  disabled,
+}: {
+  icon: React.ElementType;
+  title: string;
+  desc: string;
+  checked: boolean;
+  onCheckedChange: (v: boolean) => void;
+  disabled?: boolean;
+}) {
+  return (
+    <div className="flex items-start justify-between gap-3 rounded-xl border border-border/60 bg-muted/20 p-3">
+      <div className="min-w-0">
+        <div className="flex items-center gap-2 text-sm font-medium">
+          <Icon className="w-4 h-4 text-primary shrink-0" />
+          <span className="truncate">{title}</span>
+        </div>
+        <p className="mt-0.5 text-xs text-muted-foreground leading-relaxed">{desc}</p>
+      </div>
+      <Switch checked={checked} onCheckedChange={onCheckedChange} className="shrink-0 mt-0.5" disabled={disabled} />
+    </div>
+  );
+}
+
+// ── Main component ────────────────────────────────────────────────────────────
+
 export default function Settings() {
   const { t } = useTranslation();
   const { data: fields = [] } = useCustomFields();
@@ -131,6 +166,9 @@ export default function Settings() {
   const saveIntegration = useSaveIntegration();
   const deleteIntegration = useDeleteIntegration();
   const testIntegration = useTestIntegration();
+
+  const { data: notifPrefs } = useNotificationPrefs();
+  const saveNotifPrefs = useSaveNotificationPrefs();
 
   const [apiKeys, setApiKeys] = useState<Record<string, string>>({});
   const [showKey, setShowKey] = useState<Record<string, boolean>>({});
@@ -180,28 +218,310 @@ export default function Settings() {
     setManagerOpen(true);
   };
 
+  const handleNotifToggle = (key: string, value: boolean) => {
+    saveNotifPrefs.mutate(
+      { ...notifPrefs, [key]: value },
+      { onSuccess: () => toast.success(t('settings.notif_saved')) }
+    );
+  };
+
+  // Browser push permission state
+  const pushPermission = typeof Notification !== 'undefined' ? Notification.permission : 'default';
+
+  const requestPushPermission = async () => {
+    if (typeof Notification === 'undefined') return;
+    const result = await Notification.requestPermission();
+    if (result === 'granted') {
+      toast.success(t('settings.notif_push_granted'));
+    }
+  };
+
   return (
-    <div className="max-w-7xl mx-auto">
+    <div className="max-w-5xl mx-auto">
       {/* Header */}
-      <div className="flex items-center justify-between mb-6">
-        <div className="flex items-center gap-3">
-          <div className="w-10 h-10 rounded-xl bg-primary/10 flex items-center justify-center">
-            <Settings2 className="w-5 h-5 text-primary" />
-          </div>
-          <div>
-            <h1 className="text-2xl font-extrabold tracking-tight">{t('settings.title')}</h1>
-            <p className="text-sm text-muted-foreground">{t('settings.subtitle')}</p>
-          </div>
+      <div className="flex items-center gap-3 mb-6">
+        <div className="w-10 h-10 rounded-xl bg-primary/10 flex items-center justify-center">
+          <Settings2 className="w-5 h-5 text-primary" />
         </div>
-        <Button size="sm" className="rounded-xl gap-2" onClick={openCreate}>
-          <Plus className="w-4 h-4" />
-          {t('custom_fields.add_field')}
-        </Button>
+        <div>
+          <h1 className="text-2xl font-extrabold tracking-tight">{t('settings.title')}</h1>
+          <p className="text-sm text-muted-foreground">{t('settings.subtitle')}</p>
+        </div>
       </div>
 
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-        {/* ── Left: Custom Fields (2/3 width) ── */}
-        <div className="lg:col-span-2 space-y-4">
+      <Tabs defaultValue="preferences" className="space-y-6">
+        <TabsList className="h-auto flex flex-wrap gap-1 p-1 rounded-xl bg-muted w-full sm:w-auto">
+          <TabsTrigger value="preferences" className="flex items-center gap-1.5 rounded-lg text-sm px-3 py-2">
+            <Globe className="w-4 h-4" />
+            {t('settings.tab_preferences')}
+          </TabsTrigger>
+          <TabsTrigger value="notifications" className="flex items-center gap-1.5 rounded-lg text-sm px-3 py-2">
+            <Bell className="w-4 h-4" />
+            {t('settings.tab_notifications')}
+          </TabsTrigger>
+          <TabsTrigger value="fields" className="flex items-center gap-1.5 rounded-lg text-sm px-3 py-2">
+            <Settings2 className="w-4 h-4" />
+            {t('settings.tab_fields')}
+            {fields.length > 0 && (
+              <Badge variant="secondary" className="ml-1 h-4 px-1.5 text-[10px] tabular-nums">{fields.length}</Badge>
+            )}
+          </TabsTrigger>
+          <TabsTrigger value="integrations" className="flex items-center gap-1.5 rounded-lg text-sm px-3 py-2">
+            <Plug className="w-4 h-4" />
+            {t('settings.tab_integrations')}
+          </TabsTrigger>
+        </TabsList>
+
+        {/* ── TAB: Préférences ── */}
+        <TabsContent value="preferences" className="space-y-6">
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+            {/* Language + Theme */}
+            <Card>
+              <CardHeader>
+                <CardTitle className="flex items-center gap-2 text-base">
+                  <Globe className="w-4 h-4 text-primary" />
+                  {t('settings.tab_preferences')}
+                </CardTitle>
+                <CardDescription>{t('settings.preferences_desc')}</CardDescription>
+              </CardHeader>
+              <CardContent className="space-y-4">
+                <div>
+                  <label className="text-xs font-semibold uppercase tracking-wider text-muted-foreground block mb-2">
+                    {t('settings.language')}
+                  </label>
+                  <LanguageSwitcher variant="outline" />
+                </div>
+                <div>
+                  <label className="text-xs font-semibold uppercase tracking-wider text-muted-foreground block mb-2">
+                    {t('settings.theme')}
+                  </label>
+                  <ThemeSwitcher variant="outline" />
+                </div>
+              </CardContent>
+            </Card>
+
+            {/* Régionalisation */}
+            <Card>
+              <CardHeader>
+                <CardTitle className="flex items-center gap-2 text-base">
+                  <CalendarDays className="w-4 h-4 text-primary" />
+                  {t('settings.regional_title')}
+                </CardTitle>
+                <CardDescription>{t('settings.regional_desc')}</CardDescription>
+              </CardHeader>
+              <CardContent className="space-y-4">
+                <div>
+                  <label className="text-xs font-semibold uppercase tracking-wider text-muted-foreground block mb-2">
+                    {t('settings.week_start')}
+                  </label>
+                  <Select
+                    value={String(weekStartDay)}
+                    onValueChange={(v) => {
+                      setWeekStartDay(Number(v) as 0 | 1);
+                      toast.success(t('settings.saved'));
+                    }}
+                  >
+                    <SelectTrigger className="w-full rounded-xl">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="1">{t('settings.week_start_monday')}</SelectItem>
+                      <SelectItem value="0">{t('settings.week_start_sunday')}</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div>
+                  <label className="text-xs font-semibold uppercase tracking-wider text-muted-foreground block mb-2">
+                    {t('settings.distance_unit')}
+                  </label>
+                  <Select
+                    value={distanceUnit}
+                    onValueChange={(v) => {
+                      setDistanceUnit(v as 'km' | 'mi');
+                      toast.success(t('settings.saved'));
+                    }}
+                  >
+                    <SelectTrigger className="w-full rounded-xl">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="km">{t('settings.distance_km')}</SelectItem>
+                      <SelectItem value="mi">{t('settings.distance_mi')}</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+              </CardContent>
+            </Card>
+
+            {/* UI Toggles */}
+            <Card>
+              <CardHeader>
+                <CardTitle className="text-base">{t('settings.ui_toggles_title')}</CardTitle>
+              </CardHeader>
+              <CardContent className="space-y-3">
+                {([
+                  { key: 'vision',    icon: Eye,              title: t('settings.reduced_vision_title'),       desc: t('settings.reduced_vision_desc'),        checked: reducedVisionMode,      onCheckedChange: setReducedVisionMode },
+                  { key: 'notif',     icon: BellOff,          title: t('settings.notifications_toggle_title'), desc: t('settings.notifications_toggle_desc'),  checked: showNotifications,      onCheckedChange: setShowNotifications },
+                  { key: 'chatbot',   icon: MessageSquareOff, title: t('settings.chatbot_toggle_title'),       desc: t('settings.chatbot_toggle_desc'),        checked: showChatbot,            onCheckedChange: setShowChatbot },
+                  { key: 'hideperm', icon: EyeOff,           title: t('settings.hide_restricted_title'),      desc: t('settings.hide_restricted_desc'),       checked: hideRestrictedElements, onCheckedChange: setHideRestrictedElements },
+                ] as const).map(item => {
+                  const ItemIcon = item.icon;
+                  return (
+                    <div key={item.key} className="flex items-start justify-between gap-3 rounded-xl border border-border/60 bg-muted/20 p-3">
+                      <div className="min-w-0">
+                        <div className="flex items-center gap-2 text-sm font-medium">
+                          <ItemIcon className="w-4 h-4 text-primary shrink-0" />
+                          <span className="truncate">{item.title}</span>
+                        </div>
+                        <p className="mt-0.5 text-xs text-muted-foreground leading-relaxed">{item.desc}</p>
+                      </div>
+                      <Switch checked={item.checked} onCheckedChange={item.onCheckedChange} className="shrink-0 mt-0.5" />
+                    </div>
+                  );
+                })}
+              </CardContent>
+            </Card>
+
+            {/* Session security */}
+            <Card>
+              <CardHeader>
+                <CardTitle className="flex items-center gap-2 text-base">
+                  <ShieldAlert className="w-4 h-4 text-primary" />
+                  {t('settings.session_security_title')}
+                </CardTitle>
+                <CardDescription>{t('settings.session_security_desc')}</CardDescription>
+              </CardHeader>
+              <CardContent>
+                <label className="text-xs font-semibold uppercase tracking-wider text-muted-foreground block mb-2">
+                  {t('settings.session_timeout_label')}
+                </label>
+                <Select value={sessionTimeout} onValueChange={handleTimeoutChange}>
+                  <SelectTrigger className="w-full rounded-xl">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="0">{t('settings.session_timeout_disabled')}</SelectItem>
+                    <SelectItem value="10">{t('settings.session_timeout_10m')}</SelectItem>
+                    <SelectItem value="15">{t('settings.session_timeout_15m')}</SelectItem>
+                    <SelectItem value="30">{t('settings.session_timeout_30m')}</SelectItem>
+                    <SelectItem value="60">{t('settings.session_timeout_60m')}</SelectItem>
+                    <SelectItem value="120">{t('settings.session_timeout_120m')}</SelectItem>
+                  </SelectContent>
+                </Select>
+                {sessionTimeout !== '0' && (
+                  <p className="mt-2 text-xs text-muted-foreground">
+                    {t('settings.session_timeout_hint', { minutes: sessionTimeout })}
+                  </p>
+                )}
+              </CardContent>
+            </Card>
+          </div>
+        </TabsContent>
+
+        {/* ── TAB: Notifications ── */}
+        <TabsContent value="notifications" className="space-y-6">
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+            {/* Email notifications */}
+            <Card>
+              <CardHeader>
+                <CardTitle className="flex items-center gap-2 text-base">
+                  <Mail className="w-4 h-4 text-primary" />
+                  {t('settings.notif_email_title')}
+                </CardTitle>
+                <CardDescription>{t('settings.notif_email_desc')}</CardDescription>
+              </CardHeader>
+              <CardContent className="space-y-3">
+                <NotifRow
+                  icon={CalendarDays}
+                  title={t('settings.notif_email_match_assigned')}
+                  desc={t('settings.notif_email_match_assigned_desc')}
+                  checked={notifPrefs?.email_match_assigned ?? true}
+                  onCheckedChange={v => handleNotifToggle('email_match_assigned', v)}
+                />
+                <NotifRow
+                  icon={User}
+                  title={t('settings.notif_email_org_invite')}
+                  desc={t('settings.notif_email_org_invite_desc')}
+                  checked={notifPrefs?.email_org_invite ?? true}
+                  onCheckedChange={v => handleNotifToggle('email_org_invite', v)}
+                />
+                <NotifRow
+                  icon={MessageSquareOff}
+                  title={t('settings.notif_email_community')}
+                  desc={t('settings.notif_email_community_desc')}
+                  checked={notifPrefs?.email_community ?? true}
+                  onCheckedChange={v => handleNotifToggle('email_community', v)}
+                />
+                <NotifRow
+                  icon={Trophy}
+                  title={t('settings.notif_email_weekly')}
+                  desc={t('settings.notif_email_weekly_desc')}
+                  checked={notifPrefs?.email_weekly ?? false}
+                  onCheckedChange={v => handleNotifToggle('email_weekly', v)}
+                />
+              </CardContent>
+            </Card>
+
+            <div className="space-y-6">
+              {/* In-app (bell) */}
+              <Card>
+                <CardHeader>
+                  <CardTitle className="flex items-center gap-2 text-base">
+                    <Bell className="w-4 h-4 text-primary" />
+                    {t('settings.notif_web_title')}
+                  </CardTitle>
+                  <CardDescription>{t('settings.notif_web_desc')}</CardDescription>
+                </CardHeader>
+                <CardContent className="space-y-3">
+                  <NotifRow
+                    icon={BellOff}
+                    title={t('settings.notif_web_bell')}
+                    desc={t('settings.notif_web_bell_desc')}
+                    checked={showNotifications}
+                    onCheckedChange={setShowNotifications}
+                  />
+                </CardContent>
+              </Card>
+
+              {/* Browser push */}
+              <Card>
+                <CardHeader>
+                  <CardTitle className="flex items-center gap-2 text-base">
+                    <BellRing className="w-4 h-4 text-primary" />
+                    {t('settings.notif_push_title')}
+                  </CardTitle>
+                  <CardDescription>{t('settings.notif_push_desc')}</CardDescription>
+                </CardHeader>
+                <CardContent>
+                  {pushPermission === 'granted' ? (
+                    <div className="flex items-center gap-2 text-sm text-emerald-600 dark:text-emerald-400">
+                      <CheckCircle2 className="w-4 h-4 shrink-0" />
+                      {t('settings.notif_push_granted')}
+                    </div>
+                  ) : pushPermission === 'denied' ? (
+                    <div className="flex items-center gap-2 text-sm text-destructive">
+                      <XCircle className="w-4 h-4 shrink-0" />
+                      {t('settings.notif_push_denied')}
+                    </div>
+                  ) : (
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      className="gap-2 rounded-xl"
+                      onClick={requestPushPermission}
+                    >
+                      <BellRing className="w-4 h-4" />
+                      {t('settings.notif_push_enable')}
+                    </Button>
+                  )}
+                </CardContent>
+              </Card>
+            </div>
+          </div>
+        </TabsContent>
+
+        {/* ── TAB: Champs personnalisés ── */}
+        <TabsContent value="fields">
           <Card>
             <CardHeader>
               <div className="flex items-center justify-between">
@@ -212,7 +532,13 @@ export default function Settings() {
                   </CardTitle>
                   <CardDescription className="mt-0.5">{t('custom_fields.manage_desc')}</CardDescription>
                 </div>
-                <Badge variant="secondary" className="tabular-nums">{fields.length}</Badge>
+                <div className="flex items-center gap-2">
+                  <Badge variant="secondary" className="tabular-nums">{fields.length}</Badge>
+                  <Button size="sm" className="rounded-xl gap-2" onClick={openCreate}>
+                    <Plus className="w-4 h-4" />
+                    {t('custom_fields.add_field')}
+                  </Button>
+                </div>
               </div>
             </CardHeader>
             <CardContent className="p-0">
@@ -238,21 +564,14 @@ export default function Settings() {
                         className="flex items-center gap-3 px-5 py-3.5 hover:bg-muted/30 transition-colors group"
                         style={{ animationDelay: `${i * 40}ms` }}
                       >
-                        {/* Drag handle (visual only) */}
                         <GripVertical className="w-4 h-4 text-muted-foreground/30 shrink-0 group-hover:text-muted-foreground/60 transition-colors" />
-
-                        {/* Type icon */}
                         <div className={`w-8 h-8 rounded-lg flex items-center justify-center shrink-0 ${meta.color}`}>
                           <Icon className="w-4 h-4" />
                         </div>
-
-                        {/* Name + type */}
                         <div className="flex-1 min-w-0">
                           <p className="text-sm font-semibold truncate">{f.field_name}</p>
                           <p className="text-xs text-muted-foreground">{t(`custom_fields.type_${f.field_type}`)}</p>
                         </div>
-
-                        {/* Preview (options / championship) */}
                         <div className="hidden sm:flex items-center gap-1.5 flex-wrap max-w-[200px]">
                           {f.field_type === 'select' && (f.field_options ?? []).slice(0, 3).map((opt, oi) => (
                             <span key={oi} className="px-2 py-0.5 rounded-full bg-primary/10 text-primary text-[11px] font-medium">{String(opt)}</span>
@@ -273,8 +592,6 @@ export default function Settings() {
                             <span className="text-[11px] text-muted-foreground">✓ / ✗</span>
                           )}
                         </div>
-
-                        {/* Actions */}
                         <div className="flex items-center gap-1 shrink-0">
                           <button
                             onClick={() => openEdit(f)}
@@ -296,277 +613,125 @@ export default function Settings() {
               )}
             </CardContent>
           </Card>
-        </div>
+        </TabsContent>
 
-        {/* ── Right: Preferences (1/3 width) ── */}
-        <div className="space-y-4">
-          {/* Language + Theme */}
-          <Card>
+        {/* ── TAB: Intégrations ── */}
+        <TabsContent value="integrations">
+          <Card className={!isPremium ? 'opacity-80' : ''}>
             <CardHeader>
-              <CardTitle className="flex items-center gap-2 text-base">
-                <Globe className="w-4 h-4 text-primary" />
-                {t('settings.tab_preferences')}
-              </CardTitle>
-              <CardDescription>{t('settings.preferences_desc')}</CardDescription>
+              <div className="flex items-start justify-between gap-4">
+                <div>
+                  <CardTitle className="flex items-center gap-2 text-base">
+                    <Plug className="w-4 h-4 text-primary" />
+                    {t('settings.modules_title')}
+                    <span className="inline-flex items-center gap-1 text-[10px] px-2 py-0.5 rounded-full bg-primary/10 text-primary font-bold ml-1">
+                      <Crown className="w-3 h-3" />Pro
+                    </span>
+                  </CardTitle>
+                  <CardDescription className="mt-0.5">{t('settings.modules_desc')}</CardDescription>
+                </div>
+                {!isPremium && (
+                  <Button size="sm" variant="outline" className="shrink-0 gap-1.5 text-primary border-primary/30" onClick={() => window.location.href = '/pricing'}>
+                    <Crown className="w-3.5 h-3.5" />
+                    {t('settings.modules_upgrade')}
+                  </Button>
+                )}
+              </div>
             </CardHeader>
-            <CardContent className="space-y-4">
-              <div>
-                <label className="text-xs font-semibold uppercase tracking-wider text-muted-foreground block mb-2">
-                  {t('settings.language')}
-                </label>
-                <LanguageSwitcher variant="outline" />
-              </div>
-              <div>
-                <label className="text-xs font-semibold uppercase tracking-wider text-muted-foreground block mb-2">
-                  {t('settings.theme')}
-                </label>
-                <ThemeSwitcher variant="outline" />
-              </div>
-            </CardContent>
-          </Card>
+            <CardContent className="p-0">
+              <div className="divide-y divide-border/60">
+                {INTEGRATION_MODULES.map(mod => {
+                  const status = getStatus(mod.id);
+                  const isConnected = !!status?.has_key;
+                  const isEnabled = !!status?.enabled;
+                  const testStatus = status?.test_status;
+                  const isTesting = testIntegration.isPending && testIntegration.variables === mod.id;
+                  const isSaving = saveIntegration.isPending && (saveIntegration.variables as { service?: string })?.service === mod.id;
 
-          {/* UI Toggles */}
-          <Card>
-            <CardHeader>
-              <CardTitle className="text-base">{t('settings.ui_toggles_title')}</CardTitle>
-            </CardHeader>
-            <CardContent className="space-y-3">
-              {([
-                { key: 'vision',    icon: Eye,             title: t('settings.reduced_vision_title'),        desc: t('settings.reduced_vision_desc'),        checked: reducedVisionMode,      onCheckedChange: setReducedVisionMode },
-                { key: 'notif',     icon: BellOff,         title: t('settings.notifications_toggle_title'),  desc: t('settings.notifications_toggle_desc'),  checked: showNotifications,      onCheckedChange: setShowNotifications },
-                { key: 'chatbot',   icon: MessageSquareOff, title: t('settings.chatbot_toggle_title'),        desc: t('settings.chatbot_toggle_desc'),        checked: showChatbot,            onCheckedChange: setShowChatbot },
-                { key: 'hideperm', icon: EyeOff,          title: t('settings.hide_restricted_title'),       desc: t('settings.hide_restricted_desc'),       checked: hideRestrictedElements, onCheckedChange: setHideRestrictedElements },
-              ] as const).map(item => {
-                const ItemIcon = item.icon;
-                return (
-                  <div key={item.key} className="flex items-start justify-between gap-3 rounded-xl border border-border/60 bg-muted/20 p-3">
-                    <div className="min-w-0">
-                      <div className="flex items-center gap-2 text-sm font-medium">
-                        <ItemIcon className="w-4 h-4 text-primary shrink-0" />
-                        <span className="truncate">{item.title}</span>
-                      </div>
-                      <p className="mt-0.5 text-xs text-muted-foreground leading-relaxed">{item.desc}</p>
-                    </div>
-                    <Switch checked={item.checked} onCheckedChange={item.onCheckedChange} className="shrink-0 mt-0.5" />
-                  </div>
-                );
-              })}
-            </CardContent>
-          </Card>
-          {/* Régionalisation */}
-          <Card>
-            <CardHeader>
-              <CardTitle className="flex items-center gap-2 text-base">
-                <CalendarDays className="w-4 h-4 text-primary" />
-                {t('settings.regional_title')}
-              </CardTitle>
-              <CardDescription>{t('settings.regional_desc')}</CardDescription>
-            </CardHeader>
-            <CardContent className="space-y-4">
-              <div>
-                <label className="text-xs font-semibold uppercase tracking-wider text-muted-foreground block mb-2">
-                  {t('settings.week_start')}
-                </label>
-                <Select
-                  value={String(weekStartDay)}
-                  onValueChange={(v) => {
-                    setWeekStartDay(Number(v) as 0 | 1);
-                    toast.success(t('settings.saved'));
-                  }}
-                >
-                  <SelectTrigger className="w-full rounded-xl">
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="1">{t('settings.week_start_monday')}</SelectItem>
-                    <SelectItem value="0">{t('settings.week_start_sunday')}</SelectItem>
-                  </SelectContent>
-                </Select>
-              </div>
-              <div>
-                <label className="text-xs font-semibold uppercase tracking-wider text-muted-foreground block mb-2">
-                  {t('settings.distance_unit')}
-                </label>
-                <Select
-                  value={distanceUnit}
-                  onValueChange={(v) => {
-                    setDistanceUnit(v as 'km' | 'mi');
-                    toast.success(t('settings.saved'));
-                  }}
-                >
-                  <SelectTrigger className="w-full rounded-xl">
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="km">{t('settings.distance_km')}</SelectItem>
-                    <SelectItem value="mi">{t('settings.distance_mi')}</SelectItem>
-                  </SelectContent>
-                </Select>
-              </div>
-            </CardContent>
-          </Card>
-
-          {/* Session security */}
-          <Card>
-            <CardHeader>
-              <CardTitle className="flex items-center gap-2 text-base">
-                <ShieldAlert className="w-4 h-4 text-primary" />
-                {t('settings.session_security_title')}
-              </CardTitle>
-              <CardDescription>{t('settings.session_security_desc')}</CardDescription>
-            </CardHeader>
-            <CardContent>
-              <label className="text-xs font-semibold uppercase tracking-wider text-muted-foreground block mb-2">
-                {t('settings.session_timeout_label')}
-              </label>
-              <Select value={sessionTimeout} onValueChange={handleTimeoutChange}>
-                <SelectTrigger className="w-full rounded-xl">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="0">{t('settings.session_timeout_disabled')}</SelectItem>
-                  <SelectItem value="10">{t('settings.session_timeout_10m')}</SelectItem>
-                  <SelectItem value="15">{t('settings.session_timeout_15m')}</SelectItem>
-                  <SelectItem value="30">{t('settings.session_timeout_30m')}</SelectItem>
-                  <SelectItem value="60">{t('settings.session_timeout_60m')}</SelectItem>
-                  <SelectItem value="120">{t('settings.session_timeout_120m')}</SelectItem>
-                </SelectContent>
-              </Select>
-              {sessionTimeout !== '0' && (
-                <p className="mt-2 text-xs text-muted-foreground">
-                  {t('settings.session_timeout_hint', { minutes: sessionTimeout })}
-                </p>
-              )}
-            </CardContent>
-          </Card>
-        </div>
-      </div>
-
-      {/* ── Modules complémentaires ── */}
-      <div className="mt-6">
-        <Card className={!isPremium ? 'opacity-80' : ''}>
-          <CardHeader>
-            <div className="flex items-start justify-between gap-4">
-              <div>
-                <CardTitle className="flex items-center gap-2 text-base">
-                  <Plug className="w-4 h-4 text-primary" />
-                  {t('settings.modules_title')}
-                  <span className="inline-flex items-center gap-1 text-[10px] px-2 py-0.5 rounded-full bg-primary/10 text-primary font-bold ml-1">
-                    <Crown className="w-3 h-3" />Pro
-                  </span>
-                </CardTitle>
-                <CardDescription className="mt-0.5">{t('settings.modules_desc')}</CardDescription>
-              </div>
-              {!isPremium && (
-                <Button size="sm" variant="outline" className="shrink-0 gap-1.5 text-primary border-primary/30" onClick={() => window.location.href = '/pricing'}>
-                  <Crown className="w-3.5 h-3.5" />
-                  {t('settings.modules_upgrade')}
-                </Button>
-              )}
-            </div>
-          </CardHeader>
-          <CardContent className="p-0">
-            <div className="divide-y divide-border/60">
-              {INTEGRATION_MODULES.map(mod => {
-                const status = getStatus(mod.id);
-                const isConnected = !!status?.has_key;
-                const isEnabled = !!status?.enabled;
-                const testStatus = status?.test_status;
-                const isTesting = testIntegration.isPending && testIntegration.variables === mod.id;
-                const isSaving = saveIntegration.isPending && (saveIntegration.variables as { service?: string })?.service === mod.id;
-
-                return (
-                  <div key={mod.id} className={`p-5 transition-colors ${!isPremium ? 'pointer-events-none' : ''}`}>
-                    <div className="flex items-start gap-4">
-                      {/* Logo */}
-                      <div className={`w-10 h-10 rounded-xl flex items-center justify-center text-xl shrink-0 border ${mod.color}`}>
-                        {mod.logo}
-                      </div>
-
-                      {/* Info */}
-                      <div className="flex-1 min-w-0">
-                        <div className="flex items-center gap-2 flex-wrap">
-                          <span className="text-sm font-bold">{mod.name}</span>
-                          <span className="text-xs text-muted-foreground">{mod.tagline}</span>
-                          {isConnected && testStatus === 'ok' && (
-                            <span className="flex items-center gap-1 text-[10px] text-emerald-600 dark:text-emerald-400 font-medium">
-                              <CheckCircle2 className="w-3 h-3" />{t('settings.module_connected')}
-                            </span>
-                          )}
-                          {isConnected && testStatus === 'error' && (
-                            <span className="flex items-center gap-1 text-[10px] text-red-500 font-medium">
-                              <XCircle className="w-3 h-3" />{t('settings.module_error')}
-                            </span>
-                          )}
+                  return (
+                    <div key={mod.id} className={`p-5 transition-colors ${!isPremium ? 'pointer-events-none' : ''}`}>
+                      <div className="flex items-start gap-4">
+                        <div className={`w-10 h-10 rounded-xl flex items-center justify-center text-xl shrink-0 border ${mod.color}`}>
+                          {mod.logo}
                         </div>
-                        <p className="text-xs text-muted-foreground mt-1 leading-relaxed">{mod.description}</p>
-
-                        {/* What it enriches */}
-                        <div className="flex flex-wrap gap-1.5 mt-2">
-                          {mod.enriches.map(e => (
-                            <span key={e} className="text-[10px] px-2 py-0.5 rounded-full bg-muted font-medium text-muted-foreground">{e}</span>
-                          ))}
-                          <a href={mod.docUrl} target="_blank" rel="noopener noreferrer" className="text-[10px] px-2 py-0.5 rounded-full bg-muted font-medium text-muted-foreground hover:text-primary transition-colors flex items-center gap-0.5">
-                            <ExternalLink className="w-2.5 h-2.5" />API docs
-                          </a>
-                        </div>
-
-                        {/* Key input */}
-                        <div className="mt-3 flex gap-2 max-w-lg">
-                          <div className="relative flex-1">
-                            <KeyRound className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-muted-foreground pointer-events-none" />
-                            <Input
-                              type={showKey[mod.id] ? 'text' : 'password'}
-                              value={apiKeys[mod.id] ?? ''}
-                              onChange={e => setApiKeys(prev => ({ ...prev, [mod.id]: e.target.value }))}
-                              placeholder={isConnected ? '••••••••••••••••' : mod.keyPlaceholder}
-                              className="h-8 text-xs pl-8 font-mono"
-                              onKeyDown={e => e.key === 'Enter' && handleSaveKey(mod.id)}
-                              disabled={!isPremium}
-                            />
+                        <div className="flex-1 min-w-0">
+                          <div className="flex items-center gap-2 flex-wrap">
+                            <span className="text-sm font-bold">{mod.name}</span>
+                            <span className="text-xs text-muted-foreground">{mod.tagline}</span>
+                            {isConnected && testStatus === 'ok' && (
+                              <span className="flex items-center gap-1 text-[10px] text-emerald-600 dark:text-emerald-400 font-medium">
+                                <CheckCircle2 className="w-3 h-3" />{t('settings.module_connected')}
+                              </span>
+                            )}
+                            {isConnected && testStatus === 'error' && (
+                              <span className="flex items-center gap-1 text-[10px] text-red-500 font-medium">
+                                <XCircle className="w-3 h-3" />{t('settings.module_error')}
+                              </span>
+                            )}
                           </div>
-                          {apiKeys[mod.id]?.trim() && (
-                            <Button size="sm" className="h-8 text-xs shrink-0" onClick={() => handleSaveKey(mod.id)} disabled={isSaving}>
-                              {isSaving ? <Loader2 className="w-3 h-3 animate-spin" /> : t('common.save')}
-                            </Button>
-                          )}
-                          {isConnected && (
-                            <>
-                              <Button
-                                size="sm" variant="outline" className="h-8 text-xs shrink-0"
-                                onClick={() => testIntegration.mutate(mod.id)}
-                                disabled={isTesting}
-                              >
-                                {isTesting ? <Loader2 className="w-3 h-3 animate-spin mr-1" /> : null}
-                                {t('settings.module_test')}
+                          <p className="text-xs text-muted-foreground mt-1 leading-relaxed">{mod.description}</p>
+                          <div className="flex flex-wrap gap-1.5 mt-2">
+                            {mod.enriches.map(e => (
+                              <span key={e} className="text-[10px] px-2 py-0.5 rounded-full bg-muted font-medium text-muted-foreground">{e}</span>
+                            ))}
+                            <a href={mod.docUrl} target="_blank" rel="noopener noreferrer" className="text-[10px] px-2 py-0.5 rounded-full bg-muted font-medium text-muted-foreground hover:text-primary transition-colors flex items-center gap-0.5">
+                              <ExternalLink className="w-2.5 h-2.5" />API docs
+                            </a>
+                          </div>
+                          <div className="mt-3 flex gap-2 max-w-lg">
+                            <div className="relative flex-1">
+                              <KeyRound className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-muted-foreground pointer-events-none" />
+                              <Input
+                                type={showKey[mod.id] ? 'text' : 'password'}
+                                value={apiKeys[mod.id] ?? ''}
+                                onChange={e => setApiKeys(prev => ({ ...prev, [mod.id]: e.target.value }))}
+                                placeholder={isConnected ? '••••••••••••••••' : mod.keyPlaceholder}
+                                className="h-8 text-xs pl-8 font-mono"
+                                onKeyDown={e => e.key === 'Enter' && handleSaveKey(mod.id)}
+                                disabled={!isPremium}
+                              />
+                            </div>
+                            {apiKeys[mod.id]?.trim() && (
+                              <Button size="sm" className="h-8 text-xs shrink-0" onClick={() => handleSaveKey(mod.id)} disabled={isSaving}>
+                                {isSaving ? <Loader2 className="w-3 h-3 animate-spin" /> : t('common.save')}
                               </Button>
-                              <Button
-                                size="sm" variant="ghost" className="h-8 text-xs text-destructive hover:text-destructive hover:bg-destructive/10 shrink-0"
-                                onClick={() => deleteIntegration.mutate(mod.id)}
-                              >
-                                <Trash2 className="w-3 h-3" />
-                              </Button>
-                            </>
-                          )}
+                            )}
+                            {isConnected && (
+                              <>
+                                <Button
+                                  size="sm" variant="outline" className="h-8 text-xs shrink-0"
+                                  onClick={() => testIntegration.mutate(mod.id)}
+                                  disabled={isTesting}
+                                >
+                                  {isTesting ? <Loader2 className="w-3 h-3 animate-spin mr-1" /> : null}
+                                  {t('settings.module_test')}
+                                </Button>
+                                <Button
+                                  size="sm" variant="ghost" className="h-8 text-xs text-destructive hover:text-destructive hover:bg-destructive/10 shrink-0"
+                                  onClick={() => deleteIntegration.mutate(mod.id)}
+                                >
+                                  <Trash2 className="w-3 h-3" />
+                                </Button>
+                              </>
+                            )}
+                          </div>
                         </div>
+                        {isConnected && (
+                          <Switch
+                            checked={isEnabled}
+                            onCheckedChange={checked => saveIntegration.mutate({ service: mod.id, enabled: checked })}
+                            className="shrink-0 mt-0.5"
+                          />
+                        )}
                       </div>
-
-                      {/* Enable toggle */}
-                      {isConnected && (
-                        <Switch
-                          checked={isEnabled}
-                          onCheckedChange={checked => saveIntegration.mutate({ service: mod.id, enabled: checked })}
-                          className="shrink-0 mt-0.5"
-                        />
-                      )}
                     </div>
-                  </div>
-                );
-              })}
-            </div>
-          </CardContent>
-        </Card>
-      </div>
+                  );
+                })}
+              </div>
+            </CardContent>
+          </Card>
+        </TabsContent>
+      </Tabs>
 
       {/* ── CustomFieldsManager (controlled) ── */}
       <CustomFieldsManager

@@ -16,6 +16,8 @@ type AuthUser = {
   created_at?: string;
   updated_at?: string;
   last_sign_in_at?: string | null;
+  oauth_provider?: string | null;
+  has_password?: boolean;
 };
 
 type AuthSession = {
@@ -244,6 +246,8 @@ export const supabase = {
           club: meta.club || '',
           role: meta.role || 'scout',
           referralCode: meta.referral_code || '',
+          _hp: meta._hp || '',   // honeypot (must be empty)
+          _t: meta._t || '',     // form load timestamp (anti-bot timing)
         }),
       }, false);
 
@@ -288,6 +292,19 @@ export const supabase = {
       setStoredSession(data.session);
       notify('SIGNED_IN', data.session);
       return { data: { user: data.user, session: data.session }, error: null };
+    },
+
+    async signInWithGoogle(access_token: string) {
+      const { data, error } = await apiRequest<LoginResponse & { isNew?: boolean }>('/auth/google', {
+        method: 'POST',
+        body: JSON.stringify({ access_token }),
+      }, false);
+
+      if (error || !data?.session) return { data: { user: null, session: null, isNew: false }, error: error || new Error('Échec de la connexion Google') };
+
+      setStoredSession(data.session);
+      notify('SIGNED_IN', data.session);
+      return { data: { user: data.user, session: data.session, isNew: data.isNew ?? false }, error: null };
     },
 
     async signOut() {

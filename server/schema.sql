@@ -19,7 +19,26 @@ CREATE TABLE IF NOT EXISTS users (
   email_2fa_enabled TINYINT(1) NOT NULL DEFAULT 0,
   email_2fa_code VARCHAR(6) NULL,
   email_2fa_expires_at DATETIME NULL,
+  -- Anti-bot & moderation
+  is_banned TINYINT(1) NOT NULL DEFAULT 0,
+  ban_reason TEXT NULL,
+  banned_at DATETIME NULL,
+  banned_by CHAR(36) NULL,
+  bot_score INT NOT NULL DEFAULT 0,
+  registration_ip VARCHAR(45) NULL,
+  registration_ip_hash CHAR(64) NULL,
+  INDEX idx_users_banned (is_banned),
+  INDEX idx_users_ip_hash (registration_ip_hash),
   UNIQUE KEY uniq_users_email (email(191))
+);
+
+-- Tracks hashed registration IPs to enforce multi-account limits (SHA-256, privacy-safe)
+CREATE TABLE IF NOT EXISTS signup_ip_log (
+  ip_hash       CHAR(64)   NOT NULL PRIMARY KEY,
+  account_count INT        NOT NULL DEFAULT 1,
+  first_seen    DATETIME   NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  last_seen     DATETIME   NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  is_flagged    TINYINT(1) NOT NULL DEFAULT 0
 );
 
 CREATE TABLE IF NOT EXISTS profiles (
@@ -856,6 +875,17 @@ CREATE TABLE IF NOT EXISTS editorial_articles (
   INDEX idx_editorial_user (user_id),
   INDEX idx_editorial_status (status, created_at),
   FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS editorial_reactions (
+  user_id    CHAR(36)    NOT NULL,
+  article_id CHAR(36)    NOT NULL,
+  reaction   ENUM('like','dislike') NOT NULL,
+  created_at DATETIME    NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (user_id, article_id),
+  INDEX idx_er_article (article_id),
+  FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+  FOREIGN KEY (article_id) REFERENCES editorial_articles(id) ON DELETE CASCADE
 );
 
 -- ── Scout opinions (par organisation) ────────────────────────────────────────

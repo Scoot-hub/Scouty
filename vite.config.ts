@@ -21,8 +21,17 @@ export default defineConfig(({ mode }) => ({
       overlay: false,
     },
     headers: {
-      "Content-Security-Policy":
-        "default-src 'self'; script-src 'self' 'unsafe-eval' 'unsafe-inline' https://*.cal.eu https://*.cal.com; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; img-src 'self' data: blob: https:; connect-src 'self' ws: wss: http://localhost:3001 https://*.cal.eu https://*.cal.com; frame-src 'self' https://*.cal.eu https://*.cal.com https://www.youtube.com https://youtube.com;",
+      "Content-Security-Policy": [
+        "default-src 'self'",
+        "script-src 'self' 'unsafe-eval' 'unsafe-inline' https://*.cal.eu https://*.cal.com https://accounts.google.com https://apis.google.com",
+        "script-src-elem 'self' 'unsafe-inline' https://*.cal.eu https://*.cal.com https://accounts.google.com https://apis.google.com",
+        "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com https://accounts.google.com",
+        "font-src 'self' https://fonts.gstatic.com",
+        "img-src 'self' data: blob: https: https://*.googleusercontent.com",
+        "connect-src 'self' ws: wss: http://localhost:3001 https://*.cal.eu https://*.cal.com https://accounts.google.com https://oauth2.googleapis.com https://www.googleapis.com https://openidconnect.googleapis.com",
+        "frame-src 'self' https://*.cal.eu https://*.cal.com https://www.youtube.com https://youtube.com https://accounts.google.com",
+        "frame-ancestors 'none'",
+      ].join("; "),
     },
   },
   plugins: [react(), mode === "development" && componentTagger()].filter(Boolean),

@@ -577,6 +577,67 @@ setInterval(() => {
   }
 }, 30 * 60 * 1000);
 
+// ── Anti-bot & account protection helpers ────────────────────────────────
+
+// Hash an IP for privacy storage (SHA-256, no key — it's a public-ish value)
+function hashIp(ip) {
+  if (!ip) return null;
+  // Normalize IPv6 to /48 prefix to group ISP-level ranges
+  let normalized = ip.trim();
+  if (normalized.includes(':') && !normalized.includes('::ffff:')) {
+    // Keep first 3 groups of IPv6 (/48 prefix)
+    const parts = normalized.split(':');
+    normalized = parts.slice(0, 3).join(':');
+  }
+  // Strip IPv6-mapped IPv4 prefix
+  normalized = normalized.replace(/^::ffff:/, '');
+  return crypto.createHash('sha256').update(normalized).digest('hex');
+}
+
+// Detect headless/automated browsers from User-Agent
+const HEADLESS_UA_PATTERNS = [
+  /HeadlessChrome/i, /PhantomJS/i, /Puppeteer/i, /Playwright/i, /Selenium/i,
+  /WebDriver/i, /python-requests/i, /curl\//i, /axios\//i, /node-fetch/i,
+  /Go-http-client/i, /Java\/\d/i, /okhttp/i, /Scrapy/i, /bot/i, /crawler/i,
+];
+function isHeadlessBrowser(ua) {
+  if (!ua) return true;
+  return HEADLESS_UA_PATTERNS.some(p => p.test(ua));
+}
+
+// Compute a bot score (0–100) from request signals
+function computeBotScore(req, extraSignals = {}) {
+  let score = 0;
+  const ua = req.headers['user-agent'] || '';
+  if (isHeadlessBrowser(ua)) score += 60;
+  if (!ua || ua.length < 20) score += 20;
+  if (!req.headers['accept-language']) score += 10;
+  if (!req.headers['accept']) score += 10;
+  if (extraSignals.honeypotFilled) score += 100;
+  if (extraSignals.tooFast) score += 40;   // form submitted < 3s after page load
+  if (extraSignals.sameIpBanned) score += 50;
+  return Math.min(score, 100);
+}
+
+// In-memory ban cache to avoid DB hit on every request (TTL: 5 minutes)
+const _banCache = new Map(); // userId → { isBanned, banReason, cachedAt }
+const BAN_CACHE_TTL = 5 * 60 * 1000;
+
+async function isUserBanned(userId) {
+  const cached = _banCache.get(userId);
+  if (cached && Date.now() - cached.cachedAt < BAN_CACHE_TTL) {
+    return { isBanned: cached.isBanned, banReason: cached.banReason };
+  }
+  try {
+    const [[row]] = await pool.query('SELECT is_banned, ban_reason FROM users WHERE id = ? LIMIT 1', [userId]);
+    const result = { isBanned: !!row?.is_banned, banReason: row?.ban_reason || null };
+    _banCache.set(userId, { ...result, cachedAt: Date.now() });
+    return result;
+  } catch { return { isBanned: false, banReason: null }; }
+}
+
+function invalidateBanCache(userId) { _banCache.delete(userId); }
+
 // ── Password strength validation ──────────────────────────────────────────
 function validatePasswordStrength(password) {
   const pwd = String(password || "");
@@ -614,6 +675,8 @@ function normalizeUserRow(userRow) {
     created_at: userRow.created_at,
     updated_at: userRow.updated_at,
     last_sign_in_at: userRow.last_sign_in_at,
+    oauth_provider: userRow.oauth_provider || null,
+    has_password: !!userRow.password_hash,
   };
 }
 
@@ -650,6 +713,15 @@ async function authMiddleware(req, res, next) {
     const user = await getUserById(payload.sub);
     if (!user) {
       return res.status(401).json({ error: "Invalid token" });
+    }
+    // Ban check (cached)
+    const { isBanned, banReason } = await isUserBanned(user.id);
+    if (isBanned) {
+      return res.status(403).json({
+        error: 'Compte suspendu.',
+        ban_reason: banReason || 'Violation des conditions d\'utilisation.',
+        banned: true,
+      });
     }
     req.user = normalizeUserRow(user);
     next();
@@ -797,6 +869,52 @@ async function _legacyRunMigrations() {
     `);
   } catch (err) {
     if (!err?.message?.includes('already exists')) console.warn('[warn] club_geocoding_cache migration:', err?.message);
+  }
+
+  // Add anti-bot & ban columns to users (idempotent)
+  for (const col of [
+    "ALTER TABLE `users` ADD COLUMN `is_banned`        TINYINT(1)   NOT NULL DEFAULT 0",
+    "ALTER TABLE `users` ADD COLUMN `ban_reason`       TEXT         NULL",
+    "ALTER TABLE `users` ADD COLUMN `banned_at`        DATETIME     NULL",
+    "ALTER TABLE `users` ADD COLUMN `banned_by`        CHAR(36)     NULL",
+    "ALTER TABLE `users` ADD COLUMN `bot_score`        INT          NOT NULL DEFAULT 0",
+    "ALTER TABLE `users` ADD COLUMN `registration_ip`  VARCHAR(45)  NULL",
+    "ALTER TABLE `users` ADD COLUMN `registration_ip_hash` CHAR(64) NULL",
+  ]) {
+    try { await pool.query(col); } catch (e) { if (e?.errno !== 1060) console.warn('[migration] users ban cols:', e?.message); }
+  }
+
+  // signup_ip_log — tracks hashed IPs to enforce multi-account limits
+  try {
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS signup_ip_log (
+        ip_hash      CHAR(64)  NOT NULL PRIMARY KEY,
+        account_count INT      NOT NULL DEFAULT 1,
+        first_seen   DATETIME  NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        last_seen    DATETIME  NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        is_flagged   TINYINT(1) NOT NULL DEFAULT 0
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+    `);
+  } catch (err) {
+    if (!err?.message?.includes('already exists')) console.warn('[migration] signup_ip_log:', err?.message);
+  }
+
+  // Create editorial_reactions table (likes / dislikes on editorial articles)
+  try {
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS editorial_reactions (
+        user_id    CHAR(36)    NOT NULL,
+        article_id CHAR(36)    NOT NULL,
+        reaction   ENUM('like','dislike') NOT NULL,
+        created_at DATETIME    NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        PRIMARY KEY (user_id, article_id),
+        INDEX idx_er_article (article_id),
+        FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+        FOREIGN KEY (article_id) REFERENCES editorial_articles(id) ON DELETE CASCADE
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+    `);
+  } catch (err) {
+    if (!err?.message?.includes('already exists')) console.warn('[migration] editorial_reactions:', err?.message);
   }
 
   // Add geo columns to user_sessions (idempotent)
@@ -1455,6 +1573,14 @@ async function _legacyRunMigrations() {
   ]) {
     try { await pool.query(`ALTER TABLE profiles ADD COLUMN ${col}`); } catch (err) { if (err?.errno !== 1060) console.warn("[warn] profile social migration:", err?.message); }
   }
+  // Add Google OAuth columns to users
+  for (const col of [
+    "oauth_provider VARCHAR(50) NULL",
+    "oauth_sub VARCHAR(255) NULL",
+  ]) {
+    try { await pool.query(`ALTER TABLE users ADD COLUMN ${col}`); } catch (err) { if (err?.errno !== 1060) console.warn("[warn] users oauth migration:", err?.message); }
+  }
+
   // Add extended personal info columns to profiles
   for (const col of [
     'photo_url TEXT NULL',
@@ -1650,8 +1776,70 @@ async function _legacyRunMigrations() {
     if (!err?.message?.includes("already exists")) console.warn("[warn] user_sessions migration:", err?.message);
   }
 
+  // notification_prefs column on users table
+  try {
+    await pool.query("ALTER TABLE users ADD COLUMN notification_prefs TEXT NULL");
+  } catch (err) { if (err?.errno !== 1060) console.warn("[warn] notification_prefs migration:", err?.message); }
+
   console.log("[startup] Legacy migrations complete");
 }
+
+// ── Notification preferences ─────────────────────────────────────────────
+
+const DEFAULT_NOTIF_PREFS = {
+  email_match_assigned: true,
+  email_org_invite: true,
+  email_community: true,
+  email_weekly: false,
+  web_bell: true,
+};
+
+app.get("/api/notification-prefs", authMiddleware, async (req, res) => {
+  try {
+    const [[row]] = await pool.query("SELECT notification_prefs FROM users WHERE id = ?", [req.user.id]);
+    let prefs = { ...DEFAULT_NOTIF_PREFS };
+    if (row?.notification_prefs) {
+      try { Object.assign(prefs, JSON.parse(row.notification_prefs)); } catch {}
+    }
+    return res.json(prefs);
+  } catch (err) {
+    console.error(err);
+    return res.status(500).json({ error: "Erreur serveur" });
+  }
+});
+
+app.put("/api/notification-prefs", authMiddleware, async (req, res) => {
+  try {
+    const allowed = Object.keys(DEFAULT_NOTIF_PREFS);
+    const prefs = {};
+    for (const key of allowed) {
+      if (key in req.body) prefs[key] = Boolean(req.body[key]);
+    }
+    await pool.query("UPDATE users SET notification_prefs = ? WHERE id = ?", [JSON.stringify(prefs), req.user.id]);
+    return res.json(prefs);
+  } catch (err) {
+    console.error(err);
+    return res.status(500).json({ error: "Erreur serveur" });
+  }
+});
+
+// ── Page access info (which roles can view each page) ────────────────────
+app.get("/api/page-access-info", authMiddleware, async (req, res) => {
+  try {
+    const [rows] = await pool.query(
+      "SELECT page_key, role FROM page_permissions WHERE action = 'view' AND allowed = 1 AND role != 'admin' ORDER BY role"
+    );
+    const map = {};
+    for (const { page_key, role } of rows) {
+      if (!map[page_key]) map[page_key] = [];
+      if (!map[page_key].includes(role)) map[page_key].push(role);
+    }
+    return res.json(map);
+  } catch (err) {
+    console.error(err);
+    return res.status(500).json({ error: "Erreur serveur" });
+  }
+});
 
 // ── Notification helper ──────────────────────────────────────────────────
 async function createNotification(userId, { type, title, message, icon, link, playerId } = {}) {
@@ -1816,11 +2004,61 @@ app.get("/api/health", async (_req, res) => {
 });
 
 app.post("/api/auth/signup", rateLimitAuth, async (req, res) => {
-  const { email, password, fullName = "", club = "", role = "scout", referralCode = "" } = req.body || {};
+  const { email, password, fullName = "", club = "", role = "scout", referralCode = "",
+          _hp = "", _t = "" } = req.body || {};
   const normalizedEmail = String(email || "").trim().toLowerCase();
   const normalizedFullName = String(fullName || "").trim();
   const normalizedClub = String(club || "").trim();
   const normalizedRole = String(role || "scout").trim();
+  const ip = (req.headers["x-forwarded-for"] || "").split(",")[0].trim() || req.socket?.remoteAddress || null;
+  const ua = req.headers['user-agent'] || '';
+
+  // ── Anti-bot checks ──
+  // 1. Honeypot: if _hp is filled, it's a bot
+  if (String(_hp).trim().length > 0) {
+    console.warn(`[signup/antibot] Honeypot triggered from IP ${ip}`);
+    return res.status(400).json({ error: "Validation échouée. Veuillez réessayer." });
+  }
+  // 2. Timing: form submitted < 3 seconds after page load
+  const formAge = _t ? Date.now() - Number(_t) : Infinity;
+  const tooFast = formAge < 3000;
+  // 3. Headless browser detection
+  const headless = isHeadlessBrowser(ua);
+  // 4. IP check: any banned account from this IP?
+  const ipHash = hashIp(ip);
+  let sameIpBanned = false;
+  if (ipHash) {
+    try {
+      const [[ipRow]] = await pool.query(
+        'SELECT COUNT(*) as cnt FROM users WHERE registration_ip_hash = ? AND is_banned = 1', [ipHash]
+      );
+      sameIpBanned = (ipRow?.cnt || 0) > 0;
+    } catch { /* ignore */ }
+  }
+
+  const botScore = computeBotScore(req, { honeypotFilled: false, tooFast, sameIpBanned });
+
+  if (headless || tooFast || sameIpBanned || botScore >= 60) {
+    console.warn(`[signup/antibot] Blocked — score=${botScore} headless=${headless} tooFast=${tooFast} bannedIP=${sameIpBanned} ip=${ip}`);
+    if (sameIpBanned) {
+      return res.status(403).json({ error: "Inscription non autorisée depuis cette adresse réseau." });
+    }
+    return res.status(400).json({ error: "Validation échouée. Veuillez réessayer depuis un navigateur standard." });
+  }
+
+  // 5. IP uniqueness: max 3 accounts per IP (handles NAT/families)
+  const MAX_ACCOUNTS_PER_IP = 3;
+  if (ipHash) {
+    try {
+      const [[{ cnt }]] = await pool.query(
+        'SELECT COUNT(*) as cnt FROM users WHERE registration_ip_hash = ?', [ipHash]
+      );
+      if (cnt >= MAX_ACCOUNTS_PER_IP) {
+        console.warn(`[signup/antibot] IP limit reached (${cnt}) for hash ${ipHash.slice(0,8)}`);
+        return res.status(429).json({ error: "Trop de comptes créés depuis cette adresse réseau. Contactez le support si vous pensez à une erreur." });
+      }
+    } catch { /* ignore — don't block signup on DB error */ }
+  }
 
   if (!normalizedEmail || !password) {
     return res.status(400).json({ error: "Email et mot de passe valides requis." });
@@ -1864,9 +2102,9 @@ app.post("/api/auth/signup", rateLimitAuth, async (req, res) => {
     }
 
     await conn.query(
-      `INSERT INTO users (id, email, password_hash, created_at, updated_at, last_sign_in_at)
-       VALUES (?, ?, ?, NOW(), NOW(), NOW())`,
-      [userId, normalizedEmail, hash],
+      `INSERT INTO users (id, email, password_hash, registration_ip, registration_ip_hash, bot_score, created_at, updated_at, last_sign_in_at)
+       VALUES (?, ?, ?, ?, ?, ?, NOW(), NOW(), NOW())`,
+      [userId, normalizedEmail, hash, ip, ipHash, botScore],
     );
 
     await conn.query(
@@ -1888,6 +2126,16 @@ app.post("/api/auth/signup", rateLimitAuth, async (req, res) => {
     );
 
     await conn.commit();
+
+    // Log the IP for future multi-account detection (async, non-blocking)
+    if (ipHash) {
+      pool.query(
+        `INSERT INTO signup_ip_log (ip_hash, account_count, first_seen, last_seen)
+         VALUES (?, 1, NOW(), NOW())
+         ON DUPLICATE KEY UPDATE account_count = account_count + 1, last_seen = NOW()`,
+        [ipHash]
+      ).catch(() => {});
+    }
 
     // Award 100 affiliate credits to the referrer
     if (referrerId) {
@@ -1918,6 +2166,84 @@ app.post("/api/auth/signup", rateLimitAuth, async (req, res) => {
   }
 });
 
+// ── Google OAuth sign-in / sign-up ────────────────────────────────────────
+app.post("/api/auth/google", rateLimitAuth, async (req, res) => {
+  const { access_token } = req.body || {};
+  if (!access_token) return res.status(400).json({ error: "Token Google manquant." });
+
+  // Verify access token by calling Google's userinfo endpoint
+  let tokenData;
+  try {
+    const r = await fetch("https://www.googleapis.com/oauth2/v3/userinfo", {
+      headers: { Authorization: `Bearer ${access_token}` },
+      signal: AbortSignal.timeout(8000),
+    });
+    tokenData = await r.json();
+    if (!r.ok || tokenData.error_description) return res.status(401).json({ error: "Token Google invalide." });
+  } catch {
+    return res.status(502).json({ error: "Impossible de vérifier le token Google." });
+  }
+
+  const { email, sub: oauthSub, given_name, family_name, picture } = tokenData;
+  if (!email) return res.status(400).json({ error: "Email manquant dans le token Google." });
+  const normalizedEmail = String(email).toLowerCase().trim();
+
+  let conn;
+  try {
+    conn = await pool.getConnection();
+    const [existing] = await conn.query("SELECT * FROM users WHERE email = ? LIMIT 1", [normalizedEmail]);
+
+    let userId;
+    let isNew = false;
+
+    if (existing.length) {
+      userId = existing[0].id;
+      await conn.query(
+        "UPDATE users SET oauth_provider = 'google', oauth_sub = ?, last_sign_in_at = NOW(), updated_at = NOW() WHERE id = ?",
+        [oauthSub, userId]
+      );
+      // Update profile with Google name/photo if fields are empty
+      await conn.query(
+        `UPDATE profiles SET
+          first_name = COALESCE(NULLIF(first_name, ''), ?),
+          last_name  = COALESCE(NULLIF(last_name, ''), ?),
+          photo_url  = COALESCE(NULLIF(photo_url, ''), ?)
+         WHERE user_id = ?`,
+        [given_name || null, family_name || null, picture || null, userId]
+      );
+    } else {
+      isNew = true;
+      userId = uuidv4();
+      await conn.beginTransaction();
+
+      await conn.query(
+        "INSERT INTO users (id, email, oauth_provider, oauth_sub, created_at, updated_at, last_sign_in_at) VALUES (?, ?, 'google', ?, NOW(), NOW(), NOW())",
+        [userId, normalizedEmail, oauthSub]
+      );
+
+      const fullName = [given_name, family_name].filter(Boolean).join(" ").trim();
+      await conn.query(
+        `INSERT INTO profiles (id, user_id, full_name, first_name, last_name, photo_url, role, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, 'scout', NOW(), NOW())`,
+        [uuidv4(), userId, fullName || normalizedEmail, given_name || null, family_name || null, picture || null]
+      );
+      await conn.query("INSERT INTO user_roles (id, user_id, role, created_at) VALUES (?, ?, 'user', NOW())", [uuidv4(), userId]);
+      await conn.query("INSERT INTO user_subscriptions (id, user_id, is_premium, premium_since, created_at, updated_at) VALUES (?, ?, 0, NULL, NOW(), NOW())", [uuidv4(), userId]);
+
+      await conn.commit();
+    }
+
+    const user = await getUserById(userId);
+    return res.json({ user: normalizeUserRow(user), session: buildSession(user, res), isNew });
+  } catch (err) {
+    if (conn) { try { await conn.rollback(); } catch {} }
+    console.error("[google-auth]", err?.message);
+    return res.status(500).json({ error: "Erreur serveur lors de l'authentification Google." });
+  } finally {
+    if (conn) conn.release();
+  }
+});
+
 app.post("/api/auth/login", rateLimitAuth, async (req, res) => {
   const { email, password } = req.body || {};
   if (!email || !password) {
@@ -1934,6 +2260,15 @@ app.post("/api/auth/login", rateLimitAuth, async (req, res) => {
     const ok = await bcrypt.compare(password, user.password_hash);
     if (!ok) {
       return res.status(401).json({ error: "Identifiants invalides." });
+    }
+
+    // Ban check
+    if (user.is_banned) {
+      return res.status(403).json({
+        error: 'Compte suspendu.',
+        ban_reason: user.ban_reason || 'Violation des conditions d\'utilisation.',
+        banned: true,
+      });
     }
 
     // If TOTP 2FA is enabled, don't return session yet — require TOTP code
@@ -4066,7 +4401,8 @@ app.post("/api/rpc/get_org_members", authMiddleware, async (req, res) => {
 
     const [rows] = await pool.query(
       `SELECT om.id, om.user_id, om.role, om.joined_at,
-              p.full_name, p.club, p.role AS profile_role, p.social_x, p.social_instagram, p.social_linkedin, p.social_public,
+              p.full_name, p.club, p.role AS profile_role, p.photo_url,
+              p.social_x, p.social_instagram, p.social_linkedin, p.social_public,
               u.email
        FROM organization_members om
        LEFT JOIN profiles p ON p.user_id = om.user_id
@@ -4086,6 +4422,7 @@ app.post("/api/rpc/get_org_members", authMiddleware, async (req, res) => {
         full_name: r.full_name,
         club: r.club,
         role: r.profile_role,
+        photo_url: r.photo_url || null,
         social_x: r.social_x,
         social_instagram: r.social_instagram,
         social_linkedin: r.social_linkedin,
@@ -5536,6 +5873,7 @@ app.post("/api/analytics/heartbeat", authMiddleware, async (req, res) => {
     const { session_id, device_type, browser, os, screen_width, screen_height, language, current_page, started_at, geo_lat, geo_lon } = req.body;
     if (!session_id) return res.status(400).json({ error: "session_id required" });
     const ip = (req.headers["x-forwarded-for"] || "").split(",")[0].trim() || req.socket?.remoteAddress || null;
+    const ua = req.headers["user-agent"] || '';
     const id = require("crypto").randomUUID();
     const safeDevice = ["desktop", "mobile", "tablet"].includes(device_type) ? device_type : "desktop";
     const sessionStart = started_at ? new Date(started_at) : new Date();
@@ -5577,6 +5915,26 @@ app.post("/api/analytics/heartbeat", authMiddleware, async (req, res) => {
          ON DUPLICATE KEY UPDATE seconds_spent = seconds_spent + 30, last_updated = NOW()`,
         [userId, session_id, category]
       ).catch(() => {});
+    }
+
+    // Headless browser post-login detection — increment bot_score, auto-ban if >= 85
+    if (isHeadlessBrowser(ua || '')) {
+      pool.query(
+        `UPDATE users SET bot_score = LEAST(bot_score + 25, 100), updated_at = NOW() WHERE id = ?`,
+        [userId]
+      ).then(async () => {
+        const [[u]] = await pool.query('SELECT bot_score FROM users WHERE id = ?', [userId]);
+        if (u?.bot_score >= 85) {
+          await pool.query(
+            `UPDATE users SET is_banned = 1, ban_reason = ?, banned_at = NOW() WHERE id = ? AND is_banned = 0`,
+            ['Détection automatique : comportement de bot (navigateur headless)', userId]
+          );
+          invalidateBanCache(userId);
+          console.warn(`[antibot] Auto-banned user ${userId} (bot_score=${u.bot_score})`);
+        } else {
+          invalidateBanCache(userId);
+        }
+      }).catch(() => {});
     }
 
     // Geolocate from IP on new session (first insert only), async, non-blocking
@@ -5622,6 +5980,84 @@ function profileCountryToCode(name) {
   if (!name) return null;
   return PROFILE_COUNTRY_TO_CODE[name.toLowerCase().trim()] || null;
 }
+
+// ── Admin ban management ──────────────────────────────────────────────────────
+
+// GET /api/admin/users/bans — list banned accounts + suspicious (bot_score >= 50)
+app.get("/api/admin/users/bans", authMiddleware, ensureAdmin, async (req, res) => {
+  try {
+    const [banned] = await pool.query(
+      `SELECT u.id, u.email, u.is_banned, u.ban_reason, u.banned_at, u.banned_by,
+              u.bot_score, u.registration_ip, u.created_at,
+              COALESCE(p.full_name, '') AS full_name, p.role,
+              (SELECT COUNT(*) FROM users u2 WHERE u2.registration_ip_hash = u.registration_ip_hash AND u2.id != u.id) AS ip_siblings
+       FROM users u LEFT JOIN profiles p ON p.user_id = u.id
+       WHERE u.is_banned = 1 OR u.bot_score >= 50
+       ORDER BY u.is_banned DESC, u.bot_score DESC, u.created_at DESC
+       LIMIT 200`
+    );
+    const [ipStats] = await pool.query(
+      `SELECT ip_hash, account_count, first_seen, last_seen, is_flagged
+       FROM signup_ip_log WHERE account_count > 2 OR is_flagged = 1
+       ORDER BY account_count DESC LIMIT 50`
+    );
+    res.json({ banned, ipStats });
+  } catch (err) {
+    res.status(500).json({ error: err?.message });
+  }
+});
+
+// POST /api/admin/users/:id/ban
+app.post("/api/admin/users/:id/ban", authMiddleware, ensureAdmin, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { reason = 'Décision administrative' } = req.body || {};
+    const adminId = req.user.id;
+    if (id === adminId) return res.status(400).json({ error: 'Vous ne pouvez pas vous bannir vous-même.' });
+    await pool.query(
+      `UPDATE users SET is_banned = 1, ban_reason = ?, banned_at = NOW(), banned_by = ?, updated_at = NOW() WHERE id = ?`,
+      [String(reason).slice(0, 500), adminId, id]
+    );
+    invalidateBanCache(id);
+    // Flag the IP in signup_ip_log
+    pool.query(
+      `UPDATE signup_ip_log sil
+       INNER JOIN users u ON u.registration_ip_hash = sil.ip_hash
+       SET sil.is_flagged = 1
+       WHERE u.id = ?`,
+      [id]
+    ).catch(() => {});
+    res.json({ ok: true });
+  } catch (err) {
+    res.status(500).json({ error: err?.message });
+  }
+});
+
+// POST /api/admin/users/:id/unban
+app.post("/api/admin/users/:id/unban", authMiddleware, ensureAdmin, async (req, res) => {
+  try {
+    const { id } = req.params;
+    await pool.query(
+      `UPDATE users SET is_banned = 0, ban_reason = NULL, banned_at = NULL, banned_by = NULL, bot_score = 0, updated_at = NOW() WHERE id = ?`,
+      [id]
+    );
+    invalidateBanCache(id);
+    res.json({ ok: true });
+  } catch (err) {
+    res.status(500).json({ error: err?.message });
+  }
+});
+
+// POST /api/admin/users/:id/reset-bot-score
+app.post("/api/admin/users/:id/reset-bot-score", authMiddleware, ensureAdmin, async (req, res) => {
+  try {
+    await pool.query('UPDATE users SET bot_score = 0, updated_at = NOW() WHERE id = ?', [req.params.id]);
+    invalidateBanCache(req.params.id);
+    res.json({ ok: true });
+  } catch (err) {
+    res.status(500).json({ error: err?.message });
+  }
+});
 
 // GET /api/admin/analytics/live — currently online users (last 2 min)
 app.get("/api/admin/analytics/live", authMiddleware, ensureAdmin, async (req, res) => {
@@ -12469,35 +12905,53 @@ async function fetchArticleContentWithApify(articleUrl) {
   }
 }
 
-// ── GET /api/news/unified — merged news_articles + football_buzz ──────────────
+// ── GET /api/news/unified — merged news_articles + football_buzz + editorial ──
 app.get("/api/news/unified", authMiddleware, async (req, res) => {
   try {
     const limit  = Math.min(parseInt(req.query.limit) || 20, 60);
     const offset = Math.max(parseInt(req.query.offset) || 0, 0);
     const search = (req.query.search || '').trim();
     const category = (req.query.category || '').trim();
-    const typeFilter = (req.query.type || '').trim(); // 'article' | 'buzz' | ''
+    // 'article' = Sofascore only | 'buzz' = buzz only | 'editorial' = internal only | '' = all
+    const typeFilter = (req.query.type || '').trim();
 
+    const showArticle  = typeFilter === '' || typeFilter === 'article';
+    const showBuzz     = typeFilter === '' || typeFilter === 'buzz';
+    const showEditorial = typeFilter === '' || typeFilter === 'editorial';
+
+    // Build per-source WHERE clauses + params independently
     const artClauses = ['1=1']; const artParams = [];
     const buzzClauses = ['1=1']; const buzzParams = [];
+    const editClauses = ["ea.status = 'published'"]; const editParams = [];
 
     if (search) {
-      artClauses.push('(na.title LIKE ? OR na.description LIKE ?)');
-      artParams.push(`%${search}%`, `%${search}%`);
-      buzzClauses.push('fb.content LIKE ?');
-      buzzParams.push(`%${search}%`);
+      if (showArticle) {
+        artClauses.push('(na.title LIKE ? OR na.description LIKE ?)');
+        artParams.push(`%${search}%`, `%${search}%`);
+      }
+      if (showBuzz) {
+        buzzClauses.push('fb.content LIKE ?');
+        buzzParams.push(`%${search}%`);
+      }
+      if (showEditorial) {
+        editClauses.push('ea.title LIKE ?');
+        editParams.push(`%${search}%`);
+      }
     }
-    if (category) {
+    if (category && showArticle) {
       artClauses.push('na.category = ?');
       artParams.push(category);
     }
 
     const artWhere  = artClauses.join(' AND ');
     const buzzWhere = buzzClauses.join(' AND ');
+    const editWhere = editClauses.join(' AND ');
 
-    // Build UNION query (articles + buzz), skip buzz if type=article, skip articles if type=buzz
-    let unionParts = [];
-    if (typeFilter !== 'buzz') {
+    // Build UNION — only include each part when shown, params follow the same order
+    const unionParts = [];
+    const allParams  = [];
+
+    if (showArticle) {
       unionParts.push(`
         SELECT na.id, 'article' AS type, na.title, na.description AS excerpt,
                na.image_url, na.article_url AS url, na.category, na.author,
@@ -12505,23 +12959,44 @@ app.get("/api/news/unified", authMiddleware, async (req, res) => {
                CASE WHEN na.content IS NOT NULL AND na.content != '' THEN 1 ELSE 0 END AS has_content
         FROM news_articles na WHERE ${artWhere}
       `);
+      allParams.push(...artParams);
     }
-    if (typeFilter !== 'article') {
+    if (showBuzz) {
       unionParts.push(`
         SELECT fb.id, 'buzz' AS type, fb.source_name AS title, fb.content AS excerpt,
                fb.image_url, fb.external_url AS url, NULL AS category, fb.source_handle AS author,
-               fb.published_at, 'footballbuzz' AS source,
-               1 AS has_content
+               fb.published_at, 'footballbuzz' AS source, 1 AS has_content
         FROM football_buzz fb WHERE ${buzzWhere}
       `);
+      allParams.push(...buzzParams);
+    }
+    if (showEditorial) {
+      // Use SUBSTRING instead of REGEXP_REPLACE for wider DB compatibility
+      unionParts.push(`
+        SELECT ea.id, 'editorial' AS type, ea.title,
+               SUBSTRING(ea.content, 1, 300) AS excerpt,
+               ea.banner_url AS image_url,
+               ea.id AS url,
+               'Éditorial' AS category,
+               COALESCE(p.full_name, u.email) AS author,
+               ea.created_at AS published_at, 'internal' AS source,
+               1 AS has_content
+        FROM editorial_articles ea
+        LEFT JOIN users u ON u.id = ea.user_id
+        LEFT JOIN profiles p ON p.user_id = ea.user_id
+        WHERE ${editWhere}
+      `);
+      allParams.push(...editParams);
     }
 
     if (!unionParts.length) return res.json({ items: [], total: 0, categories: [] });
 
     const unionSql = unionParts.join(' UNION ALL ');
-    const allParams = [...artParams, ...buzzParams];
 
-    const [[{ total }]] = await pool.query(`SELECT COUNT(*) as total FROM (${unionSql}) u`, allParams);
+    const [[{ total }]] = await pool.query(
+      `SELECT COUNT(*) as total FROM (${unionSql}) u`,
+      allParams
+    );
     const [rows] = await pool.query(
       `SELECT * FROM (${unionSql}) u ORDER BY published_at DESC LIMIT ? OFFSET ?`,
       [...allParams, limit, offset]
@@ -13829,6 +14304,30 @@ app.get("/api/editorial", authMiddleware, async (req, res) => {
   }
 });
 
+// ── Public share endpoint — no auth required, published articles only ────────
+app.get("/api/public/editorial/:id", async (req, res) => {
+  try {
+    const [rows] = await pool.query(
+      `SELECT ea.id, ea.title, ea.content, ea.banner_url, ea.keywords,
+              ea.status, ea.views, ea.created_at, ea.user_id,
+              COALESCE(p.full_name, u.email) AS author_name,
+              p.photo_url AS author_photo
+       FROM editorial_articles ea
+       LEFT JOIN users u ON u.id = ea.user_id
+       LEFT JOIN profiles p ON p.user_id = ea.user_id
+       WHERE ea.id = ? AND ea.status = 'published'`,
+      [req.params.id]
+    );
+    if (!rows[0]) return res.status(404).json({ error: "Article introuvable ou non publié" });
+    // Increment views (non-blocking)
+    pool.query("UPDATE editorial_articles SET views = views + 1 WHERE id = ?", [req.params.id]).catch(() => {});
+    res.set('Cache-Control', 'public, max-age=300'); // 5 min
+    return res.json(rows[0]);
+  } catch (err) {
+    return res.status(500).json({ error: "Erreur serveur" });
+  }
+});
+
 app.get("/api/editorial/:id", authMiddleware, async (req, res) => {
   try {
     const [rows] = await pool.query(
@@ -13911,6 +14410,83 @@ app.delete("/api/editorial/:id", authMiddleware, async (req, res) => {
     return res.json({ success: true });
   } catch (err) {
     return res.status(500).json({ error: "Erreur serveur" });
+  }
+});
+
+// ── Editorial reactions (like / dislike) ─────────────────────────────────────
+// Table created via _legacyRunMigrations — see migration block above
+
+// GET /api/editorial/:id/reactions — counts + current user's reaction
+app.get("/api/editorial/:id/reactions", authMiddleware, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const [[counts]] = await pool.query(
+      `SELECT
+         SUM(reaction = 'like') AS likes,
+         SUM(reaction = 'dislike') AS dislikes
+       FROM editorial_reactions WHERE article_id = ?`,
+      [id]
+    );
+    const [[mine]] = await pool.query(
+      `SELECT reaction FROM editorial_reactions WHERE article_id = ? AND user_id = ?`,
+      [id, req.user.id]
+    );
+    return res.json({
+      likes: +(counts?.likes || 0),
+      dislikes: +(counts?.dislikes || 0),
+      user_reaction: mine?.reaction || null,
+    });
+  } catch (err) {
+    return res.status(500).json({ error: err?.message });
+  }
+});
+
+// POST /api/editorial/:id/react — toggle like or dislike
+app.post("/api/editorial/:id/react", authMiddleware, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { reaction } = req.body; // 'like' | 'dislike'
+    if (!['like', 'dislike'].includes(reaction)) {
+      return res.status(400).json({ error: "Réaction invalide." });
+    }
+    // Check article exists
+    const [[art]] = await pool.query('SELECT id FROM editorial_articles WHERE id = ?', [id]);
+    if (!art) return res.status(404).json({ error: "Article introuvable." });
+
+    const [[existing]] = await pool.query(
+      'SELECT reaction FROM editorial_reactions WHERE user_id = ? AND article_id = ?',
+      [req.user.id, id]
+    );
+
+    if (existing?.reaction === reaction) {
+      // Same reaction → remove (toggle off)
+      await pool.query('DELETE FROM editorial_reactions WHERE user_id = ? AND article_id = ?', [req.user.id, id]);
+    } else {
+      // Insert or replace with new reaction
+      await pool.query(
+        `INSERT INTO editorial_reactions (user_id, article_id, reaction)
+         VALUES (?, ?, ?)
+         ON DUPLICATE KEY UPDATE reaction = VALUES(reaction), created_at = NOW()`,
+        [req.user.id, id, reaction]
+      );
+    }
+
+    const [[counts]] = await pool.query(
+      `SELECT SUM(reaction = 'like') AS likes, SUM(reaction = 'dislike') AS dislikes
+       FROM editorial_reactions WHERE article_id = ?`,
+      [id]
+    );
+    const [[mine]] = await pool.query(
+      'SELECT reaction FROM editorial_reactions WHERE article_id = ? AND user_id = ?',
+      [id, req.user.id]
+    );
+    return res.json({
+      likes: +(counts?.likes || 0),
+      dislikes: +(counts?.dislikes || 0),
+      user_reaction: mine?.reaction || null,
+    });
+  } catch (err) {
+    return res.status(500).json({ error: err?.message });
   }
 });
 

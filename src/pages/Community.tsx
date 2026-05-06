@@ -322,10 +322,131 @@ function MentionLink({ name, userId }: { name: string; userId: string }) {
   );
 }
 
+// ---------------------------------------------------------------------------
+// Premium gate — standalone component (minimal hooks, unmounts cleanly)
+// ---------------------------------------------------------------------------
+
+function CommunityGate() {
+  const { t } = useTranslation();
+
+  const features = [
+    { icon: MessageSquare, label: 'Échangez en temps réel avec des scouts du monde entier' },
+    { icon: HelpCircle,    label: 'Posez vos questions, obtenez des réponses d\'experts' },
+    { icon: Lightbulb,     label: 'Partagez vos observations et découvertes terrain' },
+    { icon: Trophy,        label: 'Accédez aux discussions exclusives sur les talents' },
+    { icon: UsersIcon,     label: 'Construisez votre réseau de scouts professionnels' },
+  ];
+
+  return (
+    <div className="max-w-2xl mx-auto">
+      {/* Header card */}
+      <div className="relative overflow-hidden rounded-2xl bg-gradient-to-br from-primary/90 via-primary to-primary/70 p-8 text-primary-foreground mb-4 shadow-xl">
+        <div className="absolute inset-0 opacity-10">
+          {Array.from({ length: 6 }).map((_, i) => (
+            <MessageSquare
+              key={i}
+              className="absolute"
+              style={{
+                width: `${40 + i * 18}px`,
+                height: `${40 + i * 18}px`,
+                top: `${[10, 55, 20, 70, 5, 45][i]}%`,
+                left: `${[5, 80, 40, 15, 65, 50][i]}%`,
+                transform: `rotate(${[-15, 20, -5, 30, -25, 10][i]}deg)`,
+              }}
+            />
+          ))}
+        </div>
+        <div className="relative">
+          <div className="flex items-center gap-3 mb-5">
+            <div className="w-12 h-12 rounded-xl bg-white/20 backdrop-blur-sm flex items-center justify-center shrink-0 shadow-lg">
+              <Crown className="w-6 h-6 text-white" />
+            </div>
+            <div>
+              <div className="flex items-center gap-2">
+                <h1 className="text-xl font-extrabold tracking-tight">{t('community.title')}</h1>
+                <span className="px-2 py-0.5 rounded-full bg-white/20 text-[11px] font-bold uppercase tracking-wide">PRO</span>
+              </div>
+              <p className="text-primary-foreground/70 text-sm mt-0.5">Forum exclusif entre scouts professionnels</p>
+            </div>
+          </div>
+          <p className="text-base font-semibold text-white/90 leading-relaxed">{t('community.premium_title')}</p>
+          <p className="text-sm text-primary-foreground/75 mt-1 leading-relaxed">{t('community.premium_desc')}</p>
+        </div>
+      </div>
+
+      {/* Features + CTA */}
+      <div className="rounded-2xl border border-border bg-card p-6 shadow-sm space-y-5">
+        <div className="space-y-3">
+          <p className="text-xs font-bold uppercase tracking-wider text-muted-foreground">Ce que vous débloquez</p>
+          {features.map(({ icon: Icon, label }) => (
+            <div key={label} className="flex items-start gap-3">
+              <div className="w-7 h-7 rounded-lg bg-primary/10 flex items-center justify-center shrink-0 mt-0.5">
+                <Icon className="w-3.5 h-3.5 text-primary" />
+              </div>
+              <p className="text-sm text-foreground leading-snug">{label}</p>
+            </div>
+          ))}
+        </div>
+        <div className="border-t border-border/60 pt-5 flex flex-col sm:flex-row items-center gap-3">
+          <a
+            href="/pricing"
+            target="_blank"
+            rel="noopener noreferrer"
+            className="inline-flex items-center justify-center gap-2 w-full sm:w-auto rounded-xl bg-primary px-6 py-2.5 text-sm font-bold text-primary-foreground hover:bg-primary/90 transition-colors shadow-md shadow-primary/20"
+          >
+            <Sparkles className="w-4 h-4" />
+            {t('community.see_plans')}
+          </a>
+          <Link
+            to="/players"
+            className="inline-flex items-center justify-center gap-1.5 w-full sm:w-auto rounded-xl border border-border px-6 py-2.5 text-sm font-medium text-muted-foreground hover:bg-muted transition-colors"
+          >
+            Retour à mes joueurs
+          </Link>
+        </div>
+        <p className="text-[11px] text-muted-foreground/60 text-center -mt-1">
+          Les offres s'ouvriront dans un nouvel onglet — votre navigation reste intacte.
+        </p>
+      </div>
+
+      {/* Blurred preview */}
+      <div className="mt-4 rounded-2xl border border-border overflow-hidden relative select-none pointer-events-none" aria-hidden="true">
+        <div className="absolute inset-0 z-10 flex flex-col items-center justify-center bg-background/60 backdrop-blur-[3px]">
+          <div className="flex items-center gap-2 px-4 py-2 rounded-xl bg-card/90 border border-border shadow-lg">
+            <Crown className="w-4 h-4 text-primary" />
+            <span className="text-sm font-semibold text-foreground">Contenu réservé aux abonnés PRO</span>
+          </div>
+        </div>
+        <div className="p-4 space-y-3">
+          {[
+            { name: 'Marc T.', role: 'Recruteur', text: 'Quelqu\'un a-t-il observé les U21 du PSG ce weekend ? J\'ai des retours intéressants sur...' },
+            { name: 'Sophie L.', role: 'Scout', text: 'Partage d\'analyse — latéral gauche prometteur en Ligue 2, disponible en janvier. Pied dominant...' },
+            { name: 'Jules M.', role: 'Analyste', text: 'Question sur les critères de détection pour les milieux défensifs en académie, comment évaluez-vous...' },
+          ].map((post, i) => (
+            <div key={i} className="flex items-start gap-3 p-3 rounded-xl bg-muted/40">
+              <div className="w-8 h-8 rounded-full bg-primary/20 flex items-center justify-center shrink-0 text-xs font-bold text-primary">
+                {post.name[0]}
+              </div>
+              <div className="min-w-0">
+                <div className="flex items-center gap-2 mb-0.5">
+                  <span className="text-xs font-semibold">{post.name}</span>
+                  <span className="text-[10px] text-muted-foreground">{post.role}</span>
+                </div>
+                <p className="text-xs text-muted-foreground truncate">{post.text}</p>
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Component
 // ---------------------------------------------------------------------------
 
-export default function Community() {
+function CommunityFull() {
   const { t } = useTranslation();
   const { user } = useAuth();
   const { data: isPremium } = useIsPremium();
@@ -827,25 +948,6 @@ export default function Community() {
     },
     onError: (err: unknown) => toast.error(err instanceof Error ? err.message : String(err)),
   });
-
-  // --- Premium gate ---
-  if (isPremium === false) {
-    return (
-      <div className="max-w-3xl mx-auto py-16 px-4 text-center space-y-6">
-        <div className="w-16 h-16 rounded-2xl bg-primary/10 flex items-center justify-center mx-auto">
-          <Crown className="w-8 h-8 text-primary" />
-        </div>
-        <h1 className="text-2xl font-bold">{t('community.premium_title')}</h1>
-        <p className="text-muted-foreground max-w-md mx-auto">{t('community.premium_desc')}</p>
-        <Link to="/pricing">
-          <Button>
-            <Sparkles className="w-4 h-4 mr-2" />
-            {t('community.see_plans')}
-          </Button>
-        </Link>
-      </div>
-    );
-  }
 
   const formatDate = (dateStr: string) => {
     const d = new Date(dateStr);
@@ -1511,4 +1613,20 @@ export default function Community() {
       </Dialog>
     </div>
   );
+}
+
+// ---------------------------------------------------------------------------
+// Router-level export — thin wrapper that gates on premium status.
+// Only mounts CommunityFull when user is premium/admin; otherwise mounts the
+// lightweight CommunityGate which has no background queries and unmounts cleanly.
+// ---------------------------------------------------------------------------
+
+export default function Community() {
+  const { data: isPremium } = useIsPremium();
+  const { data: isAdmin } = useIsAdmin();
+
+  if (isPremium === false && !isAdmin) return <CommunityGate />;
+
+  // Still loading (undefined) → CommunityFull handles its own loading states
+  return <CommunityFull />;
 }

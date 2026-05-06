@@ -73,6 +73,7 @@ const Onboarding = lazy(() => import("@/pages/Onboarding"));
 const Editorial = lazy(() => import("@/pages/Editorial"));
 const EditorialEditor = lazy(() => import("@/pages/EditorialEditor"));
 const EditorialView = lazy(() => import("@/pages/EditorialView"));
+const EditorialShare = lazy(() => import("@/pages/EditorialShare"));
 const NotFound = lazy(() => import("@/pages/NotFound"));
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -108,6 +109,7 @@ const App = () => (
             <Route path="/cgu" element={<CGU />} />
             <Route path="/about" element={<About />} />
             <Route path="/privacy" element={<Privacy />} />
+            <Route path="/share/article/:id" element={<EditorialShare />} />
             <Route path="/cookies" element={<CookiesPolicy />} />
             <Route path="/accessibility" element={<Accessibility />} />
 

@@ -1,12 +1,18 @@
 import { useTranslation } from 'react-i18next';
 import { useNavigate, useParams, Link } from 'react-router-dom';
-import { useQuery } from '@tanstack/react-query';
+import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useIsAdmin } from '@/hooks/use-admin';
 import { useAuth } from '@/contexts/AuthContext';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Skeleton } from '@/components/ui/skeleton';
-import { ChevronLeft, Edit, Calendar, Eye, User, Tag } from 'lucide-react';
+import {
+  ChevronLeft, Edit, Calendar, Eye, User, Tag, Share2, Check,
+  ThumbsUp, ThumbsDown, Link2, Twitter, MessageSquare,
+} from 'lucide-react';
+import { useState } from 'react';
+import { toast } from 'sonner';
+import { cn } from '@/lib/utils';
 
 const API = (import.meta.env.API_URL || '/api').replace(/\/$/, '');
 
@@ -25,6 +31,12 @@ interface Article {
   author_photo: string | null;
 }
 
+interface Reactions {
+  likes: number;
+  dislikes: number;
+  user_reaction: 'like' | 'dislike' | null;
+}
+
 function parseKeywords(kw: string[] | string | null): string[] {
   if (!kw) return [];
   if (Array.isArray(kw)) return kw;
@@ -36,12 +48,100 @@ function formatDate(d: string) {
   catch { return d; }
 }
 
+function timeAgo(d: string) {
+  try {
+    const diff = Date.now() - new Date(d).getTime();
+    const h = Math.floor(diff / 3_600_000);
+    if (h < 1) return 'À l\'instant';
+    if (h < 24) return `Il y a ${h}h`;
+    const days = Math.floor(h / 24);
+    if (days < 30) return `Il y a ${days}j`;
+    return formatDate(d);
+  } catch { return d; }
+}
+
+// ── Reaction button ───────────────────────────────────────────────────────────
+
+function ReactionButton({
+  type, count, active, onClick,
+}: { type: 'like' | 'dislike'; count: number; active: boolean; onClick: () => void }) {
+  const Icon = type === 'like' ? ThumbsUp : ThumbsDown;
+  return (
+    <button
+      onClick={onClick}
+      className={cn(
+        'flex items-center gap-2 px-4 py-2.5 rounded-xl border text-sm font-medium transition-all duration-200',
+        active
+          ? type === 'like'
+            ? 'bg-emerald-500/15 border-emerald-500/40 text-emerald-600 dark:text-emerald-400'
+            : 'bg-red-500/15 border-red-500/40 text-red-600 dark:text-red-400'
+          : 'border-border hover:bg-muted/60 text-muted-foreground hover:text-foreground',
+      )}
+    >
+      <Icon className={cn('w-4 h-4 transition-transform', active && 'scale-110')} />
+      <span className="font-mono">{count}</span>
+    </button>
+  );
+}
+
+// ── Share panel ───────────────────────────────────────────────────────────────
+
+function SharePanel({ article }: { article: Article }) {
+  const [copied, setCopied] = useState(false);
+  const shareUrl = `${window.location.origin}/share/article/${article.id}`;
+  const tweetText = encodeURIComponent(`${article.title} — ${shareUrl}`);
+
+  const copyLink = () => {
+    navigator.clipboard.writeText(shareUrl).then(() => {
+      setCopied(true);
+      toast.success('Lien copié !');
+      setTimeout(() => setCopied(false), 2000);
+    });
+  };
+
+  const nativeShare = () => {
+    if (navigator.share) {
+      navigator.share({ title: article.title, url: shareUrl }).catch(() => {});
+    } else {
+      copyLink();
+    }
+  };
+
+  return (
+    <div className="flex items-center gap-2 flex-wrap">
+      <button
+        onClick={copyLink}
+        className="flex items-center gap-1.5 px-3 py-2 rounded-xl border border-border text-xs text-muted-foreground hover:text-foreground hover:bg-muted/60 transition-all"
+      >
+        {copied ? <Check className="w-3.5 h-3.5 text-emerald-500" /> : <Link2 className="w-3.5 h-3.5" />}
+        {copied ? 'Copié !' : 'Copier le lien'}
+      </button>
+      <a
+        href={`https://twitter.com/intent/tweet?text=${tweetText}`}
+        target="_blank" rel="noopener noreferrer"
+        className="flex items-center gap-1.5 px-3 py-2 rounded-xl border border-border text-xs text-muted-foreground hover:text-[#1d9bf0] hover:border-[#1d9bf0]/30 transition-all"
+      >
+        <Twitter className="w-3.5 h-3.5" /> Twitter / X
+      </a>
+      <button
+        onClick={nativeShare}
+        className="flex items-center gap-1.5 px-3 py-2 rounded-xl border border-border text-xs text-muted-foreground hover:text-foreground hover:bg-muted/60 transition-all"
+      >
+        <Share2 className="w-3.5 h-3.5" /> Partager
+      </button>
+    </div>
+  );
+}
+
+// ── Main page ─────────────────────────────────────────────────────────────────
+
 export default function EditorialView() {
   const { t } = useTranslation();
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
   const { user } = useAuth();
   const { data: isAdmin } = useIsAdmin();
+  const qc = useQueryClient();
 
   const { data: article, isLoading } = useQuery<Article>({
     queryKey: ['editorial-view', id],
@@ -52,6 +152,34 @@ export default function EditorialView() {
     },
     enabled: !!id,
     staleTime: 2 * 60_000,
+  });
+
+  const { data: reactions } = useQuery<Reactions>({
+    queryKey: ['editorial-reactions', id],
+    queryFn: async () => {
+      const res = await fetch(`${API}/editorial/${id}/reactions`, { credentials: 'include' });
+      if (!res.ok) return { likes: 0, dislikes: 0, user_reaction: null };
+      return res.json();
+    },
+    enabled: !!id && !!user,
+    staleTime: 30_000,
+  });
+
+  const reactMutation = useMutation({
+    mutationFn: async (reaction: 'like' | 'dislike') => {
+      const res = await fetch(`${API}/editorial/${id}/react`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify({ reaction }),
+      });
+      if (!res.ok) throw new Error('Erreur');
+      return res.json();
+    },
+    onSuccess: (data) => {
+      qc.setQueryData(['editorial-reactions', id], data);
+    },
+    onError: () => toast.error('Impossible d\'enregistrer votre réaction.'),
   });
 
   if (isLoading) return (
@@ -75,19 +203,24 @@ export default function EditorialView() {
   const kw = parseKeywords(article.keywords);
   const canEdit = article.user_id === user?.id || isAdmin;
   const authorName = article.author_name || article.author_email;
+  const r = reactions ?? { likes: 0, dislikes: 0, user_reaction: null };
+  const totalReactions = r.likes + r.dislikes;
+  const likeRatio = totalReactions > 0 ? Math.round((r.likes / totalReactions) * 100) : null;
 
   return (
-    <div className="max-w-3xl mx-auto">
+    <div className="max-w-3xl mx-auto pb-16">
       {/* Nav */}
       <div className="flex items-center justify-between mb-6">
-        <Button variant="ghost" className="rounded-xl gap-2 -ml-2" onClick={() => navigate('/editorial')}>
+        <Button variant="ghost" className="rounded-xl gap-2 -ml-2" onClick={() => navigate(-1)}>
           <ChevronLeft className="w-4 h-4" />{t('editorial.back')}
         </Button>
-        {canEdit && (
-          <Button variant="outline" className="rounded-xl gap-2" onClick={() => navigate(`/editorial/${id}/edit`)}>
-            <Edit className="w-4 h-4" />{t('editorial.edit')}
-          </Button>
-        )}
+        <div className="flex items-center gap-2">
+          {canEdit && (
+            <Button variant="outline" size="sm" className="rounded-xl gap-2" onClick={() => navigate(`/editorial/${id}/edit`)}>
+              <Edit className="w-4 h-4" />{t('editorial.edit')}
+            </Button>
+          )}
+        </div>
       </div>
 
       {/* Draft badge */}
@@ -99,26 +232,35 @@ export default function EditorialView() {
 
       {/* Banner */}
       {article.banner_url && (
-        <div className="rounded-2xl overflow-hidden mb-6 shadow-md">
-          <img src={article.banner_url} alt={article.title} className="w-full max-h-72 object-cover" />
+        <div className="rounded-2xl overflow-hidden mb-8 shadow-lg">
+          <img src={article.banner_url} alt={article.title} className="w-full max-h-80 object-cover" />
         </div>
       )}
 
       {/* Title */}
-      <h1 className="text-3xl font-black tracking-tight leading-tight mb-4">{article.title}</h1>
+      <h1 className="text-3xl md:text-4xl font-black tracking-tight leading-tight mb-5">{article.title}</h1>
 
-      {/* Meta */}
-      <div className="flex items-center gap-4 text-xs text-muted-foreground mb-4 flex-wrap">
-        <span className="flex items-center gap-1.5">
-          {article.author_photo ? (
-            <img src={article.author_photo} alt="" className="w-5 h-5 rounded-full object-cover" />
-          ) : (
-            <User className="w-3.5 h-3.5" />
-          )}
-          {authorName}
-        </span>
-        <span className="flex items-center gap-1"><Calendar className="w-3.5 h-3.5" />{formatDate(article.created_at)}</span>
-        <span className="flex items-center gap-1"><Eye className="w-3.5 h-3.5" />{article.views} vue{article.views > 1 ? 's' : ''}</span>
+      {/* Author card */}
+      <div className="flex items-center gap-4 mb-6 p-4 rounded-2xl bg-muted/30 border border-border/50">
+        {article.author_photo ? (
+          <img src={article.author_photo} alt="" className="w-12 h-12 rounded-full object-cover shrink-0" />
+        ) : (
+          <div className="w-12 h-12 rounded-full bg-primary/10 flex items-center justify-center shrink-0">
+            <User className="w-6 h-6 text-primary" />
+          </div>
+        )}
+        <div className="flex-1 min-w-0">
+          <p className="font-semibold text-sm">{authorName}</p>
+          <div className="flex items-center gap-3 text-xs text-muted-foreground mt-0.5 flex-wrap">
+            <span className="flex items-center gap-1"><Calendar className="w-3 h-3" />{timeAgo(article.created_at)}</span>
+            <span className="flex items-center gap-1"><Eye className="w-3 h-3" />{article.views} vue{article.views > 1 ? 's' : ''}</span>
+            {totalReactions > 0 && likeRatio !== null && (
+              <span className="flex items-center gap-1 text-emerald-500">
+                <ThumbsUp className="w-3 h-3" />{likeRatio}% positif
+              </span>
+            )}
+          </div>
+        </div>
       </div>
 
       {/* Keywords */}
@@ -132,7 +274,7 @@ export default function EditorialView() {
         </div>
       )}
 
-      <hr className="border-border/60 mb-6" />
+      <hr className="border-border/50 mb-8" />
 
       {/* Rich text content */}
       <div
@@ -143,9 +285,80 @@ export default function EditorialView() {
           prose-blockquote:border-l-4 prose-blockquote:border-primary/40 prose-blockquote:pl-4 prose-blockquote:italic
           prose-img:rounded-xl prose-img:shadow-md
           prose-code:bg-muted prose-code:px-1.5 prose-code:py-0.5 prose-code:rounded
-          pb-12"
+          mb-12"
         dangerouslySetInnerHTML={{ __html: article.content }}
       />
+
+      {/* ── Reactions & Share ─────────────────────────────────── */}
+      {article.status === 'published' && (
+        <div className="border-t border-border/50 pt-8 space-y-6">
+
+          {/* Reactions */}
+          <div>
+            <p className="text-sm font-semibold mb-3 text-muted-foreground">
+              {user ? 'Votre avis sur cet article' : 'Connectez-vous pour réagir'}
+            </p>
+            <div className="flex items-center gap-3 flex-wrap">
+              {user ? (
+                <>
+                  <ReactionButton
+                    type="like"
+                    count={r.likes}
+                    active={r.user_reaction === 'like'}
+                    onClick={() => reactMutation.mutate('like')}
+                  />
+                  <ReactionButton
+                    type="dislike"
+                    count={r.dislikes}
+                    active={r.user_reaction === 'dislike'}
+                    onClick={() => reactMutation.mutate('dislike')}
+                  />
+                  {r.user_reaction && (
+                    <span className="text-xs text-muted-foreground">
+                      {r.user_reaction === 'like' ? '👍 Vous avez aimé cet article' : '👎 Vous n\'avez pas aimé'}
+                    </span>
+                  )}
+                </>
+              ) : (
+                <Link to="/auth">
+                  <Button variant="outline" size="sm" className="rounded-xl gap-2">
+                    <ThumbsUp className="w-4 h-4" /> Se connecter pour réagir
+                  </Button>
+                </Link>
+              )}
+            </div>
+
+            {/* Reaction bar */}
+            {totalReactions > 0 && (
+              <div className="mt-4 flex items-center gap-3">
+                <div className="flex-1 h-1.5 bg-muted rounded-full overflow-hidden">
+                  <div
+                    className="h-full bg-emerald-500 rounded-full transition-all duration-500"
+                    style={{ width: `${likeRatio}%` }}
+                  />
+                </div>
+                <span className="text-[10px] text-muted-foreground shrink-0">
+                  {totalReactions} réaction{totalReactions > 1 ? 's' : ''}
+                </span>
+              </div>
+            )}
+          </div>
+
+          {/* Share */}
+          <div>
+            <p className="text-sm font-semibold mb-3 text-muted-foreground">Partager cet article</p>
+            <SharePanel article={article} />
+          </div>
+
+          {/* Comments nudge */}
+          <div className="p-4 rounded-2xl bg-muted/30 border border-border/50 flex items-center gap-3">
+            <MessageSquare className="w-5 h-5 text-muted-foreground shrink-0" />
+            <p className="text-sm text-muted-foreground">
+              Les commentaires seront bientôt disponibles.
+            </p>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
