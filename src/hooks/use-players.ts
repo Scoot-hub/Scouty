@@ -283,11 +283,18 @@ export function useUpsertPlayer() {
             potential: player.potential,
             general_opinion: player.general_opinion,
             contract_end: player.contract_end,
+            contract_start: player.contract_start ?? null,
             notes: player.notes,
             ts_report_published: player.ts_report_published,
             date_of_birth: player.date_of_birth,
             position_secondaire: player.position_secondaire,
             task: player.task ?? null,
+            player_type: player.player_type ?? 'player',
+            coaching_license: player.coaching_license ?? null,
+            coaching_preferred_formation: player.coaching_preferred_formation ?? null,
+            coaching_style: player.coaching_style ?? null,
+            coaching_career: player.coaching_career ? JSON.stringify(player.coaching_career) : null,
+            tm_coach_id: player.tm_coach_id ?? null,
           })
           .eq('id', player.id)
           .select()
@@ -312,11 +319,18 @@ export function useUpsertPlayer() {
             potential: player.potential,
             general_opinion: player.general_opinion,
             contract_end: player.contract_end,
+            contract_start: player.contract_start ?? null,
             notes: player.notes,
             ts_report_published: player.ts_report_published,
             date_of_birth: player.date_of_birth,
             position_secondaire: player.position_secondaire,
             task: player.task ?? null,
+            player_type: player.player_type ?? 'player',
+            coaching_license: player.coaching_license ?? null,
+            coaching_preferred_formation: player.coaching_preferred_formation ?? null,
+            coaching_style: player.coaching_style ?? null,
+            coaching_career: player.coaching_career ? JSON.stringify(player.coaching_career) : null,
+            tm_coach_id: player.tm_coach_id ?? null,
             user_id: userId,
           })
           .select()

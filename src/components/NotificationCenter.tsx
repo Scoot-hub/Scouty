@@ -61,19 +61,29 @@ export default function NotificationCenter() {
 
   return (
     <div className="relative">
-      {/* Bell button */}
-      <button
-        onClick={() => setOpen(!open)}
-        className="relative p-2 rounded-xl hover:bg-accent transition-colors"
-        aria-label={t('notifications.title')}
-      >
-        <Bell className="w-5 h-5 text-muted-foreground" />
-        {unreadCount > 0 && (
-          <span className="absolute -top-0.5 -right-0.5 min-w-[18px] h-[18px] flex items-center justify-center rounded-full bg-primary text-primary-foreground text-[10px] font-bold px-1">
-            {unreadCount > 99 ? '99+' : unreadCount}
-          </span>
+      {/* Bell button with tooltip */}
+      <div className="relative group/notif-tip">
+        <button
+          onClick={() => setOpen(!open)}
+          className="relative p-2 rounded-xl hover:bg-accent transition-colors"
+          aria-label={t('notifications.title')}
+        >
+          <Bell className="w-5 h-5 text-muted-foreground" />
+          {unreadCount > 0 && (
+            <span className="absolute -top-0.5 -right-0.5 min-w-[18px] h-[18px] flex items-center justify-center rounded-full bg-primary text-primary-foreground text-[10px] font-bold px-1">
+              {unreadCount > 99 ? '99+' : unreadCount}
+            </span>
+          )}
+        </button>
+        {!open && (
+          <div className="absolute right-0 top-full mt-1.5 pointer-events-none opacity-0 group-hover/notif-tip:opacity-100 transition-opacity duration-150 z-50">
+            <div className="bg-popover border border-border rounded-xl shadow-xl p-2.5 min-w-[180px] max-w-[220px]">
+              <p className="text-xs font-semibold text-popover-foreground mb-0.5">{t('notifications.title')}</p>
+              <p className="text-[11px] text-muted-foreground leading-snug">{t('notifications.tooltip')}</p>
+            </div>
+          </div>
         )}
-      </button>
+      </div>
 
       {/* Dropdown panel */}
       {open && (

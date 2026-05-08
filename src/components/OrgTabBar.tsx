@@ -1,18 +1,20 @@
 import { Link, useLocation } from 'react-router-dom';
-import { Users, UserSquare2, Map, Settings, Building2 } from 'lucide-react';
+import { Users, UserSquare2, Map, Settings, Building2, MessageSquare } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { slugify, useCurrentOrg } from '@/hooks/use-organization';
 import { Badge } from '@/components/ui/badge';
+import { useOrgUnread } from '@/hooks/use-org-chat';
 
 interface OrgTabBarProps {
   orgName: string;
 }
 
 const TABS = [
-  { key: 'squad',    label: 'Effectif',                   icon: Users,       path: 'squad' },
-  { key: 'players',  label: "Joueurs de l'organisation",  icon: UserSquare2, path: 'players' },
-  { key: 'roadmap',  label: 'Feuille de route',           icon: Map,         path: 'roadmap' },
-  { key: 'settings', label: 'Paramètres',                 icon: Settings,    path: '' },
+  { key: 'squad',    label: 'Effectif',                   icon: Users,          path: 'squad'    },
+  { key: 'players',  label: "Joueurs de l'organisation",  icon: UserSquare2,    path: 'players'  },
+  { key: 'roadmap',  label: 'Feuille de route',           icon: Map,            path: 'roadmap'  },
+  { key: 'chat',     label: 'Discussion',                  icon: MessageSquare,  path: 'chat'     },
+  { key: 'settings', label: 'Paramètres',                 icon: Settings,       path: 'settings' },
 ] as const;
 
 const ORG_TYPE_LABELS: Record<string, string> = {
@@ -26,6 +28,9 @@ export default function OrgTabBar({ orgName }: OrgTabBarProps) {
   const { pathname } = useLocation();
   const base = `/organization/${slugify(orgName)}`;
   const { data: org } = useCurrentOrg();
+  const orgId = org?.id as string | undefined;
+  const { data: unreadData } = useOrgUnread(orgId);
+  const unreadCount = unreadData?.count ?? 0;
 
   return (
     <div className="space-y-4">
@@ -63,12 +68,10 @@ export default function OrgTabBar({ orgName }: OrgTabBarProps) {
       )}
 
       {/* ── Tab navigation ── */}
-      <div className="flex items-center gap-1 border-b border-border overflow-x-auto pb-0 -mx-1 px-1">
+      <div className="flex items-center gap-1 border-b border-border pb-0 -mx-1 px-1">
         {TABS.map(({ key, label, icon: Icon, path }) => {
-          const href = path ? `${base}/${path}` : base;
-          const active = path
-            ? pathname.startsWith(`${base}/${path}`)
-            : pathname === base || pathname === `${base}/`;
+          const href = `${base}/${path}`;
+          const active = pathname.startsWith(`${base}/${path}`);
 
           return (
             <Link
@@ -83,6 +86,11 @@ export default function OrgTabBar({ orgName }: OrgTabBarProps) {
             >
               <Icon className="w-4 h-4" />
               {label}
+              {key === 'chat' && unreadCount > 0 && (
+                <span className="ml-0.5 min-w-[18px] h-[18px] px-1 rounded-full bg-red-500 text-white text-[10px] font-bold flex items-center justify-center">
+                  {unreadCount > 99 ? '99+' : unreadCount}
+                </span>
+              )}
             </Link>
           );
         })}

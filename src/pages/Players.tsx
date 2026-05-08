@@ -10,6 +10,9 @@ import { useIsPremium, useIsAdmin } from '@/hooks/use-admin';
 import { PermGate } from '@/components/PermGate';
 import { getPlayerAge, getOpinionBgClass, getOpinionEmoji, getOpinionTranslationKey, ALL_OPINIONS, getTaskBgClass, getTaskEmoji, getTaskTranslationKey, translateFoot, PLAYER_TASKS, resolveLeagueName, translateCountry, type Opinion, type Position, type Foot, type PlayerTask, type Player } from '@/types/player';
 import type { PerfStats } from '@/lib/player-stats';
+import { convertMV, formatDateShort } from '@/lib/format-utils';
+import { useUiPreferences } from '@/contexts/UiPreferencesContext';
+import { useRatesMap } from '@/hooks/use-exchange-rates';
 import { usePositions } from '@/hooks/use-positions';
 import { FlagIcon } from '@/components/ui/flag-icon';
 import { useCustomFields } from '@/hooks/use-custom-fields';
@@ -30,13 +33,62 @@ import { ImportTmMatchDialog } from '@/components/ImportTmMatchDialog';
 import { AddToWatchlistDialog } from '@/components/AddToWatchlistDialog';
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from '@/components/ui/dropdown-menu';
 import { supabase } from '@/integrations/supabase/client';
-import { Search, RotateCcw, Users, RefreshCw, ChevronDown, ChevronUp, SlidersHorizontal, Download, X, LayoutGrid, List, Table2, Building2, Swords, Eye, Zap, Check, Sparkles, Copy, Trash2, FileText, Upload, FilePlus, ClipboardList, Trophy, TrendingUp, BarChart3, CalendarDays } from 'lucide-react';
+import { Search, RotateCcw, Users, RefreshCw, ChevronDown, ChevronUp, SlidersHorizontal, Download, X, LayoutGrid, List, Table2, Building2, Swords, Eye, Zap, Check, Sparkles, Copy, Trash2, FileText, Upload, FilePlus, ClipboardList, Trophy, TrendingUp, BarChart3, CalendarDays, Info } from 'lucide-react';
+import { useRemainingCredits } from '@/hooks/use-credits';
+import { CreditLimitDialog } from '@/components/CreditLimitDialog';
 import { getPlayerPerfStats, CHART_COLORS } from '@/lib/player-stats';
 const LazyCompareRadar = lazy(() => import('@/components/charts/CompareRadarChart'));
 import { toast } from 'sonner';
 import { useOperationBanner } from '@/contexts/OperationBannerContext';
 
 type SortOption = 'name' | 'age-asc' | 'age-desc' | 'level' | 'potential' | 'recent' | 'contract' | 'rating' | 'goals' | 'assists' | 'minutes' | 'xg' | 'pass-accuracy';
+
+function computeCompletionPct(player: Player): number {
+  const ext = (player.external_data ?? {}) as Record<string, unknown>;
+  const checks = [
+    !!player.photo_url,
+    !!player.date_of_birth,
+    !!player.contract_end,
+    !!(ext.market_value || player.market_value),
+    !!ext.height,
+    !!ext.agent,
+    !!(player.notes?.trim()),
+    !!player.general_opinion,
+    !!ext.performance_stats,
+    !!(player.transfermarkt_id || ext.transfermarkt_id),
+  ];
+  return Math.round(checks.filter(Boolean).length / checks.length * 100);
+}
+
+function completionColor(pct: number): string {
+  if (pct >= 80) return 'text-emerald-600 bg-emerald-500/10 dark:text-emerald-400';
+  if (pct >= 50) return 'text-amber-600 bg-amber-500/10 dark:text-amber-400';
+  return 'text-rose-600 bg-rose-500/10 dark:text-rose-400';
+}
+
+/** Relative date for enrichment badge: "aujourd'hui", "il y a 2j", "le 12 jan." */
+function formatEnrichDate(isoDate: string, locale: string): string {
+  const d = new Date(isoDate);
+  const now = Date.now();
+  const diff = now - d.getTime();
+  const days = Math.floor(diff / 86_400_000);
+  if (days === 0) return "aujourd'hui";
+  if (days === 1) return 'hier';
+  if (days < 30) return `il y a ${days}j`;
+  return d.toLocaleDateString(locale, { day: 'numeric', month: 'short' });
+}
+
+/** Sort players: primary (never enriched OR ≤50% completion) first, preserving relative order */
+function sortByEnrichPriority(players: Player[]): Player[] {
+  return [...players].sort((a, b) => {
+    const pctA = computeCompletionPct(a);
+    const pctB = computeCompletionPct(b);
+    const secA = !!a.external_data_fetched_at && pctA > 50;
+    const secB = !!b.external_data_fetched_at && pctB > 50;
+    if (secA === secB) return 0; // preserve display order within same tier
+    return secA ? 1 : -1;       // secondary goes last
+  });
+}
 
 const FILTER_KEY = 'players_filters';
 function loadFilters() {
@@ -231,8 +283,12 @@ export default function Players() {
   const { data: isPremium } = useIsPremium();
   const { data: isAdmin } = useIsAdmin();
   const { addOperation, updateOperation, completeOperation } = useOperationBanner();
+  const { currency, dateFormat } = useUiPreferences();
+  const rates = useRatesMap();
   const { data: myOrgs = [] } = useMyOrganizations();
   const hasOrg = myOrgs.length > 0;
+  const remainingCredits = useRemainingCredits();
+  const [showCreditLimit, setShowCreditLimit] = useState(false);
 
   // IntersectionObserver for infinite scroll
   const hasNextPageRef = useRef(hasNextPage);
@@ -371,7 +427,10 @@ export default function Players() {
 
   const availableRoles = useMemo(() => (facets?.roles ?? []).sort((a, b) => a.localeCompare(b, 'fr')), [facets]);
 
-  const handleFindDuplicates = () => {
+  const handleFindDuplicates = async () => {
+    const ok = await tryConsumeCredits(1, 'find_duplicates');
+    if (!ok) return;
+
     const groups: { keep: Player; duplicates: Player[] }[] = [];
     const processed = new Set<string>();
 
@@ -389,7 +448,6 @@ export default function Players() {
 
       if (dupes.length > 0) {
         processed.add(players[i].id);
-        // Keep the one with more data (reports, level, etc.) — or just the first
         groups.push({ keep: players[i], duplicates: dupes });
       }
     }
@@ -400,6 +458,13 @@ export default function Players() {
     if (groups.length === 0) {
       toast.success(t('players.no_duplicates'));
     }
+  };
+
+  const handleCompare = async () => {
+    const count = selectedIds.size;
+    const ok = await tryConsumeCredits(count, 'compare');
+    if (!ok) return;
+    setCompareDialogOpen(true);
   };
 
   const handleDeleteDuplicates = async () => {
@@ -420,19 +485,58 @@ export default function Players() {
     }
   };
 
+  const isCreditLimitCode = (code: string | undefined) =>
+    code === 'daily_limit' || code === 'weekly_limit' || code === 'monthly_limit';
+
+  /** Consume N credits for a given action. Returns true if OK, false if limit reached (shows dialog). */
+  const tryConsumeCredits = async (amount: number, actionType: string): Promise<boolean> => {
+    if (isAdmin) return true;
+    try {
+      const res = await fetch('/api/credits/consume', {
+        method: 'POST',
+        credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action_type: actionType, amount }),
+      });
+      const body = await res.json().catch(() => ({}));
+      queryClient.invalidateQueries({ queryKey: ['credits-me'] });
+      if (!res.ok || isCreditLimitCode(body?.error)) {
+        setShowCreditLimit(true);
+        return false;
+      }
+      return true;
+    } catch {
+      return true; // Don't block on network error
+    }
+  };
+
   const handleBulkEnrich = async (mode: 'all' | 'selected') => {
     if (mode === 'all') {
+      // Fresh credit check before launching (bypass React Query cache)
+      try {
+        const credResp = await fetch('/api/credits/me', { credentials: 'include' });
+        if (credResp.ok) {
+          const cred = await credResp.json();
+          const q = cred.quotas;
+          const u = cred.usage;
+          if (q?.daily !== -1) {
+            const remaining = Math.min(q.daily - u.daily, q.weekly - u.weekly, (q.monthly + (u.earned_total || 0)) - u.monthly);
+            if (remaining <= 0) { setShowCreditLimit(true); return; }
+          }
+        }
+      } catch { /* proceed anyway — server will enforce */ }
+
       // Server-side background enrichment — returns immediately
       const { data, error } = await supabase.functions.invoke('enrich-all-players');
-      if (error || (data as any)?.error === 'premium_required') {
-        if ((data as any)?.error === 'premium_required' || (error as any)?.message?.includes('premium_required')) {
-          toast.error(t('profile.enrich_premium_required'), {
-            action: { label: t('sidebar.upgrade'), onClick: () => window.location.href = '/pricing' },
-            duration: 6000,
-          });
-        } else {
-          toast.error(t('common.error'));
-        }
+      // errCode: from body (200 response) OR from Error.message (non-200 shim behavior)
+      const errCode = (data as any)?.error ?? error?.message;
+      if (isCreditLimitCode(errCode)) {
+        setShowCreditLimit(true);
+        queryClient.invalidateQueries({ queryKey: ['credits-me'] });
+        return;
+      }
+      if (error || (data as any)?.error) {
+        toast.error(t('common.error'));
         return;
       }
       const enrichResult = data as { alreadyRunning?: boolean; total?: number } | null;
@@ -440,17 +544,22 @@ export default function Players() {
       const total = enrichResult?.total ?? players.length;
       const opId = `enrich-all-${Date.now()}`;
       addOperation({ id: opId, type: 'enrichment', label: t('banner.enrichment_label', { count: total }), current: 0, total });
-      // Poll server for real progress instead of estimating
+      // Poll server for real progress + credit balance
       const pollInterval = setInterval(async () => {
         try {
           const { data: progress } = await supabase.functions.invoke('enrich-all-progress');
           if (!progress) return;
           const current = (progress.done ?? 0) + (progress.errors ?? 0);
           updateOperation(opId, { current });
+          // Refresh credit widget whenever server reports an updated balance
+          if (progress.credits) {
+            queryClient.invalidateQueries({ queryKey: ['credits-me'] });
+          }
           if (!progress.running) {
             clearInterval(pollInterval);
             completeOperation(opId, { newCount: progress.done ?? 0, errorCount: progress.errors > 0 ? progress.errors : undefined });
             refetch();
+            queryClient.invalidateQueries({ queryKey: ['credits-me'] });
           }
         } catch {
           // Ignore polling errors
@@ -459,35 +568,79 @@ export default function Players() {
       return;
     }
 
-    // Selected players — client-side with progress (skip recently enriched within 1h)
+    // Selected players — client-side with priority sort + cooldown filter
     const ENRICH_COOLDOWN = 60 * 60 * 1000;
     const allTargets = filtered.filter(p => selectedIds.has(p.id));
-    const targets = isAdmin ? allTargets : allTargets.filter(p => {
+    const cooldownFiltered = isAdmin ? allTargets : allTargets.filter(p => {
       if (!p.external_data_fetched_at) return true;
       return Date.now() - new Date(p.external_data_fetched_at).getTime() > ENRICH_COOLDOWN;
     });
+    // Sort: never-enriched or ≤50% completion first; already enriched + >50% last
+    const targets = sortByEnrichPriority(cooldownFiltered);
     const skipped = allTargets.length - targets.length;
     if (targets.length === 0) { toast(skipped > 0 ? t('players.enrichment_skipped') : t('common.error')); return; }
+
+    // Pre-check: verify credits are available before starting the loop
+    if (!isAdmin) {
+      try {
+        const credResp = await fetch('/api/credits/me', { credentials: 'include' });
+        if (credResp.ok) {
+          const cred = await credResp.json();
+          const remaining = Math.min(
+            (cred.quotas?.daily ?? 0) - (cred.usage?.daily ?? 0),
+            (cred.quotas?.weekly ?? 0) - (cred.usage?.weekly ?? 0),
+            (cred.quotas?.monthly ?? 0) - (cred.usage?.monthly ?? 0),
+          );
+          if (remaining <= 0) {
+            setShowCreditLimit(true);
+            return;
+          }
+        }
+      } catch { /* ignore pre-check errors — let the loop handle it */ }
+    }
+
     setEnriching(true);
     setEnrichProgress({ current: 0, total: targets.length });
     const opId = `enrich-selected-${Date.now()}`;
     addOperation({ id: opId, type: 'enrichment', label: t('banner.enrichment_label', { count: targets.length }), current: 0, total: targets.length });
     let success = 0;
     let errors = 0;
+    let hitCreditLimit = false;
     for (const p of targets) {
       try {
-        await supabase.functions.invoke('enrich-player', {
+        const { data: ed, error: invokeErr } = await supabase.functions.invoke('enrich-player', {
           body: { playerName: p.name, club: p.club, playerId: p.id, nationality: p.nationality, generation: p.generation, position: p.position },
         });
+        // errCode: from body (200) OR from Error.message (shim converts non-200 to error)
+        const errCode = (ed as any)?.error ?? invokeErr?.message;
+        if (isCreditLimitCode(errCode)) {
+          setShowCreditLimit(true);
+          queryClient.invalidateQueries({ queryKey: ['credits-me'] });
+          hitCreditLimit = true;
+          break;
+        }
         success++;
+
+        // Update credit cache immediately with server-returned balance
+        const cr = (ed as any)?.credits_remaining;
+        if (cr) {
+          queryClient.invalidateQueries({ queryKey: ['credits-me'] });
+          // Stop immediately if any limit hits 0 or below
+          if (cr.daily <= 0 || cr.weekly <= 0 || cr.monthly <= 0) {
+            setShowCreditLimit(true);
+            hitCreditLimit = true;
+            break;
+          }
+        }
       } catch (e) { console.error('Enrich failed for', p.name, e); errors++; }
       setEnrichProgress(prev => ({ ...prev, current: prev.current + 1 }));
       updateOperation(opId, { current: success + errors });
     }
-    completeOperation(opId, { newCount: success, errorCount: errors > 0 ? errors : undefined });
+    completeOperation(opId, { newCount: success, errorCount: (errors > 0 && !hitCreditLimit) ? errors : undefined });
     setEnriching(false);
     setSelectedIds(new Set());
     refetch();
+    queryClient.invalidateQueries({ queryKey: ['credits-me'] });
   };
 
   const handleBulkAddDone = () => {
@@ -849,21 +1002,47 @@ export default function Players() {
                     </DropdownMenuItem>
                   )}
                   {selectedIds.size >= 2 && selectedIds.size <= 4 && (
-                    <DropdownMenuItem onClick={() => setCompareDialogOpen(true)}>
+                    <DropdownMenuItem onClick={handleCompare}>
                       <BarChart3 className="w-4 h-4 mr-2" />
                       {t('players.compare_button')} ({selectedIds.size})
+                      <span className="ml-auto flex items-center gap-0.5 text-[10px] text-amber-500 font-bold">
+                        <Zap className="w-2.5 h-2.5" />{selectedIds.size}
+                      </span>
                     </DropdownMenuItem>
                   )}
-                  <DropdownMenuItem
-                    onClick={() => handleBulkEnrich('selected')}
-                    disabled={enriching || !isPremium}
-                    className={!isPremium ? 'opacity-50 cursor-not-allowed' : ''}
-                  >
-                    <RefreshCw className={`w-4 h-4 mr-2 ${enriching ? 'animate-spin' : ''}`} />
-                    {enriching
-                      ? t('players.enriching_progress', { current: enrichProgress.current, total: enrichProgress.total })
-                      : t('players.enrich_selected', { count: selectedIds.size })}
-                  </DropdownMenuItem>
+                  {(() => {
+                    const selPlayers = filtered.filter(p => selectedIds.has(p.id));
+                    const primaryCount = selPlayers.filter(p => !p.external_data_fetched_at || computeCompletionPct(p) <= 50).length;
+                    const secondaryCount = selPlayers.length - primaryCount;
+                    return (
+                      <Tooltip>
+                        <TooltipTrigger asChild>
+                          <DropdownMenuItem
+                            onClick={() => handleBulkEnrich('selected')}
+                            disabled={enriching}
+                          >
+                            <RefreshCw className={`w-4 h-4 mr-2 ${enriching ? 'animate-spin' : ''}`} />
+                            {enriching
+                              ? t('players.enriching_progress', { current: enrichProgress.current, total: enrichProgress.total })
+                              : t('players.enrich_selected', { count: selectedIds.size })}
+                            {!enriching && (
+                              <span className="ml-auto flex items-center gap-0.5 text-[10px] text-amber-500 font-bold">
+                                <Zap className="w-2.5 h-2.5" />{selectedIds.size}
+                              </span>
+                            )}
+                          </DropdownMenuItem>
+                        </TooltipTrigger>
+                        <TooltipContent side="right" className="max-w-[260px] space-y-1.5 p-3">
+                          <p className="text-xs font-semibold">{t('players.enrich_tooltip_title')}</p>
+                          <ul className="text-[11px] text-muted-foreground space-y-1">
+                            <li>• <span className="text-foreground font-medium">{primaryCount} {t('players.enrich_tooltip_primary')}</span> — {t('players.enrich_tooltip_primary_desc')}</li>
+                            {secondaryCount > 0 && <li>• <span className="text-muted-foreground">{secondaryCount} {t('players.enrich_tooltip_secondary')}</span> — {t('players.enrich_tooltip_secondary_desc')}</li>}
+                            <li>• {t('players.enrich_tooltip_order')}</li>
+                          </ul>
+                        </TooltipContent>
+                      </Tooltip>
+                    );
+                  })()}
                   <DropdownMenuItem onClick={() => setBulkReportOpen(true)}>
                     <FilePlus className="w-4 h-4 mr-2" />
                     {t('players.bulk_report', { count: selectedIds.size })}
@@ -888,23 +1067,60 @@ export default function Players() {
                   <DropdownMenuSeparator />
                 </>
               )}
-              {selectedIds.size === 0 && (
-                <DropdownMenuItem
-                  onClick={() => handleBulkEnrich('all')}
-                  disabled={enriching || !isPremium}
-                  className={!isPremium ? 'opacity-50 cursor-not-allowed' : ''}
-                >
-                  <RefreshCw className={`w-4 h-4 mr-2 ${enriching ? 'animate-spin' : ''}`} />
-                  {enriching
-                    ? t('players.enriching_progress', { current: enrichProgress.current, total: enrichProgress.total })
-                    : t('players.enrich_all')}
-                </DropdownMenuItem>
-              )}
+              {selectedIds.size === 0 && (() => {
+                const allPrimaryCount = filtered.filter(p => !p.external_data_fetched_at || computeCompletionPct(p) <= 50).length;
+                const allSecondaryCount = filtered.length - allPrimaryCount;
+                const rem = !remainingCredits || remainingCredits.daily === -1 ? null : Math.min(
+                  remainingCredits.daily ?? 0,
+                  remainingCredits.weekly ?? 0,
+                  remainingCredits.monthly ?? 0,
+                );
+                return (
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <DropdownMenuItem
+                        onClick={() => handleBulkEnrich('all')}
+                        disabled={enriching}
+                      >
+                        <RefreshCw className={`w-4 h-4 mr-2 ${enriching ? 'animate-spin' : ''}`} />
+                        {enriching
+                          ? t('players.enriching_progress', { current: enrichProgress.current, total: enrichProgress.total })
+                          : t('players.enrich_all')}
+                        {!enriching && rem !== null && rem > 0 && (
+                          <span className="ml-auto flex items-center gap-0.5 text-[10px] text-amber-500 font-bold">
+                            <Zap className="w-2.5 h-2.5" />{t('players.enrich_all_credits', { count: rem })}
+                          </span>
+                        )}
+                      </DropdownMenuItem>
+                    </TooltipTrigger>
+                    <TooltipContent side="right" className="max-w-[280px] space-y-1.5 p-3">
+                      <p className="text-xs font-semibold">{t('players.enrich_tooltip_title')}</p>
+                      <ul className="text-[11px] text-muted-foreground space-y-1">
+                        <li>• <span className="text-foreground font-medium">{allPrimaryCount} {t('players.enrich_tooltip_primary')}</span> — {t('players.enrich_tooltip_primary_desc')}</li>
+                        {allSecondaryCount > 0 && <li>• <span className="text-muted-foreground">{allSecondaryCount} {t('players.enrich_tooltip_secondary')}</span> — {t('players.enrich_tooltip_secondary_desc')}</li>}
+                        <li>• {t('players.enrich_tooltip_order')}</li>
+                        {rem !== null && <li className="pt-0.5 border-t border-border/40 text-amber-600 dark:text-amber-400">• {t('players.enrich_tooltip_credits', { count: rem })}</li>}
+                      </ul>
+                    </TooltipContent>
+                  </Tooltip>
+                );
+              })()}
               <DropdownMenuSeparator />
-              <DropdownMenuItem onClick={handleFindDuplicates}>
-                <Copy className="w-4 h-4 mr-2" />
-                {t('players.find_duplicates')}
-              </DropdownMenuItem>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <DropdownMenuItem onClick={handleFindDuplicates}>
+                    <Copy className="w-4 h-4 mr-2" />
+                    {t('players.find_duplicates')}
+                    <span className="ml-auto flex items-center gap-0.5 text-[10px] text-amber-500 font-bold">
+                      <Zap className="w-2.5 h-2.5" />1
+                    </span>
+                  </DropdownMenuItem>
+                </TooltipTrigger>
+                <TooltipContent side="right" className="max-w-[240px] p-3 space-y-1">
+                  <p className="text-xs font-semibold">{t('players.duplicates_tooltip_title')}</p>
+                  <p className="text-[11px] text-muted-foreground">{t('players.duplicates_tooltip_desc')}</p>
+                </TooltipContent>
+              </Tooltip>
             </DropdownMenuContent>
           </DropdownMenu>
           <AddToWatchlistDialog
@@ -1895,6 +2111,37 @@ export default function Players() {
                               />
                             </div>
                           </div>
+                          {/* Data completion bar */}
+                          {(() => {
+                            const pct = computeCompletionPct(player);
+                            const color = completionColor(pct);
+                            return (
+                              <div className="flex items-center gap-1.5 pt-0.5">
+                                <span className="text-[9px] text-muted-foreground w-[34px] shrink-0">{t('players.completion')}</span>
+                                <div className="flex-1 h-1.5 rounded-full bg-muted overflow-hidden">
+                                  <div
+                                    className={`h-full rounded-full transition-all duration-700 ease-out delay-100 ${pct >= 80 ? 'bg-emerald-500' : pct >= 50 ? 'bg-amber-500' : 'bg-rose-500'}`}
+                                    style={{ width: `${pct}%` }}
+                                  />
+                                </div>
+                                <span className={`text-[9px] font-bold tabular-nums rounded px-1 py-0.5 shrink-0 ${color}`}>{pct}%</span>
+                              </div>
+                            );
+                          })()}
+                          {/* Enrichment status */}
+                          {player.external_data_fetched_at ? (
+                            <div className="flex items-center gap-1 mt-0.5">
+                              <Zap className="w-2.5 h-2.5 text-sky-500 shrink-0" />
+                              <span className="text-[9px] text-sky-600 dark:text-sky-400">
+                                {t('players.enriched_on', { date: formatEnrichDate(player.external_data_fetched_at, i18n.language) })}
+                              </span>
+                            </div>
+                          ) : (
+                            <div className="flex items-center gap-1 mt-0.5">
+                              <Zap className="w-2.5 h-2.5 text-muted-foreground/40 shrink-0" />
+                              <span className="text-[9px] text-muted-foreground/50">{t('players.not_enriched')}</span>
+                            </div>
+                          )}
                         </div>
                         {viewMode === 'detailed' && (
                           <>
@@ -1909,12 +2156,12 @@ export default function Players() {
                             </div>
                             <div className="rounded-lg bg-muted/50 py-2 px-1 text-center">
                               <p className="text-[10px] text-muted-foreground mb-0.5">{t('players.value')}</p>
-                              <p className="text-xs font-semibold truncate">{ext.market_value || player.market_value || '—'}</p>
+                              <p className="text-xs font-semibold truncate">{convertMV((ext.market_value as string) || player.market_value, currency, rates)}</p>
                             </div>
                             <div className={`rounded-lg py-2 px-1 text-center ${ext.on_loan ? 'bg-amber-50 dark:bg-amber-950/30 ring-1 ring-amber-200 dark:ring-amber-800' : 'bg-muted/50'}`}>
                               <p className="text-[10px] text-muted-foreground mb-0.5">{t('players.contract')}</p>
                               <p className={`text-xs font-semibold ${player.contract_end && (new Date(player.contract_end).getTime() - Date.now()) / (1000 * 60 * 60 * 24) < 180 ? 'text-destructive' : ''}`}>
-                                {player.contract_end ? new Date(player.contract_end).toLocaleDateString(undefined, { month: '2-digit', year: 'numeric' }) : '—'}
+                                {formatDateShort(player.contract_end, dateFormat)}
                               </p>
                               {ext.on_loan && (
                                 <p className="text-[9px] text-amber-600 dark:text-amber-400 mt-0.5">{t('profile.on_loan_short')}</p>
@@ -2046,6 +2293,9 @@ export default function Players() {
           })()}
         </DialogContent>
       </Dialog>
+
+      {/* Credit limit dialog */}
+      <CreditLimitDialog open={showCreditLimit} onClose={() => setShowCreditLimit(false)} />
 
       {/* Bottom banner for new players */}
       {newsCount > 0 && (

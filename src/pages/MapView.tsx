@@ -11,6 +11,8 @@ import {
   type LivescoreCompetition,
   type LivescoreEvent,
 } from '@/hooks/use-api-football';
+import { useSofascoreLeague } from '@/hooks/use-championships';
+import { SOFASCORE_TOURNAMENT_IDS } from '@/data/sofascore-ids';
 import { usePlayers } from '@/hooks/use-players';
 import { useClubLocations } from '@/hooks/use-club-locations';
 import { Card, CardContent } from '@/components/ui/card';
@@ -239,10 +241,12 @@ function MapClickHandler({ active, onPick }: { active: boolean; onPick: (lat: nu
 // ---------------------------------------------------------------------------
 // Selected-pin type (replaces Leaflet Popup — rendered outside the map DOM)
 // ---------------------------------------------------------------------------
+type ScreenPos = { x: number; y: number };
+
 type SelectedPin =
-  | { type: 'club'; club: { club: string; count: number; players: string[]; country: string; isGeolocated: boolean }; logoUrl: string | null }
-  | { type: 'match'; comp: import('@/hooks/use-api-football').LivescoreCompetition }
-  | { type: 'user'; lat: number; lng: number; nearbyMatches: number; nearbyClubs: number; nearbyPlayers: number; isManual: boolean };
+  | { type: 'club'; club: { club: string; count: number; players: string[]; country: string; isGeolocated: boolean }; logoUrl: string | null; screenPos: ScreenPos; league: string | null }
+  | { type: 'match'; comp: import('@/hooks/use-api-football').LivescoreCompetition; screenPos: ScreenPos }
+  | { type: 'user'; lat: number; lng: number; nearbyMatches: number; nearbyClubs: number; nearbyPlayers: number; isManual: boolean; screenPos: ScreenPos };
 
 // ---------------------------------------------------------------------------
 // Parse "lat, lng" string (e.g. "48.85, 2.35")
@@ -621,6 +625,7 @@ export default function MapView() {
 
   return (
     <div className="flex flex-col gap-4">
+      <style>{`@keyframes fadeInScale{from{opacity:0;transform:scale(.96)}to{opacity:1;transform:scale(1)}}`}</style>
       {/* Header */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
         <div>
@@ -846,7 +851,7 @@ export default function MapView() {
               const hasLive = m.comp.events.some(e => isLive(e.status));
               return (
                 <Marker key={`match-${i}`} position={m.coords} icon={hasLive ? MATCH_LIVE_ICON : MATCH_ICON}
-                  eventHandlers={{ click: () => setSelectedPin({ type: 'match', comp: m.comp }) }}
+                  eventHandlers={{ click: (e) => setSelectedPin({ type: 'match', comp: m.comp, screenPos: { x: (e as unknown as { originalEvent: MouseEvent }).originalEvent.clientX, y: (e as unknown as { originalEvent: MouseEvent }).originalEvent.clientY } }) }}
                 />
               );
             })}
@@ -864,7 +869,11 @@ export default function MapView() {
                 />
               ) : (
                 <Marker key={`club-${i}`} position={c.coords} icon={c.isGeolocated ? CLUB_ICON_PRECISE : CLUB_ICON}
-                  eventHandlers={{ click: () => setSelectedPin({ type: 'club', club: c, logoUrl: c.logoUrl }) }}
+                  eventHandlers={{ click: (e) => {
+                    const ev = e as unknown as { originalEvent: MouseEvent };
+                    const league = players.find(p => p.club?.toLowerCase() === c.club?.toLowerCase())?.league ?? null;
+                    setSelectedPin({ type: 'club', club: c, logoUrl: c.logoUrl, screenPos: { x: ev.originalEvent.clientX, y: ev.originalEvent.clientY }, league });
+                  }}}
                 />
               )
             )}
@@ -873,14 +882,18 @@ export default function MapView() {
             {effectivePos && (
               <>
                 <Marker position={[effectivePos.latitude, effectivePos.longitude]} icon={USER_ICON}
-                  eventHandlers={{ click: () => setSelectedPin({
-                    type: 'user',
-                    lat: effectivePos.latitude, lng: effectivePos.longitude,
-                    nearbyMatches: nearbyMatches.reduce((s, m) => s + m.comp.events.length, 0),
-                    nearbyClubs: nearbyClubs.length,
-                    nearbyPlayers: nearbyClubs.reduce((s, c) => s + c.count, 0),
-                    isManual: !!manualPos,
-                  }) }}
+                  eventHandlers={{ click: (e) => {
+                    const ev = e as unknown as { originalEvent: MouseEvent };
+                    setSelectedPin({
+                      type: 'user',
+                      lat: effectivePos.latitude, lng: effectivePos.longitude,
+                      nearbyMatches: nearbyMatches.reduce((s, m) => s + m.comp.events.length, 0),
+                      nearbyClubs: nearbyClubs.length,
+                      nearbyPlayers: nearbyClubs.reduce((s, c) => s + c.count, 0),
+                      isManual: !!manualPos,
+                      screenPos: { x: ev.originalEvent.clientX, y: ev.originalEvent.clientY },
+                    });
+                  } }}
                 />
                 {showNearby && (
                   <Circle
@@ -1074,12 +1087,63 @@ export default function MapView() {
         </div>
       </div>
 
-      {/* ── Floating info panel (replaces Leaflet Popup) ── */}
-      {selectedPin && (
+      {/* ── Floating info panel — anchored above the clicked marker ── */}
+      {selectedPin && (() => {
+        const POPUP_W = 288;
+        const MARGIN = 10;
+        const CARET_H = 10; // triangle height
+        const { x, y } = selectedPin.screenPos;
+
+        // Horizontal: center on marker, clamped to viewport
+        const rawLeft = x - POPUP_W / 2;
+        const left = Math.max(MARGIN, Math.min(rawLeft, window.innerWidth - POPUP_W - MARGIN));
+
+        // Vertical: prefer above the marker, flip below if not enough room
+        const spaceAbove = y - MARGIN;
+        const spaceBelow = window.innerHeight - y - MARGIN;
+        const goAbove = spaceAbove >= 260 || spaceAbove > spaceBelow;
+
+        // Caret horizontal offset (points to exact marker x)
+        const caretLeft = Math.max(16, Math.min(x - left, POPUP_W - 16));
+
+        return (
         <div
-          className="fixed z-[9999] top-4 right-4 w-72 rounded-2xl shadow-2xl border border-border bg-background overflow-hidden animate-in slide-in-from-right-2 duration-200"
-          style={{ maxHeight: 'calc(100vh - 32px)', overflowY: 'auto' }}
+          className="fixed z-[9999] w-72 rounded-2xl shadow-2xl border border-border bg-background overflow-hidden"
+          style={{
+            width: POPUP_W,
+            maxHeight: goAbove ? Math.min(spaceAbove - CARET_H - 4, 480) : Math.min(spaceBelow - CARET_H - 4, 480),
+            overflowY: 'auto',
+            left,
+            ...(goAbove
+              ? { bottom: window.innerHeight - y + CARET_H + 4 }
+              : { top: y + CARET_H + 4 }
+            ),
+            animation: 'fadeInScale 0.15s ease both',
+          }}
         >
+          {/* Caret arrow pointing to the marker */}
+          <div
+            style={{
+              position: 'absolute',
+              left: caretLeft - 8,
+              width: 0, height: 0,
+              ...(goAbove
+                ? { bottom: -CARET_H, borderLeft: '8px solid transparent', borderRight: '8px solid transparent', borderTop: `${CARET_H}px solid hsl(var(--border))` }
+                : { top: -CARET_H, borderLeft: '8px solid transparent', borderRight: '8px solid transparent', borderBottom: `${CARET_H}px solid hsl(var(--border))` }
+              ),
+            }}
+          />
+          <div
+            style={{
+              position: 'absolute',
+              left: caretLeft - 7,
+              width: 0, height: 0,
+              ...(goAbove
+                ? { bottom: -(CARET_H - 1), borderLeft: '7px solid transparent', borderRight: '7px solid transparent', borderTop: `${CARET_H - 1}px solid hsl(var(--background))` }
+                : { top: -(CARET_H - 1), borderLeft: '7px solid transparent', borderRight: '7px solid transparent', borderBottom: `${CARET_H - 1}px solid hsl(var(--background))` }
+              ),
+            }}
+          />
           {/* Close button */}
           <button
             onClick={() => setSelectedPin(null)}
@@ -1094,6 +1158,7 @@ export default function MapView() {
             <ClubPopup
               club={selectedPin.club}
               logoUrl={selectedPin.logoUrl}
+              league={selectedPin.league}
               fixingClub={fixingClub}
               fixCountry={fixCountry}
               manualLat={manualLat}
@@ -1169,7 +1234,8 @@ export default function MapView() {
             </div>
           )}
         </div>
-      )}
+        );
+      })()}
     </div>
   );
 }
@@ -1202,9 +1268,43 @@ function ClusterMarker({
 // Sub-components — use inline styles for Leaflet popups (Tailwind doesn't apply in popups)
 // ---------------------------------------------------------------------------
 
+// ── Inline club standing badge (fetches lazily) ─────────────────────────────
+function ClubStanding({ clubName, leagueName }: { clubName: string; leagueName: string | null }) {
+  const sofascoreId = leagueName ? (SOFASCORE_TOURNAMENT_IDS[leagueName] ?? null) : null;
+  const { data } = useSofascoreLeague(sofascoreId, null, leagueName ?? undefined);
+
+  if (!data?.teams?.length) return null;
+
+  const normalize = (s: string) => s.toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/[^a-z0-9 ]/g, '').trim();
+  const cn = normalize(clubName);
+  const team = data.teams.find(t =>
+    normalize(t.name) === cn ||
+    (t.shortName && normalize(t.shortName) === cn) ||
+    normalize(t.name).includes(cn) || cn.includes(normalize(t.name))
+  );
+
+  if (!team?.position) return null;
+
+  const medals: Record<number, string> = { 1: '🥇', 2: '🥈', 3: '🥉' };
+  const medal = medals[team.position] ?? null;
+  const pts = team.points != null ? `${team.points} pts` : '';
+  const gd = team.goalDifference != null ? `(${team.goalDifference > 0 ? '+' : ''}${team.goalDifference})` : '';
+
+  return (
+    <div style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '6px 10px', background: 'rgba(99,102,241,.07)', borderRadius: 8, margin: '0 0 8px' }}>
+      <span style={{ fontSize: 15 }}>{medal ?? `#${team.position}`}</span>
+      <div style={{ flex: 1, minWidth: 0 }}>
+        <div style={{ fontSize: 11, fontWeight: 700, color: '#6366f1', lineHeight: 1.2 }}>{leagueName}</div>
+        <div style={{ fontSize: 10, color: '#6b7280' }}>{[pts, gd].filter(Boolean).join(' ')}</div>
+      </div>
+    </div>
+  );
+}
+
 interface ClubPopupProps {
   club: { club: string; count: number; players: string[]; country: string; isGeolocated: boolean };
   logoUrl: string | null;
+  league: string | null;
   fixingClub: string | null;
   fixCountry: string; manualLat: string; manualLng: string; fixLoading: boolean;
   onStartFix: () => void; onCancelFix: () => void;
@@ -1215,7 +1315,7 @@ interface ClubPopupProps {
   preciseLabel: string; approxLabel: string; viewProfileLabel: string; moreLabel: string;
 }
 
-function ClubPopup({ club: c, logoUrl, fixingClub, fixCountry, manualLat, manualLng, fixLoading,
+function ClubPopup({ club: c, logoUrl, league, fixingClub, fixCountry, manualLat, manualLng, fixLoading,
   onStartFix, onCancelFix, onFixCountryChange, onManualLatChange, onManualLngChange,
   onAutoGeocode, onManualGeocode,
   fixLocationLabel, fixCountryPlaceholder, fixAutoLabel, fixManualLabel,
@@ -1286,6 +1386,9 @@ function ClubPopup({ club: c, logoUrl, fixingClub, fixCountry, manualLat, manual
             </span>
           )}
         </div>
+
+        {/* Championship standing */}
+        <ClubStanding clubName={c.club} leagueName={league} />
 
         {/* Players list */}
         {c.players.length > 0 && (

@@ -23,7 +23,7 @@ export function useSavedChampionships() {
       if (!res.ok) throw new Error('Failed');
       return res.json();
     },
-    staleTime: 2 * 60_000,
+    staleTime: 0,
   });
 }
 

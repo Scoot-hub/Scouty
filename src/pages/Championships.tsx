@@ -1,7 +1,9 @@
 import { useState, useMemo, useEffect, useRef } from 'react';
+import { Textarea } from '@/components/ui/textarea';
+import { useAuth } from '@/contexts/AuthContext';
 import { useSearchParams } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
-import { useQuery } from '@tanstack/react-query';
+import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import {
   useChampionships,
   useChampionshipPlayers,
@@ -10,17 +12,23 @@ import {
   useLinkPlayer,
   useUnlinkPlayer,
   useSofascoreLeague,
+  useRefreshStandings,
+  useChampionshipCustomClubs,
+  useAddChampionshipClub,
+  useRemoveChampionshipClub,
+  getAvailableSeasons,
   type ChampionshipEntry,
   type SofascoreTeam,
 } from '@/hooks/use-championships';
 import { useSavedChampionships, useSaveChampionship, useUnsaveChampionship } from '@/hooks/use-saved-championships';
 import { usePlayers } from '@/hooks/use-players';
-import { useIsAdmin } from '@/hooks/use-admin';
+import { useIsAdmin, useMyPermissions } from '@/hooks/use-admin';
 import { type Player } from '@/types/player';
 import { FlagIcon } from '@/components/ui/flag-icon';
 import { LeagueLogo } from '@/components/ui/league-logo';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Label } from '@/components/ui/label';
 import {
   Dialog,
@@ -42,11 +50,185 @@ import { toast } from 'sonner';
 import { Link } from 'react-router-dom';
 import {
   PlusCircle, Search, Trash2, Trophy, Users, X, UserPlus, ChevronLeft,
-  Building2, ExternalLink, MapPin, TrendingUp, Star, StarOff, CalendarDays,
+  Building2, ExternalLink, MapPin, TrendingUp, Star, StarOff, CalendarDays, RefreshCw, Database,
+  PencilLine, Plus, GripVertical, Check, AlertTriangle, StickyNote, Pencil, Loader2,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 
 const API_BASE = (import.meta.env.API_URL || '/api').replace(/\/$/, '');
+
+// ── Broadcaster mapping (French market) ─────────────────────────────────────
+
+interface Broadcaster { name: string; url: string; color: string; bg: string }
+
+const BROADCASTERS: Record<string, Broadcaster[]> = {
+  'Ligue 1': [
+    { name: 'DAZN', url: 'https://www.dazn.com/fr-FR/home', color: '#fff', bg: '#000' },
+    { name: 'Canal+', url: 'https://www.canalplus.com/sport/ligue-1/', color: '#fff', bg: '#0d1538' },
+    { name: 'beIN Sports', url: 'https://www.beinsports.com/fr/ligue1/', color: '#fff', bg: '#b50014' },
+  ],
+  'Ligue 2': [
+    { name: 'beIN Sports', url: 'https://www.beinsports.com/fr/', color: '#fff', bg: '#b50014' },
+    { name: "L'Équipe", url: 'https://www.lequipe.fr/direct/', color: '#000', bg: '#FFD700' },
+  ],
+  'Premier League': [
+    { name: 'Canal+', url: 'https://www.canalplus.com/sport/premier-league/', color: '#fff', bg: '#0d1538' },
+    { name: 'beIN Sports', url: 'https://www.beinsports.com/fr/premier-league/', color: '#fff', bg: '#b50014' },
+  ],
+  'EFL Championship': [
+    { name: 'Canal+', url: 'https://www.canalplus.com', color: '#fff', bg: '#0d1538' },
+  ],
+  'La Liga': [
+    { name: 'beIN Sports', url: 'https://www.beinsports.com/fr/la-liga/', color: '#fff', bg: '#b50014' },
+    { name: 'Canal+', url: 'https://www.canalplus.com/sport/la-liga/', color: '#fff', bg: '#0d1538' },
+  ],
+  'La Liga 2': [
+    { name: 'beIN Sports', url: 'https://www.beinsports.com/fr/', color: '#fff', bg: '#b50014' },
+  ],
+  'Serie A': [
+    { name: 'Canal+', url: 'https://www.canalplus.com/sport/serie-a/', color: '#fff', bg: '#0d1538' },
+    { name: 'beIN Sports', url: 'https://www.beinsports.com/fr/serie-a/', color: '#fff', bg: '#b50014' },
+  ],
+  'Serie B': [
+    { name: 'Canal+', url: 'https://www.canalplus.com', color: '#fff', bg: '#0d1538' },
+  ],
+  'Bundesliga': [
+    { name: 'Canal+', url: 'https://www.canalplus.com/sport/bundesliga/', color: '#fff', bg: '#0d1538' },
+    { name: 'beIN Sports', url: 'https://www.beinsports.com/fr/bundesliga/', color: '#fff', bg: '#b50014' },
+  ],
+  '2. Bundesliga': [
+    { name: 'Canal+', url: 'https://www.canalplus.com', color: '#fff', bg: '#0d1538' },
+  ],
+  'Liga Portugal': [
+    { name: 'Canal+', url: 'https://www.canalplus.com', color: '#fff', bg: '#0d1538' },
+    { name: 'RMC Sport', url: 'https://rmcsport.bfmtv.com', color: '#fff', bg: '#e30713' },
+  ],
+  'Liga Portugal 2': [
+    { name: 'Canal+', url: 'https://www.canalplus.com', color: '#fff', bg: '#0d1538' },
+  ],
+  'Eredivisie': [
+    { name: 'Canal+', url: 'https://www.canalplus.com', color: '#fff', bg: '#0d1538' },
+  ],
+  'Jupiler Pro League': [
+    { name: 'Canal+', url: 'https://www.canalplus.com', color: '#fff', bg: '#0d1538' },
+  ],
+  'Super Lig Turquie': [
+    { name: 'beIN Sports', url: 'https://www.beinsports.com/fr/', color: '#fff', bg: '#b50014' },
+  ],
+  'Super League Suisse': [
+    { name: 'RMC Sport', url: 'https://rmcsport.bfmtv.com', color: '#fff', bg: '#e30713' },
+  ],
+  'Superligaen': [
+    { name: 'Canal+', url: 'https://www.canalplus.com', color: '#fff', bg: '#0d1538' },
+  ],
+  'Allsvenskan': [
+    { name: 'Canal+', url: 'https://www.canalplus.com', color: '#fff', bg: '#0d1538' },
+  ],
+  'Eliteserien': [
+    { name: 'Canal+', url: 'https://www.canalplus.com', color: '#fff', bg: '#0d1538' },
+  ],
+  'Premier League Écosse': [
+    { name: 'Canal+', url: 'https://www.canalplus.com', color: '#fff', bg: '#0d1538' },
+  ],
+  'Ekstraklasa': [
+    { name: 'Canal+', url: 'https://www.canalplus.com', color: '#fff', bg: '#0d1538' },
+  ],
+  'Super League Grèce': [
+    { name: 'beIN Sports', url: 'https://www.beinsports.com/fr/', color: '#fff', bg: '#b50014' },
+  ],
+  'Ligue des Champions': [
+    { name: 'Canal+', url: 'https://www.canalplus.com/sport/ligue-des-champions/', color: '#fff', bg: '#0d1538' },
+    { name: 'beIN Sports', url: 'https://www.beinsports.com/fr/champions-league/', color: '#fff', bg: '#b50014' },
+  ],
+  'Europa League': [
+    { name: 'Canal+', url: 'https://www.canalplus.com/sport/europa-league/', color: '#fff', bg: '#0d1538' },
+    { name: 'beIN Sports', url: 'https://www.beinsports.com/fr/europa-league/', color: '#fff', bg: '#b50014' },
+  ],
+  'Conference League': [
+    { name: 'Canal+', url: 'https://www.canalplus.com', color: '#fff', bg: '#0d1538' },
+  ],
+  'Copa Libertadores': [
+    { name: 'beIN Sports', url: 'https://www.beinsports.com/fr/copa-libertadores/', color: '#fff', bg: '#b50014' },
+    { name: 'Canal+', url: 'https://www.canalplus.com', color: '#fff', bg: '#0d1538' },
+  ],
+  'Copa Sudamericana': [
+    { name: 'beIN Sports', url: 'https://www.beinsports.com/fr/', color: '#fff', bg: '#b50014' },
+  ],
+  'Ligue des Champions CAF': [
+    { name: 'Canal+', url: 'https://www.canalplus.com/sport/can/', color: '#fff', bg: '#0d1538' },
+    { name: 'beIN Sports', url: 'https://www.beinsports.com/fr/', color: '#fff', bg: '#b50014' },
+  ],
+  'Coupe du Monde': [
+    { name: 'TF1', url: 'https://www.tf1plus.fr/sport', color: '#fff', bg: '#003189' },
+    { name: 'beIN Sports', url: 'https://www.beinsports.com/fr/coupe-du-monde/', color: '#fff', bg: '#b50014' },
+  ],
+  'Euro': [
+    { name: 'M6', url: 'https://www.m6.fr/sport/', color: '#fff', bg: '#f47920' },
+    { name: 'TF1', url: 'https://www.tf1plus.fr/sport', color: '#fff', bg: '#003189' },
+    { name: 'beIN Sports', url: 'https://www.beinsports.com/fr/euro/', color: '#fff', bg: '#b50014' },
+  ],
+  'Copa America': [
+    { name: 'beIN Sports', url: 'https://www.beinsports.com/fr/copa-america/', color: '#fff', bg: '#b50014' },
+  ],
+  'CAN': [
+    { name: 'Canal+', url: 'https://www.canalplus.com/sport/can/', color: '#fff', bg: '#0d1538' },
+    { name: 'beIN Sports', url: 'https://www.beinsports.com/fr/can/', color: '#fff', bg: '#b50014' },
+  ],
+  'MLS': [
+    { name: 'Apple TV+', url: 'https://tv.apple.com/channel/tvs.sbd.4000', color: '#fff', bg: '#1c1c1e' },
+    { name: 'Canal+', url: 'https://www.canalplus.com', color: '#fff', bg: '#0d1538' },
+  ],
+  'Liga MX': [
+    { name: 'beIN Sports', url: 'https://www.beinsports.com/fr/', color: '#fff', bg: '#b50014' },
+  ],
+  'Liga Profesional Argentina': [
+    { name: 'beIN Sports', url: 'https://www.beinsports.com/fr/', color: '#fff', bg: '#b50014' },
+  ],
+  'Primera División Uruguay': [
+    { name: 'beIN Sports', url: 'https://www.beinsports.com/fr/', color: '#fff', bg: '#b50014' },
+  ],
+  'Saudi Pro League': [
+    { name: 'beIN Sports', url: 'https://www.beinsports.com/fr/saudi-pro-league/', color: '#fff', bg: '#b50014' },
+    { name: 'Canal+', url: 'https://www.canalplus.com', color: '#fff', bg: '#0d1538' },
+  ],
+  'Stars League Qatar': [
+    { name: 'beIN Sports', url: 'https://www.beinsports.com/fr/', color: '#fff', bg: '#b50014' },
+  ],
+  'UAE Pro League': [
+    { name: 'beIN Sports', url: 'https://www.beinsports.com/fr/', color: '#fff', bg: '#b50014' },
+  ],
+  'Persian Gulf Pro League': [
+    { name: 'beIN Sports', url: 'https://www.beinsports.com/fr/', color: '#fff', bg: '#b50014' },
+  ],
+  'J1 League': [
+    { name: 'DAZN', url: 'https://www.dazn.com/fr-FR/home', color: '#fff', bg: '#000' },
+  ],
+  'K League 1': [
+    { name: 'Canal+', url: 'https://www.canalplus.com', color: '#fff', bg: '#0d1538' },
+  ],
+  'Chinese Super League': [
+    { name: 'Canal+', url: 'https://www.canalplus.com', color: '#fff', bg: '#0d1538' },
+  ],
+  'Indian Super League': [
+    { name: 'Canal+', url: 'https://www.canalplus.com', color: '#fff', bg: '#0d1538' },
+  ],
+  'A-League Men': [
+    { name: 'beIN Sports', url: 'https://www.beinsports.com/fr/', color: '#fff', bg: '#b50014' },
+  ],
+  'Egyptian Premier League': [
+    { name: 'beIN Sports', url: 'https://www.beinsports.com/fr/', color: '#fff', bg: '#b50014' },
+  ],
+  'Botola Pro Maroc': [
+    { name: 'beIN Sports', url: 'https://www.beinsports.com/fr/', color: '#fff', bg: '#b50014' },
+    { name: 'Canal+', url: 'https://www.canalplus.com', color: '#fff', bg: '#0d1538' },
+  ],
+  'Ligue 1 Algérie': [
+    { name: 'beIN Sports', url: 'https://www.beinsports.com/fr/', color: '#fff', bg: '#b50014' },
+  ],
+  'Ligue Professionnelle 1 Tunisie': [
+    { name: 'beIN Sports', url: 'https://www.beinsports.com/fr/', color: '#fff', bg: '#b50014' },
+  ],
+};
 
 // ── Logo components ─────────────────────────────────────────────────────────
 
@@ -60,6 +242,31 @@ function ClubLogo({ src, name, size = 'md' }: { src?: string | null; name: strin
   return (
     <div className={cn(dims, 'rounded-lg bg-muted flex items-center justify-center font-bold text-muted-foreground shrink-0', textSize)}>
       {name.charAt(0)}
+    </div>
+  );
+}
+
+// ── Broadcasters bar ────────────────────────────────────────────────────────
+
+function BroadcastersBar({ championshipName }: { championshipName: string }) {
+  const list = BROADCASTERS[championshipName];
+  if (!list || list.length === 0) return null;
+  return (
+    <div className="flex items-center gap-2 flex-wrap">
+      <span className="text-xs text-muted-foreground font-medium whitespace-nowrap">Où regarder :</span>
+      {list.map(b => (
+        <a
+          key={b.name}
+          href={b.url}
+          target="_blank"
+          rel="noopener noreferrer"
+          className="inline-flex items-center gap-1 text-xs font-semibold px-2.5 py-1 rounded-full transition-opacity hover:opacity-80"
+          style={{ backgroundColor: b.bg, color: b.color }}
+        >
+          {b.name}
+          <ExternalLink className="w-2.5 h-2.5 opacity-70" />
+        </a>
+      ))}
     </div>
   );
 }
@@ -246,6 +453,316 @@ function ClubPanel({
   );
 }
 
+// ── Club name autocomplete input ─────────────────────────────────────────────
+
+function ClubNameInput({ value, onChange, suggestions }: { value: string; onChange: (v: string) => void; suggestions: string[] }) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+
+  const filtered = useMemo(() => {
+    if (!value.trim()) return suggestions.slice(0, 8);
+    const q = value.toLowerCase();
+    return suggestions.filter(s => s.toLowerCase().includes(q)).slice(0, 8);
+  }, [value, suggestions]);
+
+  useEffect(() => {
+    const handler = (e: MouseEvent) => { if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false); };
+    document.addEventListener('mousedown', handler);
+    return () => document.removeEventListener('mousedown', handler);
+  }, []);
+
+  return (
+    <div ref={ref} className="relative w-full min-w-[130px]">
+      <input
+        value={value}
+        onChange={e => { onChange(e.target.value); setOpen(true); }}
+        onFocus={() => setOpen(true)}
+        placeholder="Nom de l'équipe"
+        className="border rounded px-2 py-0.5 text-xs bg-background focus:outline-none focus:ring-1 focus:ring-primary w-full"
+      />
+      {open && filtered.length > 0 && (
+        <ul className="absolute z-50 left-0 top-full mt-0.5 w-full max-h-44 overflow-y-auto bg-popover border rounded-lg shadow-lg text-xs">
+          {filtered.map(s => (
+            <li
+              key={s}
+              onMouseDown={e => { e.preventDefault(); onChange(s); setOpen(false); }}
+              className={cn('px-2 py-1.5 cursor-pointer hover:bg-muted transition-colors truncate', s === value && 'bg-primary/10 font-medium')}
+            >
+              {s}
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
+  );
+}
+
+// ── Manual standings modal ────────────────────────────────────────────────────
+
+interface ManualTeam {
+  key: string; // local key for React list
+  name: string;
+  points: number | '';
+  played: number | '';
+  wins: number | '';
+  draws: number | '';
+  losses: number | '';
+  goalsFor: number | '';
+  goalsAgainst: number | '';
+  zone: string; // 'none' | 'champions_league' | 'europa_league' | 'conference_league' | 'playoff' | 'relegation' | 'promotion'
+}
+
+const ZONE_OPTIONS = [
+  { value: 'none', label: '—' },
+  { value: 'champions_league', label: 'Ligue des Champions', color: '#3b82f6' },
+  { value: 'europa_league', label: 'Europa League', color: '#fb923c' },
+  { value: 'conference_league', label: 'Conférence League', color: '#4ade80' },
+  { value: 'promotion', label: 'Promotion', color: '#22c55e' },
+  { value: 'playoff', label: 'Barrages / Play-off', color: '#facc15' },
+  { value: 'relegation', label: 'Relégation', color: '#ef4444' },
+];
+
+const ZONE_COLORS: Record<string, string> = {
+  champions_league: '#3b82f6',
+  europa_league: '#fb923c',
+  conference_league: '#4ade80',
+  promotion: '#22c55e',
+  playoff: '#facc15',
+  relegation: '#ef4444',
+};
+
+function emptyTeam(): ManualTeam {
+  return {
+    key: Math.random().toString(36).slice(2),
+    name: '', points: '', played: '', wins: '', draws: '', losses: '', goalsFor: '', goalsAgainst: '',
+    zone: 'none',
+  };
+}
+
+function teamFromSofascore(t: SofascoreTeam): ManualTeam {
+  const zoneDesc = (t.description ?? '').toLowerCase();
+  const zone =
+    zoneDesc.includes('champion') ? 'champions_league' :
+    zoneDesc.includes('europa') && !zoneDesc.includes('conf') ? 'europa_league' :
+    zoneDesc.includes('conf') ? 'conference_league' :
+    zoneDesc.includes('promot') ? 'promotion' :
+    zoneDesc.includes('playoff') || zoneDesc.includes('play-off') || zoneDesc.includes('barrage') ? 'playoff' :
+    zoneDesc.includes('relég') || zoneDesc.includes('relega') ? 'relegation' :
+    'none';
+  return {
+    key: Math.random().toString(36).slice(2),
+    name: t.name ?? '',
+    points: t.points ?? '',
+    played: t.played ?? '',
+    wins: t.wins ?? '',
+    draws: t.draws ?? '',
+    losses: t.losses ?? '',
+    goalsFor: t.goalsFor ?? '',
+    goalsAgainst: t.goalsAgainst ?? '',
+    zone,
+  };
+}
+
+function ManualStandingsModal({
+  champ,
+  seasonYear,
+  currentTeams,
+  onClose,
+  onSaved,
+}: {
+  champ: ChampionshipEntry;
+  seasonYear: number;
+  currentTeams: SofascoreTeam[];
+  onClose: () => void;
+  onSaved: () => void;
+}) {
+  const [teams, setTeams] = useState<ManualTeam[]>(() =>
+    currentTeams.length > 0 ? currentTeams.map(teamFromSofascore) : [emptyTeam()]
+  );
+  const [seasonDisplay, setSeasonDisplay] = useState(`${seasonYear}–${String(seasonYear + 1).slice(2)}`);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [saved, setSaved] = useState(false);
+
+  const updateTeam = (idx: number, field: keyof ManualTeam, val: string | number) => {
+    setTeams(prev => prev.map((t, i) => i === idx ? { ...t, [field]: val } : t));
+  };
+
+  const addRow = () => setTeams(prev => [...prev, emptyTeam()]);
+  const removeRow = (idx: number) => setTeams(prev => prev.filter((_, i) => i !== idx));
+
+  const handleSave = async () => {
+    const valid = teams.filter(t => t.name.trim());
+    if (!valid.length) { setError('Ajoutez au moins une équipe.'); return; }
+    setSaving(true); setError(null);
+    try {
+      const payload = {
+        championshipName: champ.name,
+        seasonYear,
+        seasonDisplayName: seasonDisplay,
+        teams: valid.map((t, i) => ({
+          position: i + 1,
+          name: t.name.trim(),
+          points: Number(t.points) || 0,
+          played: Number(t.played) || 0,
+          wins: Number(t.wins) || 0,
+          draws: Number(t.draws) || 0,
+          losses: Number(t.losses) || 0,
+          goalsFor: Number(t.goalsFor) || 0,
+          goalsAgainst: Number(t.goalsAgainst) || 0,
+          goalDifference: (Number(t.goalsFor) || 0) - (Number(t.goalsAgainst) || 0),
+          description: t.zone !== 'none' ? t.zone : null,
+          noteColor: t.zone !== 'none' ? (ZONE_COLORS[t.zone] ?? null) : null,
+        })),
+      };
+      const resp = await fetch('/api/championships/manual-standings', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify(payload),
+      });
+      if (!resp.ok) {
+        const d = await resp.json().catch(() => ({}));
+        throw new Error(d.error || `HTTP ${resp.status}`);
+      }
+      setSaved(true);
+      setTimeout(() => { onSaved(); onClose(); }, 800);
+    } catch (e: any) {
+      setError(e.message || 'Erreur');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const numField = (idx: number, field: keyof ManualTeam, w = 'w-12') => (
+    <input
+      type="number" min={0}
+      value={teams[idx][field] as number | ''}
+      onChange={e => updateTeam(idx, field, e.target.value === '' ? '' : Number(e.target.value))}
+      className={cn('border rounded px-1 py-0.5 text-center text-xs bg-background focus:outline-none focus:ring-1 focus:ring-primary', w)}
+    />
+  );
+
+  return (
+    <div className="fixed inset-0 z-50 bg-black/60 flex items-center justify-center p-4" onClick={e => e.target === e.currentTarget && onClose()}>
+      <div className="bg-background rounded-2xl shadow-2xl w-full max-w-4xl max-h-[90vh] flex flex-col">
+        {/* Header */}
+        <div className="flex items-center justify-between px-6 py-4 border-b shrink-0">
+          <div>
+            <h2 className="text-lg font-bold flex items-center gap-2">
+              <PencilLine className="w-5 h-5 text-primary" />
+              Compléter le classement
+            </h2>
+            <p className="text-sm text-muted-foreground">{champ.name}</p>
+          </div>
+          <button onClick={onClose} className="p-2 rounded-lg hover:bg-muted transition-colors">
+            <X className="w-5 h-5" />
+          </button>
+        </div>
+
+        {/* Season display name */}
+        <div className="px-6 py-3 border-b shrink-0 flex items-center gap-3">
+          <label className="text-sm font-medium whitespace-nowrap">Nom de la saison :</label>
+          <input
+            value={seasonDisplay}
+            onChange={e => setSeasonDisplay(e.target.value)}
+            className="border rounded-lg px-3 py-1.5 text-sm bg-background focus:outline-none focus:ring-2 focus:ring-primary max-w-[160px]"
+            placeholder="ex: 2025–26"
+          />
+          <span className="text-xs text-muted-foreground">Année : {seasonYear}</span>
+        </div>
+
+        {/* Teams table */}
+        <div className="overflow-auto flex-1 px-2">
+          <table className="w-full text-xs mt-2">
+            <thead className="sticky top-0 bg-background z-10">
+              <tr className="text-muted-foreground border-b">
+                <th className="px-2 py-1.5 w-6"></th>
+                <th className="text-left px-2 py-1.5">#</th>
+                <th className="text-left px-2 py-1.5 min-w-[140px]">Équipe *</th>
+                <th className="px-2 py-1.5 w-14">Pts</th>
+                <th className="px-2 py-1.5 w-12">MJ</th>
+                <th className="px-2 py-1.5 w-10">V</th>
+                <th className="px-2 py-1.5 w-10">N</th>
+                <th className="px-2 py-1.5 w-10">D</th>
+                <th className="px-2 py-1.5 w-10">B+</th>
+                <th className="px-2 py-1.5 w-10">B-</th>
+                <th className="px-2 py-1.5 w-36 text-left">Zone</th>
+                <th className="px-2 py-1.5 w-8"></th>
+              </tr>
+            </thead>
+            <tbody>
+              {teams.map((team, i) => (
+                <tr key={team.key} className="border-b border-border/30 hover:bg-muted/20">
+                  <td className="px-2 py-1 text-muted-foreground/40">
+                    <GripVertical className="w-3 h-3" />
+                  </td>
+                  <td className="px-2 py-1 text-muted-foreground font-mono text-center">{i + 1}</td>
+                  <td className="px-2 py-1">
+                    <ClubNameInput
+                      value={team.name}
+                      onChange={v => updateTeam(i, 'name', v)}
+                      suggestions={champ.clubs}
+                    />
+                  </td>
+                  <td className="px-1 py-1 text-center">{numField(i, 'points', 'w-14')}</td>
+                  <td className="px-1 py-1 text-center">{numField(i, 'played')}</td>
+                  <td className="px-1 py-1 text-center">{numField(i, 'wins', 'w-10')}</td>
+                  <td className="px-1 py-1 text-center">{numField(i, 'draws', 'w-10')}</td>
+                  <td className="px-1 py-1 text-center">{numField(i, 'losses', 'w-10')}</td>
+                  <td className="px-1 py-1 text-center">{numField(i, 'goalsFor', 'w-10')}</td>
+                  <td className="px-1 py-1 text-center">{numField(i, 'goalsAgainst', 'w-10')}</td>
+                  <td className="px-1 py-1">
+                    <div className="flex items-center gap-1">
+                      {team.zone !== 'none' && (
+                        <span className="w-2 h-2 rounded-full shrink-0" style={{ backgroundColor: ZONE_COLORS[team.zone] }} />
+                      )}
+                      <select
+                        value={team.zone}
+                        onChange={e => updateTeam(i, 'zone', e.target.value)}
+                        className="border rounded px-1 py-0.5 text-xs bg-background focus:outline-none focus:ring-1 focus:ring-primary flex-1"
+                      >
+                        {ZONE_OPTIONS.map(z => <option key={z.value} value={z.value}>{z.label}</option>)}
+                      </select>
+                    </div>
+                  </td>
+                  <td className="px-2 py-1">
+                    <button onClick={() => removeRow(i)} className="text-muted-foreground/50 hover:text-red-500 transition-colors">
+                      <X className="w-3.5 h-3.5" />
+                    </button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          <button
+            onClick={addRow}
+            className="mx-2 my-3 flex items-center gap-1.5 text-xs text-primary hover:text-primary/80 font-medium transition-colors"
+          >
+            <Plus className="w-3.5 h-3.5" /> Ajouter une équipe
+          </button>
+        </div>
+
+        {/* Footer */}
+        <div className="px-6 py-4 border-t shrink-0 flex items-center justify-between gap-3">
+          <div className="flex-1">
+            {error && (
+              <p className="text-xs text-red-500 flex items-center gap-1"><AlertTriangle className="w-3.5 h-3.5" />{error}</p>
+            )}
+            <p className="text-xs text-muted-foreground">Les données saisies manuellement sont <strong>prioritaires</strong> sur les données API.</p>
+          </div>
+          <div className="flex gap-2 shrink-0">
+            <Button variant="outline" size="sm" onClick={onClose} disabled={saving}>Annuler</Button>
+            <Button size="sm" onClick={handleSave} disabled={saving} className={cn(saved && 'bg-green-600 hover:bg-green-600')}>
+              {saved ? <><Check className="w-4 h-4 mr-1" />Sauvegardé</> : saving ? 'Enregistrement…' : 'Enregistrer'}
+            </Button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ── Championship detail sub-page ─────────────────────────────────────────────
 
 function ChampionshipDetail({
@@ -258,7 +775,41 @@ function ChampionshipDetail({
   const { t } = useTranslation();
   const { data: players = [] } = usePlayers();
   const { data: linkedPlayers = [] } = useChampionshipPlayers(champ.name);
-  const { data: sofaData, isLoading: sofaLoading } = useSofascoreLeague(champ.sofascoreId);
+  const availableSeasons = useMemo(() => getAvailableSeasons(6), []);
+  const [seasonYear, setSeasonYear] = useState<number | null>(null); // null = current
+  const { data: sofaData, isLoading: sofaLoading, refetch: refetchStandings } = useSofascoreLeague(champ.sofascoreId, seasonYear, champ.name);
+  const refreshStandings = useRefreshStandings();
+
+  // Moderator / admin check
+  const { data: isAdmin } = useIsAdmin();
+  const { data: permsData } = useMyPermissions();
+  const canManageStandings = isAdmin || permsData?.roles?.some(r => r.toLowerCase().includes('mod'));
+  const [manualModalOpen, setManualModalOpen] = useState(false);
+
+  // Custom clubs (mod-added)
+  const { data: customClubs = [] } = useChampionshipCustomClubs(champ.name);
+  const addClub = useAddChampionshipClub();
+  const removeClub = useRemoveChampionshipClub();
+  const [newClubInput, setNewClubInput] = useState('');
+  const [clubInputOpen, setClubInputOpen] = useState(false);
+  const [isRefreshing, setIsRefreshing] = useState(false);
+
+  const now = new Date();
+  const currentSeasonYear = now.getMonth() >= 6 ? now.getFullYear() : now.getFullYear() - 1;
+  const isCurrentSeason = !seasonYear || seasonYear >= currentSeasonYear;
+
+  const handleRefresh = async () => {
+    if (!champ.sofascoreId || isRefreshing) return;
+    setIsRefreshing(true);
+    try {
+      await refreshStandings(champ.sofascoreId, seasonYear);
+      toast.success(t('championships.standings_refreshed'));
+    } catch {
+      toast.error(t('common.error'));
+    } finally {
+      setIsRefreshing(false);
+    }
+  };
   const { data: logosMap = {} } = useClubLogosMap();
   const linkPlayer = useLinkPlayer();
   const unlinkPlayer = useUnlinkPlayer();
@@ -268,7 +819,61 @@ function ChampionshipDetail({
   const isSaved = savedChamps.some(s => s.championship_name === champ.name);
   const [justSaved, setJustSaved] = useState(false);
   const [playerSearch, setPlayerSearch] = useState('');
-  const [tab, setTab] = useState<'standings' | 'clubs' | 'players'>('standings');
+  const [tab, setTab] = useState<'standings' | 'clubs' | 'players' | 'notes'>('standings');
+
+  // ── Scouting notes — notepad par utilisateur ──
+  interface ChampNote { id: number; content: string; rating: number | null; created_at: string; updated_at: string; user_id: string; author_name: string; }
+  const { user: currentUser } = useAuth();
+  const { data: notesData, refetch: refetchNotes } = useQuery<{ notes: ChampNote[] }>({
+    queryKey: ['championship-notes', champ.name, currentUser?.id],
+    queryFn: async () => {
+      const res = await fetch(`${API_BASE}/championship-notes?name=${encodeURIComponent(champ.name)}`, { credentials: 'include' });
+      if (!res.ok) return { notes: [] };
+      return res.json();
+    },
+    staleTime: 0,
+    enabled: !!currentUser?.id && !!champ.name,
+  });
+  // Derive server note for current user — recalculates whenever notesData or user changes
+  const myChampNote = useMemo(
+    () => notesData?.notes?.find(n => String(n.user_id) === String(currentUser?.id)) ?? null,
+    [notesData, currentUser?.id],
+  );
+  const teamChampNotes = useMemo(
+    () => notesData?.notes?.filter(n => String(n.user_id) !== String(currentUser?.id)) ?? [],
+    [notesData, currentUser?.id],
+  );
+
+  // Draft state: undefined = no local edit (show server value), otherwise show local edit.
+  // This pattern ensures the saved note is visible immediately on revisit (no useEffect race).
+  const [draftText, setDraftText] = useState<string | undefined>(undefined);
+  const [draftRating, setDraftRating] = useState<number | null | undefined>(undefined);
+
+  const noteDirty = draftText !== undefined || draftRating !== undefined;
+  const noteText  = draftText   !== undefined ? draftText   : (myChampNote?.content ?? '');
+  const noteRating = draftRating !== undefined ? draftRating : (myChampNote?.rating  ?? null);
+
+  const clearDraft = () => { setDraftText(undefined); setDraftRating(undefined); };
+
+  const saveNote = useMutation({
+    mutationFn: async ({ content, rating }: { content: string; rating: number | null }) => {
+      const res = await fetch(`${API_BASE}/championship-notes`, {
+        method: 'POST', credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: champ.name, content, rating, id: myChampNote?.id }),
+      });
+      if (!res.ok) { const b = await res.json().catch(() => ({})); throw new Error(b?.error || 'save_failed'); }
+    },
+    onSuccess: async () => { await refetchNotes(); clearDraft(); toast.success('Note enregistrée'); },
+    onError: (err: Error) => toast.error(`Erreur : ${err.message}`),
+  });
+  const deleteNote = useMutation({
+    mutationFn: async (id: number) => {
+      await fetch(`${API_BASE}/championship-notes/${id}`, { method: 'DELETE', credentials: 'include' });
+    },
+    onSuccess: async () => { await refetchNotes(); clearDraft(); },
+    onError: () => toast.error('Erreur lors de la suppression'),
+  });
   const [selectedClub, setSelectedClub] = useState<SelectedClub | null>(null);
   const animTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -375,14 +980,32 @@ function ChampionshipDetail({
         <div className="w-14 h-14 flex items-center justify-center shrink-0">
           <LeagueLogo league={champ.name} size="lg" />
         </div>
-        <div className="flex-1 min-w-0">
+        <div className="flex-1 min-w-0 space-y-1.5">
           <h1 className="text-2xl font-bold">{champ.name}</h1>
           <p className="text-sm text-muted-foreground flex items-center gap-1.5">
             <FlagIcon nationality={champ.country} size="sm" />
             {champ.country}
             {sofaData?.season?.name && ` — ${sofaData.season.name}`}
           </p>
+          <BroadcastersBar championshipName={champ.name} />
         </div>
+
+        {/* Season selector — only shown for leagues with SofaScore standings */}
+        {champ.sofascoreId && (
+          <div className="shrink-0">
+            <select
+              value={seasonYear ?? ''}
+              onChange={e => setSeasonYear(e.target.value ? Number(e.target.value) : null)}
+              className="text-xs border border-border rounded-lg px-2.5 py-1.5 bg-background text-foreground focus:outline-none focus:ring-2 focus:ring-primary cursor-pointer"
+              title="Sélectionner une saison"
+            >
+              <option value="">Saison actuelle</option>
+              {availableSeasons.map(s => (
+                <option key={s.year} value={s.year}>{s.label}</option>
+              ))}
+            </select>
+          </div>
+        )}
         <div className="relative shrink-0">
           {/* Burst particles on save */}
           {justSaved && (
@@ -452,6 +1075,19 @@ function ChampionshipDetail({
           <Users className="w-4 h-4 inline mr-1.5 -mt-0.5" />
           {t('championships.linked_players')} ({allLinkedPlayers.length})
         </button>
+        <button
+          onClick={() => setTab('notes')}
+          className={cn(
+            'px-4 py-2 text-sm font-medium border-b-2 transition-colors -mb-px flex items-center gap-1.5',
+            tab === 'notes' ? 'border-primary text-foreground' : 'border-transparent text-muted-foreground hover:text-foreground',
+          )}
+        >
+          <StickyNote className="w-4 h-4 -mt-0.5" />
+          Notes
+          {(notesData?.notes?.length ?? 0) > 0 && (
+            <span className="text-[10px] font-bold bg-primary/15 text-primary px-1.5 py-0.5 rounded-full">{notesData!.notes.length}</span>
+          )}
+        </button>
       </div>
 
       {/* ── Standings tab ── */}
@@ -462,29 +1098,81 @@ function ChampionshipDetail({
               {[...Array(10)].map((_, i) => <div key={i} className="h-11 rounded-lg bg-muted animate-pulse" />)}
             </div>
           ) : !hasStandings ? (
-            <div className="text-center py-16 text-muted-foreground">
-              <Trophy className="w-10 h-10 mx-auto mb-3 opacity-20" />
-              <p className="text-sm">{t('championships.no_standings')}</p>
-              {!champ.sofascoreId && (
-                <p className="text-xs mt-1 opacity-60">{t('championships.no_sofascore_id')}</p>
+            <div className="text-center py-12 text-muted-foreground space-y-4">
+              <Trophy className="w-10 h-10 mx-auto opacity-20" />
+              <div>
+                <p className="text-sm">{t('championships.no_standings')}</p>
+                {!champ.sofascoreId && (
+                  <p className="text-xs mt-1 opacity-60">{t('championships.no_sofascore_id')}</p>
+                )}
+              </div>
+              {canManageStandings && (
+                <Button size="sm" variant="outline" onClick={() => setManualModalOpen(true)} className="gap-2 mx-auto">
+                  <PencilLine className="w-4 h-4" /> Compléter le classement
+                </Button>
+              )}
+              {BROADCASTERS[champ.name] && (
+                <div className="flex flex-col items-center gap-2 pt-2">
+                  <p className="text-xs font-medium">Suivre le championnat :</p>
+                  <div className="flex flex-wrap gap-2 justify-center">
+                    {BROADCASTERS[champ.name].map(b => (
+                      <a key={b.name} href={b.url} target="_blank" rel="noopener noreferrer"
+                        className="inline-flex items-center gap-1 text-xs font-semibold px-3 py-1.5 rounded-full transition-opacity hover:opacity-80"
+                        style={{ backgroundColor: b.bg, color: b.color }}>
+                        {b.name} <ExternalLink className="w-2.5 h-2.5 opacity-70" />
+                      </a>
+                    ))}
+                  </div>
+                </div>
               )}
             </div>
           ) : (
             <>
-              {/* Season label */}
-              {(sofaData as any)?.season?.name && (
-                <div className="flex items-center justify-between text-xs text-muted-foreground">
-                  <span className="font-medium">{(sofaData as any).season.name}</span>
-                  <a
-                    href={`https://www.sofascore.com/fr/football/tournament/${champ.sofascoreId}`}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="flex items-center gap-1 hover:text-foreground transition-colors"
-                  >
-                    Source : Sofascore ↗
-                  </a>
+              {/* Season label + cache info + refresh */}
+              <div className="flex items-center justify-between text-xs text-muted-foreground flex-wrap gap-2">
+                <span className="font-medium flex items-center gap-2">
+                  {sofaData?.season?.name}
+                  {!isCurrentSeason && (
+                    <span className="text-[10px] bg-muted text-muted-foreground px-1.5 py-0.5 rounded-full font-semibold">
+                      {t('championships.historical')}
+                    </span>
+                  )}
+                  {(sofaData as any)?.source === 'manual' ? (
+                    <span className="flex items-center gap-1 text-[10px] bg-amber-500/10 text-amber-600 px-1.5 py-0.5 rounded-full font-semibold">
+                      <PencilLine className="w-2.5 h-2.5" /> Données saisies manuellement
+                    </span>
+                  ) : sofaData?.from_cache && (
+                    <span className="flex items-center gap-1 text-[10px] text-muted-foreground/70">
+                      <Database className="w-2.5 h-2.5" />
+                      {t('championships.from_db')}
+                      {sofaData.fetched_at && ` · ${new Intl.DateTimeFormat('fr-FR', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }).format(new Date(sofaData.fetched_at))}`}
+                    </span>
+                  )}
+                </span>
+                <div className="flex items-center gap-2">
+                  {isCurrentSeason && champ.sofascoreId && (
+                    <button
+                      onClick={handleRefresh}
+                      disabled={isRefreshing}
+                      className="flex items-center gap-1 text-[11px] hover:text-foreground transition-colors disabled:opacity-50"
+                      title={t('championships.refresh_standings')}
+                    >
+                      <RefreshCw className={cn('w-3 h-3', isRefreshing && 'animate-spin')} />
+                      {t('championships.refresh_standings')}
+                    </button>
+                  )}
+                  {canManageStandings && (
+                    <button
+                      onClick={() => setManualModalOpen(true)}
+                      className="flex items-center gap-1 text-[11px] text-primary hover:text-primary/80 transition-colors"
+                      title="Modifier le classement manuellement"
+                    >
+                      <PencilLine className="w-3 h-3" />
+                      Modifier
+                    </button>
+                  )}
                 </div>
-              )}
+              </div>
 
               {/* Standings table */}
               <div className="overflow-x-auto rounded-xl border">
@@ -508,17 +1196,19 @@ function ChampionshipDetail({
                       const myCount = clubPlayerCount(team.name);
                       const isSelected = selectedClub?.name === team.name;
                       const pos = team.position ?? i + 1;
-                      const gd = (team.goalsFor ?? 0) - (team.goalsAgainst ?? 0);
+                      const gd = team.goalDifference ?? ((team.goalsFor ?? 0) - (team.goalsAgainst ?? 0));
 
-                      // Zone color based on description or promotionDescription
+                      // Use ESPN noteColor directly if available, otherwise fall back to keyword detection
+                      const noteColor = team.noteColor ?? null;
                       const desc = (team.description ?? team.promotionDescription ?? '').toLowerCase();
-                      const zoneColor =
-                        desc.includes('champion') || desc === 'champions league' || desc.includes('champions_league') ? 'bg-blue-500' :
-                        desc.includes('europa') && !desc.includes('conference') ? 'bg-orange-400' :
-                        desc.includes('conference') ? 'bg-green-400' :
-                        desc.includes('relega') ? 'bg-red-500' :
-                        desc.includes('playoff') || desc.includes('play-off') ? 'bg-yellow-400' :
+                      const fallbackColor =
+                        desc.includes('champion') ? '#3b82f6' :
+                        desc.includes('europa') && !desc.includes('conference') ? '#fb923c' :
+                        desc.includes('conference') ? '#4ade80' :
+                        desc.includes('relega') ? '#ef4444' :
+                        desc.includes('playoff') || desc.includes('play-off') ? '#facc15' :
                         null;
+                      const zoneHex = noteColor ?? fallbackColor;
 
                       return (
                         <tr
@@ -532,7 +1222,12 @@ function ChampionshipDetail({
                           {/* Position with zone indicator */}
                           <td className="px-3 py-2.5">
                             <div className="flex items-center gap-1.5">
-                              {zoneColor && <span className={cn('w-1 h-5 rounded-full shrink-0', zoneColor)} />}
+                              {zoneHex && (
+                                <span
+                                  className="w-1 h-5 rounded-full shrink-0"
+                                  style={{ backgroundColor: zoneHex }}
+                                />
+                              )}
                               <span className={cn('font-mono text-xs font-semibold w-4 text-center', pos === 1 ? 'text-yellow-600' : 'text-muted-foreground')}>{pos}</span>
                             </div>
                           </td>
@@ -695,35 +1390,99 @@ function ChampionshipDetail({
                 );
               })}
             </div>
-          ) : staticClubs.length > 0 ? (
-            /* Static club list with local DB logos */
-            <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-3">
-              {staticClubs.map(club => {
-                const myCount = clubPlayerCount(club);
-                const logo = getStaticClubLogo(club);
-                const isSelected = selectedClub?.name === club;
-                return (
-                  <button
-                    key={club}
-                    onClick={() => setSelectedClub(isSelected ? null : { name: club, logoUrl: logo })}
-                    className={cn(
-                      'flex flex-col items-center gap-2 rounded-xl border p-4 text-center transition-all hover:shadow-sm',
-                      isSelected ? 'bg-primary/5 border-primary/40' : 'bg-card hover:bg-accent/40 hover:border-primary/20',
-                    )}
-                  >
-                    <ClubLogo src={logo} name={club} size="md" />
-                    <span className="text-xs font-medium leading-tight line-clamp-2">{club}</span>
-                    {myCount > 0 && (
-                      <span className="inline-flex items-center justify-center min-w-[20px] h-5 px-1.5 rounded-full bg-primary/15 text-primary text-[11px] font-bold">
-                        {myCount}
-                      </span>
-                    )}
-                  </button>
-                );
-              })}
-            </div>
           ) : (
-            <p className="text-sm text-muted-foreground">{t('championships.no_clubs')}</p>
+            /* Static clubs + custom clubs */
+            (() => {
+              const customNames = new Set(customClubs.map(c => c.name));
+              const allClubs = [
+                ...staticClubs.map(name => ({ name, isCustom: false })),
+                ...customClubs.map(c => ({ name: c.name, isCustom: true })),
+              ].filter((c, i, arr) => arr.findIndex(x => x.name === c.name) === i);
+              return (
+                <div className="space-y-3">
+                  {allClubs.length > 0 ? (
+                    <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-3">
+                      {allClubs.map(({ name: club, isCustom }) => {
+                        const myCount = clubPlayerCount(club);
+                        const logo = getStaticClubLogo(club);
+                        const isSelected = selectedClub?.name === club;
+                        return (
+                          <div key={club} className="relative group">
+                            <button
+                              onClick={() => setSelectedClub(isSelected ? null : { name: club, logoUrl: logo })}
+                              className={cn(
+                                'w-full flex flex-col items-center gap-2 rounded-xl border p-4 text-center transition-all hover:shadow-sm',
+                                isSelected ? 'bg-primary/5 border-primary/40' : 'bg-card hover:bg-accent/40 hover:border-primary/20',
+                                isCustom && 'border-dashed',
+                              )}
+                            >
+                              <ClubLogo src={logo} name={club} size="md" />
+                              <span className="text-xs font-medium leading-tight line-clamp-2">{club}</span>
+                              {myCount > 0 && (
+                                <span className="inline-flex items-center justify-center min-w-[20px] h-5 px-1.5 rounded-full bg-primary/15 text-primary text-[11px] font-bold">
+                                  {myCount}
+                                </span>
+                              )}
+                            </button>
+                            {canManageStandings && isCustom && (
+                              <button
+                                onClick={() => removeClub.mutate({ championshipName: champ.name, clubName: club })}
+                                className="absolute top-1.5 right-1.5 w-5 h-5 rounded-full bg-background/80 border opacity-0 group-hover:opacity-100 flex items-center justify-center text-red-500 hover:bg-red-50 transition-all"
+                                title="Retirer ce club"
+                              >
+                                <X className="w-2.5 h-2.5" />
+                              </button>
+                            )}
+                          </div>
+                        );
+                      })}
+                    </div>
+                  ) : (
+                    <p className="text-sm text-muted-foreground">{t('championships.no_clubs')}</p>
+                  )}
+
+                  {/* Add club UI for mods */}
+                  {canManageStandings && (
+                    <div className="pt-1">
+                      {clubInputOpen ? (
+                        <div className="flex items-center gap-2 max-w-xs">
+                          <ClubNameInput
+                            value={newClubInput}
+                            onChange={setNewClubInput}
+                            suggestions={[
+                              ...staticClubs.filter(c => !customNames.has(c) && !staticClubs.includes(c)),
+                              ...staticClubs,
+                            ].filter((c, i, arr) => arr.indexOf(c) === i && !allClubs.some(x => x.name === c))}
+                          />
+                          <Button
+                            size="sm"
+                            disabled={!newClubInput.trim() || addClub.isPending}
+                            onClick={async () => {
+                              if (!newClubInput.trim()) return;
+                              await addClub.mutateAsync({ championshipName: champ.name, clubName: newClubInput.trim() });
+                              setNewClubInput('');
+                              setClubInputOpen(false);
+                            }}
+                          >
+                            <Check className="w-3.5 h-3.5" />
+                          </Button>
+                          <Button size="sm" variant="ghost" onClick={() => { setClubInputOpen(false); setNewClubInput(''); }}>
+                            <X className="w-3.5 h-3.5" />
+                          </Button>
+                        </div>
+                      ) : (
+                        <button
+                          onClick={() => setClubInputOpen(true)}
+                          className="flex items-center gap-1.5 text-xs text-primary hover:text-primary/80 font-medium transition-colors"
+                        >
+                          <Plus className="w-3.5 h-3.5" /> Ajouter un club
+                        </button>
+                      )}
+                    </div>
+                  )}
+                </div>
+              );
+            })()
           )}
         </div>
       )}
@@ -830,6 +1589,107 @@ function ChampionshipDetail({
           </div>
         </div>
       )}
+
+      {/* ── Notes tab ── */}
+      {tab === 'notes' && (
+        <div className="max-w-2xl space-y-5">
+          {/* En-tête */}
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-2">
+              <StickyNote className="w-4 h-4 text-primary" />
+              <h3 className="text-sm font-semibold">Notes de scouting — {champ.name}</h3>
+            </div>
+            <div className="flex items-center gap-2">
+              {noteDirty && <span className="text-xs text-amber-600 font-medium">● Non enregistré</span>}
+              {myChampNote && (
+                <button
+                  onClick={() => { if (confirm('Supprimer votre note ?')) deleteNote.mutate(myChampNote.id); }}
+                  className="p-1.5 rounded-lg text-muted-foreground hover:text-destructive hover:bg-destructive/10 transition-colors"
+                  title="Supprimer ma note"
+                >
+                  <Trash2 className="w-4 h-4" />
+                </button>
+              )}
+            </div>
+          </div>
+
+          {/* Ma note — éditeur principal */}
+          <div className="space-y-3">
+            {/* Étoiles */}
+            <div className="flex items-center gap-1.5">
+              <span className="text-xs text-muted-foreground shrink-0">Ma note :</span>
+              {[1,2,3,4,5].map(star => (
+                <button
+                  key={star}
+                  type="button"
+                  onClick={() => setDraftRating(star === noteRating ? null : star)}
+                  className="p-0.5 transition-transform hover:scale-110"
+                  title={`${star}/5`}
+                >
+                  <Star className={`w-5 h-5 transition-colors ${star <= (noteRating ?? 0) ? 'text-amber-500 fill-amber-500' : 'text-muted-foreground/25 hover:text-amber-400'}`} />
+                </button>
+              ))}
+              {noteRating && <span className="text-sm font-bold text-amber-600 ml-1">{noteRating}/5</span>}
+              {noteRating && <button onClick={() => setDraftRating(null)} className="text-xs text-muted-foreground hover:text-foreground ml-1">✕</button>}
+            </div>
+            <Textarea
+              placeholder={`Mes notes sur ${champ.name}… (observations, joueurs à suivre, tendances…)`}
+              value={noteText}
+              onChange={e => setDraftText(e.target.value)}
+              className="min-h-[160px] resize-y text-sm leading-relaxed"
+            />
+            <div className="flex items-center justify-between">
+              <span className="text-xs text-muted-foreground">
+                {myChampNote
+                  ? `Modifié le ${new Date(myChampNote.updated_at).toLocaleDateString('fr-FR', { day: 'numeric', month: 'short', year: 'numeric' })}`
+                  : 'Aucune note enregistrée'}
+              </span>
+              <button
+                disabled={!noteText.trim() || saveNote.isPending || (!noteDirty && !!myChampNote)}
+                onClick={() => saveNote.mutate({ content: noteText, rating: noteRating })}
+                className="flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium bg-primary text-primary-foreground hover:bg-primary/90 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+              >
+                {saveNote.isPending ? <Loader2 className="w-4 h-4 animate-spin" /> : <Check className="w-4 h-4" />}
+                {myChampNote ? 'Mettre à jour' : 'Enregistrer'}
+              </button>
+            </div>
+          </div>
+
+          {/* Notes de l'équipe */}
+          {teamChampNotes.length > 0 && (
+            <div className="space-y-3 pt-4 border-t border-border/40">
+              <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">Notes de l'équipe ({teamChampNotes.length})</p>
+              {teamChampNotes.map(note => (
+                <div key={note.id} className="rounded-xl border bg-card p-4">
+                  {note.rating != null && (
+                    <div className="flex items-center gap-0.5 mb-2">
+                      {[1,2,3,4,5].map(s => (
+                        <Star key={s} className={`w-4 h-4 ${s <= note.rating! ? 'text-amber-500 fill-amber-500' : 'text-muted-foreground/20'}`} />
+                      ))}
+                      <span className="text-xs text-amber-600 font-medium ml-1">{note.rating}/5</span>
+                    </div>
+                  )}
+                  <p className="text-sm leading-relaxed whitespace-pre-line">{note.content}</p>
+                  <p className="text-xs text-muted-foreground mt-2">
+                    {note.author_name?.trim() || '?'} · {new Date(note.updated_at).toLocaleDateString('fr-FR', { day: 'numeric', month: 'short', year: 'numeric' })}
+                  </p>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Manual standings modal */}
+      {manualModalOpen && (
+        <ManualStandingsModal
+          champ={champ}
+          seasonYear={seasonYear ?? (new Date().getMonth() >= 6 ? new Date().getFullYear() : new Date().getFullYear() - 1)}
+          currentTeams={teams}
+          onClose={() => setManualModalOpen(false)}
+          onSaved={() => { refetchStandings(); }}
+        />
+      )}
     </div>
   );
 }
@@ -846,6 +1706,7 @@ export default function Championships() {
   const deleteCustom = useDeleteCustomChampionship();
 
   const [search, setSearch] = useState(() => urlParams.get('search') || '');
+  const [countryFilter, setCountryFilter] = useState('');
   const [dialogOpen, setDialogOpen] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState<ChampionshipEntry | null>(null);
   const [formName, setFormName] = useState('');
@@ -869,13 +1730,18 @@ export default function Championships() {
     return map;
   }, [players]);
 
+  const countries = useMemo(() =>
+    Array.from(new Set(championships.map(c => c.country).filter((x): x is string => !!x))).sort((a, b) => a.localeCompare(b)),
+  [championships]);
+
   const filtered = useMemo(() => {
     const q = search.toLowerCase();
-    return championships.filter(c =>
-      c.name.toLowerCase().includes(q) ||
-      c.country.toLowerCase().includes(q),
-    );
-  }, [championships, search]);
+    return championships.filter(c => {
+      const matchesSearch = !q || c.name.toLowerCase().includes(q) || c.country.toLowerCase().includes(q);
+      const matchesCountry = !countryFilter || c.country === countryFilter;
+      return matchesSearch && matchesCountry;
+    });
+  }, [championships, search, countryFilter]);
 
   const handleAddCustom = async () => {
     if (!formName.trim()) { toast.error(t('championships.name_required')); return; }
@@ -899,7 +1765,7 @@ export default function Championships() {
   };
 
   if (selectedChamp) {
-    return <ChampionshipDetail champ={selectedChamp} onBack={() => setSelectedChamp(null)} />;
+    return <ChampionshipDetail key={selectedChamp.name} champ={selectedChamp} onBack={() => setSelectedChamp(null)} />;
   }
 
   return (
@@ -920,14 +1786,32 @@ export default function Championships() {
         )}
       </div>
 
-      <div className="relative max-w-sm">
-        <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
-        <Input
-          placeholder={t('championships.search')}
-          value={search}
-          onChange={e => setSearch(e.target.value)}
-          className="pl-9"
-        />
+      <div className="flex flex-wrap gap-2">
+        <div className="relative flex-1 min-w-[200px] max-w-sm">
+          <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
+          <Input
+            placeholder={t('championships.search')}
+            value={search}
+            onChange={e => setSearch(e.target.value)}
+            className="pl-9"
+          />
+        </div>
+        <Select value={countryFilter || '_all'} onValueChange={v => setCountryFilter(v === '_all' ? '' : v)}>
+          <SelectTrigger className="w-48 shrink-0">
+            <SelectValue placeholder={t('championships.filter_country')} />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="_all">{t('championships.all_countries')}</SelectItem>
+            {(countries as string[]).map(country => (
+              <SelectItem key={country} value={country}>
+                <span className="flex items-center gap-2">
+                  <FlagIcon nationality={country} size="sm" />
+                  {country}
+                </span>
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
       </div>
 
       {isLoading ? (

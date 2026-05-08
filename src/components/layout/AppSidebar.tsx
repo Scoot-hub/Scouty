@@ -9,6 +9,7 @@ import { useAuth } from '@/contexts/AuthContext';
 import { useIsAdmin, useIsPremium, useMyPermissions } from '@/hooks/use-admin';
 import { useUiPreferences } from '@/contexts/UiPreferencesContext';
 import { useMyOrganizations, slugify } from '@/hooks/use-organization';
+import { useOrgUnread } from '@/hooks/use-org-chat';
 import { useAdminTicketUnreadCount, useMyTickets } from '@/hooks/use-tickets';
 import { FeatureGate } from '@/components/FeatureGate';
 import { usePageAccessInfo } from '@/hooks/use-page-access-info';
@@ -19,16 +20,54 @@ interface AppSidebarProps {
   onToggle: () => void;
 }
 
-function SidebarTooltip({ label, collapsed, children }: { label: string; collapsed: boolean; children: React.ReactNode }) {
-  if (!collapsed) return <>{children}</>;
-  return (
-    <div className="relative group/tip">
-      {children}
-      <div className="absolute left-full top-1/2 -translate-y-1/2 ml-2 px-2.5 py-1.5 rounded-lg bg-sidebar-accent text-sidebar-accent-foreground text-xs font-medium whitespace-nowrap opacity-0 pointer-events-none group-hover/tip:opacity-100 transition-opacity duration-150 z-50 shadow-lg">
-        {label}
+function SidebarTooltip({
+  label, collapsed, children, description,
+}: {
+  label: string;
+  collapsed: boolean;
+  children: React.ReactNode;
+  description?: string;
+}) {
+  const [mousePos, setMousePos] = useState<{ x: number; y: number } | null>(null);
+
+  // In collapsed mode: simple right-side tooltip showing the label
+  if (collapsed) {
+    return (
+      <div className="relative group/tip">
+        {children}
+        <div className="absolute left-full top-1/2 -translate-y-1/2 ml-2 px-2.5 py-1.5 rounded-lg bg-sidebar-accent text-sidebar-accent-foreground text-xs font-medium whitespace-nowrap opacity-0 pointer-events-none group-hover/tip:opacity-100 transition-opacity duration-150 z-50 shadow-lg">
+          {label}
+          {description && <p className="text-[10px] opacity-70 mt-0.5 max-w-[160px] whitespace-normal">{description}</p>}
+        </div>
       </div>
-    </div>
-  );
+    );
+  }
+
+  // In expanded mode: if description is provided, show a mouse-following info tooltip
+  if (description) {
+    return (
+      <div
+        onMouseEnter={(e) => setMousePos({ x: e.clientX, y: e.clientY })}
+        onMouseMove={(e) => setMousePos({ x: e.clientX, y: e.clientY })}
+        onMouseLeave={() => setMousePos(null)}
+      >
+        {children}
+        {mousePos && (
+          <div
+            className="fixed z-[9999] pointer-events-none"
+            style={{ left: mousePos.x + 14, top: mousePos.y - 10 }}
+          >
+            <div className="bg-popover border border-border rounded-xl shadow-xl p-2.5 min-w-[160px] max-w-[220px]">
+              <p className="text-xs font-semibold text-popover-foreground mb-0.5">{label}</p>
+              <p className="text-[11px] text-muted-foreground leading-snug">{description}</p>
+            </div>
+          </div>
+        )}
+      </div>
+    );
+  }
+
+  return <>{children}</>;
 }
 
 function RestrictedWrapper({
@@ -107,6 +146,45 @@ const subLinkSmClass = (active: boolean) =>
       ? 'bg-sidebar-accent text-sidebar-accent-foreground'
       : 'text-sidebar-foreground/50 hover:text-sidebar-foreground hover:bg-sidebar-accent/50'
   );
+
+// Per-org submenu — separate component so useOrgUnread can be called once per org (no hook-in-loop)
+function OrgSubMenu({ orgBase, orgId, onNav, isActive }: {
+  orgBase: string; orgId: string; onNav: () => void; isActive: (p: string) => boolean;
+}) {
+  const { t } = useTranslation();
+  const { data: unreadData } = useOrgUnread(orgId);
+  const unread = unreadData?.count ?? 0;
+
+  return (
+    <div className="pl-6 space-y-0.5 mt-0.5">
+      <Link to={`${orgBase}/squad`} className={subLinkSmClass(isActive(`${orgBase}/squad`))} onClick={onNav}>
+        <ClipboardList className="w-3 h-3" />
+        {t('sidebar.squad')}
+      </Link>
+      <Link to={`${orgBase}/players`} className={subLinkSmClass(isActive(`${orgBase}/players`))} onClick={onNav}>
+        <Users className="w-3 h-3" />
+        {t('sidebar.org_players')}
+      </Link>
+      <Link to={`${orgBase}/roadmap`} className={subLinkSmClass(isActive(`${orgBase}/roadmap`))} onClick={onNav}>
+        <Route className="w-3 h-3" />
+        {t('sidebar.roadmap')}
+      </Link>
+      <Link to={`${orgBase}/chat`} className={subLinkSmClass(isActive(`${orgBase}/chat`))} onClick={onNav}>
+        <MessageSquare className="w-3 h-3" />
+        {t('sidebar.org_chat')}
+        {unread > 0 && (
+          <span className="ml-auto min-w-[16px] h-[16px] px-1 rounded-full bg-red-500 text-white text-[9px] font-bold flex items-center justify-center">
+            {unread > 99 ? '99+' : unread}
+          </span>
+        )}
+      </Link>
+      <Link to={`${orgBase}/settings`} className={subLinkSmClass(isActive(`${orgBase}/settings`))} onClick={onNav}>
+        <Settings className="w-3 h-3" />
+        {t('sidebar.org_settings')}
+      </Link>
+    </div>
+  );
+}
 
 export default function AppSidebar({ collapsed, onToggle }: AppSidebarProps) {
   const location = useLocation();
@@ -360,20 +438,12 @@ export default function AppSidebar({ collapsed, onToggle }: AppSidebarProps) {
                     <span className="truncate">{org.name}</span>
                   </Link>
                   {isOrgActive && (
-                    <div className="pl-6 space-y-0.5 mt-0.5">
-                      <Link to={`${orgBase}/squad`} className={subLinkSmClass(isActive(`${orgBase}/squad`))} onClick={() => setMobileOpen(false)}>
-                        <ClipboardList className="w-3 h-3" />
-                        {t('sidebar.squad')}
-                      </Link>
-                      <Link to={`${orgBase}/players`} className={subLinkSmClass(isActive(`${orgBase}/players`))} onClick={() => setMobileOpen(false)}>
-                        <Users className="w-3 h-3" />
-                        {t('sidebar.org_players')}
-                      </Link>
-                      <Link to={`${orgBase}/roadmap`} className={subLinkSmClass(isActive(`${orgBase}/roadmap`))} onClick={() => setMobileOpen(false)}>
-                        <Route className="w-3 h-3" />
-                        {t('sidebar.roadmap')}
-                      </Link>
-                    </div>
+                    <OrgSubMenu
+                      orgBase={orgBase}
+                      orgId={org.id as string}
+                      onNav={() => setMobileOpen(false)}
+                      isActive={isActive}
+                    />
                   )}
                 </div>
               );
@@ -642,7 +712,7 @@ export default function AppSidebar({ collapsed, onToggle }: AppSidebarProps) {
       <div className={cn('py-3 border-t border-sidebar-border shrink-0', collapsed ? 'px-2' : 'px-3')}>
         <div className="space-y-0.5">
           {isAdmin && (
-            <SidebarTooltip label={t('sidebar.administration')} collapsed={collapsed}>
+            <SidebarTooltip label={t('sidebar.administration')} collapsed={collapsed} description={t('sidebar.tooltip_admin')}>
               <Link to="/admin" className={footerLinkClass('/admin')} onClick={() => setMobileOpen(false)}>
                 <Shield className="w-3.5 h-3.5 shrink-0" />
                 {!collapsed && t('sidebar.administration')}
@@ -650,7 +720,7 @@ export default function AppSidebar({ collapsed, onToggle }: AppSidebarProps) {
             </SidebarTooltip>
           )}
           {isAdmin && (
-            <SidebarTooltip label={t('sidebar.tickets')} collapsed={collapsed}>
+            <SidebarTooltip label={t('sidebar.tickets')} collapsed={collapsed} description={t('sidebar.tooltip_admin_tickets')}>
               <Link to="/admin/tickets" className={footerLinkClass('/admin/tickets')} onClick={() => setMobileOpen(false)}>
                 <MessageSquare className="w-3.5 h-3.5 shrink-0" />
                 {!collapsed && t('sidebar.tickets')}
@@ -663,7 +733,7 @@ export default function AppSidebar({ collapsed, onToggle }: AppSidebarProps) {
             </SidebarTooltip>
           )}
 
-          <SidebarTooltip label={t('sidebar.my_account')} collapsed={collapsed}>
+          <SidebarTooltip label={t('sidebar.my_account')} collapsed={collapsed} description={t('sidebar.tooltip_account')}>
             <Link to="/account" className={footerLinkClass('/account')} onClick={() => setMobileOpen(false)}>
               <UserCircle className="w-3.5 h-3.5 shrink-0" />
               {!collapsed && t('sidebar.my_account')}
@@ -672,7 +742,7 @@ export default function AppSidebar({ collapsed, onToggle }: AppSidebarProps) {
 
           {shouldShow('settings') && (
             <RestrictedWrapper pageKey="settings" canView={canView('settings')} requiredRoles={pageAccessInfo?.['settings'] ?? []}>
-              <SidebarTooltip label={t('sidebar.settings')} collapsed={collapsed}>
+              <SidebarTooltip label={t('sidebar.settings')} collapsed={collapsed} description={t('sidebar.tooltip_settings')}>
                 <Link to="/settings" className={footerLinkClass('/settings')} onClick={() => setMobileOpen(false)}>
                   <Settings className="w-3.5 h-3.5 shrink-0" />
                   {!collapsed && t('sidebar.settings')}
@@ -684,7 +754,7 @@ export default function AppSidebar({ collapsed, onToggle }: AppSidebarProps) {
           {shouldShow('my_tickets') && (
             <RestrictedWrapper pageKey="my_tickets" canView={canView('my_tickets')} requiredRoles={pageAccessInfo?.['my_tickets'] ?? []}>
               <FeatureGate featureKey="feature_my_tickets" inline>
-                <SidebarTooltip label={t('sidebar.my_tickets')} collapsed={collapsed}>
+                <SidebarTooltip label={t('sidebar.my_tickets')} collapsed={collapsed} description={t('sidebar.tooltip_my_tickets')}>
                   <Link to="/my-tickets" className={footerLinkClass('/my-tickets')} onClick={() => setMobileOpen(false)}>
                     <MessageSquare className="w-3.5 h-3.5 shrink-0" />
                     {!collapsed && t('sidebar.my_tickets')}
@@ -699,7 +769,7 @@ export default function AppSidebar({ collapsed, onToggle }: AppSidebarProps) {
             </RestrictedWrapper>
           )}
 
-          <SidebarTooltip label={t('sidebar.signout')} collapsed={collapsed}>
+          <SidebarTooltip label={t('sidebar.signout')} collapsed={collapsed} description={t('sidebar.tooltip_signout')}>
             <button onClick={handleSignOut} className={footerBtnClass}>
               <LogOut className="w-3.5 h-3.5 shrink-0" />
               {!collapsed && t('sidebar.signout')}

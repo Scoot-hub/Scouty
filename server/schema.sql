@@ -27,6 +27,8 @@ CREATE TABLE IF NOT EXISTS users (
   bot_score INT NOT NULL DEFAULT 0,
   registration_ip VARCHAR(45) NULL,
   registration_ip_hash CHAR(64) NULL,
+  -- Notification preferences (JSON: email_match_assigned, email_org_invite, email_community, email_weekly, web_bell)
+  notification_prefs TEXT NULL,
   INDEX idx_users_banned (is_banned),
   INDEX idx_users_ip_hash (registration_ip_hash),
   UNIQUE KEY uniq_users_email (email(191))
@@ -1056,3 +1058,57 @@ CREATE TABLE IF NOT EXISTS player_wyscout_stats (
   FOREIGN KEY (player_id) REFERENCES players(id) ON DELETE CASCADE,
   FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
 );
+
+-- Championship standings cache — permanent for historical seasons, refreshed daily for current season
+CREATE TABLE IF NOT EXISTS championship_standings (
+  tournament_id  INT           NOT NULL,
+  season_year    INT           NOT NULL,
+  espn_slug      VARCHAR(60)   NULL,
+  season_name    VARCHAR(200)  NULL,
+  standings_json LONGTEXT      NOT NULL,  -- full JSON result (teams[], season, source, etc.)
+  source         VARCHAR(20)   NOT NULL DEFAULT 'espn',
+  fetched_at     DATETIME      NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (tournament_id, season_year),
+  INDEX idx_cs_fetched (fetched_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+-- Logic: historical seasons (season_year < current football year) are never re-fetched.
+
+-- ── Organization chat ─────────────────────────────────────────────────────────
+
+-- Messages (soft-deleted via deleted_at, editable within 10 min)
+CREATE TABLE IF NOT EXISTS org_messages (
+  id          CHAR(36)  NOT NULL PRIMARY KEY,
+  org_id      CHAR(36)  NOT NULL,
+  user_id     CHAR(36)  NOT NULL,
+  content     TEXT      NOT NULL,
+  reply_to_id CHAR(36)  NULL,
+  edited_at   DATETIME  NULL,
+  deleted_at  DATETIME  NULL,
+  created_at  DATETIME  NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  INDEX idx_om_org_created (org_id, created_at),
+  FOREIGN KEY (org_id)      REFERENCES organizations(id) ON DELETE CASCADE,
+  FOREIGN KEY (user_id)     REFERENCES users(id)         ON DELETE CASCADE,
+  FOREIGN KEY (reply_to_id) REFERENCES org_messages(id)  ON DELETE SET NULL
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- Emoji reactions (one per emoji per user per message)
+CREATE TABLE IF NOT EXISTS org_message_reactions (
+  message_id  CHAR(36)     NOT NULL,
+  user_id     CHAR(36)     NOT NULL,
+  emoji       VARCHAR(10)  NOT NULL,
+  created_at  DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (message_id, user_id, emoji),
+  FOREIGN KEY (message_id) REFERENCES org_messages(id) ON DELETE CASCADE,
+  FOREIGN KEY (user_id)    REFERENCES users(id)         ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- Last-read cursor per user per org (for unread badge)
+CREATE TABLE IF NOT EXISTS org_message_reads (
+  org_id       CHAR(36)  NOT NULL,
+  user_id      CHAR(36)  NOT NULL,
+  last_read_at DATETIME  NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (org_id, user_id),
+  FOREIGN KEY (org_id)   REFERENCES organizations(id) ON DELETE CASCADE,
+  FOREIGN KEY (user_id)  REFERENCES users(id)          ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+-- Current season is re-fetched if fetched_at is older than 24h, or on manual refresh.

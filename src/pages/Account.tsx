@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useAuth } from '@/contexts/AuthContext';
 import { useMyPermissions } from '@/hooks/use-admin';
@@ -12,12 +12,78 @@ import { Separator } from '@/components/ui/separator';
 import { toast } from 'sonner';
 import { Crown, Mail, Lock, Building2, User, CalendarDays, ExternalLink, Loader2, Shield, ShieldCheck, ShieldOff, Download, Trash2, AlertTriangle, CreditCard, Camera, Phone, MapPin, Briefcase, Zap, Globe, Info } from 'lucide-react';
 import { COUNTRY_LIST } from '@/data/country-names';
+import { getFlag } from '@/types/player';
 import { useCredits } from '@/hooks/use-credits';
 import { Progress } from '@/components/ui/progress';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from '@/components/ui/dialog';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import PasswordStrengthIndicator, { validatePassword } from '@/components/PasswordStrengthIndicator';
 import { InputOTP, InputOTPGroup, InputOTPSlot } from '@/components/ui/input-otp';
+
+function CountrySelect({ value, onChange, placeholder }: { value: string; onChange: (v: string) => void; placeholder: string }) {
+  const [query, setQuery] = useState(value);
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+
+  // Sync when parent value changes (e.g. profile load)
+  useEffect(() => { setQuery(value); }, [value]);
+
+  const filtered = query.trim()
+    ? COUNTRY_LIST.filter(c => c.toLowerCase().includes(query.toLowerCase())).slice(0, 30)
+    : COUNTRY_LIST.slice(0, 60);
+
+  useEffect(() => {
+    const handler = (e: MouseEvent) => {
+      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
+    };
+    document.addEventListener('mousedown', handler);
+    return () => document.removeEventListener('mousedown', handler);
+  }, []);
+
+  const handleSelect = (country: string) => {
+    onChange(country);
+    setQuery(country);
+    setOpen(false);
+  };
+
+  return (
+    <div className="relative" ref={ref}>
+      <div className="relative">
+        {value && (
+          <span className="absolute left-3 top-1/2 -translate-y-1/2 text-base leading-none pointer-events-none">
+            {getFlag(value)}
+          </span>
+        )}
+        <input
+          type="text"
+          value={query}
+          onChange={e => { setQuery(e.target.value); setOpen(true); }}
+          onFocus={() => setOpen(true)}
+          placeholder={placeholder}
+          autoComplete="off"
+          className={`w-full h-9 rounded-md border border-input bg-background text-sm ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 ${value ? 'pl-8 pr-3' : 'px-3'} py-1`}
+        />
+      </div>
+      {open && filtered.length > 0 && (
+        <div className="absolute z-50 top-full left-0 right-0 mt-1 max-h-56 overflow-y-auto rounded-xl border bg-popover shadow-xl">
+          <div className="p-1 space-y-0.5">
+            {filtered.map(c => (
+              <button
+                key={c}
+                type="button"
+                onClick={() => handleSelect(c)}
+                className={`w-full flex items-center gap-2.5 px-2.5 py-1.5 rounded-lg text-sm text-left hover:bg-muted transition-colors ${value === c ? 'bg-primary/10 text-primary font-medium' : ''}`}
+              >
+                <span className="text-base leading-none w-5 text-center shrink-0">{getFlag(c)}</span>
+                <span className="flex-1 truncate">{c}</span>
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
 
 export default function Account() {
   const { t } = useTranslation();
@@ -553,20 +619,14 @@ export default function Account() {
               <Input className="mt-1" value={address} onChange={e => setAddress(e.target.value)} placeholder={t('account.address_placeholder')} />
             </div>
             <div>
-              <label className="text-xs font-medium text-muted-foreground flex items-center gap-1.5">
+              <label className="text-xs font-medium text-muted-foreground flex items-center gap-1.5 mb-1">
                 <Globe className="w-3 h-3" />{t('account.country')}
               </label>
-              <Input
-                className="mt-1"
-                list="country-list"
+              <CountrySelect
                 value={country}
-                onChange={e => setCountry(e.target.value)}
+                onChange={setCountry}
                 placeholder={t('account.country_placeholder')}
-                autoComplete="off"
               />
-              <datalist id="country-list">
-                {COUNTRY_LIST.map(c => <option key={c} value={c} />)}
-              </datalist>
               <p className="text-[10px] text-muted-foreground mt-1 flex items-center gap-1">
                 <Info className="w-3 h-3 shrink-0" />
                 {t('account.country_hint')}

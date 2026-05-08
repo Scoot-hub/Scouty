@@ -4,7 +4,7 @@ import { Link, useNavigate } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { supabase } from '@/integrations/supabase/client';
 import { useAuth } from '@/contexts/AuthContext';
-import { useIsPremium, useIsAdmin } from '@/hooks/use-admin';
+import { useIsPremium, useIsAdmin, useMyPermissions } from '@/hooks/use-admin';
 import { usePlayers } from '@/hooks/use-players';
 import { Card, CardContent } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
@@ -20,6 +20,7 @@ import {
   MessageCircle, HelpCircle, Lightbulb, Trophy, Users as UsersIcon, Heart, ExternalLink, Trash2, AlertTriangle,
   Link2, ImageIcon, Archive, ArchiveRestore, Building2, Search, Pin, PinOff, Eye, ChevronDown, ChevronUp,
   ShieldCheck, MoreVertical, ArrowUp, ArrowDown, X as XClose, CheckSquare, Square,
+  CheckCircle2, Lock, Unlock,
 } from 'lucide-react';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from '@/components/ui/dialog';
 import { moderateFields } from '@/lib/content-moderation';
@@ -44,6 +45,9 @@ interface CommunityPost {
   is_pinned: boolean;
   display_order: number;
   is_archived?: boolean;
+  is_closed?: boolean;
+  accepted_reply_id?: string | null;
+  closed_at?: string | null;
   created_at: string;
 }
 
@@ -323,6 +327,106 @@ function MentionLink({ name, userId }: { name: string; userId: string }) {
 }
 
 // ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// CloseQuestionModal — modale de clôture pour admin/modérateur
+// ---------------------------------------------------------------------------
+
+type Reply = { id: string; post_id: string; user_id: string | null; author_name: string; content: string; created_at: string };
+
+function CloseQuestionModal({
+  post, replies, onClose, onConfirm, isPending,
+}: {
+  post: CommunityPost;
+  replies: Reply[];
+  onClose: () => void;
+  onConfirm: (acceptedReplyId: string | null) => void;
+  isPending: boolean;
+}) {
+  const [selectedReplyId, setSelectedReplyId] = useState<string | null>(null);
+  const fmtDate = (d: string) => new Date(d).toLocaleDateString('fr-FR', { day: 'numeric', month: 'short' });
+
+  return (
+    <div className="fixed inset-0 z-50 bg-black/60 flex items-center justify-center p-4" onClick={e => e.target === e.currentTarget && onClose()}>
+      <div className="bg-background rounded-2xl w-full max-w-lg flex flex-col max-h-[85vh] shadow-2xl">
+
+        {/* Header */}
+        <div className="flex items-center justify-between px-5 py-4 border-b">
+          <div>
+            <h3 className="font-bold flex items-center gap-2"><Lock className="w-4 h-4 text-amber-500" />Clôturer la question</h3>
+            <p className="text-xs text-muted-foreground mt-0.5">Sélectionnez la réponse de référence (facultatif)</p>
+          </div>
+          <button onClick={onClose} className="p-1.5 rounded-lg hover:bg-muted"><XClose className="w-4 h-4" /></button>
+        </div>
+
+        {/* Question title */}
+        <div className="px-5 py-3 border-b bg-muted/30">
+          <p className="text-sm font-semibold line-clamp-2">{post.title}</p>
+        </div>
+
+        {/* Reply list */}
+        <div className="flex-1 overflow-y-auto p-3 space-y-2">
+          {/* Option: close without accepted reply */}
+          <button
+            onClick={() => setSelectedReplyId(null)}
+            className={cn(
+              'w-full p-3 rounded-xl border text-left transition-all',
+              selectedReplyId === null
+                ? 'border-amber-400 bg-amber-50 dark:bg-amber-950/30'
+                : 'border-border hover:bg-muted/50',
+            )}
+          >
+            <span className="text-sm font-medium text-muted-foreground flex items-center gap-2">
+              <Lock className="w-3.5 h-3.5" />
+              Clôturer sans réponse acceptée
+            </span>
+            <p className="text-xs text-muted-foreground/70 mt-0.5">La question sera marquée comme résolue sans référence.</p>
+          </button>
+
+          {replies.length === 0 ? (
+            <p className="text-center text-xs text-muted-foreground py-6 italic">Aucune réponse pour l'instant.</p>
+          ) : (
+            replies.map(reply => (
+              <button
+                key={reply.id}
+                onClick={() => setSelectedReplyId(reply.id)}
+                className={cn(
+                  'w-full p-3 rounded-xl border text-left transition-all',
+                  selectedReplyId === reply.id
+                    ? 'border-green-500 bg-green-50 dark:bg-green-950/30'
+                    : 'border-border hover:bg-muted/50',
+                )}
+              >
+                <div className="flex items-center gap-2 mb-1.5">
+                  <span className="text-xs font-semibold">{reply.author_name}</span>
+                  <span className="text-[10px] text-muted-foreground">{fmtDate(reply.created_at)}</span>
+                  {selectedReplyId === reply.id && (
+                    <CheckCircle2 className="w-4 h-4 text-green-500 ml-auto" />
+                  )}
+                </div>
+                <p className="text-sm text-muted-foreground line-clamp-4 whitespace-pre-line">{reply.content}</p>
+              </button>
+            ))
+          )}
+        </div>
+
+        {/* Footer */}
+        <div className="px-5 py-4 border-t flex items-center justify-between gap-3">
+          <p className="text-xs text-muted-foreground">
+            {selectedReplyId ? 'Réponse sélectionnée comme référence.' : 'Aucune réponse sélectionnée.'}
+          </p>
+          <div className="flex gap-2">
+            <Button variant="outline" size="sm" onClick={onClose} disabled={isPending}>Annuler</Button>
+            <Button size="sm" onClick={() => onConfirm(selectedReplyId)} disabled={isPending} className="gap-1.5">
+              <Lock className="w-3.5 h-3.5" />
+              {isPending ? 'Clôture…' : 'Clôturer'}
+            </Button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // Premium gate — standalone component (minimal hooks, unmounts cleanly)
 // ---------------------------------------------------------------------------
 
@@ -451,6 +555,8 @@ function CommunityFull() {
   const { user } = useAuth();
   const { data: isPremium } = useIsPremium();
   const { data: isAdmin } = useIsAdmin();
+  const { data: permsData } = useMyPermissions();
+  const canManage = isAdmin || permsData?.roles?.some(r => r.toLowerCase().includes('mod'));
   const queryClient = useQueryClient();
 
   const [filter, setFilter] = useState<PostCategory | 'all'>('all');
@@ -481,6 +587,7 @@ function CommunityFull() {
   const heartIdRef = useRef(0);
   const [moderationMode, setModerationMode] = useState(false);
   const [selectedPosts, setSelectedPosts] = useState<Set<string>>(new Set());
+  const [closeModalPost, setCloseModalPost] = useState<CommunityPost | null>(null);
   const viewedPostsRef = useRef<Set<string>>(new Set());
   const postRefs = useRef<Record<string, HTMLDivElement | null>>({});
   const replyInputRef = useRef<HTMLInputElement>(null);
@@ -670,6 +777,9 @@ function CommunityFull() {
           ...p,
           is_archived: !!p.is_archived,
           is_pinned: !!p.is_pinned,
+          is_closed: !!p.is_closed,
+          accepted_reply_id: (p as any).accepted_reply_id ?? null,
+          closed_at: (p as any).closed_at ?? null,
           views: p.views || 0,
           display_order: p.display_order || 0,
         }))
@@ -909,6 +1019,40 @@ function CommunityFull() {
       setDeleteReplyId(null);
       queryClient.invalidateQueries({ queryKey: ['community-posts'] });
       queryClient.invalidateQueries({ queryKey: ['community-replies'] });
+    },
+    onError: (err: unknown) => toast.error(err instanceof Error ? err.message : String(err)),
+  });
+
+  // --- Close question (admin/moderator) ---
+  const closeQuestion = useMutation({
+    mutationFn: async ({ postId, acceptedReplyId }: { postId: string; acceptedReplyId: string | null }) => {
+      const res = await fetch(`/api/community/posts/${postId}/close`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify({ acceptedReplyId }),
+      });
+      if (!res.ok) { const d = await res.json().catch(() => ({})); throw new Error(d.error || 'Erreur'); }
+    },
+    onSuccess: () => {
+      toast.success('Question clôturée avec succès');
+      setCloseModalPost(null);
+      queryClient.invalidateQueries({ queryKey: ['community-posts'] });
+    },
+    onError: (err: unknown) => toast.error(err instanceof Error ? err.message : String(err)),
+  });
+
+  const reopenQuestion = useMutation({
+    mutationFn: async (postId: string) => {
+      const res = await fetch(`/api/community/posts/${postId}/reopen`, {
+        method: 'POST',
+        credentials: 'include',
+      });
+      if (!res.ok) { const d = await res.json().catch(() => ({})); throw new Error((await res.json().catch(() => ({}))).error || 'Erreur'); }
+    },
+    onSuccess: () => {
+      toast.success('Question réouverte');
+      queryClient.invalidateQueries({ queryKey: ['community-posts'] });
     },
     onError: (err: unknown) => toast.error(err instanceof Error ? err.message : String(err)),
   });
@@ -1291,6 +1435,7 @@ function CommunityFull() {
             const hasNewReply = justReplied === post.id;
             const isArchived = !!post.is_archived;
             const isPinned = !!post.is_pinned;
+            const isClosed = !!post.is_closed;
             const isExpanded = expandedPost === post.id;
             const isSelected = selectedPosts.has(post.id);
 
@@ -1323,11 +1468,16 @@ function CommunityFull() {
                 >
                   <CardContent className="p-4 pt-3">
                     {/* Status badges row */}
-                    {(isArchived || isPinned) && (
+                    {(isArchived || isPinned || isClosed) && (
                       <div className="flex items-center gap-2 mb-2">
                         {isPinned && (
                           <span className="flex items-center gap-1 text-[10px] font-bold text-primary uppercase tracking-wider">
                             <Pin className="w-3 h-3" />Épinglé
+                          </span>
+                        )}
+                        {isClosed && (
+                          <span className="flex items-center gap-1 text-[10px] font-bold text-green-600 uppercase tracking-wider">
+                            <CheckCircle2 className="w-3 h-3" />Résolu
                           </span>
                         )}
                         {isArchived && (
@@ -1366,14 +1516,36 @@ function CommunityFull() {
                           <span className="text-[11px] text-muted-foreground flex items-center gap-0.5">
                             <Calendar className="w-3 h-3" />{formatDate(post.created_at)}
                           </span>
-                          {/* Admin quick actions */}
-                          {isAdmin && (
+                          {/* Admin/mod quick actions */}
+                          {canManage && (
                             <div className="ml-auto flex items-center gap-1">
-                              <button onClick={() => toggleArchivePost.mutate({ postId: post.id, archived: !isArchived })}
-                                className="p-1 text-muted-foreground hover:text-amber-500 transition-colors rounded"
-                                title={isArchived ? t('community.unarchive_post') : t('community.archive_post')}>
-                                {isArchived ? <ArchiveRestore className="w-3 h-3" /> : <Archive className="w-3 h-3" />}
-                              </button>
+                              {/* Close/reopen — questions only */}
+                              {post.category === 'question' && (
+                                isClosed ? (
+                                  <button
+                                    onClick={() => reopenQuestion.mutate(post.id)}
+                                    className="p-1 text-green-600 hover:text-muted-foreground transition-colors rounded"
+                                    title="Réouvrir la question"
+                                  >
+                                    <Unlock className="w-3 h-3" />
+                                  </button>
+                                ) : (
+                                  <button
+                                    onClick={() => setCloseModalPost(post)}
+                                    className="p-1 text-muted-foreground hover:text-amber-500 transition-colors rounded"
+                                    title="Clôturer la question"
+                                  >
+                                    <Lock className="w-3 h-3" />
+                                  </button>
+                                )
+                              )}
+                              {isAdmin && (
+                                <button onClick={() => toggleArchivePost.mutate({ postId: post.id, archived: !isArchived })}
+                                  className="p-1 text-muted-foreground hover:text-amber-500 transition-colors rounded"
+                                  title={isArchived ? t('community.unarchive_post') : t('community.archive_post')}>
+                                  {isArchived ? <ArchiveRestore className="w-3 h-3" /> : <Archive className="w-3 h-3" />}
+                                </button>
+                              )}
                               {(isAdmin || post.user_id === user?.id) && (
                                 <button onClick={() => setDeletePostId(post.id)}
                                   className="p-1 text-muted-foreground hover:text-destructive transition-colors rounded">
@@ -1453,14 +1625,36 @@ function CommunityFull() {
                         {/* ── Expanded content ── */}
                         {isExpanded && (
                           <div className="mt-4 space-y-4 animate-in fade-in slide-in-from-top-2 duration-200">
+                            {/* Accepted answer — highlighted at top when post is closed */}
+                            {isClosed && post.accepted_reply_id && (() => {
+                              const accepted = (repliesByPost[post.id] || []).find(r => r.id === post.accepted_reply_id);
+                              if (!accepted) return null;
+                              return (
+                                <div className="rounded-xl border-2 border-green-500 bg-green-50 dark:bg-green-950/30 p-3 space-y-1.5">
+                                  <div className="flex items-center gap-2">
+                                    <CheckCircle2 className="w-4 h-4 text-green-600 shrink-0" />
+                                    <span className="text-xs font-bold text-green-700 dark:text-green-400 uppercase tracking-wide">Réponse acceptée</span>
+                                  </div>
+                                  <div className="flex items-center gap-2 ml-6">
+                                    <span className="text-xs font-semibold">{accepted.author_name}</span>
+                                    <span className="text-[10px] text-muted-foreground">{formatDate(accepted.created_at)}</span>
+                                  </div>
+                                  <p className="text-sm text-foreground ml-6 leading-relaxed whitespace-pre-line">{renderContent(accepted.content)}</p>
+                                </div>
+                              );
+                            })()}
+
                             {/* Replies */}
                             {(repliesByPost[post.id] || []).length > 0 && (
                               <div className="space-y-3 pl-4 border-l-2 border-border">
-                                {(repliesByPost[post.id] || []).map(reply => (
-                                  <div key={reply.id} className="space-y-0.5">
+                                {(repliesByPost[post.id] || []).map(reply => {
+                                  const isAccepted = reply.id === post.accepted_reply_id && isClosed;
+                                  return (
+                                  <div key={reply.id} className={cn('space-y-0.5', isAccepted && 'opacity-70')}>
                                     <div className="flex items-center gap-2">
                                       <span className="text-xs font-semibold">{reply.author_name}</span>
                                       <span className="text-[10px] text-muted-foreground">{formatDate(reply.created_at)}</span>
+                                      {isAccepted && <CheckCircle2 className="w-3 h-3 text-green-500" title="Réponse acceptée" />}
                                       {reply.user_id !== user?.id && (
                                         <button onClick={() => { setReplyingTo(post.id); if (reply.user_id) mentionMapRef.current.set(reply.author_name, reply.user_id); setReplyContent(prev => `@${reply.author_name} ${prev}`); }}
                                           className="text-[10px] text-primary hover:underline">{t('community.mention')}</button>
@@ -1474,12 +1668,24 @@ function CommunityFull() {
                                     </div>
                                     <p className="text-sm text-muted-foreground">{renderContent(reply.content)}</p>
                                   </div>
-                                ))}
+                                  );
+                                })}
                               </div>
                             )}
 
                             {/* Reply input — anchor for scroll */}
                             <div data-reply-anchor className="relative pt-3 border-t border-border">
+                            {/* Notice si question clôturée */}
+                            {isClosed && (
+                              <div className="flex items-center gap-2 py-2 px-3 rounded-lg bg-muted/60 text-xs text-muted-foreground mb-2">
+                                <Lock className="w-3.5 h-3.5 shrink-0 text-green-600" />
+                                <span>Cette question est <strong>clôturée</strong>. Les nouvelles réponses sont désactivées.</span>
+                                {canManage && (
+                                  <button onClick={() => reopenQuestion.mutate(post.id)} className="ml-auto text-primary hover:underline text-[10px] font-medium">Réouvrir</button>
+                                )}
+                              </div>
+                            )}
+                            {!isClosed && (
                               <div className="flex gap-2">
                                 <div className="relative flex-1">
                                   <Input ref={replyInputRef} value={replyContent} onChange={e => handleReplyChange(e.target.value)}
@@ -1516,6 +1722,7 @@ function CommunityFull() {
                                   {replyCooldown > 0 ? <span className="text-[10px] font-mono">{replyCooldown}s</span> : <Send className="w-3.5 h-3.5" />}
                                 </Button>
                               </div>
+                            )}
                             </div>
                           </div>
                         )}
@@ -1527,6 +1734,17 @@ function CommunityFull() {
             );
           })}
         </div>
+      )}
+
+      {/* Close question modal */}
+      {closeModalPost && (
+        <CloseQuestionModal
+          post={closeModalPost}
+          replies={repliesByPost[closeModalPost.id] || []}
+          onClose={() => setCloseModalPost(null)}
+          onConfirm={acceptedReplyId => closeQuestion.mutate({ postId: closeModalPost.id, acceptedReplyId })}
+          isPending={closeQuestion.isPending}
+        />
       )}
 
       {/* Confirm delete post */}

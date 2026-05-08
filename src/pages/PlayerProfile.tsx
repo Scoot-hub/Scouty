@@ -1,4 +1,5 @@
 import { lazy, Suspense, useMemo, useState, useCallback, useRef, useEffect } from 'react';
+import { CreditLimitDialog } from '@/components/CreditLimitDialog';
 import { useParams, Link, useNavigate } from 'react-router-dom';
 import { useIsPremium, useIsAdmin } from '@/hooks/use-admin';
 import { PermGate } from '@/components/PermGate';
@@ -33,12 +34,15 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, Di
 import { usePlayerResearch, useAddResearch, useDeleteResearch, type ResearchItem } from '@/hooks/use-player-research';
 import { usePlayerVideos, useAddVideo, useDeleteVideo, type VideoItem } from '@/hooks/use-player-videos';
 import { usePlayerInjuries } from '@/hooks/use-player-injuries';
+import { useWyscoutStats } from '@/hooks/use-wyscout-stats';
 import { usePlayerMarketValue } from '@/hooks/use-player-market-value';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from '@/components/ui/dropdown-menu';
-import { ArrowLeft, Edit, ExternalLink, PlusCircle, Trash2, RefreshCw, Globe, TrendingUp, Calendar, Ruler, User, MapPin, Hash, Pencil, Euro, Briefcase, LayoutDashboard, ListPlus, Check, Building2, AlertCircle, FileText, Upload, X, Clock, Youtube, Newspaper, Link2, StickyNote, Plus, Activity, Info, Video, ClipboardList, BarChart3, Play, HeartPulse, ChevronDown, Plug, Loader2 as ModuleLoader, CheckCircle2 as ModuleOk } from 'lucide-react';
+import { ArrowLeft, Edit, ExternalLink, PlusCircle, Trash2, RefreshCw, Globe, TrendingUp, Calendar, Ruler, User, MapPin, Hash, Pencil, Euro, Briefcase, LayoutDashboard, ListPlus, Check, Building2, AlertCircle, FileText, Upload, X, Clock, Youtube, Newspaper, Link2, StickyNote, Plus, Activity, Info, Video, ClipboardList, BarChart3, Play, HeartPulse, ChevronDown, Plug, Loader2 as ModuleLoader, CheckCircle2 as ModuleOk, Award } from 'lucide-react';
 import { toast } from 'sonner';
 import { parseScoutingNotes, serializeScoutingNotes, loadLayout, saveLayout, type CardId, type CardSize, type LayoutConfig, type ScoutingNotes } from '@/lib/scouting-notes';
+
+import { CoachPanel } from '@/components/coach/CoachPanel';
 
 const LazyProfileDataTab = lazy(() => import('@/components/profile/ProfileDataTab'));
 const LazyEvolutionChart = lazy(() => import('@/components/charts/EvolutionChart'));
@@ -66,6 +70,7 @@ export default function PlayerProfile() {
   const { data: videos = [] } = usePlayerVideos(id);
   const addVideo = useAddVideo();
   const deleteVideo = useDeleteVideo();
+  const { data: wyscoutRows = [] } = useWyscoutStats(id);
   const { data: allPlayers = [] } = usePlayers();
   const { t, i18n } = useTranslation();
   const { positions: posLabels, positionShort: posShort } = usePositions();
@@ -75,6 +80,7 @@ export default function PlayerProfile() {
   const { data: myOrgs = [] } = useMyOrganizations();
   const hasOrg = myOrgs.length > 0;
   const navigate = useNavigate();
+  const [showCreditLimit, setShowCreditLimit] = useState(false);
 
   // Scout opinions (org context)
   const { data: scoutOpinions = [] } = useScoutOpinions(id, isOrgView ? currentOrg?.id : undefined);
@@ -99,7 +105,7 @@ export default function PlayerProfile() {
 
   // UI state
   const [editMode, setEditMode] = useState(false);
-  const [activeTab, setActiveTab] = useState('infos');
+  const [activeTab, setActiveTab] = useState(() => player?.player_type === 'coach' ? 'coach' : 'infos');
   const [careerExpanded, setCareerExpanded] = useState(false);
   const [nationalCareerExpanded, setNationalCareerExpanded] = useState(false);
   const playerTmId = (player as unknown as { transfermarkt_id?: string | number } | undefined)?.transfermarkt_id;
@@ -182,6 +188,14 @@ export default function PlayerProfile() {
       const body: Record<string, unknown> = { playerName: player.name, club: player.club, playerId: player.id, nationality: player.nationality, generation: player.generation, position: player.position };
       if (tmUrl) body.tmUrl = tmUrl;
       const { data, error } = await supabase.functions.invoke('enrich-player', { body });
+      // Check credit limit first — from body (200) OR Error.message (shim non-200 behavior)
+      const creditErrCode = (data as any)?.error ?? error?.message;
+      if (creditErrCode === 'daily_limit' || creditErrCode === 'weekly_limit' || creditErrCode === 'monthly_limit') {
+        setShowCreditLimit(true);
+        queryClient.invalidateQueries({ queryKey: ['credits-me'] });
+        setEnriching(false);
+        return;
+      }
       if (error) throw error;
       if (data?.ambiguous && data?.candidates?.length > 1) {
         // Multiple TM matches — show disambiguation dialog
@@ -219,12 +233,9 @@ export default function PlayerProfile() {
         toast.error(data?.error || t('profile.enrich_error'));
       }
     } catch (err: any) {
-      const isPremiumErr = err?.message?.includes('premium_required') || (data as any)?.error === 'premium_required';
-      if (isPremiumErr) {
-        toast.error(t('profile.enrich_premium_required'), {
-          action: { label: t('sidebar.upgrade'), onClick: () => window.location.href = '/pricing' },
-          duration: 6000,
-        });
+      const errCode = (err as any)?.error ?? err?.message;
+      if (errCode === 'daily_limit' || errCode === 'weekly_limit' || errCode === 'monthly_limit') {
+        setShowCreditLimit(true);
       } else {
         toast.error(t('profile.enrich_error'));
       }
@@ -536,12 +547,12 @@ export default function PlayerProfile() {
             <Tooltip>
               <TooltipTrigger asChild>
                 <span>
-                  <Button size="sm" variant="outline" className="rounded-xl" onClick={() => handleEnrich()} disabled={enriching || !isPremium}>
+                  <Button size="sm" variant="outline" className="rounded-xl" onClick={() => handleEnrich()} disabled={enriching}>
                     <RefreshCw className={`w-3.5 h-3.5 mr-1.5 ${enriching ? 'animate-spin' : ''}`} />{t('profile.refresh')}
                   </Button>
                 </span>
               </TooltipTrigger>
-              {!isPremium && <TooltipContent>Fonctionnalité réservée aux comptes Premium</TooltipContent>}
+              
             </Tooltip>
             {activeModules.length > 0 && (
               <DropdownMenu modal={false}>
@@ -992,7 +1003,7 @@ export default function PlayerProfile() {
                 </DropdownMenuItem>
                 <DropdownMenuItem
                   onClick={() => handleEnrich()}
-                  disabled={enriching || !isPremium}
+                  disabled={enriching}
                   className="flex items-center gap-2.5"
                 >
                   <RefreshCw className={`w-4 h-4 ${enriching ? 'animate-spin' : ''}`} />
@@ -1006,7 +1017,13 @@ export default function PlayerProfile() {
 
       {/* Tabs */}
       <Tabs value={activeTab} onValueChange={setActiveTab} className="w-full">
-        <TabsList className="w-full grid grid-cols-6">
+        <TabsList className={`w-full grid ${player.player_type === 'coach' ? 'grid-cols-7' : 'grid-cols-6'}`}>
+          {player.player_type === 'coach' && (
+            <TabsTrigger value="coach" className="gap-2">
+              <Award className="w-4 h-4" />
+              <span className="hidden sm:inline">Coach</span>
+            </TabsTrigger>
+          )}
           <TabsTrigger value="infos" className="gap-2">
             <Info className="w-4 h-4" />
             <span className="hidden sm:inline">{t('profile.tab_infos')}</span>
@@ -1023,6 +1040,9 @@ export default function PlayerProfile() {
           <TabsTrigger value="data" className="gap-2">
             <Activity className="w-4 h-4" />
             <span className="hidden sm:inline">{t('profile.tab_data')}</span>
+            {wyscoutRows.length > 0 && (
+              <Badge variant="secondary" className="ml-1 text-[10px] h-4 px-1 bg-primary/15 text-primary">WY</Badge>
+            )}
           </TabsTrigger>
           <TabsTrigger value="injuries" className="gap-2">
             <HeartPulse className="w-4 h-4" />
@@ -1038,6 +1058,23 @@ export default function PlayerProfile() {
           </TabsTrigger>
         </TabsList>
 
+        {/* ── Tab: Coach profile ── */}
+        {player.player_type === 'coach' && (
+          <TabsContent value="coach" className="mt-4">
+            <Card>
+              <CardContent className="pt-5">
+                <CoachPanel
+                  player={player}
+                  onUpdate={async fields => {
+                    await supabase.from('players').update({ ...fields } as any).eq('id', player.id);
+                    queryClient.invalidateQueries({ queryKey: ['player', player.id] });
+                  }}
+                />
+              </CardContent>
+            </Card>
+          </TabsContent>
+        )}
+
         {/* ── Tab: Infos (retrieved data only) ── */}
         <TabsContent value="infos" className="mt-4 space-y-4">
           {!hiddenCards.has('external_data') && (
@@ -1051,14 +1088,29 @@ export default function PlayerProfile() {
               <Tooltip>
                 <TooltipTrigger asChild>
                   <span>
-                    <Button size="sm" variant="outline" className="rounded-xl mt-4" onClick={() => handleEnrich()} disabled={enriching || !isPremium}>
+                    <Button size="sm" variant="outline" className="rounded-xl mt-4" onClick={() => handleEnrich()} disabled={enriching}>
                       <RefreshCw className={`w-3.5 h-3.5 mr-1.5 ${enriching ? 'animate-spin' : ''}`} />{t('profile.enrich')}
                     </Button>
                   </span>
                 </TooltipTrigger>
-                {!isPremium && <TooltipContent>Fonctionnalité réservée aux comptes Premium</TooltipContent>}
+                
               </Tooltip>
             </div>
+          )}
+
+          {/* Wyscout data available banner */}
+          {wyscoutRows.length > 0 && (
+            <button
+              onClick={() => setActiveTab('data')}
+              className="w-full flex items-center gap-3 px-4 py-3 rounded-xl bg-primary/5 border border-primary/20 hover:bg-primary/10 transition-colors text-left"
+            >
+              <BarChart3 className="w-4 h-4 text-primary shrink-0" />
+              <div className="flex-1 min-w-0">
+                <p className="text-xs font-semibold text-primary">{t('profile.wyscout_available', { count: wyscoutRows.length })}</p>
+                <p className="text-[11px] text-muted-foreground">{t('profile.wyscout_available_desc')}</p>
+              </div>
+              <Badge className="shrink-0 bg-primary/15 text-primary text-[10px] border-0">WY</Badge>
+            </button>
           )}
 
           {/* Market value evolution (Transfermarkt) */}
@@ -2144,6 +2196,8 @@ export default function PlayerProfile() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      <CreditLimitDialog open={showCreditLimit} onClose={() => setShowCreditLimit(false)} />
     </div>
   );
 }

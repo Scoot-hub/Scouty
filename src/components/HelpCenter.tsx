@@ -419,31 +419,42 @@ export default function HelpCenter() {
 
   return (
     <>
-      {/* Floating "?" button */}
-      <button
-        onClick={() => {
-          setOpen(o => !o);
-          if (!open) setTab(hasGuide && !isCurrentPageSeen ? 'guide' : 'assistant');
-        }}
-        className={cn(
-          'fixed z-50 w-14 h-14 rounded-full shadow-xl flex items-center justify-center transition-all duration-300 hover:scale-105',
-          open
-            ? 'bg-muted text-muted-foreground hover:bg-muted/80'
-            : 'bg-primary text-primary-foreground hover:bg-primary/90'
-        )}
+      {/* Floating "?" button with tooltip */}
+      <div
+        className="fixed z-50 group/help-tip"
         style={{ bottom: 'calc(env(safe-area-inset-bottom) + 1rem)', right: 'calc(env(safe-area-inset-right) + 1rem)' }}
       >
-        {open ? (
-          <X className="w-6 h-6" />
-        ) : (
-          <>
-            <HelpCircle className="w-6 h-6" />
-            {!isCurrentPageSeen && (
-              <span className="absolute top-0 right-0 w-3.5 h-3.5 bg-rose-500 rounded-full border-2 border-background animate-pulse" />
-            )}
-          </>
+        <button
+          onClick={() => {
+            setOpen(o => !o);
+            if (!open) setTab(hasGuide && !isCurrentPageSeen ? 'guide' : 'assistant');
+          }}
+          className={cn(
+            'w-14 h-14 rounded-full shadow-xl flex items-center justify-center transition-all duration-300 hover:scale-105',
+            open
+              ? 'bg-muted text-muted-foreground hover:bg-muted/80'
+              : 'bg-primary text-primary-foreground hover:bg-primary/90'
+          )}
+        >
+          {open ? (
+            <X className="w-6 h-6" />
+          ) : (
+            <>
+              <HelpCircle className="w-6 h-6" />
+              {!isCurrentPageSeen && (
+                <span className="absolute top-0 right-0 w-3.5 h-3.5 bg-rose-500 rounded-full border-2 border-background animate-pulse" />
+              )}
+            </>
+          )}
+        </button>
+        {!open && (
+          <div className="absolute bottom-full right-0 mb-2 pointer-events-none opacity-0 group-hover/help-tip:opacity-100 transition-opacity duration-150">
+            <div className="bg-popover border border-border rounded-xl shadow-xl p-2.5 min-w-[160px] max-w-[210px]">
+              <p className="text-[11px] text-muted-foreground leading-snug">{t('help.tooltip')}</p>
+            </div>
+          </div>
         )}
-      </button>
+      </div>
 
       {/* Panel */}
       <div

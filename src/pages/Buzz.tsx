@@ -1,10 +1,11 @@
 import { useState, useEffect, useRef } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { Link } from 'react-router-dom';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Skeleton } from '@/components/ui/skeleton';
-import { Flame, TrendingUp, Clock, RefreshCw, ExternalLink, Zap, Radio } from 'lucide-react';
+import { Flame, TrendingUp, Clock, RefreshCw, BookOpen, Zap, Radio } from 'lucide-react';
 import { cn } from '@/lib/utils';
 
 const API = (import.meta.env.API_URL || '/api').replace(/\/$/, '');
@@ -35,7 +36,9 @@ function timeAgo(dateStr: string) {
 function BuzzCard({ post }: { post: BuzzPost }) {
   const isHot = post.is_hot === 1 || post.buzz_score >= 120;
   return (
-    <a href={post.external_url} target="_blank" rel="noopener noreferrer"
+    <Link
+      to={`/buzz/article?url=${encodeURIComponent(post.external_url)}`}
+      state={{ post }}
       className={cn('group block rounded-2xl border transition-all duration-200 hover:shadow-lg hover:-translate-y-px',
         isHot ? 'border-orange-500/30 bg-gradient-to-br from-orange-500/5 to-red-500/5 hover:border-orange-500/50'
                : 'border-border/60 bg-card hover:border-primary/30')}>
@@ -55,7 +58,7 @@ function BuzzCard({ post }: { post: BuzzPost }) {
           </div>
           <div className="flex items-center gap-2">
             <span className="text-[11px] text-muted-foreground">{timeAgo(post.published_at)}</span>
-            <ExternalLink className="w-3 h-3 text-muted-foreground/40 group-hover:text-primary transition-colors" />
+            <BookOpen className="w-3 h-3 text-muted-foreground/40 group-hover:text-primary transition-colors" />
           </div>
         </div>
         <p className="text-sm leading-relaxed text-foreground/90 mb-3 line-clamp-3">{post.content}</p>
@@ -70,7 +73,7 @@ function BuzzCard({ post }: { post: BuzzPost }) {
           {post.buzz_score >= 140 && <Badge className="text-[9px] gap-1 bg-orange-500/15 text-orange-600 border-0 px-2 ml-auto"><Flame className="w-2.5 h-2.5" /> Trending</Badge>}
         </div>
       </div>
-    </a>
+    </Link>
   );
 }
 

@@ -9,11 +9,12 @@ export const LEAGUE_CLUBS: Record<string, string[]> = {
     'Paris Saint-Germain', 'Olympique de Marseille', 'Olympique Lyonnais', 'AS Monaco', 'LOSC Lille',
     'Stade Rennais', 'OGC Nice', 'RC Lens', 'Stade Brestois', 'RC Strasbourg',
     'Montpellier HSC', 'FC Nantes', 'Toulouse FC', 'Stade de Reims', 'Le Havre AC',
-    'AJ Auxerre', 'AS Saint-Étienne', 'Angers SCO',
+    'AJ Auxerre', 'Angers SCO',
   ],
   'Ligue 2': [
     'FC Metz', 'SM Caen', 'Paris FC', 'ES Troyes AC', 'FC Lorient', 'Amiens SC',
     'Grenoble Foot', 'Rodez AF', 'USL Dunkerque', 'SC Bastia', 'FC Martigues', 'Red Star FC',
+    'AS Saint-Étienne',
   ],
   'Premier League': [
     'Manchester City', 'Arsenal', 'Liverpool', 'Chelsea', 'Manchester United',

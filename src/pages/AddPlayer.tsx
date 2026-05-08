@@ -136,6 +136,10 @@ export default function AddPlayer() {
     [i18n.language]);
   const [customFieldValues, setCustomFieldValues] = useState<Record<string, string>>({});
   const [step, setStep] = useState(0);
+  const [playerType, setPlayerType] = useState<'player' | 'coach'>('player');
+  const [coachingLicense, setCoachingLicense] = useState('');
+  const [coachingPreferredFormation, setCoachingPreferredFormation] = useState('');
+  const [coachingStyle, setCoachingStyle] = useState('');
 
   const [name, setName] = useState(prefillName);
   const [photoUrl, setPhotoUrl] = useState('');
@@ -277,7 +281,7 @@ export default function AddPlayer() {
   const canNext = () => {
     if (tmImported) return true;
     if (step === 0) return name.trim().length > 0 && nationality !== '';
-    if (step === 1) return position !== '';
+    if (step === 1) return playerType === 'coach' || position !== '';
     return true;
   };
 
@@ -285,7 +289,9 @@ export default function AddPlayer() {
     try {
       const result = await upsertPlayer.mutateAsync({
         name, photo_url: photoUrl || undefined, generation: parseInt(generation),
-        nationality, club, league, zone, position: position as Position,
+        nationality, club, league,
+        zone: playerType === 'coach' ? (zone || 'Attaquant') : zone,
+        position: (playerType === 'coach' ? 'ATT' : position) as Position,
         position_secondaire: positionSecondaire || undefined,
         role: role || undefined,
         foot, current_level: level[0], potential: potential[0],
@@ -293,6 +299,10 @@ export default function AddPlayer() {
         date_of_birth: dateOfBirth || undefined,
         task: task || null,
         notes: notes || undefined, ts_report_published: tsPublished,
+        player_type: playerType,
+        coaching_license: coachingLicense || null,
+        coaching_preferred_formation: coachingPreferredFormation || null,
+        coaching_style: coachingStyle || null,
         ...(createAsArchived ? { is_archived: true } : {}),
       });
       if (addReportFlag && result?.id) {
@@ -349,6 +359,20 @@ export default function AddPlayer() {
       <Card className="border-none shadow-sm">
         <CardContent className="p-6 space-y-5">
           {step === 0 && (<>
+            {/* Player type toggle */}
+            <div className="flex gap-2 p-1 bg-muted rounded-xl w-fit">
+              {(['player', 'coach'] as const).map(type => (
+                <button
+                  key={type}
+                  type="button"
+                  onClick={() => setPlayerType(type)}
+                  className={`px-4 py-1.5 rounded-lg text-sm font-medium transition-all ${playerType === type ? 'bg-background shadow text-foreground' : 'text-muted-foreground hover:text-foreground'}`}
+                >
+                  {type === 'player' ? '⚽ Joueur' : '🎽 Entraîneur'}
+                </button>
+              ))}
+            </div>
+
             {/* Transfermarkt import */}
             <div className="rounded-xl border border-dashed border-primary/30 bg-primary/5 p-4 space-y-3">
               <div className="flex items-center gap-2">
@@ -397,6 +421,40 @@ export default function AddPlayer() {
             </div>
           </>)}
           {step === 1 && (<>
+            {/* Coach-specific fields — shown only for coaches */}
+            {playerType === 'coach' && (
+              <div className="rounded-xl border border-primary/20 bg-primary/5 p-4 space-y-3">
+                <p className="text-xs font-semibold text-primary flex items-center gap-1.5">🎽 Informations entraîneur</p>
+                <div>
+                  <Label className="text-xs">Licence UEFA</Label>
+                  <select
+                    value={coachingLicense}
+                    onChange={e => setCoachingLicense(e.target.value)}
+                    className="mt-1 w-full text-sm border rounded-lg px-3 py-2 bg-background focus:outline-none focus:ring-2 focus:ring-primary"
+                  >
+                    <option value="">— Non renseignée —</option>
+                    {['UEFA Pro', 'UEFA A', 'UEFA B', 'UEFA C', 'FFF Fédéral 1', 'FFF Fédéral 2', 'FFF Fédéral 3', 'Autre'].map(l => (
+                      <option key={l} value={l}>{l}</option>
+                    ))}
+                  </select>
+                </div>
+                <div>
+                  <Label className="text-xs">Formation préférée</Label>
+                  <Input value={coachingPreferredFormation} onChange={e => setCoachingPreferredFormation(e.target.value)} placeholder="ex : 4-3-3, 4-2-3-1…" className="mt-1 text-sm" />
+                </div>
+                <div>
+                  <Label className="text-xs">Style de jeu</Label>
+                  <textarea
+                    value={coachingStyle}
+                    onChange={e => setCoachingStyle(e.target.value)}
+                    placeholder="Décrivez le style de jeu, la philosophie de l'entraîneur…"
+                    rows={3}
+                    className="mt-1 w-full text-sm border rounded-lg px-3 py-2 bg-background focus:outline-none focus:ring-2 focus:ring-primary resize-none"
+                  />
+                </div>
+              </div>
+            )}
+
             <div><Label>{t('player_form.club')}</Label>
               {tmImported ? (
                 <Input value={club} disabled className="mt-1" />
@@ -423,6 +481,7 @@ export default function AddPlayer() {
                 <SearchableSelect value={league} onValueChange={setLeague} options={mergedLeagues} placeholder={t('player_form.league_placeholder')} />
               )}
             </div>
+            {playerType === 'player' && (<>
             <div><Label>{t('player_form.zone')}</Label>
               <Select value={zone} onValueChange={setZone} disabled={tmImported}>
                 <SelectTrigger className="mt-1"><SelectValue placeholder={t('player_form.select_placeholder')} /></SelectTrigger>
@@ -446,6 +505,7 @@ export default function AddPlayer() {
             </div>
             <div><Label>{t('player_form.role')}</Label><Input value={role} onChange={e => setRole(e.target.value)} placeholder={t('player_form.role_placeholder')} className="mt-1" /></div>
             <div><Label>{t('player_form.strong_foot')}</Label><div className="flex gap-3 mt-1">{(['Gaucher', 'Droitier', 'Ambidextre'] as Foot[]).map(f => (<Button key={f} type="button" variant={foot === f ? 'default' : 'outline'} size="sm" onClick={() => setFoot(f)} disabled={tmImported}>{t(getFootTranslationKey(f)!)}</Button>))}</div></div>
+            </>)}
             <div><Label>{t('player_form.contract_end')}</Label><Input type="date" value={contractEnd} onChange={e => setContractEnd(e.target.value)} className="mt-1" disabled={tmImported && !!contractEnd} /></div>
           </>)}
           {step === 2 && (<>

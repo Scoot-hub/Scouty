@@ -13,8 +13,10 @@ import {
   Settings, Mail, Trash2, ToggleLeft, Loader2, ArrowLeft, AlertTriangle,
   Shield, Users, CalendarDays, MessageSquare, Heart, Building2, Globe, Search, Database, Ticket, Bell, Archive,
   UserX, Play, RefreshCw, CheckCircle2, XCircle, Clock,
-  Newspaper, Trophy, Eye, Star, Zap, Camera, FileText,
+  Newspaper, Trophy, Eye, Star, Zap, Camera, FileText, Euro, Pencil, Check,
 } from 'lucide-react';
+import { useExchangeRates, useUpdateExchangeRate } from '@/hooks/use-exchange-rates';
+import { CURRENCIES } from '@/lib/format-utils';
 import {
   AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent,
   AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle,
@@ -69,6 +71,103 @@ const PURGE_TYPES = [
   { key: 'club_logos', icon: Database, color: 'text-red-400' },
   { key: 'cache', icon: Database, color: 'text-red-300' },
 ] as const;
+
+function ExchangeRatesCard() {
+  const { t } = useTranslation();
+  const { data: rates = [], isLoading } = useExchangeRates();
+  const updateRate = useUpdateExchangeRate();
+  const [editing, setEditing] = useState<string | null>(null);
+  const [editValue, setEditValue] = useState('');
+
+  const startEdit = (code: string, current: number) => {
+    setEditing(code);
+    setEditValue(String(current));
+  };
+
+  const saveEdit = (code: string) => {
+    const v = parseFloat(editValue);
+    if (isNaN(v) || v <= 0) { toast.error('Taux invalide'); return; }
+    updateRate.mutate({ currency_code: code, rate_vs_eur: v }, {
+      onSuccess: () => { toast.success('Taux mis à jour'); setEditing(null); },
+      onError: () => toast.error('Erreur lors de la mise à jour'),
+    });
+  };
+
+  const currencyDef = (code: string) => CURRENCIES.find(c => c.code === code);
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle className="flex items-center gap-2 text-base">
+          <Euro className="w-4 h-4 text-primary" />
+          {t('admin_settings.exchange_rates_title')}
+        </CardTitle>
+        <CardDescription>{t('admin_settings.exchange_rates_desc')}</CardDescription>
+      </CardHeader>
+      <CardContent>
+        {isLoading ? (
+          <div className="flex justify-center py-6"><Loader2 className="w-5 h-5 animate-spin text-muted-foreground" /></div>
+        ) : (
+          <div className="space-y-2">
+            <p className="text-xs text-muted-foreground mb-3">{t('admin_settings.exchange_rates_hint')}</p>
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2">
+              {rates.map(r => {
+                const def = currencyDef(r.currency_code);
+                const isEur = r.currency_code === 'EUR';
+                return (
+                  <div key={r.currency_code} className="flex items-center gap-2 px-3 py-2.5 rounded-xl border border-border/60 bg-muted/20">
+                    <span className="font-mono text-sm font-bold w-10 shrink-0 text-primary">{r.symbol || r.currency_code}</span>
+                    <div className="flex-1 min-w-0">
+                      <p className="text-xs font-medium truncate">{def?.name ?? r.name_fr ?? r.currency_code}</p>
+                      <p className="text-[10px] text-muted-foreground font-mono">{r.currency_code}</p>
+                    </div>
+                    {isEur ? (
+                      <span className="text-sm font-mono text-muted-foreground">= 1.00</span>
+                    ) : editing === r.currency_code ? (
+                      <div className="flex items-center gap-1 shrink-0">
+                        <input
+                          type="number"
+                          step="0.0001"
+                          min="0.0001"
+                          value={editValue}
+                          onChange={e => setEditValue(e.target.value)}
+                          onKeyDown={e => { if (e.key === 'Enter') saveEdit(r.currency_code); if (e.key === 'Escape') setEditing(null); }}
+                          className="w-20 h-7 text-xs px-2 rounded-lg border border-primary bg-background font-mono focus:outline-none"
+                          autoFocus
+                        />
+                        <button
+                          onClick={() => saveEdit(r.currency_code)}
+                          className="w-7 h-7 rounded-lg bg-primary text-primary-foreground flex items-center justify-center hover:bg-primary/90"
+                        >
+                          {updateRate.isPending ? <Loader2 className="w-3 h-3 animate-spin" /> : <Check className="w-3 h-3" />}
+                        </button>
+                      </div>
+                    ) : (
+                      <div className="flex items-center gap-1 shrink-0">
+                        <span className="text-sm font-mono">{Number(r.rate_vs_eur).toFixed(4)}</span>
+                        <button
+                          onClick={() => startEdit(r.currency_code, Number(r.rate_vs_eur))}
+                          className="w-6 h-6 rounded-md text-muted-foreground hover:text-foreground hover:bg-muted flex items-center justify-center transition-colors"
+                        >
+                          <Pencil className="w-3 h-3" />
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+            {rates.length > 0 && (
+              <p className="text-[10px] text-muted-foreground mt-2">
+                {t('admin_settings.exchange_rates_updated')}: {new Date(rates[0]?.updated_at ?? '').toLocaleDateString('fr-FR')}
+              </p>
+            )}
+          </div>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
 
 export default function AdminSettings() {
   const { t } = useTranslation();
@@ -404,6 +503,9 @@ export default function AdminSettings() {
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
+
+      {/* ── 5. Exchange rates ── */}
+      <ExchangeRatesCard />
 
       {/* Purge confirmation dialog */}
       <AlertDialog open={!!purgeConfirm} onOpenChange={open => !open && setPurgeConfirm(null)}>

@@ -39,6 +39,7 @@ const Fixtures = lazy(() => import("@/pages/Fixtures"));
 const MyMatches = lazy(() => import("@/pages/MyMatches"));
 const MyChampionships = lazy(() => import("@/pages/MyChampionships"));
 const OrgRoadmap = lazy(() => import("@/pages/OrgRoadmap"));
+const OrgChat = lazy(() => import("@/pages/OrgChat"));
 const Contacts = lazy(() => import("@/pages/Contacts"));
 const ForgotPassword = lazy(() => import("@/pages/ForgotPassword"));
 const ResetPassword = lazy(() => import("@/pages/ResetPassword"));
@@ -53,6 +54,7 @@ const Discover = lazy(() => import("@/pages/Discover"));
 const Community = lazy(() => import("@/pages/Community"));
 const News = lazy(() => import("@/pages/News"));
 const Buzz = lazy(() => import("@/pages/Buzz"));
+const BuzzArticle = lazy(() => import("@/pages/BuzzArticle"));
 const XPage = lazy(() => import("@/pages/X"));
 const Instagram = lazy(() => import("@/pages/Instagram"));
 const UserProfile = lazy(() => import("@/pages/UserProfile"));
@@ -143,16 +145,19 @@ const App = () => (
                 <Route path="/premium-success" element={<PremiumSuccess />} />
                 <Route path="/account" element={<Account />} />
                 <Route path="/organization" element={<Organization />} />
-                <Route path="/organization/:orgSlug" element={<Organization />} />
+                <Route path="/organization/:orgSlug" element={<Navigate to="squad" replace />} />
+                <Route path="/organization/:orgSlug/settings" element={<Organization />} />
                 <Route path="/organization/:orgSlug/squad" element={<Squad />} />
                 <Route path="/organization/:orgSlug/players" element={<OrgPlayers />} />
                 <Route path="/organization/:orgSlug/player/:id" element={<PlayerProfile />} />
                 <Route path="/organization/:orgSlug/roadmap" element={<OrgRoadmap />} />
+                <Route path="/organization/:orgSlug/chat" element={<OrgChat />} />
                 <Route path="/booking" element={<Booking />} />
                 <Route path="/discover" element={<Discover />} />
                 <Route path="/community" element={<Community />} />
                 <Route path="/news" element={<News />} />
                 <Route path="/buzz" element={<Buzz />} />
+                <Route path="/buzz/article" element={<BuzzArticle />} />
                 <Route path="/x" element={<XPage />} />
                 <Route path="/instagram" element={<Instagram />} />
                 <Route path="/profile/:userId" element={<UserProfile />} />

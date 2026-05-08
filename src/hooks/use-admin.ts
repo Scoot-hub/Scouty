@@ -47,6 +47,22 @@ export function useCanAction(pageKey: string, action: string = 'view') {
   return val !== false;
 }
 
+export function useIsAdminOrModerator() {
+  const { user } = useAuth();
+  return useQuery({
+    queryKey: ['is-admin-or-moderator', user?.id],
+    queryFn: async () => {
+      if (!user) return false;
+      const res = await fetch(`${API_BASE}/my-permissions`, { credentials: 'include' });
+      if (!res.ok) return false;
+      const data = await res.json();
+      return (data.roles || []).some((r: string) => r === 'admin' || r === 'moderator');
+    },
+    enabled: !!user,
+    staleTime: 5 * 60 * 1000,
+  });
+}
+
 export function useIsPremium() {
   const { user } = useAuth();
   return useQuery({

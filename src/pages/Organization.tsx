@@ -404,12 +404,12 @@ function OrganizationDashboard({ org, userId }: { org: Record<string, unknown>; 
   const typeLabel = ORG_TYPES.find(ot => ot.value === org.type);
 
   return (
-    <div className="max-w-2xl mx-auto space-y-6">
+    <div className="space-y-6 pb-10">
       {/* Tab bar (includes persistent org header) */}
       <OrgTabBar orgName={org.name as string} />
 
-      {/* ── Paramètres ── */}
-      {isAdmin && (
+      <div className="max-w-2xl space-y-4">
+        {isAdmin && (
         <Card>
           <CardHeader>
             <CardTitle className="flex items-center gap-2 text-base">
@@ -747,6 +747,7 @@ function OrganizationDashboard({ org, userId }: { org: Record<string, unknown>; 
           </CardContent>
         </Card>
       )}
+      </div>
     </div>
   );
 }

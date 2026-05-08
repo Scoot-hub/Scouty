@@ -4,6 +4,30 @@ export type PlayerTask = 'À voir' | 'À revoir' | 'À suivre';
 export type Foot = 'Gaucher' | 'Droitier' | 'Ambidextre';
 export type Position = 'GK' | 'DC' | 'LD' | 'LG' | 'MDef' | 'MC' | 'MO' | 'AD' | 'AG' | 'ATT';
 export type Zone = 'Gardien' | 'Défenseur' | 'Milieu' | 'Attaquant';
+export type PlayerType = 'player' | 'coach';
+
+export const COACHING_LICENSES = [
+  'UEFA Pro', 'UEFA A', 'UEFA B', 'UEFA C', 'UEFA Futsal A',
+  'FFF Fédéral 1', 'FFF Fédéral 2', 'FFF Fédéral 3', 'Autre',
+] as const;
+export type CoachingLicense = typeof COACHING_LICENSES[number];
+
+export const COACH_ROLES = [
+  'Entraîneur principal', 'Entraîneur adjoint', 'Entraîneur des gardiens',
+  'Entraîneur athlétique', 'Analyste vidéo', 'Directeur sportif', 'Autre',
+] as const;
+
+export interface CoachCareerEntry {
+  club: string;
+  club_logo?: string | null;
+  from: string;
+  to: string;
+  role?: string | null;
+  games?: number | null;
+  wins?: number | null;
+  draws?: number | null;
+  losses?: number | null;
+}
 
 export interface Player {
   id: string;
@@ -22,6 +46,7 @@ export interface Player {
   potential: number;
   general_opinion: Opinion;
   contract_end?: string;
+  contract_start?: string;
   notes?: string;
   ts_report_published: boolean;
   date_of_birth?: string;
@@ -34,6 +59,13 @@ export interface Player {
   has_news?: string | null;
   is_archived?: boolean;
   social_instagram?: string | null;
+  // Coach-specific fields
+  player_type?: PlayerType;
+  coaching_license?: CoachingLicense | string | null;
+  coaching_preferred_formation?: string | null;
+  coaching_style?: string | null;
+  coaching_career?: CoachCareerEntry[] | null;
+  tm_coach_id?: string | null;
   created_at: string;
   updated_at: string;
 }

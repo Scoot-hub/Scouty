@@ -177,8 +177,10 @@ export interface SofascoreTeam {
   losses?: number;
   goalsFor?: number;
   goalsAgainst?: number;
+  goalDifference?: number;
   description?: string | null;
   promotionDescription?: string | null;
+  noteColor?: string | null;
 }
 
 export interface ChampionshipPlayerLink {
@@ -349,29 +351,111 @@ export function getChampionshipCountry(name: string): string {
   return LEAGUE_COUNTRY[name] ?? 'Autre';
 }
 
-/** Fetch live team data from SofaScore (standings, team IDs for logos) */
-export function useSofascoreLeague(sofascoreId: number | null) {
+/** Fetch team standings from ESPN (current or historical season) */
+export interface StandingsResult {
+  season: { name: string } | null;
+  seasonYear: number | null;
+  teams: SofascoreTeam[];
+  fetched_at: string | null;
+  from_cache: boolean;
+  stale?: boolean;
+}
+
+async function fetchStandings(sofascoreId: number, seasonYear: number | null, refresh = false, championshipName?: string): Promise<StandingsResult> {
+  const resp = await fetch('/api/functions/sofascore-league', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    credentials: 'include',
+    body: JSON.stringify({ tournamentId: sofascoreId, seasonYear: seasonYear ?? null, refresh, championshipName }),
+  });
+  if (!resp.ok) throw new Error(`Standings ${resp.status}`);
+  const data = await resp.json();
+  console.debug('[standings] raw response:', { source: data.source, teams: data.teams?.length, season: data.season, error: data.error });
+  return {
+    season: data.season ?? null,
+    seasonYear: data.seasonYear ?? null,
+    fetched_at: data.fetched_at ?? null,
+    from_cache: data.from_cache ?? false,
+    stale: data.stale ?? false,
+    teams: (data.teams ?? []).map((t: Record<string, unknown>) => ({
+      ...t,
+      logoUrl: (t.logoUrl as string) || (t.id ? getTeamLogoUrl(t.id as number) : ''),
+    })),
+  };
+}
+
+export function useSofascoreLeague(sofascoreId: number | null, seasonYear?: number | null, championshipName?: string) {
   return useQuery({
-    queryKey: ['sofascore-league', sofascoreId],
+    queryKey: ['sofascore-league', sofascoreId, seasonYear ?? 'current'],
     enabled: !!sofascoreId,
-    staleTime: 30 * 60 * 1000, // 30 min
-    queryFn: async (): Promise<{ season: unknown; teams: SofascoreTeam[] }> => {
-      const resp = await fetch('/api/functions/sofascore-league', {
+    staleTime: 60 * 60 * 1000,
+    queryFn: () => fetchStandings(sofascoreId!, seasonYear ?? null, false, championshipName),
+  });
+}
+
+export function useRefreshStandings() {
+  const qc = useQueryClient();
+  return async (sofascoreId: number, seasonYear: number | null, championshipName?: string) => {
+    const fresh = await fetchStandings(sofascoreId, seasonYear, true, championshipName);
+    qc.setQueryData(['sofascore-league', sofascoreId, seasonYear ?? 'current'], fresh);
+    return fresh;
+  };
+}
+
+const API_BASE_CHAMP = (typeof import.meta !== 'undefined' && (import.meta as any).env?.API_URL || '/api').replace(/\/$/, '');
+
+export interface ChampionshipCustomClub { name: string; added_by: string | null; created_at: string }
+
+export function useChampionshipCustomClubs(championshipName: string | null) {
+  return useQuery({
+    queryKey: ['championship-custom-clubs', championshipName],
+    enabled: !!championshipName,
+    staleTime: 2 * 60 * 1000,
+    queryFn: async (): Promise<ChampionshipCustomClub[]> => {
+      const res = await fetch(`${API_BASE_CHAMP}/championships/${encodeURIComponent(championshipName!)}/clubs`, { credentials: 'include' });
+      if (!res.ok) return [];
+      return res.json();
+    },
+  });
+}
+
+export function useAddChampionshipClub() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async ({ championshipName, clubName }: { championshipName: string; clubName: string }) => {
+      const res = await fetch(`${API_BASE_CHAMP}/championships/${encodeURIComponent(championshipName)}/clubs`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         credentials: 'include',
-        body: JSON.stringify({ tournamentId: sofascoreId }),
+        body: JSON.stringify({ clubName }),
       });
-      if (!resp.ok) throw new Error(`SofaScore ${resp.status}`);
-      const data = await resp.json();
-      return {
-        season: data.season,
-        teams: (data.teams ?? []).map((t: Record<string, unknown>) => ({
-          ...t,
-          // Use the ESPN CDN logo when provided; fall back to Sofascore for legacy cache entries
-          logoUrl: (t.logoUrl as string) || (t.id ? getTeamLogoUrl(t.id as number) : ''),
-        })),
-      };
+      if (!res.ok) { const d = await res.json().catch(() => ({})); throw new Error(d.error || `HTTP ${res.status}`); }
     },
+    onSuccess: (_d, vars) => queryClient.invalidateQueries({ queryKey: ['championship-custom-clubs', vars.championshipName] }),
+  });
+}
+
+export function useRemoveChampionshipClub() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async ({ championshipName, clubName }: { championshipName: string; clubName: string }) => {
+      const res = await fetch(`${API_BASE_CHAMP}/championships/${encodeURIComponent(championshipName)}/clubs/${encodeURIComponent(clubName)}`, {
+        method: 'DELETE',
+        credentials: 'include',
+      });
+      if (!res.ok) { const d = await res.json().catch(() => ({})); throw new Error(d.error || `HTTP ${res.status}`); }
+    },
+    onSuccess: (_d, vars) => queryClient.invalidateQueries({ queryKey: ['championship-custom-clubs', vars.championshipName] }),
+  });
+}
+
+/** Generate a list of available season years (current season going back N years) */
+export function getAvailableSeasons(count = 6): { year: number; label: string }[] {
+  const now = new Date();
+  // Football season starting year: if before July → current "start" year is previous calendar year
+  const currentStartYear = now.getMonth() >= 6 ? now.getFullYear() : now.getFullYear() - 1;
+  return Array.from({ length: count }, (_, i) => {
+    const year = currentStartYear - i;
+    return { year, label: `${year}–${String(year + 1).slice(2)}` };
   });
 }

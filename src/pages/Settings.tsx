@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useRef, useEffect } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useAuth, INACTIVITY_TIMEOUT_KEY } from '@/contexts/AuthContext';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
@@ -11,7 +11,8 @@ import {
   Settings2, Globe, Pencil, Trash2, Eye, EyeOff, BellOff, MessageSquareOff,
   Type, Hash, ListOrdered, Link2, ToggleLeft, User, CalendarDays, Trophy,
   Plus, GripVertical, ShieldAlert, Plug, CheckCircle2, XCircle, Loader2,
-  KeyRound, ExternalLink, Crown, Bell, Mail, BellRing,
+  KeyRound, ExternalLink, Crown, Bell, Mail, BellRing, Clock, Ruler, X,
+  Euro, FileText, AlertTriangle,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -19,6 +20,7 @@ import LanguageSwitcher from '@/components/LanguageSwitcher';
 import ThemeSwitcher from '@/components/ThemeSwitcher';
 import { Switch } from '@/components/ui/switch';
 import { useUiPreferences } from '@/contexts/UiPreferencesContext';
+import { CURRENCIES } from '@/lib/format-utils';
 import { toast } from 'sonner';
 import { Badge } from '@/components/ui/badge';
 import {
@@ -140,6 +142,134 @@ function NotifRow({
   );
 }
 
+// ── Timezone utilities ─────────────────────────────────────────────────────────
+
+function getTimezoneOffset(tz: string): string {
+  try {
+    const parts = new Intl.DateTimeFormat('en', {
+      timeZone: tz, timeZoneName: 'shortOffset',
+    }).formatToParts(new Date());
+    const offset = parts.find(p => p.type === 'timeZoneName')?.value ?? 'UTC';
+    return offset === 'GMT' ? 'UTC+0' : offset.replace('GMT', 'UTC');
+  } catch { return ''; }
+}
+
+function getAllTimezones(): string[] {
+  try {
+    const supported = (Intl as unknown as { supportedValuesOf?: (key: string) => string[] })
+      .supportedValuesOf?.('timeZone');
+    if (supported?.length) return supported;
+  } catch {}
+  // Curated fallback list
+  return [
+    'UTC',
+    'Africa/Abidjan','Africa/Algiers','Africa/Cairo','Africa/Casablanca','Africa/Johannesburg',
+    'Africa/Lagos','Africa/Nairobi','Africa/Tunis',
+    'America/Bogota','America/Buenos_Aires','America/Chicago','America/Denver',
+    'America/Lima','America/Los_Angeles','America/Mexico_City','America/New_York',
+    'America/Sao_Paulo','America/Toronto','America/Vancouver',
+    'Asia/Bangkok','Asia/Colombo','Asia/Dubai','Asia/Jakarta','Asia/Karachi',
+    'Asia/Kolkata','Asia/Seoul','Asia/Shanghai','Asia/Singapore','Asia/Tokyo',
+    'Atlantic/Reykjavik',
+    'Australia/Melbourne','Australia/Sydney',
+    'Europe/Amsterdam','Europe/Athens','Europe/Belgrade','Europe/Berlin',
+    'Europe/Brussels','Europe/Budapest','Europe/Copenhagen','Europe/Dublin',
+    'Europe/Helsinki','Europe/Istanbul','Europe/Kyiv','Europe/Lisbon',
+    'Europe/London','Europe/Luxembourg','Europe/Madrid','Europe/Moscow',
+    'Europe/Oslo','Europe/Paris','Europe/Prague','Europe/Rome',
+    'Europe/Stockholm','Europe/Vienna','Europe/Warsaw','Europe/Zurich',
+    'Indian/Mauritius','Indian/Reunion',
+    'Pacific/Auckland','Pacific/Fiji','Pacific/Honolulu',
+  ];
+}
+
+function TimezoneSelect({ value, onChange }: { value: string; onChange: (tz: string) => void }) {
+  const [query, setQuery] = useState('');
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+  const allTz = getAllTimezones();
+  const browserTz = (() => { try { return Intl.DateTimeFormat().resolvedOptions().timeZone; } catch { return 'UTC'; } })();
+
+  const filtered = query.trim()
+    ? allTz.filter(tz => tz.toLowerCase().includes(query.toLowerCase())).slice(0, 60)
+    : allTz.slice(0, 80);
+
+  useEffect(() => {
+    const handler = (e: MouseEvent) => {
+      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
+    };
+    document.addEventListener('mousedown', handler);
+    return () => document.removeEventListener('mousedown', handler);
+  }, []);
+
+  const displayValue = value ? `${value.split('/').pop()?.replace(/_/g, ' ')} (${getTimezoneOffset(value)})` : '';
+
+  return (
+    <div className="relative" ref={ref}>
+      <div className="relative flex items-center">
+        <Clock className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground pointer-events-none" />
+        <input
+          type="text"
+          value={open ? query : displayValue}
+          onChange={e => { setQuery(e.target.value); setOpen(true); }}
+          onFocus={() => { setOpen(true); setQuery(''); }}
+          onBlur={() => { if (!open) setQuery(''); }}
+          placeholder="Europe/Paris"
+          autoComplete="off"
+          className="w-full h-9 pl-9 pr-8 rounded-md border border-input bg-background text-sm ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
+        />
+        {query && open && (
+          <button
+            type="button"
+            onClick={() => { setQuery(''); }}
+            className="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
+          >
+            <X className="w-3.5 h-3.5" />
+          </button>
+        )}
+      </div>
+
+      {open && (
+        <div className="absolute z-50 top-full left-0 right-0 mt-1 max-h-60 overflow-y-auto rounded-xl border bg-popover shadow-xl">
+          <div className="p-1 space-y-0.5">
+            {/* Browser timezone shortcut */}
+            {!query && browserTz !== value && (
+              <button
+                type="button"
+                onClick={() => { onChange(browserTz); setOpen(false); setQuery(''); }}
+                className="w-full flex items-center gap-2 px-2.5 py-2 rounded-lg text-sm text-left hover:bg-muted transition-colors text-primary"
+              >
+                <Clock className="w-3.5 h-3.5 shrink-0" />
+                <span className="flex-1 truncate font-medium">{browserTz.split('/').pop()?.replace(/_/g, ' ')}</span>
+                <span className="text-xs text-muted-foreground shrink-0">{getTimezoneOffset(browserTz)} · navigateur</span>
+              </button>
+            )}
+            {filtered.map(tz => {
+              const city = tz.split('/').pop()?.replace(/_/g, ' ') ?? tz;
+              const region = tz.includes('/') ? tz.split('/')[0] : '';
+              const offset = getTimezoneOffset(tz);
+              return (
+                <button
+                  key={tz}
+                  type="button"
+                  onClick={() => { onChange(tz); setOpen(false); setQuery(''); }}
+                  className={`w-full flex items-center gap-2 px-2.5 py-1.5 rounded-lg text-sm text-left hover:bg-muted transition-colors ${value === tz ? 'bg-primary/10 text-primary font-medium' : ''}`}
+                >
+                  <span className="flex-1 min-w-0">
+                    <span className="font-medium truncate block">{city}</span>
+                    {region && <span className="text-[11px] text-muted-foreground">{region}</span>}
+                  </span>
+                  <span className="text-xs text-muted-foreground shrink-0 font-mono">{offset}</span>
+                </button>
+              );
+            })}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ── Main component ────────────────────────────────────────────────────────────
 
 export default function Settings() {
@@ -153,12 +283,20 @@ export default function Settings() {
     hideRestrictedElements,
     weekStartDay,
     distanceUnit,
+    timezone,
+    currency,
+    dateFormat,
+    timeFormat,
     setReducedVisionMode,
     setShowNotifications,
     setShowChatbot,
     setHideRestrictedElements,
     setWeekStartDay,
     setDistanceUnit,
+    setTimezone,
+    setCurrency,
+    setDateFormat,
+    setTimeFormat,
   } = useUiPreferences();
 
   const { data: isPremium } = useIsPremium();
@@ -302,7 +440,7 @@ export default function Settings() {
 
             {/* Régionalisation */}
             <Card>
-              <CardHeader>
+              <CardHeader className="pb-3">
                 <CardTitle className="flex items-center gap-2 text-base">
                   <CalendarDays className="w-4 h-4 text-primary" />
                   {t('settings.regional_title')}
@@ -310,46 +448,137 @@ export default function Settings() {
                 <CardDescription>{t('settings.regional_desc')}</CardDescription>
               </CardHeader>
               <CardContent className="space-y-4">
+
                 <div>
-                  <label className="text-xs font-semibold uppercase tracking-wider text-muted-foreground block mb-2">
-                    {t('settings.week_start')}
+                  <label className="flex items-center gap-1.5 text-sm font-medium mb-1.5">
+                    <Clock className="w-3.5 h-3.5 text-primary shrink-0" />
+                    {t('settings.timezone')}
                   </label>
-                  <Select
-                    value={String(weekStartDay)}
-                    onValueChange={(v) => {
-                      setWeekStartDay(Number(v) as 0 | 1);
-                      toast.success(t('settings.saved'));
-                    }}
-                  >
-                    <SelectTrigger className="w-full rounded-xl">
+                  <TimezoneSelect
+                    value={timezone}
+                    onChange={(v) => { setTimezone(v); toast.success(t('settings.saved')); }}
+                  />
+                  <p className="text-[11px] text-muted-foreground mt-1">{t('settings.timezone_desc')}</p>
+                </div>
+
+                <div className="grid grid-cols-2 gap-3">
+                  <div>
+                    <label className="flex items-center gap-1.5 text-sm font-medium mb-1.5">
+                      <CalendarDays className="w-3.5 h-3.5 text-primary shrink-0" />
+                      {t('settings.week_start')}
+                    </label>
+                    <Select
+                      value={String(weekStartDay)}
+                      onValueChange={(v) => { setWeekStartDay(Number(v) as 0 | 1); toast.success(t('settings.saved')); }}
+                    >
+                      <SelectTrigger className="w-full rounded-xl h-9">
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="1">{t('settings.week_start_monday')}</SelectItem>
+                        <SelectItem value="0">{t('settings.week_start_sunday')}</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
+
+                  <div>
+                    <label className="flex items-center gap-1.5 text-sm font-medium mb-1.5">
+                      <Ruler className="w-3.5 h-3.5 text-primary shrink-0" />
+                      {t('settings.distance_unit')}
+                    </label>
+                    <Select
+                      value={distanceUnit}
+                      onValueChange={(v) => { setDistanceUnit(v as 'km' | 'mi'); toast.success(t('settings.saved')); }}
+                    >
+                      <SelectTrigger className="w-full rounded-xl h-9">
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="km">{t('settings.distance_km')}</SelectItem>
+                        <SelectItem value="mi">{t('settings.distance_mi')}</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
+                </div>
+
+              </CardContent>
+            </Card>
+
+            {/* Affichage — devise, format de date, format d'heure */}
+            <Card>
+              <CardHeader className="pb-3">
+                <CardTitle className="flex items-center gap-2 text-base">
+                  <Euro className="w-4 h-4 text-primary" />
+                  {t('settings.display_title')}
+                </CardTitle>
+                <CardDescription>{t('settings.display_desc')}</CardDescription>
+              </CardHeader>
+              <CardContent className="space-y-4">
+
+                <div>
+                  <label className="flex items-center gap-1.5 text-sm font-medium mb-1.5">
+                    <Euro className="w-3.5 h-3.5 text-primary shrink-0" />
+                    {t('settings.currency')}
+                  </label>
+                  <Select value={currency} onValueChange={(v) => { setCurrency(v); toast.success(t('settings.saved')); }}>
+                    <SelectTrigger className="w-full rounded-xl h-9">
                       <SelectValue />
                     </SelectTrigger>
                     <SelectContent>
-                      <SelectItem value="1">{t('settings.week_start_monday')}</SelectItem>
-                      <SelectItem value="0">{t('settings.week_start_sunday')}</SelectItem>
+                      {CURRENCIES.map(c => (
+                        <SelectItem key={c.code} value={c.code}>
+                          <span className="font-mono text-xs mr-2 text-muted-foreground">{c.symbol}</span>
+                          {c.name} <span className="text-muted-foreground">({c.code})</span>
+                        </SelectItem>
+                      ))}
                     </SelectContent>
                   </Select>
+                  <p className="text-[11px] text-muted-foreground mt-1">{t('settings.currency_desc')}</p>
                 </div>
-                <div>
-                  <label className="text-xs font-semibold uppercase tracking-wider text-muted-foreground block mb-2">
-                    {t('settings.distance_unit')}
-                  </label>
-                  <Select
-                    value={distanceUnit}
-                    onValueChange={(v) => {
-                      setDistanceUnit(v as 'km' | 'mi');
-                      toast.success(t('settings.saved'));
-                    }}
-                  >
-                    <SelectTrigger className="w-full rounded-xl">
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="km">{t('settings.distance_km')}</SelectItem>
-                      <SelectItem value="mi">{t('settings.distance_mi')}</SelectItem>
-                    </SelectContent>
-                  </Select>
+
+                <div className="grid grid-cols-2 gap-3">
+                  <div>
+                    <label className="flex items-center gap-1.5 text-sm font-medium mb-1.5">
+                      <CalendarDays className="w-3.5 h-3.5 text-primary shrink-0" />
+                      {t('settings.date_format')}
+                    </label>
+                    <Select value={dateFormat} onValueChange={(v) => { setDateFormat(v as 'DD/MM/YYYY' | 'MM/DD/YYYY' | 'YYYY-MM-DD'); toast.success(t('settings.saved')); }}>
+                      <SelectTrigger className="w-full rounded-xl h-9 font-mono text-xs">
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="DD/MM/YYYY">DD/MM/YYYY</SelectItem>
+                        <SelectItem value="MM/DD/YYYY">MM/DD/YYYY</SelectItem>
+                        <SelectItem value="YYYY-MM-DD">YYYY-MM-DD</SelectItem>
+                      </SelectContent>
+                    </Select>
+                    <p className="text-[11px] text-muted-foreground mt-1 font-mono">
+                      {dateFormat === 'DD/MM/YYYY' ? '08/05/2026'
+                        : dateFormat === 'MM/DD/YYYY' ? '05/08/2026'
+                        : '2026-05-08'}
+                    </p>
+                  </div>
+
+                  <div>
+                    <label className="flex items-center gap-1.5 text-sm font-medium mb-1.5">
+                      <Clock className="w-3.5 h-3.5 text-primary shrink-0" />
+                      {t('settings.time_format')}
+                    </label>
+                    <Select value={timeFormat} onValueChange={(v) => { setTimeFormat(v as '24h' | '12h'); toast.success(t('settings.saved')); }}>
+                      <SelectTrigger className="w-full rounded-xl h-9">
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="24h">24h</SelectItem>
+                        <SelectItem value="12h">12h AM/PM</SelectItem>
+                      </SelectContent>
+                    </Select>
+                    <p className="text-[11px] text-muted-foreground mt-1 font-mono">
+                      {timeFormat === '24h' ? 'ex: 14:30' : 'ex: 2:30 PM'}
+                    </p>
+                  </div>
                 </div>
+
               </CardContent>
             </Card>
 
@@ -517,6 +746,70 @@ export default function Settings() {
                 </CardContent>
               </Card>
             </div>
+
+            {/* ── Alertes & Rappels ── */}
+            <Card>
+              <CardHeader className="pb-3">
+                <CardTitle className="flex items-center gap-2 text-base">
+                  <AlertTriangle className="w-4 h-4 text-primary" />
+                  {t('settings.alerts_title')}
+                </CardTitle>
+                <CardDescription>{t('settings.alerts_desc')}</CardDescription>
+              </CardHeader>
+              <CardContent className="grid grid-cols-2 gap-4">
+
+                <div>
+                  <label className="flex items-center gap-1.5 text-sm font-medium mb-1.5">
+                    <FileText className="w-3.5 h-3.5 text-primary shrink-0" />
+                    {t('settings.alert_no_report')}
+                  </label>
+                  <Select
+                    value={String(notifPrefs?.alert_no_report_days ?? 30)}
+                    onValueChange={(v) => {
+                      saveNotifPrefs.mutate({ ...notifPrefs, alert_no_report_days: Number(v) as 0 | 7 | 30 });
+                      toast.success(t('settings.saved'));
+                    }}
+                  >
+                    <SelectTrigger className="w-full rounded-xl h-9">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="0">{t('settings.alert_never')}</SelectItem>
+                      <SelectItem value="7">{t('settings.alert_7d')}</SelectItem>
+                      <SelectItem value="30">{t('settings.alert_30d')}</SelectItem>
+                    </SelectContent>
+                  </Select>
+                  <p className="text-[11px] text-muted-foreground mt-1">{t('settings.alert_no_report_desc')}</p>
+                </div>
+
+                <div>
+                  <label className="flex items-center gap-1.5 text-sm font-medium mb-1.5">
+                    <AlertTriangle className="w-3.5 h-3.5 text-primary shrink-0" />
+                    {t('settings.alert_contract')}
+                  </label>
+                  <Select
+                    value={String(notifPrefs?.alert_contract_months ?? 3)}
+                    onValueChange={(v) => {
+                      saveNotifPrefs.mutate({ ...notifPrefs, alert_contract_months: Number(v) as 0 | 3 | 6 | 12 });
+                      toast.success(t('settings.saved'));
+                    }}
+                  >
+                    <SelectTrigger className="w-full rounded-xl h-9">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="0">{t('settings.alert_never')}</SelectItem>
+                      <SelectItem value="3">{t('settings.alert_3m')}</SelectItem>
+                      <SelectItem value="6">{t('settings.alert_6m')}</SelectItem>
+                      <SelectItem value="12">{t('settings.alert_12m')}</SelectItem>
+                    </SelectContent>
+                  </Select>
+                  <p className="text-[11px] text-muted-foreground mt-1">{t('settings.alert_contract_desc')}</p>
+                </div>
+
+              </CardContent>
+            </Card>
+
           </div>
         </TabsContent>
 

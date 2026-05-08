@@ -460,6 +460,7 @@ const ALLOWED_TABLES = {
     "current_level", "potential", "general_opinion", "contract_end", "notes", "ts_report_published", "date_of_birth", "market_value",
     "transfermarkt_id", "external_data", "external_data_fetched_at", "shared_with_org", "has_news", "task", "is_archived", "user_id", "created_at", "updated_at",
     "social_instagram",
+    "player_type", "coaching_license", "coaching_preferred_formation", "coaching_style", "coaching_career", "tm_coach_id", "contract_start",
   ],
   reports: ["id", "player_id", "report_date", "title", "opinion", "drive_link", "file_url", "user_id", "created_at"],
   custom_fields: ["id", "user_id", "field_name", "field_type", "field_options", "display_order", "created_at"],
@@ -477,7 +478,7 @@ const ALLOWED_TABLES = {
   organization_members: ["id", "organization_id", "user_id", "role", "joined_at"],
   player_org_shares: ["id", "player_id", "organization_id", "user_id", "created_at"],
   match_assignments: ["id", "user_id", "organization_id", "assigned_to", "assigned_by", "home_team", "away_team", "match_date", "match_time", "competition", "venue", "home_badge", "away_badge", "notes", "status", "created_at", "updated_at"],
-  community_posts: ["id", "user_id", "author_name", "category", "title", "content", "likes", "replies_count", "is_archived", "views", "is_pinned", "display_order", "created_at"],
+  community_posts: ["id", "user_id", "author_name", "category", "title", "content", "likes", "replies_count", "is_archived", "views", "is_pinned", "display_order", "is_closed", "accepted_reply_id", "closed_by", "closed_at", "created_at"],
   community_replies: ["id", "post_id", "user_id", "author_name", "content", "created_at"],
   community_likes: ["id", "post_id", "user_id", "created_at"],
 };
@@ -1100,6 +1101,10 @@ async function _legacyRunMigrations() {
     'views INT NOT NULL DEFAULT 0',
     'is_pinned TINYINT(1) NOT NULL DEFAULT 0',
     'display_order INT NOT NULL DEFAULT 0',
+    'is_closed TINYINT(1) NOT NULL DEFAULT 0',
+    'accepted_reply_id CHAR(36) NULL',
+    'closed_by CHAR(36) NULL',
+    'closed_at DATETIME NULL',
   ]) {
     try { await pool.query(`ALTER TABLE community_posts ADD COLUMN ${col}`); } catch { /* already exists */ }
   }
@@ -1126,6 +1131,13 @@ async function _legacyRunMigrations() {
     "wyscout_team_in_timeframe VARCHAR(255) NULL",
     "wyscout_stats JSON NULL",
     "social_instagram VARCHAR(255) NULL",
+    "player_type ENUM('player','coach') NOT NULL DEFAULT 'player'",
+    "coaching_license VARCHAR(100) NULL",
+    "coaching_preferred_formation VARCHAR(50) NULL",
+    "coaching_style TEXT NULL",
+    "coaching_career JSON NULL",
+    "tm_coach_id VARCHAR(50) NULL",
+    "contract_start DATE NULL",
   ]) {
     try { await pool.query(`ALTER TABLE players ADD COLUMN ${col}`); } catch { /* already exists */ }
   }
@@ -1781,6 +1793,158 @@ async function _legacyRunMigrations() {
     await pool.query("ALTER TABLE users ADD COLUMN notification_prefs TEXT NULL");
   } catch (err) { if (err?.errno !== 1060) console.warn("[warn] notification_prefs migration:", err?.message); }
 
+  // ── Org chat tables ────────────────────────────────────────────────────────
+  try {
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS org_messages (
+        id           CHAR(36)      NOT NULL PRIMARY KEY,
+        org_id       CHAR(36)      NOT NULL,
+        user_id      CHAR(36)      NOT NULL,
+        content      TEXT          NOT NULL,
+        reply_to_id  CHAR(36)      NULL,
+        edited_at    DATETIME      NULL,
+        deleted_at   DATETIME      NULL,
+        created_at   DATETIME      NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        INDEX idx_org_msg      (org_id, created_at),
+        FOREIGN KEY (org_id)       REFERENCES organizations(id) ON DELETE CASCADE,
+        FOREIGN KEY (user_id)      REFERENCES users(id)         ON DELETE CASCADE,
+        FOREIGN KEY (reply_to_id)  REFERENCES org_messages(id)  ON DELETE SET NULL
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+    `);
+  } catch (err) { if (!err?.message?.includes('already exists')) console.warn('[warn] org_messages:', err?.message); }
+
+  // Upgrade org_messages.content VARCHAR(512) → TEXT (if already created with old type)
+  try {
+    await pool.query(`ALTER TABLE org_messages MODIFY COLUMN content TEXT NOT NULL`);
+  } catch (err) {
+    // Ignore if type already correct or table doesn't exist yet
+  }
+
+  try {
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS org_message_reactions (
+        message_id CHAR(36)    NOT NULL,
+        user_id    CHAR(36)    NOT NULL,
+        emoji      VARCHAR(10) NOT NULL,
+        created_at DATETIME    NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        PRIMARY KEY (message_id, user_id, emoji),
+        FOREIGN KEY (message_id) REFERENCES org_messages(id) ON DELETE CASCADE,
+        FOREIGN KEY (user_id)    REFERENCES users(id)         ON DELETE CASCADE
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+    `);
+  } catch (err) { if (!err?.message?.includes('already exists')) console.warn('[warn] org_message_reactions:', err?.message); }
+
+  try {
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS org_message_reads (
+        org_id      CHAR(36) NOT NULL,
+        user_id     CHAR(36) NOT NULL,
+        last_read_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        PRIMARY KEY (org_id, user_id),
+        FOREIGN KEY (org_id)  REFERENCES organizations(id) ON DELETE CASCADE,
+        FOREIGN KEY (user_id) REFERENCES users(id)          ON DELETE CASCADE
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+    `);
+  } catch (err) { if (!err?.message?.includes('already exists')) console.warn('[warn] org_message_reads:', err?.message); }
+
+  // Dedicated standings cache table — permanent for historical seasons
+  try {
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS championship_standings (
+        tournament_id  INT           NOT NULL,
+        season_year    INT           NOT NULL,
+        espn_slug      VARCHAR(60)   NULL,
+        season_name    VARCHAR(200)  NULL,
+        standings_json LONGTEXT      NOT NULL,
+        source         VARCHAR(20)   NOT NULL DEFAULT 'espn',
+        fetched_at     DATETIME      NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        PRIMARY KEY (tournament_id, season_year),
+        INDEX idx_cs_fetched (fetched_at)
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+    `);
+  } catch (err) {
+    if (!err?.message?.includes("already exists")) console.warn("[warn] championship_standings migration:", err?.message);
+  }
+
+  // championship_clubs — custom club additions per championship (moderator-managed)
+  try {
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS championship_clubs (
+        championship_name VARCHAR(200) NOT NULL,
+        club_name         VARCHAR(200) NOT NULL,
+        added_by          CHAR(36)     NULL,
+        created_at        DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        PRIMARY KEY (championship_name, club_name)
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+    `);
+  } catch (err) {
+    if (!err?.message?.includes("already exists")) console.warn("[warn] championship_clubs migration:", err?.message);
+  }
+
+  // championship_manual_data — moderator-entered standings
+  try {
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS championship_manual_data (
+        id                  CHAR(36)     NOT NULL DEFAULT (UUID()),
+        championship_name   VARCHAR(200) NOT NULL,
+        season_year         INT          NOT NULL,
+        season_display_name VARCHAR(200) NULL,
+        standings_json      LONGTEXT     NOT NULL,
+        updated_by          CHAR(36)     NULL,
+        updated_at          DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        PRIMARY KEY (id),
+        UNIQUE KEY uq_manual_champ_season (championship_name(150), season_year),
+        INDEX idx_manual_updated (updated_at)
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+    `);
+  } catch (err) {
+    if (!err?.message?.includes("already exists")) console.warn("[warn] championship_manual_data migration:", err?.message);
+  }
+
+  // exchange_rates table — admin-managed currency conversion rates vs EUR
+  try {
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS exchange_rates (
+        currency_code VARCHAR(3)    NOT NULL PRIMARY KEY,
+        symbol        VARCHAR(10)   NOT NULL DEFAULT '',
+        name_fr       VARCHAR(100)  NOT NULL DEFAULT '',
+        rate_vs_eur   DECIMAL(14,6) NOT NULL DEFAULT 1.000000,
+        updated_at    DATETIME      NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+    `);
+    // Seed default rates if table is empty
+    const [[countRow]] = await pool.query('SELECT COUNT(*) AS n FROM exchange_rates');
+    if (countRow.n === 0) {
+      const seeds = [
+        ['EUR','€','Euro',1.000000],
+        ['USD','$','Dollar US',1.080000],
+        ['GBP','£','Livre sterling',0.860000],
+        ['CHF','Fr','Franc suisse',0.950000],
+        ['MAD','MAD','Dirham marocain',10.800000],
+        ['DZD','DA','Dinar algérien',145.000000],
+        ['TND','DT','Dinar tunisien',3.340000],
+        ['CAD','C$','Dollar canadien',1.470000],
+        ['AUD','A$','Dollar australien',1.650000],
+        ['BRL','R$','Réal brésilien',5.400000],
+        ['MXN','MX$','Peso mexicain',18.200000],
+        ['SAR','ر.س','Riyal saoudien',4.050000],
+        ['AED','د.إ','Dirham émirien',3.970000],
+        ['JPY','¥','Yen japonais',162.000000],
+        ['CNY','¥','Yuan chinois',7.820000],
+        ['INR','₹','Roupie indienne',90.000000],
+        ['TRY','₺','Livre turque',34.500000],
+      ];
+      for (const [code, sym, name, rate] of seeds) {
+        await pool.query(
+          'INSERT IGNORE INTO exchange_rates (currency_code, symbol, name_fr, rate_vs_eur) VALUES (?, ?, ?, ?)',
+          [code, sym, name, rate]
+        );
+      }
+    }
+  } catch (err) {
+    if (!err?.message?.includes('already exists')) console.warn('[warn] exchange_rates migration:', err?.message);
+  }
+
   console.log("[startup] Legacy migrations complete");
 }
 
@@ -1792,6 +1956,8 @@ const DEFAULT_NOTIF_PREFS = {
   email_community: true,
   email_weekly: false,
   web_bell: true,
+  alert_no_report_days: 30,    // 0 = never, 7, 30
+  alert_contract_months: 3,    // 0 = never, 3, 6, 12
 };
 
 app.get("/api/notification-prefs", authMiddleware, async (req, res) => {
@@ -1810,16 +1976,56 @@ app.get("/api/notification-prefs", authMiddleware, async (req, res) => {
 
 app.put("/api/notification-prefs", authMiddleware, async (req, res) => {
   try {
-    const allowed = Object.keys(DEFAULT_NOTIF_PREFS);
-    const prefs = {};
-    for (const key of allowed) {
-      if (key in req.body) prefs[key] = Boolean(req.body[key]);
+    // Fetch existing prefs first so we do a proper merge
+    const [[row]] = await pool.query("SELECT notification_prefs FROM users WHERE id = ?", [req.user.id]);
+    let existing = { ...DEFAULT_NOTIF_PREFS };
+    if (row?.notification_prefs) {
+      try { Object.assign(existing, JSON.parse(row.notification_prefs)); } catch {}
     }
-    await pool.query("UPDATE users SET notification_prefs = ? WHERE id = ?", [JSON.stringify(prefs), req.user.id]);
-    return res.json(prefs);
+    const boolKeys = ['email_match_assigned','email_org_invite','email_community','email_weekly','web_bell'];
+    const numericKeys = { alert_no_report_days: [0,7,30], alert_contract_months: [0,3,6,12] };
+    for (const key of boolKeys) {
+      if (key in req.body) existing[key] = Boolean(req.body[key]);
+    }
+    for (const [key, allowed] of Object.entries(numericKeys)) {
+      if (key in req.body) {
+        const v = Number(req.body[key]);
+        if (allowed.includes(v)) existing[key] = v;
+      }
+    }
+    await pool.query("UPDATE users SET notification_prefs = ? WHERE id = ?", [JSON.stringify(existing), req.user.id]);
+    return res.json(existing);
   } catch (err) {
     console.error(err);
     return res.status(500).json({ error: "Erreur serveur" });
+  }
+});
+
+// ── Exchange rates ────────────────────────────────────────────────────────────
+app.get("/api/exchange-rates", authMiddleware, async (_req, res) => {
+  try {
+    const [rows] = await pool.query('SELECT * FROM exchange_rates ORDER BY currency_code');
+    res.set('Cache-Control', 'public, max-age=900');
+    return res.json(rows);
+  } catch (err) {
+    return res.status(500).json({ error: err?.message });
+  }
+});
+
+app.put("/api/admin/exchange-rates", authMiddleware, ensureAdmin, async (req, res) => {
+  const { currency_code, rate_vs_eur } = req.body || {};
+  if (!currency_code || rate_vs_eur == null) return res.status(400).json({ error: 'Paramètres manquants' });
+  const rate = parseFloat(rate_vs_eur);
+  if (isNaN(rate) || rate <= 0) return res.status(400).json({ error: 'Taux invalide' });
+  try {
+    await pool.query(
+      'INSERT INTO exchange_rates (currency_code, rate_vs_eur, updated_at) VALUES (?, ?, NOW()) ON DUPLICATE KEY UPDATE rate_vs_eur = VALUES(rate_vs_eur), updated_at = NOW()',
+      [currency_code, rate]
+    );
+    const [[row]] = await pool.query('SELECT * FROM exchange_rates WHERE currency_code = ?', [currency_code]);
+    return res.json(row);
+  } catch (err) {
+    return res.status(500).json({ error: err?.message });
   }
 });
 
@@ -2615,6 +2821,29 @@ app.post("/api/account/upload-photo", authMiddleware, upload.single("photo"), as
   }
 });
 
+// ── Generic image upload (player photos, coach photos) ───────────────────────
+app.post("/api/upload-image", authMiddleware, upload.single("photo"), async (req, res) => {
+  if (!req.file) return res.status(400).json({ error: "Aucun fichier reçu." });
+  try {
+    const ext = path.extname(req.file.originalname).toLowerCase() || ".jpg";
+    const allowed = [".jpg", ".jpeg", ".png", ".webp"];
+    if (!allowed.includes(ext)) {
+      try { fs.unlinkSync(req.file.path); } catch {}
+      return res.status(400).json({ error: "Format non supporté. Utilisez JPG, PNG ou WebP." });
+    }
+    if (req.file.size > 4 * 1024 * 1024) {
+      try { fs.unlinkSync(req.file.path); } catch {}
+      return res.status(413).json({ error: "La photo ne doit pas dépasser 4 Mo." });
+    }
+    const imageId = require('crypto').randomUUID();
+    const photoUrl = await saveImageToDb(req.file.path, imageId, req.file.mimetype);
+    return res.json({ photo_url: photoUrl });
+  } catch (err) {
+    try { if (req.file?.path) fs.unlinkSync(req.file.path); } catch {}
+    return res.status(500).json({ error: err?.message || "Erreur serveur" });
+  }
+});
+
 // ── RGPD: Export all user data ────────────────────────────────────────────
 app.post("/api/account/export-data", authMiddleware, async (req, res) => {
   const userId = req.user.id;
@@ -2962,6 +3191,70 @@ app.post("/api/community/notify-mention", authMiddleware, async (req, res) => {
   } catch (err) {
     console.error("[notify-mention] Error:", err);
     return res.status(500).json({ error: "Erreur serveur." });
+  }
+});
+
+// ── Community: close/reopen question (admin/moderator) ───────────────────────
+
+// POST /api/community/posts/:id/close — clôturer une question avec réponse acceptée
+app.post("/api/community/posts/:id/close", authMiddleware, ensureAdminOrModerator, async (req, res) => {
+  const { id } = req.params;
+  const { acceptedReplyId } = req.body || {}; // optionnel
+
+  try {
+    // Vérifier que le post existe et est une question
+    const [rows] = await pool.query(
+      "SELECT id, category FROM community_posts WHERE id = ?",
+      [id]
+    );
+    if (!rows.length) return res.status(404).json({ error: "Post introuvable" });
+    if (rows[0].category !== 'question') return res.status(400).json({ error: "Seules les questions peuvent être clôturées" });
+
+    // Vérifier que la réponse acceptée existe si fournie
+    if (acceptedReplyId) {
+      const [replyRows] = await pool.query(
+        "SELECT id FROM community_replies WHERE id = ? AND post_id = ?",
+        [acceptedReplyId, id]
+      );
+      if (!replyRows.length) return res.status(400).json({ error: "Réponse introuvable" });
+    }
+
+    await pool.query(
+      `UPDATE community_posts SET is_closed = 1, accepted_reply_id = ?, closed_by = ?, closed_at = NOW() WHERE id = ?`,
+      [acceptedReplyId || null, req.user.id, id]
+    );
+
+    // Notifier l'auteur du post
+    try {
+      const [postAuthor] = await pool.query("SELECT user_id FROM community_posts WHERE id = ?", [id]);
+      if (postAuthor.length && postAuthor[0].user_id !== req.user.id) {
+        await createNotification(postAuthor[0].user_id, {
+          type: 'community', icon: 'community',
+          title: 'Votre question a été clôturée',
+          message: 'Un modérateur a clôturé votre question avec une réponse acceptée.',
+          link: '/community',
+        });
+      }
+    } catch { /* non-critique */ }
+
+    return res.json({ ok: true });
+  } catch (err) {
+    console.error("[community/close] Error:", err?.message);
+    return res.status(500).json({ error: err?.message });
+  }
+});
+
+// POST /api/community/posts/:id/reopen — réouvrir une question clôturée
+app.post("/api/community/posts/:id/reopen", authMiddleware, ensureAdminOrModerator, async (req, res) => {
+  const { id } = req.params;
+  try {
+    await pool.query(
+      "UPDATE community_posts SET is_closed = 0, accepted_reply_id = NULL, closed_by = NULL, closed_at = NULL WHERE id = ?",
+      [id]
+    );
+    return res.json({ ok: true });
+  } catch (err) {
+    return res.status(500).json({ error: err?.message });
   }
 });
 
@@ -5451,6 +5744,12 @@ async function ensureAdmin(req, res, next) {
   next();
 }
 
+async function ensureAdminOrModerator(req, res, next) {
+  const [rows] = await pool.query("SELECT id FROM user_roles WHERE user_id = ? AND role IN ('admin','moderator') LIMIT 1", [req.user.id]);
+  if (!rows.length) return res.status(403).json({ error: "Forbidden" });
+  next();
+}
+
 async function ensurePremiumOrAdmin(req, res, next) {
   // Admins are always allowed
   const [adminRows] = await pool.query("SELECT id FROM user_roles WHERE user_id = ? AND role = 'admin' LIMIT 1", [req.user.id]);
@@ -6059,6 +6358,137 @@ app.post("/api/admin/users/:id/reset-bot-score", authMiddleware, ensureAdmin, as
   }
 });
 
+// ── Championship manual standings (admin/moderator) ─────────────────────────
+
+// GET /api/championships/manual-standings?championship=X&year=Y
+app.get("/api/championships/manual-standings", authMiddleware, async (req, res) => {
+  const { championship, year } = req.query;
+  if (!championship) return res.status(400).json({ error: "championship required" });
+  try {
+    const seasonYear = year ? parseInt(year) : new Date().getFullYear();
+    const [rows] = await pool.query(
+      'SELECT * FROM championship_manual_data WHERE championship_name = ? AND season_year = ?',
+      [championship, seasonYear]
+    );
+    if (!rows.length) return res.json({ exists: false, teams: [], seasonDisplayName: null });
+    const data = typeof rows[0].standings_json === 'string' ? JSON.parse(rows[0].standings_json) : rows[0].standings_json;
+    return res.json({ exists: true, seasonDisplayName: rows[0].season_display_name, updated_at: rows[0].updated_at, ...data });
+  } catch (err) {
+    res.status(500).json({ error: err?.message });
+  }
+});
+
+// POST /api/championships/manual-standings — save/update manual standings
+app.post("/api/championships/manual-standings", authMiddleware, ensureAdminOrModerator, async (req, res) => {
+  const { championshipName, seasonYear, seasonDisplayName, teams } = req.body || {};
+  if (!championshipName || !seasonYear || !Array.isArray(teams)) {
+    return res.status(400).json({ error: "championshipName, seasonYear, teams required" });
+  }
+  if (teams.length > 50) return res.status(400).json({ error: "Trop d'équipes (max 50)" });
+
+  // Validate team entries
+  const sanitized = teams.map((t, i) => ({
+    id: t.id ?? null,
+    name: String(t.name || '').trim().slice(0, 100),
+    shortName: t.shortName ? String(t.shortName).slice(0, 30) : null,
+    logoUrl: t.logoUrl ? String(t.logoUrl).slice(0, 500) : null,
+    position: Number(t.position) || (i + 1),
+    points: Number(t.points) || 0,
+    played: Number(t.played) || 0,
+    wins: Number(t.wins) || 0,
+    draws: Number(t.draws) || 0,
+    losses: Number(t.losses) || 0,
+    goalsFor: Number(t.goalsFor) || 0,
+    goalsAgainst: Number(t.goalsAgainst) || 0,
+    goalDifference: Number(t.goalDifference) || ((Number(t.goalsFor) || 0) - (Number(t.goalsAgainst) || 0)),
+    description: t.description ? String(t.description).slice(0, 100) : null,
+    noteColor: t.noteColor ? String(t.noteColor).replace(/[^a-fA-F0-9#]/g, '').slice(0, 10) : null,
+  })).filter(t => t.name);
+
+  const payload = {
+    source: 'manual',
+    seasonYear: Number(seasonYear),
+    season: { name: seasonDisplayName || String(seasonYear) },
+    teams: sanitized,
+    from_cache: true,
+    fetched_at: new Date().toISOString().slice(0, 19).replace('T', ' '),
+  };
+
+  try {
+    await pool.query(
+      `INSERT INTO championship_manual_data (championship_name, season_year, season_display_name, standings_json, updated_by)
+       VALUES (?, ?, ?, ?, ?)
+       ON DUPLICATE KEY UPDATE
+         season_display_name = VALUES(season_display_name),
+         standings_json      = VALUES(standings_json),
+         updated_by          = VALUES(updated_by),
+         updated_at          = NOW()`,
+      [championshipName, Number(seasonYear), seasonDisplayName || null, JSON.stringify(payload), req.user.id]
+    );
+    res.json({ ok: true, teams: sanitized.length });
+  } catch (err) {
+    res.status(500).json({ error: err?.message });
+  }
+});
+
+// DELETE /api/championships/manual-standings — remove manual standings
+app.delete("/api/championships/manual-standings", authMiddleware, ensureAdminOrModerator, async (req, res) => {
+  const { championship, year } = req.query;
+  if (!championship || !year) return res.status(400).json({ error: "championship and year required" });
+  try {
+    await pool.query(
+      'DELETE FROM championship_manual_data WHERE championship_name = ? AND season_year = ?',
+      [championship, parseInt(year)]
+    );
+    res.json({ ok: true });
+  } catch (err) {
+    res.status(500).json({ error: err?.message });
+  }
+});
+
+// ── Championship custom clubs (admin/moderator) ──────────────────────────────
+
+// GET /api/championships/:name/clubs — list custom clubs for a championship
+app.get("/api/championships/:name/clubs", authMiddleware, async (req, res) => {
+  try {
+    const [rows] = await pool.query(
+      'SELECT club_name, added_by, created_at FROM championship_clubs WHERE championship_name = ? ORDER BY created_at ASC',
+      [decodeURIComponent(req.params.name)]
+    );
+    res.json(rows.map(r => ({ name: r.club_name, added_by: r.added_by, created_at: r.created_at })));
+  } catch (err) {
+    res.status(500).json({ error: err?.message });
+  }
+});
+
+// POST /api/championships/:name/clubs — add a custom club
+app.post("/api/championships/:name/clubs", authMiddleware, ensureAdminOrModerator, async (req, res) => {
+  const { clubName } = req.body || {};
+  if (!clubName?.trim()) return res.status(400).json({ error: "clubName required" });
+  try {
+    await pool.query(
+      'INSERT IGNORE INTO championship_clubs (championship_name, club_name, added_by) VALUES (?, ?, ?)',
+      [decodeURIComponent(req.params.name), clubName.trim().slice(0, 200), req.user.id]
+    );
+    res.json({ ok: true });
+  } catch (err) {
+    res.status(500).json({ error: err?.message });
+  }
+});
+
+// DELETE /api/championships/:name/clubs/:clubName — remove a custom club
+app.delete("/api/championships/:name/clubs/:clubName", authMiddleware, ensureAdminOrModerator, async (req, res) => {
+  try {
+    await pool.query(
+      'DELETE FROM championship_clubs WHERE championship_name = ? AND club_name = ?',
+      [decodeURIComponent(req.params.name), decodeURIComponent(req.params.clubName)]
+    );
+    res.json({ ok: true });
+  } catch (err) {
+    res.status(500).json({ error: err?.message });
+  }
+});
+
 // GET /api/admin/analytics/live — currently online users (last 2 min)
 app.get("/api/admin/analytics/live", authMiddleware, ensureAdmin, async (req, res) => {
   try {
@@ -6524,6 +6954,342 @@ app.delete("/api/organizations/:id", authMiddleware, async (req, res) => {
   }
 });
 
+// ── Org Chat ─────────────────────────────────────────────────────────────────
+
+// In-memory typing store (ephemeral — resets on server restart, which is fine)
+const _orgTyping = new Map(); // orgId -> Map<userId, { name, photo, expiry }>
+const TYPING_TTL_MS = 5000;
+
+function setTypingUser(orgId, userId, name, photo) {
+  if (!_orgTyping.has(orgId)) _orgTyping.set(orgId, new Map());
+  _orgTyping.get(orgId).set(userId, { name, photo, expiry: Date.now() + TYPING_TTL_MS });
+}
+
+function getTypingUsers(orgId, selfUserId) {
+  const map = _orgTyping.get(orgId);
+  if (!map) return [];
+  const now = Date.now();
+  const result = [];
+  for (const [uid, data] of map.entries()) {
+    if (uid === selfUserId || data.expiry < now) { map.delete(uid); continue; }
+    result.push({ user_id: uid, name: data.name, photo: data.photo });
+  }
+  return result;
+}
+
+const CHAT_BANNED_WORDS = [
+  // Violence / menaces
+  'tuer','meurtre','bombe','terroriste','massacre','viol','pedophile','pédophile',
+  // Insultes graves
+  'connard','encule','enculé','fdp','pd','pute','salope','nique','batard','bâtard',
+  'merde','putain','cul','bite','couilles','chier',
+  // Discrimination
+  'nazi','hitler','raciste','negre','nègre','juif','arabe','gouine',
+  // Anglais
+  'fuck','shit','bitch','asshole','nigger','faggot','cunt','whore',
+  'kill','murder','rape','terrorist',
+];
+
+function moderateOrgMessage(text) {
+  const lower = text.toLowerCase().replace(/[^a-zàâäéèêëîïôùûüç0-9\s]/gi, ' ');
+  for (const word of CHAT_BANNED_WORDS) {
+    const re = new RegExp(`\\b${word}\\b`, 'i');
+    if (re.test(lower)) return false;
+  }
+  return true;
+}
+
+async function ensureOrgMember(orgId, userId) {
+  const [[row]] = await pool.query(
+    "SELECT role FROM organization_members WHERE organization_id = ? AND user_id = ? LIMIT 1",
+    [orgId, userId]
+  );
+  return row ?? null;
+}
+
+// GET /api/organizations/:orgId/messages
+app.get("/api/organizations/:orgId/messages", authMiddleware, async (req, res) => {
+  try {
+    const { orgId } = req.params;
+    const member = await ensureOrgMember(orgId, req.user.id);
+    if (!member) return res.status(403).json({ error: "Not a member" });
+
+    const before = req.query.before || null; // cursor: created_at ISO
+    const limit = Math.min(parseInt(req.query.limit) || 40, 80);
+
+    const [rows] = await pool.query(`
+      SELECT
+        m.id, m.org_id, m.user_id, m.content, m.reply_to_id, m.edited_at, m.deleted_at, m.created_at,
+        COALESCE(p.full_name, u.email)  AS author_name,
+        p.photo_url                     AS author_photo,
+        -- replied-to message snippet (null if soft-deleted)
+        IF(rm.deleted_at IS NULL, rm.content, NULL) AS reply_content,
+        COALESCE(rp.full_name, ru.email)            AS reply_author,
+        -- reactions as JSON array
+        (SELECT JSON_ARRAYAGG(JSON_OBJECT('emoji', r.emoji, 'user_id', r.user_id))
+         FROM org_message_reactions r WHERE r.message_id = m.id) AS reactions
+      FROM org_messages m
+      LEFT JOIN users    u  ON u.id  = m.user_id
+      LEFT JOIN profiles p  ON p.user_id = m.user_id
+      LEFT JOIN org_messages rm ON rm.id = m.reply_to_id
+      LEFT JOIN users    ru ON ru.id = rm.user_id
+      LEFT JOIN profiles rp ON rp.user_id = rm.user_id
+      WHERE m.org_id = ?
+        ${before ? 'AND m.created_at < ?' : ''}
+      ORDER BY m.created_at DESC
+      LIMIT ?
+    `, before ? [orgId, before, limit] : [orgId, limit]);
+
+    // Parse reactions JSON
+    const messages = rows.map(r => ({
+      ...r,
+      reactions: r.reactions ? (typeof r.reactions === 'string' ? JSON.parse(r.reactions) : r.reactions) : [],
+    }));
+
+    return res.json({ messages: messages.reverse(), has_more: rows.length === limit });
+  } catch (err) {
+    console.error('[org-chat] GET messages:', err?.message);
+    return res.status(500).json({ error: "Erreur serveur" });
+  }
+});
+
+// POST /api/organizations/:orgId/messages
+app.post("/api/organizations/:orgId/messages", authMiddleware, async (req, res) => {
+  try {
+    const { orgId } = req.params;
+    const member = await ensureOrgMember(orgId, req.user.id);
+    if (!member) return res.status(403).json({ error: "Not a member" });
+
+    const { content, reply_to_id } = req.body || {};
+    if (!content || typeof content !== 'string') return res.status(400).json({ error: "content required" });
+
+    // Anti-spam: 1 message per minute per user per org
+    const [[lastMsg]] = await pool.query(
+      "SELECT created_at FROM org_messages WHERE org_id = ? AND user_id = ? AND deleted_at IS NULL ORDER BY created_at DESC LIMIT 1",
+      [orgId, req.user.id]
+    );
+    if (lastMsg) {
+      const elapsed = Date.now() - new Date(lastMsg.created_at).getTime();
+      if (elapsed < 60000) {
+        const retryAfter = Math.ceil((60000 - elapsed) / 1000);
+        return res.status(429).json({ error: 'rate_limit', retry_after: retryAfter });
+      }
+    }
+
+    const trimmed = content.trim().slice(0, 512);
+    if (!trimmed) return res.status(400).json({ error: "empty" });
+    if (!moderateOrgMessage(trimmed)) return res.status(422).json({ error: "moderation_failed" });
+
+    // Validate reply_to_id: must exist and not be soft-deleted
+    let validReplyId = null;
+    let repliedToUserId = null;
+    if (reply_to_id) {
+      const [[replyMsg]] = await pool.query(
+        "SELECT id, user_id FROM org_messages WHERE id = ? AND org_id = ? AND deleted_at IS NULL LIMIT 1",
+        [reply_to_id, orgId]
+      );
+      if (replyMsg) { validReplyId = replyMsg.id; repliedToUserId = replyMsg.user_id; }
+    }
+
+    const id = uuidv4();
+    await pool.query(
+      "INSERT INTO org_messages (id, org_id, user_id, content, reply_to_id) VALUES (?, ?, ?, ?, ?)",
+      [id, orgId, req.user.id, trimmed, validReplyId]
+    );
+
+    const [[sender]] = await pool.query(
+      "SELECT COALESCE(p.full_name, u.email) AS name FROM users u LEFT JOIN profiles p ON p.user_id = u.id WHERE u.id = ? LIMIT 1",
+      [req.user.id]
+    );
+    const senderName = sender?.name ?? 'quelqu\'un';
+
+    // Targeted reply notification (to the message author, if different from sender)
+    if (validReplyId && repliedToUserId && repliedToUserId !== req.user.id) {
+      createNotification(repliedToUserId, {
+        type: 'organization',
+        title: `${senderName} a répondu à votre message`,
+        message: trimmed.length > 80 ? trimmed.slice(0, 80) + '…' : trimmed,
+        icon: 'Reply',
+        link: `/organization/${orgId}/chat`,
+      }).catch(() => {});
+    }
+
+    // General notification to other org members (excluding sender and already-notified reply target)
+    const [members] = await pool.query(
+      "SELECT user_id FROM organization_members WHERE organization_id = ? AND user_id != ? AND user_id != ?",
+      [orgId, req.user.id, repliedToUserId ?? req.user.id]
+    );
+    for (const m of members) {
+      createNotification(m.user_id, {
+        type: 'organization',
+        title: `Message de ${senderName}`,
+        message: trimmed.length > 80 ? trimmed.slice(0, 80) + '…' : trimmed,
+        icon: 'MessageSquare',
+        link: `/organization/${orgId}/chat`,
+      }).catch(() => {});
+    }
+
+    const [[msg]] = await pool.query(`
+      SELECT m.id, m.org_id, m.user_id, m.content, m.reply_to_id, m.edited_at, m.deleted_at, m.created_at,
+        COALESCE(p.full_name, u.email) AS author_name, p.photo_url AS author_photo,
+        rm.content AS reply_content,
+        COALESCE(rp.full_name, ru.email) AS reply_author
+      FROM org_messages m
+      LEFT JOIN users u ON u.id = m.user_id LEFT JOIN profiles p ON p.user_id = m.user_id
+      LEFT JOIN org_messages rm ON rm.id = m.reply_to_id
+      LEFT JOIN users ru ON ru.id = rm.user_id LEFT JOIN profiles rp ON rp.user_id = rm.user_id
+      WHERE m.id = ?
+    `, [id]);
+
+    return res.json({ message: { ...msg, reactions: [] } });
+  } catch (err) {
+    console.error('[org-chat] POST message:', err?.message);
+    return res.status(500).json({ error: "Erreur serveur" });
+  }
+});
+
+// DELETE /api/organizations/:orgId/messages/:msgId — soft delete (own, within 10 min)
+app.delete("/api/organizations/:orgId/messages/:msgId", authMiddleware, async (req, res) => {
+  try {
+    const { orgId, msgId } = req.params;
+    const member = await ensureOrgMember(orgId, req.user.id);
+    if (!member) return res.status(403).json({ error: "Not a member" });
+
+    const [[msg]] = await pool.query("SELECT user_id, created_at FROM org_messages WHERE id = ? AND org_id = ?", [msgId, orgId]);
+    if (!msg) return res.status(404).json({ error: "Not found" });
+
+    const isAdmin = member.role === 'owner' || member.role === 'admin';
+    const isOwn = msg.user_id === req.user.id;
+    const ageMin = (Date.now() - new Date(msg.created_at).getTime()) / 60000;
+
+    if (!isAdmin && (!isOwn || ageMin > 10)) return res.status(403).json({ error: "Cannot delete" });
+
+    await pool.query("UPDATE org_messages SET deleted_at = NOW() WHERE id = ?", [msgId]);
+    return res.json({ ok: true });
+  } catch (err) {
+    return res.status(500).json({ error: "Erreur serveur" });
+  }
+});
+
+// PUT /api/organizations/:orgId/messages/:msgId — edit own message (within 10 min)
+app.put("/api/organizations/:orgId/messages/:msgId", authMiddleware, async (req, res) => {
+  try {
+    const { orgId, msgId } = req.params;
+    const member = await ensureOrgMember(orgId, req.user.id);
+    if (!member) return res.status(403).json({ error: "Not a member" });
+
+    const { content } = req.body || {};
+    if (!content) return res.status(400).json({ error: "content required" });
+
+    const trimmed = content.trim().slice(0, 512);
+    if (!trimmed) return res.status(400).json({ error: "empty" });
+    if (!moderateOrgMessage(trimmed)) return res.status(422).json({ error: "moderation_failed" });
+
+    const [[msg]] = await pool.query("SELECT user_id, created_at, deleted_at FROM org_messages WHERE id = ? AND org_id = ?", [msgId, orgId]);
+    if (!msg || msg.deleted_at) return res.status(404).json({ error: "Not found" });
+    if (msg.user_id !== req.user.id) return res.status(403).json({ error: "Not your message" });
+    if ((Date.now() - new Date(msg.created_at).getTime()) / 60000 > 10) return res.status(403).json({ error: "Edit window expired" });
+
+    await pool.query("UPDATE org_messages SET content = ?, edited_at = NOW() WHERE id = ?", [trimmed, msgId]);
+    return res.json({ ok: true, content: trimmed });
+  } catch (err) {
+    return res.status(500).json({ error: "Erreur serveur" });
+  }
+});
+
+// POST /api/organizations/:orgId/messages/:msgId/react — toggle emoji reaction
+app.post("/api/organizations/:orgId/messages/:msgId/react", authMiddleware, async (req, res) => {
+  try {
+    const { orgId, msgId } = req.params;
+    const member = await ensureOrgMember(orgId, req.user.id);
+    if (!member) return res.status(403).json({ error: "Not a member" });
+
+    const { emoji } = req.body || {};
+    const ALLOWED_EMOJI = ['👍','❤️','😂','😮','😢','🔥'];
+    if (!ALLOWED_EMOJI.includes(emoji)) return res.status(400).json({ error: "Invalid emoji" });
+
+    const [[existing]] = await pool.query(
+      "SELECT 1 FROM org_message_reactions WHERE message_id = ? AND user_id = ? AND emoji = ?",
+      [msgId, req.user.id, emoji]
+    );
+    if (existing) {
+      await pool.query("DELETE FROM org_message_reactions WHERE message_id = ? AND user_id = ? AND emoji = ?", [msgId, req.user.id, emoji]);
+      return res.json({ action: 'removed' });
+    } else {
+      await pool.query("INSERT INTO org_message_reactions (message_id, user_id, emoji) VALUES (?, ?, ?)", [msgId, req.user.id, emoji]);
+      return res.json({ action: 'added' });
+    }
+  } catch (err) {
+    return res.status(500).json({ error: "Erreur serveur" });
+  }
+});
+
+// POST /api/organizations/:orgId/messages/read — mark messages as read
+app.post("/api/organizations/:orgId/messages/read", authMiddleware, async (req, res) => {
+  try {
+    const { orgId } = req.params;
+    await pool.query(
+      "INSERT INTO org_message_reads (org_id, user_id) VALUES (?, ?) ON DUPLICATE KEY UPDATE last_read_at = NOW()",
+      [orgId, req.user.id]
+    );
+    return res.json({ ok: true });
+  } catch (err) {
+    return res.status(500).json({ error: "Erreur serveur" });
+  }
+});
+
+// GET /api/organizations/:orgId/unread — unread message count
+app.get("/api/organizations/:orgId/unread", authMiddleware, async (req, res) => {
+  try {
+    const { orgId } = req.params;
+    const member = await ensureOrgMember(orgId, req.user.id);
+    if (!member) return res.json({ count: 0 });
+
+    const [[readRow]] = await pool.query(
+      "SELECT last_read_at FROM org_message_reads WHERE org_id = ? AND user_id = ?",
+      [orgId, req.user.id]
+    );
+    const since = readRow?.last_read_at;
+    const [[countRow]] = await pool.query(
+      `SELECT COUNT(*) AS cnt FROM org_messages WHERE org_id = ? AND user_id != ? AND deleted_at IS NULL ${since ? 'AND created_at > ?' : ''}`,
+      since ? [orgId, req.user.id, since] : [orgId, req.user.id]
+    );
+    return res.json({ count: Number(countRow?.cnt ?? 0), last_read_at: since || null });
+  } catch (err) {
+    return res.status(500).json({ error: "Erreur serveur" });
+  }
+});
+
+// POST /api/organizations/:orgId/typing — broadcast "I am typing"
+app.post("/api/organizations/:orgId/typing", authMiddleware, async (req, res) => {
+  try {
+    const { orgId } = req.params;
+    const member = await ensureOrgMember(orgId, req.user.id);
+    if (!member) return res.status(403).json({ error: "Not a member" });
+
+    const [[profile]] = await pool.query(
+      "SELECT COALESCE(p.full_name, u.email) AS name, p.photo_url AS photo FROM users u LEFT JOIN profiles p ON p.user_id = u.id WHERE u.id = ? LIMIT 1",
+      [req.user.id]
+    );
+    setTypingUser(orgId, req.user.id, profile?.name ?? 'Utilisateur', profile?.photo ?? null);
+    return res.json({ ok: true });
+  } catch (err) {
+    return res.status(500).json({ error: "Erreur serveur" });
+  }
+});
+
+// GET /api/organizations/:orgId/typing — who is currently typing
+app.get("/api/organizations/:orgId/typing", authMiddleware, async (req, res) => {
+  try {
+    const { orgId } = req.params;
+    const member = await ensureOrgMember(orgId, req.user.id);
+    if (!member) return res.json({ users: [] });
+    return res.json({ users: getTypingUsers(orgId, req.user.id) });
+  } catch (err) {
+    return res.status(500).json({ users: [] });
+  }
+});
+
 // GET /api/admin/notifications — list notifications with optional filters
 app.get("/api/admin/notifications", authMiddleware, ensureAdmin, async (req, res) => {
   try {
@@ -6866,6 +7632,30 @@ async function getUserCreditUsage(userId) {
   };
 }
 
+// Credit helpers ─────────────────────────────────────────────────────────────
+
+/** Read-only check: can this user consume 1 enrichment credit? */
+async function canUseCredit(userId) {
+  await ensureCreditTable();
+  const planType = await getUserPlanType(userId);
+  const quotas = PLAN_QUOTAS[planType] || PLAN_QUOTAS.starter;
+  if (quotas.daily === -1) return { ok: true }; // unlimited (elite)
+  const usage = await getUserCreditUsage(userId);
+  const effectiveMonthly = quotas.monthly + (usage.earned_total || 0);
+  if (usage.daily   >= quotas.daily)       return { ok: false, error: 'daily_limit',   quota: quotas.daily,       used: usage.daily };
+  if (usage.weekly  >= quotas.weekly)      return { ok: false, error: 'weekly_limit',  quota: quotas.weekly,      used: usage.weekly };
+  if (usage.monthly >= effectiveMonthly)   return { ok: false, error: 'monthly_limit', quota: effectiveMonthly,   used: usage.monthly };
+  return { ok: true };
+}
+
+/** Consume 1 enrichment credit (fire-and-forget safe, call after successful enrichment) */
+async function spendCredit(userId, description) {
+  await pool.query(
+    "INSERT INTO user_credit_events (id, user_id, action_type, direction, amount, description) VALUES (?, ?, 'enrichment', 'spend', 1, ?)",
+    [uuidv4(), userId, description || 'Enrichissement']
+  );
+}
+
 // GET /api/credits/me — current user usage + quotas
 app.get("/api/credits/me", authMiddleware, async (req, res) => {
   try {
@@ -7140,24 +7930,68 @@ app.patch("/api/club-geocode-manual", authMiddleware, async (req, res) => {
 
 // ── Search clubs in local DB (autocomplete) ──────────────────────────────────
 app.get("/api/club-search", async (req, res) => {
-  const q = String(req.query.q || "").trim();
-  if (q.length < 2) return res.json([]);
+  const q       = String(req.query.q       || "").trim();
+  const country = String(req.query.country || "").trim();
+
+  // At least one search criterion required
+  if (q.length < 2 && !country) return res.json([]);
+
   try {
+    if (country && !q) {
+      // Country-only filter: return all clubs from that country
+      const like = `%${country}%`;
+      const [rows] = await pool.query(
+        `SELECT club_name, logo_url, competition, country, country_code
+         FROM club_directory
+         WHERE country LIKE ? OR country_code LIKE ?
+         ORDER BY competition, club_name
+         LIMIT 60`,
+        [like, like]
+      );
+      return res.json(rows);
+    }
+
     const like = `%${q}%`;
+    // When a country filter is also applied, restrict to that country
+    const countryClause = country ? `AND (cd.country LIKE ? OR cd.country_code LIKE ?)` : '';
+    const countryParams = country ? [`%${country}%`, `%${country}%`] : [];
+
     const [rows] = await pool.query(`
       SELECT DISTINCT club_name, logo_url, competition, country, country_code
       FROM (
         SELECT cd.club_name, cd.logo_url, cd.competition, cd.country, cd.country_code
-        FROM club_directory cd WHERE cd.club_name LIKE ?
+        FROM club_directory cd
+        WHERE cd.club_name LIKE ? ${countryClause}
         UNION
         SELECT cl.club_name, cl.logo_url, '' AS competition, '' AS country, '' AS country_code
-        FROM club_logos cl WHERE cl.club_name LIKE ? AND cl.club_name NOT IN (SELECT club_name FROM club_directory WHERE club_name LIKE ?)
+        FROM club_logos cl
+        WHERE cl.club_name LIKE ?
+          AND cl.club_name NOT IN (SELECT club_name FROM club_directory WHERE club_name LIKE ?)
+          ${country ? 'AND 0' : ''}
       ) combined
       ORDER BY
         CASE WHEN club_name LIKE ? THEN 0 ELSE 1 END,
         club_name
       LIMIT 20
-    `, [like, like, like, `${q}%`]);
+    `, [like, ...countryParams, like, like, `${q}%`]);
+    return res.json(rows);
+  } catch (err) {
+    return res.json([]);
+  }
+});
+
+// ── List distinct countries from club_directory ──────────────────────────────
+app.get("/api/club-countries", async (_req, res) => {
+  try {
+    const [rows] = await pool.query(
+      `SELECT DISTINCT country, country_code,
+              COUNT(*) AS club_count
+       FROM club_directory
+       WHERE country IS NOT NULL AND country != ''
+       GROUP BY country, country_code
+       ORDER BY club_count DESC, country`
+    );
+    res.set('Cache-Control', 'public, max-age=3600');
     return res.json(rows);
   } catch (err) {
     return res.json([]);
@@ -7381,6 +8215,161 @@ app.get("/api/club-tm-search", async (req, res) => {
   } catch (err) {
     console.error("[club-tm-search] Error:", err.message);
     return res.status(500).json({ error: err.message });
+  }
+});
+
+// ── Transfermarkt coach search ───────────────────────────────────────────────
+app.get("/api/tm/coach-search", authMiddleware, ensureAdminOrModerator, async (req, res) => {
+  const q = String(req.query.q || '').trim();
+  if (!q) return res.status(400).json({ error: 'Missing q' });
+  try {
+    const searchUrl = `https://www.transfermarkt.fr/schnellsuche/ergebnis/schnellsuche?query=${encodeURIComponent(q)}&Trainer_page=1`;
+    const resp = await fetch(searchUrl, { headers: TM_HEADERS, signal: AbortSignal.timeout(12000) });
+    if (!resp.ok) return res.status(502).json({ error: `TM ${resp.status}` });
+    const html = await resp.text();
+
+    const results = [];
+    // Match coach links: /firstname-lastname/profil/trainer/12345
+    const re = /href="\/([\w-]+)\/profil\/trainer\/(\d+)"[^>]*title="([^"]*)"/g;
+    let m;
+    while ((m = re.exec(html)) !== null && results.length < 6) {
+      const slug = m[1], coachId = m[2], name = m[3];
+      if (results.some(r => r.coachId === coachId)) continue;
+      // Get nationality from nearby flag
+      const snippet = html.slice(Math.max(0, m.index - 200), m.index + 500);
+      const natMatch = snippet.match(/flaggenrahmen[^>]*title="([^"]+)"/);
+      const clubMatch = snippet.match(/href="\/[^/]+\/startseite\/verein\/\d+"[^>]*title="([^"]*)"/);
+      results.push({ coachId, slug, name, nationality: natMatch?.[1] ?? null, currentClub: clubMatch?.[1] ?? null });
+    }
+    res.json(results);
+  } catch (err) {
+    res.status(500).json({ error: err?.message });
+  }
+});
+
+// ── Transfermarkt coach profile scrape ───────────────────────────────────────
+app.post("/api/admin/enrich-coach/:playerId", authMiddleware, ensureAdminOrModerator, async (req, res) => {
+  const { playerId } = req.params;
+  const { tmCoachId, tmCoachSlug } = req.body || {};
+  if (!tmCoachId) return res.status(400).json({ error: 'tmCoachId required' });
+
+  const cacheKey = `tm_coach_${tmCoachId}`;
+  try {
+    // Check cache (7 days)
+    const [cached] = await pool.query(
+      'SELECT response_json FROM api_football_cache WHERE cache_key = ? AND expires_at > NOW()',
+      [cacheKey]
+    );
+    if (cached.length > 0) {
+      const data = typeof cached[0].response_json === 'string' ? JSON.parse(cached[0].response_json) : cached[0].response_json;
+      await applyCoachData(playerId, data);
+      return res.json({ ok: true, ...data, from_cache: true });
+    }
+
+    const slug = tmCoachSlug || 'coach';
+    const profileUrl = `https://www.transfermarkt.fr/${slug}/profil/trainer/${tmCoachId}`;
+    const resp = await fetch(profileUrl, { headers: TM_HEADERS, signal: AbortSignal.timeout(15000) });
+    if (!resp.ok) return res.status(502).json({ error: `TM returned ${resp.status}` });
+    const html = await resp.text();
+
+    // ── Parse coach profile ──
+    // Name
+    const nameMatch = html.match(/class="[^"]*data-header__headline[^"]*"[^>]*>[\s\S]*?<[^>]*>([^<]+)<\/[^>]*>\s*([^<]+)</);
+    const coachName = nameMatch ? (nameMatch[2] || nameMatch[1]).trim() : null;
+
+    // Photo
+    const photoMatch = html.match(/class="[^"]*data-header__profile-image[^"]*"[^>]*src="([^"]+)"/);
+    const rawPhoto = photoMatch?.[1] ?? null;
+    // TM returns small images like /small/ — upgrade to /big/
+    const photoUrl = rawPhoto ? rawPhoto.replace('/small/', '/big/').replace('/verysmall/', '/big/') : null;
+
+    // DOB / nationality from data-header
+    const headerSection = html.match(/class="data-header__details"([\s\S]{0,3000})/)?.[1] ?? html.slice(0, 6000);
+    const dobMatch = headerSection.match(/(\d{2}\.\d{2}\.\d{4})/);
+    const dateOfBirth = dobMatch ? dobMatch[1].split('.').reverse().join('-') : null;
+    const natMatch = headerSection.match(/flaggenrahmen[^>]*title="([^"]+)"/);
+    const nationality = natMatch?.[1] ?? null;
+
+    // License (look for "Diplôme" or "Licence")
+    const licenseMatch = html.match(/(?:Dipl[oô]me|Licence)[^:]*:?\s*<[^>]*>([^<]+)</i);
+    const coachingLicense = licenseMatch ? licenseMatch[1].trim() : null;
+
+    // ── Parse coaching career table ──
+    const career = [];
+    // TM uses a table with id "yw1" for coaching career
+    const careerSection = html.match(/id="yw1"[\s\S]{0,20000}/)?.[0] ?? '';
+    const rowRe = /<tr[^>]*class="[^"]*(?:odd|even)[^"]*"[^>]*>([\s\S]*?)<\/tr>/g;
+    let rowMatch;
+    while ((rowMatch = rowRe.exec(careerSection)) !== null && career.length < 30) {
+      const row = rowMatch[1];
+      // Club name
+      const clubM = row.match(/class="[^"]*hauptlink[^"]*"[^>]*>\s*<a[^>]*title="([^"]*)"/);
+      if (!clubM) continue;
+      const club = clubM[1];
+      // Club logo
+      const logoM = row.match(/<img[^>]*src="([^"]*\/wappen\/[^"]*)"[^>]*>/);
+      const clubLogo = logoM?.[1] ?? null;
+      // Period
+      const cells = [...row.matchAll(/<td[^>]*>([\s\S]*?)<\/td>/g)].map(c => c[1].replace(/<[^>]+>/g, '').trim());
+      const period = cells.find(c => /\d{4}/.test(c) && c.includes('-')) ?? '';
+      const [from, to] = period.split('-').map(s => s.trim());
+      // Stats (games/wins/draws/losses)
+      const nums = cells.filter(c => /^\d+$/.test(c)).map(Number);
+      career.push({
+        club,
+        club_logo: clubLogo,
+        from: from || '',
+        to: to || 'présent',
+        role: 'Entraîneur principal',
+        games: nums[0] ?? null,
+        wins: nums[1] ?? null,
+        draws: nums[2] ?? null,
+        losses: nums[3] ?? null,
+      });
+    }
+
+    const data = { coachName, photoUrl, dateOfBirth, nationality, coachingLicense, career, tmCoachId, profileUrl };
+
+    // Cache 7 days
+    const exp = new Date(Date.now() + 7 * 24 * 3600 * 1000).toISOString().slice(0, 19).replace('T', ' ');
+    await pool.query(
+      'INSERT INTO api_football_cache (cache_key, response_json, expires_at) VALUES (?,?,?) ON DUPLICATE KEY UPDATE response_json=VALUES(response_json), expires_at=VALUES(expires_at)',
+      [cacheKey, JSON.stringify(data), exp]
+    ).catch(() => {});
+
+    await applyCoachData(playerId, data);
+    return res.json({ ok: true, ...data });
+  } catch (err) {
+    console.error('[enrich-coach] Error:', err?.message);
+    res.status(500).json({ error: err?.message });
+  }
+
+  async function applyCoachData(pid, data) {
+    const updates = {
+      tm_coach_id: data.tmCoachId || null,
+      coaching_career: data.career?.length ? JSON.stringify(data.career) : null,
+      coaching_license: data.coachingLicense || null,
+    };
+    if (data.nationality) updates.nationality = data.nationality;
+    if (data.dateOfBirth) updates.date_of_birth = data.dateOfBirth;
+    if (data.coachName) updates.name = data.coachName;
+    const sets = Object.keys(updates).map(k => `${k} = ?`).join(', ');
+    await pool.query(`UPDATE players SET ${sets}, updated_at = NOW() WHERE id = ?`, [...Object.values(updates), pid]);
+
+    // If photo — download and store in DB
+    if (data.photoUrl) {
+      try {
+        const photoResp = await fetch(data.photoUrl, { headers: TM_HEADERS, signal: AbortSignal.timeout(10000) });
+        if (photoResp.ok) {
+          const buf = Buffer.from(await photoResp.arrayBuffer());
+          if (buf.length < 5 * 1024 * 1024) {
+            const imgId = require('crypto').randomUUID();
+            await pool.query('INSERT INTO uploaded_images (id, data, mime_type) VALUES (?, ?, ?)', [imgId, buf, 'image/jpeg']);
+            await pool.query('UPDATE players SET photo_url = ? WHERE id = ?', [`/api/images/${imgId}`, pid]);
+          }
+        }
+      } catch { /* photo import non-critique */ }
+    }
   }
 });
 
@@ -9461,12 +10450,13 @@ app.post("/api/functions/:name", authMiddleware, async (req, res) => {
   }
 
   if (name === "enrich-player") {
-    // Premium or admin only
     const [_adminR] = await pool.query("SELECT id FROM user_roles WHERE user_id = ? AND role = 'admin' LIMIT 1", [req.user.id]);
-    if (!_adminR.length) {
-      const [_subR] = await pool.query("SELECT is_premium FROM user_subscriptions WHERE user_id = ? LIMIT 1", [req.user.id]);
-      if (!_subR.length || !_subR[0].is_premium) {
-        return res.status(403).json({ error: "premium_required", message: "L'enrichissement est réservé aux utilisateurs Premium." });
+    const _isAdmin = !!_adminR.length;
+    // Credit check — admins bypass quotas
+    if (!_isAdmin) {
+      const creditCheck = await canUseCredit(req.user.id);
+      if (!creditCheck.ok) {
+        return res.status(200).json({ error: creditCheck.error, quota: creditCheck.quota, used: creditCheck.used });
       }
     }
     const { playerName, club, playerId, nationality, generation, tmUrl } = req.body || {};
@@ -9540,17 +10530,32 @@ app.post("/api/functions/:name", authMiddleware, async (req, res) => {
         });
       }
 
-      // Consume 1 credit for enrichment (fire-and-forget — don't fail the request)
-      pool.query(
-        "INSERT INTO user_credit_events (id, user_id, action_type, direction, amount, description) VALUES (?, ?, 'enrichment', 'spend', 1, ?)",
-        [uuidv4(), req.user.id, `Enrichissement: ${playerName}`]
-      ).catch(() => {});
+      // Consume 1 credit after successful enrichment (awaited — prevents going negative)
+      let creditsRemaining = null;
+      if (!_isAdmin) {
+        await spendCredit(req.user.id, `Enrichissement: ${playerName}`);
+        // Return updated credit balance so client can refresh immediately
+        try {
+          const planType = await getUserPlanType(req.user.id);
+          const quotas = PLAN_QUOTAS[planType] || PLAN_QUOTAS.starter;
+          const usage = await getUserCreditUsage(req.user.id);
+          if (quotas.daily !== -1) {
+            const effectiveMonthly = quotas.monthly + (usage.earned_total || 0);
+            creditsRemaining = {
+              daily: quotas.daily - usage.daily,
+              weekly: quotas.weekly - usage.weekly,
+              monthly: effectiveMonthly - usage.monthly,
+            };
+          }
+        } catch {}
+      }
 
       return res.json({
         success: true,
         sources: { thesportsdb: !!tsdb, wikidata: !!wd, transfermarkt: !!tm },
         tmNotFound: !tm,
-        changes, // [{field, old, new}]
+        changes,
+        credits_remaining: creditsRemaining,
       });
     } catch (err) {
       console.error('[enrich-player] Error:', err);
@@ -10109,12 +11114,13 @@ app.post("/api/functions/:name", authMiddleware, async (req, res) => {
   }
 
   if (name === "enrich-all-players") {
-    // Premium or admin only
     const [_adminR2] = await pool.query("SELECT id FROM user_roles WHERE user_id = ? AND role = 'admin' LIMIT 1", [req.user.id]);
-    if (!_adminR2.length) {
-      const [_subR2] = await pool.query("SELECT is_premium FROM user_subscriptions WHERE user_id = ? LIMIT 1", [req.user.id]);
-      if (!_subR2.length || !_subR2[0].is_premium) {
-        return res.status(403).json({ error: "premium_required", message: "L'enrichissement est réservé aux utilisateurs Premium." });
+    const _isAdmin2 = !!_adminR2.length;
+    // Credit check before starting — must have at least 1 credit
+    if (!_isAdmin2) {
+      const creditCheck = await canUseCredit(req.user.id);
+      if (!creditCheck.ok) {
+        return res.status(200).json({ error: creditCheck.error, quota: creditCheck.quota, used: creditCheck.used });
       }
     }
     // Prevent concurrent runs
@@ -10123,19 +11129,53 @@ app.post("/api/functions/:name", authMiddleware, async (req, res) => {
       return res.json({ total: existing.total, message: 'Enrichissement déjà en cours', alreadyRunning: true });
     }
 
-    const [players] = await pool.query(
-      'SELECT id, name, club, nationality, generation FROM players WHERE user_id = ? ORDER BY name',
+    const [playersRaw] = await pool.query(
+      `SELECT id, name, club, nationality, generation,
+              photo_url, date_of_birth, contract_end, market_value,
+              notes, general_opinion, transfermarkt_id, external_data,
+              external_data_fetched_at
+       FROM players WHERE user_id = ? ORDER BY name`,
       [req.user.id]
     );
-    if (!players.length) return res.json({ total: 0, message: 'No players to enrich' });
+    if (!playersRaw.length) return res.json({ total: 0, message: 'No players to enrich' });
+
+    // Same completion% logic as client — 10 fields
+    function serverCompletionPct(p) {
+      let ext = {};
+      try { ext = typeof p.external_data === 'string' ? JSON.parse(p.external_data) : (p.external_data ?? {}); } catch {}
+      const checks = [
+        !!p.photo_url, !!p.date_of_birth, !!p.contract_end,
+        !!(ext.market_value || p.market_value), !!ext.height, !!ext.agent,
+        !!(p.notes?.trim()), !!p.general_opinion, !!ext.performance_stats,
+        !!(p.transfermarkt_id || ext.transfermarkt_id),
+      ];
+      return Math.round(checks.filter(Boolean).length / checks.length * 100);
+    }
+
+    // Sort: primary (never enriched OR ≤50%) first, secondary (enriched AND >50%) last
+    const players = [...playersRaw].sort((a, b) => {
+      const secA = !!a.external_data_fetched_at && serverCompletionPct(a) > 50;
+      const secB = !!b.external_data_fetched_at && serverCompletionPct(b) > 50;
+      if (secA === secB) return 0;
+      return secA ? 1 : -1;
+    });
 
     const total = players.length;
     enrichAllProgress.set(req.user.id, { running: true, total, done: 0, errors: 0 });
     res.json({ total, message: `Enrichissement de ${total} joueurs lancé en arrière-plan` });
 
     (async () => {
-      let done = 0, errors = 0;
+      let done = 0, errors = 0, stopped = false;
       for (const p of players) {
+        // Check credit before each player — stop loop if exhausted
+        if (!_isAdmin2) {
+          const cc = await canUseCredit(req.user.id);
+          if (!cc.ok) {
+            console.log(`[enrich-all] Stopping — credit limit (${cc.error})`);
+            stopped = true;
+            break;
+          }
+        }
         try {
           const [rows] = await pool.query(
             'SELECT id, name, club, league, nationality, date_of_birth, contract_end, external_data, photo_url, foot FROM players WHERE id = ?',
@@ -10155,20 +11195,34 @@ app.post("/api/functions/:name", authMiddleware, async (req, res) => {
           await pool.query(`UPDATE players SET ${setClauses.join(', ')} WHERE id = ?`, params);
           done++;
           console.log(`[enrich-all] ${done}/${total} ${row.name} ✓`);
-          // Consume 1 credit per enriched player
-          pool.query(
-            "INSERT INTO user_credit_events (id, user_id, action_type, direction, amount, description) VALUES (?, ?, 'enrichment', 'spend', 1, ?)",
-            [uuidv4(), req.user.id, `Enrichissement: ${row.name}`]
-          ).catch(() => {});
+          // Await spendCredit so canUseCredit on next iteration sees the updated count
+          if (!_isAdmin2) await spendCredit(req.user.id, `Enrichissement: ${row.name}`);
         } catch (e) {
           errors++;
           console.error(`[enrich-all] Error for ${p.name}:`, e.message);
         }
-        enrichAllProgress.set(req.user.id, { running: true, total, done, errors });
+        // Include current credit balance in progress for real-time client display
+        let creditInfo = null;
+        if (!_isAdmin2) {
+          try {
+            const planType = await getUserPlanType(req.user.id);
+            const quotas = PLAN_QUOTAS[planType] || PLAN_QUOTAS.starter;
+            if (quotas.daily !== -1) {
+              const usage = await getUserCreditUsage(req.user.id);
+              const effectiveMonthly = quotas.monthly + (usage.earned_total || 0);
+              creditInfo = {
+                daily: quotas.daily - usage.daily,
+                weekly: quotas.weekly - usage.weekly,
+                monthly: effectiveMonthly - usage.monthly,
+              };
+            }
+          } catch {}
+        }
+        enrichAllProgress.set(req.user.id, { running: true, total, done, errors, credits: creditInfo });
         // Polite delay to avoid TM rate-limit
         await new Promise(r => setTimeout(r, 1500));
       }
-      enrichAllProgress.set(req.user.id, { running: false, total, done, errors });
+      enrichAllProgress.set(req.user.id, { running: false, total, done, errors, stopped });
       console.log(`[enrich-all] Done: ${done} enriched, ${errors} errors`);
       // Clean up after 5 minutes
       setTimeout(() => enrichAllProgress.delete(req.user.id), 5 * 60 * 1000);
@@ -11967,8 +13021,9 @@ app.post("/api/functions/:name", authMiddleware, async (req, res) => {
 
   // ── SofaScore: fetch league info (teams, season) ──
   if (name === "sofascore-league") {
-    const { tournamentId } = req.body || {};
+    const { tournamentId, seasonYear, championshipName } = req.body || {};
     if (!tournamentId) return res.status(400).json({ error: "Missing tournamentId" });
+    // seasonYear = e.g. 2023 → fetches the 2023-24 season; null/undefined = current season
 
     // Sofascore tournament ID → ESPN league slug
     const SOFA_TO_ESPN = {
@@ -12047,40 +13102,88 @@ app.post("/api/functions/:name", authMiddleware, async (req, res) => {
     }
 
     const espnSlug = SOFA_TO_ESPN[Number(tournamentId)];
-    const cacheKey = `standings_espn_${tournamentId}`;
+    const now = new Date();
+    const currentSeasonYear = now.getMonth() >= 6 ? now.getFullYear() : now.getFullYear() - 1;
+    const safeSeasonYear = seasonYear ? parseInt(seasonYear) : null;
+    const effectiveSeasonYear = safeSeasonYear ?? currentSeasonYear;
+    const isHistorical = effectiveSeasonYear < currentSeasonYear;
+    const forceRefresh = !!(req.body?.refresh);
 
-    // Check cache (6h TTL)
-    try {
-      const [cached] = await pool.query(
-        'SELECT response_json FROM api_football_cache WHERE cache_key = ? AND expires_at > NOW()',
-        [cacheKey]
-      );
-      if (cached.length > 0) {
-        const v = cached[0].response_json;
-        return res.json(typeof v === 'string' ? JSON.parse(v) : v);
-      }
-    } catch { /* cache miss */ }
+    // ── Helper: fetch manual data (always available) ──────────────────────
+    async function getManualData(name, year) {
+      if (!name) return null;
+      try {
+        const [rows] = await pool.query(
+          'SELECT standings_json, season_display_name, updated_at FROM championship_manual_data WHERE championship_name = ? AND season_year = ?',
+          [name, year]
+        );
+        if (!rows.length) return null;
+        const data = typeof rows[0].standings_json === 'string' ? JSON.parse(rows[0].standings_json) : rows[0].standings_json;
+        return { ...data, source: 'manual', from_cache: true, manual_updated_at: rows[0].updated_at };
+      } catch { return null; }
+    }
+
+    // ── 0. Manual data always wins (admin/mod entries override API) ───────
+    if (!forceRefresh) {
+      const manual = await getManualData(championshipName, effectiveSeasonYear);
+      if (manual) return res.json(manual);
+    }
+
+    // ── 1. Check championship_standings ESPN cache ────────────────────────
+    if (!forceRefresh) {
+      try {
+        const [rows] = await pool.query(
+          'SELECT standings_json, fetched_at FROM championship_standings WHERE tournament_id = ? AND season_year = ?',
+          [Number(tournamentId), effectiveSeasonYear]
+        );
+        if (rows.length > 0) {
+          const row = rows[0];
+          const fetchedAt = new Date(row.fetched_at);
+          const ageHours = (Date.now() - fetchedAt.getTime()) / 3_600_000;
+          if (isHistorical || ageHours < 24) {
+            const data = typeof row.standings_json === 'string' ? JSON.parse(row.standings_json) : row.standings_json;
+            return res.json({ ...data, fetched_at: row.fetched_at, from_cache: true });
+          }
+        }
+      } catch (e) { console.warn('[standings-cache] read error:', e?.message); }
+    }
 
     if (!espnSlug) {
       return res.json({ teams: [], season: null, source: 'none' });
     }
 
+    // ── 2. Fetch from ESPN ────────────────────────────────────────────────
     try {
       const espnResp = await fetch(
-        `https://site.api.espn.com/apis/v2/sports/soccer/${espnSlug}/standings`,
+        `https://site.api.espn.com/apis/v2/sports/soccer/${espnSlug}/standings?season=${effectiveSeasonYear}`,
         { headers: { Accept: 'application/json' }, signal: AbortSignal.timeout(10000) }
       );
       if (!espnResp.ok) {
-        console.warn(`[espn-standings] ${espnResp.status} for ${espnSlug}`);
+        // Serve stale cache rather than an error if ESPN is down
+        const [stale] = await pool.query(
+          'SELECT standings_json, fetched_at FROM championship_standings WHERE tournament_id = ? AND season_year = ?',
+          [Number(tournamentId), effectiveSeasonYear]
+        );
+        if (stale.length > 0) {
+          const data = typeof stale[0].standings_json === 'string' ? JSON.parse(stale[0].standings_json) : stale[0].standings_json;
+          return res.json({ ...data, fetched_at: stale[0].fetched_at, from_cache: true, stale: true });
+        }
         return res.status(espnResp.status).json({ error: `ESPN returned ${espnResp.status}` });
       }
 
       const espnData = await espnResp.json();
+      // Log top-level keys to help diagnose response format
+      console.log(`[espn] ${espnSlug} top-level keys:`, Object.keys(espnData));
+      if (espnData?.children) console.log(`[espn] children[0] keys:`, Object.keys(espnData.children[0] ?? {}));
+      // Try all known ESPN response shapes
+      let standingsObj = espnData?.children?.[0]?.standings ?? espnData?.standings ?? null;
+      if (Array.isArray(standingsObj)) standingsObj = standingsObj[0] ?? null;
+      console.log(`[espn] standingsObj keys:`, standingsObj ? Object.keys(standingsObj) : 'null', '| entries:', standingsObj?.entries?.length ?? 0);
       const seasonName =
-        espnData?.children?.[0]?.standings?.[0]?.seasonDisplayName ??
+        standingsObj?.seasonDisplayName ??
         espnData?.season?.displayName ??
         String(espnData?.season?.year ?? '');
-      const entries = espnData?.children?.[0]?.standings?.[0]?.entries ?? [];
+      const entries = standingsObj?.entries ?? [];
 
       const teams = entries.map(e => {
         const stat = n => { const s = e.stats?.find(x => x.name === n); return s ? Math.round(Number(s.value)) : null; };
@@ -12098,26 +13201,51 @@ app.post("/api/functions/:name", authMiddleware, async (req, res) => {
           losses: stat('losses') ?? 0,
           goalsFor: stat('pointsFor') ?? 0,
           goalsAgainst: stat('pointsAgainst') ?? 0,
-          description: getZone(espnSlug, pos, entries.length),
-          promotionDescription: null,
+          goalDifference: stat('pointDifferential') ?? 0,
+          description: e.note?.description ?? getZone(espnSlug, pos, entries.length),
+          noteColor: e.note?.color ?? null,
         };
       });
 
-      const result = { tournamentId: Number(tournamentId), season: { name: seasonName }, teams, source: 'espn' };
 
-      // Cache 6h
+      const fetchedAt = new Date().toISOString().slice(0, 19).replace('T', ' ');
+      const result = {
+        tournamentId: Number(tournamentId),
+        seasonYear: effectiveSeasonYear,
+        season: { name: seasonName },
+        teams,
+        source: 'espn',
+        fetched_at: fetchedAt,
+        from_cache: false,
+      };
+
+      // ── 3. Persist to championship_standings ──────────────────────────
       try {
-        const exp = new Date(Date.now() + 6 * 3600 * 1000).toISOString().slice(0, 19).replace('T', ' ');
         await pool.query(
-          `INSERT INTO api_football_cache (cache_key, response_json, expires_at) VALUES (?, ?, ?)
-           ON DUPLICATE KEY UPDATE response_json = VALUES(response_json), expires_at = VALUES(expires_at), fetched_at = NOW()`,
-          [cacheKey, JSON.stringify(result), exp]
+          `INSERT INTO championship_standings (tournament_id, season_year, espn_slug, season_name, standings_json, source, fetched_at)
+           VALUES (?, ?, ?, ?, ?, 'espn', NOW())
+           ON DUPLICATE KEY UPDATE
+             standings_json = VALUES(standings_json),
+             season_name    = VALUES(season_name),
+             fetched_at     = NOW()`,
+          [Number(tournamentId), effectiveSeasonYear, espnSlug, seasonName, JSON.stringify(result)]
         );
-      } catch { /* non-critical */ }
+      } catch (e) { console.warn('[standings-cache] write error:', e?.message); }
 
       return res.json(result);
     } catch (err) {
       console.error('[espn-standings] Error:', err?.message);
+      // Serve stale cache on network error
+      try {
+        const [stale] = await pool.query(
+          'SELECT standings_json, fetched_at FROM championship_standings WHERE tournament_id = ? AND season_year = ?',
+          [Number(tournamentId), effectiveSeasonYear]
+        );
+        if (stale.length > 0) {
+          const data = typeof stale[0].standings_json === 'string' ? JSON.parse(stale[0].standings_json) : stale[0].standings_json;
+          return res.json({ ...data, fetched_at: stale[0].fetched_at, from_cache: true, stale: true });
+        }
+      } catch {}
       return res.status(502).json({ error: 'ESPN fetch failed', detail: err?.message });
     }
   }
@@ -12467,24 +13595,49 @@ app.get("/api/saved-championships", authMiddleware, async (req, res) => {
     const [rows] = await pool.query(
       `SELECT
          usc.*,
-         COUNT(DISTINCT cp.player_id)                                          AS player_count,
-         COUNT(DISTINCT NULLIF(TRIM(p.club), ''))                              AS club_count,
-         (SELECT p2.club
-          FROM championship_players cp2
-          JOIN players p2 ON p2.id = cp2.player_id
-          WHERE cp2.user_id = usc.user_id
-            AND cp2.championship_name = usc.championship_name
-            AND TRIM(p2.club) != ''
-          GROUP BY p2.club
-          ORDER BY COUNT(*) DESC
-          LIMIT 1)                                                              AS top_club
+         (
+           SELECT COUNT(DISTINCT p.id)
+           FROM players p
+           WHERE p.user_id = usc.user_id
+             AND (
+               EXISTS (SELECT 1 FROM championship_players cp
+                       WHERE cp.player_id = p.id
+                         AND cp.championship_name = usc.championship_name
+                         AND cp.user_id = usc.user_id)
+               OR LOWER(TRIM(COALESCE(p.league,''))) = LOWER(TRIM(usc.championship_name))
+             )
+         ) AS player_count,
+         (
+           SELECT COUNT(DISTINCT NULLIF(TRIM(p.club),''))
+           FROM players p
+           WHERE p.user_id = usc.user_id
+             AND TRIM(COALESCE(p.club,'')) != ''
+             AND (
+               EXISTS (SELECT 1 FROM championship_players cp
+                       WHERE cp.player_id = p.id
+                         AND cp.championship_name = usc.championship_name
+                         AND cp.user_id = usc.user_id)
+               OR LOWER(TRIM(COALESCE(p.league,''))) = LOWER(TRIM(usc.championship_name))
+             )
+         ) AS club_count,
+         (
+           SELECT p.club
+           FROM players p
+           WHERE p.user_id = usc.user_id
+             AND TRIM(COALESCE(p.club,'')) != ''
+             AND (
+               EXISTS (SELECT 1 FROM championship_players cp
+                       WHERE cp.player_id = p.id
+                         AND cp.championship_name = usc.championship_name
+                         AND cp.user_id = usc.user_id)
+               OR LOWER(TRIM(COALESCE(p.league,''))) = LOWER(TRIM(usc.championship_name))
+             )
+           GROUP BY p.club
+           ORDER BY COUNT(*) DESC
+           LIMIT 1
+         ) AS top_club
        FROM user_saved_championships usc
-       LEFT JOIN championship_players cp
-         ON cp.championship_name = usc.championship_name AND cp.user_id = usc.user_id
-       LEFT JOIN players p
-         ON p.id = cp.player_id
        WHERE usc.user_id = ?
-       GROUP BY usc.id
        ORDER BY usc.championship_name ASC`,
       [req.user.id]
     );
@@ -13102,6 +14255,92 @@ app.get("/api/admin/news/status", authMiddleware, ensureAdmin, async (_req, res)
 
 // ── Football Buzz — RSS aggregator ────────────────────────────────────────────
 
+pool.query(`CREATE TABLE IF NOT EXISTS club_overrides (
+  id INT AUTO_INCREMENT PRIMARY KEY,
+  club_name VARCHAR(255) NOT NULL,
+  city VARCHAR(255) NULL,
+  official_website VARCHAR(500) NULL,
+  address TEXT NULL,
+  phone VARCHAR(100) NULL,
+  email VARCHAR(255) NULL,
+  founded_year INT NULL,
+  stadium VARCHAR(255) NULL,
+  stadium_capacity INT NULL,
+  manager VARCHAR(255) NULL,
+  description_fr TEXT NULL,
+  description_en TEXT NULL,
+  league VARCHAR(255) NULL,
+  colour1 VARCHAR(30) NULL,
+  colour2 VARCHAR(30) NULL,
+  badge_url TEXT NULL,
+  updated_by VARCHAR(36) NULL,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  UNIQUE KEY uniq_club_override (club_name(191))
+)`).catch(err => { if (!err?.message?.includes('already exists')) console.warn('[warn] club_overrides table:', err?.message); });
+
+// ── club_overrides — fix updated_by type + extended columns ──────────────────
+pool.query("ALTER TABLE club_overrides MODIFY COLUMN updated_by VARCHAR(36) NULL").catch(() => {});
+pool.query('ALTER TABLE club_overrides ADD COLUMN country VARCHAR(255) NULL').catch(err => { if (err.errno !== 1060) console.warn('[warn] club_overrides:', err?.message); });
+pool.query('ALTER TABLE club_overrides ADD COLUMN division VARCHAR(255) NULL').catch(err => { if (err.errno !== 1060) console.warn('[warn] club_overrides:', err?.message); });
+pool.query('ALTER TABLE club_overrides ADD COLUMN staff_technical TEXT NULL').catch(err => { if (err.errno !== 1060) console.warn('[warn] club_overrides:', err?.message); });
+pool.query('ALTER TABLE club_overrides ADD COLUMN contact_name VARCHAR(255) NULL').catch(err => { if (err.errno !== 1060) console.warn('[warn] club_overrides:', err?.message); });
+pool.query('ALTER TABLE club_overrides ADD COLUMN contact_role VARCHAR(100) NULL').catch(err => { if (err.errno !== 1060) console.warn('[warn] club_overrides:', err?.message); });
+pool.query('ALTER TABLE club_overrides ADD COLUMN contact_phone VARCHAR(100) NULL').catch(err => { if (err.errno !== 1060) console.warn('[warn] club_overrides:', err?.message); });
+pool.query('ALTER TABLE club_overrides ADD COLUMN contact_email VARCHAR(255) NULL').catch(err => { if (err.errno !== 1060) console.warn('[warn] club_overrides:', err?.message); });
+pool.query('ALTER TABLE club_overrides ADD COLUMN current_ranking INT NULL').catch(err => { if (err.errno !== 1060) console.warn('[warn] club_overrides:', err?.message); });
+pool.query('ALTER TABLE club_overrides ADD COLUMN current_season VARCHAR(50) NULL').catch(err => { if (err.errno !== 1060) console.warn('[warn] club_overrides:', err?.message); });
+pool.query('ALTER TABLE club_overrides ADD COLUMN stats_goals_for INT NULL').catch(err => { if (err.errno !== 1060) console.warn('[warn] club_overrides:', err?.message); });
+pool.query('ALTER TABLE club_overrides ADD COLUMN stats_goals_against INT NULL').catch(err => { if (err.errno !== 1060) console.warn('[warn] club_overrides:', err?.message); });
+pool.query('ALTER TABLE club_overrides ADD COLUMN stats_clean_sheets INT NULL').catch(err => { if (err.errno !== 1060) console.warn('[warn] club_overrides:', err?.message); });
+pool.query('ALTER TABLE club_overrides ADD COLUMN stats_wins INT NULL').catch(err => { if (err.errno !== 1060) console.warn('[warn] club_overrides:', err?.message); });
+pool.query('ALTER TABLE club_overrides ADD COLUMN stats_draws INT NULL').catch(err => { if (err.errno !== 1060) console.warn('[warn] club_overrides:', err?.message); });
+pool.query('ALTER TABLE club_overrides ADD COLUMN stats_losses INT NULL').catch(err => { if (err.errno !== 1060) console.warn('[warn] club_overrides:', err?.message); });
+pool.query('ALTER TABLE club_overrides ADD COLUMN transfer_budget VARCHAR(100) NULL').catch(err => { if (err.errno !== 1060) console.warn('[warn] club_overrides:', err?.message); });
+pool.query('ALTER TABLE club_overrides ADD COLUMN avg_salary VARCHAR(100) NULL').catch(err => { if (err.errno !== 1060) console.warn('[warn] club_overrides:', err?.message); });
+pool.query('ALTER TABLE club_overrides ADD COLUMN partnership_status VARCHAR(255) NULL').catch(err => { if (err.errno !== 1060) console.warn('[warn] club_overrides:', err?.message); });
+pool.query('ALTER TABLE club_overrides ADD COLUMN recommended_players TEXT NULL').catch(err => { if (err.errno !== 1060) console.warn('[warn] club_overrides:', err?.message); });
+pool.query('ALTER TABLE club_overrides ADD COLUMN scout_rating TINYINT NULL').catch(err => { if (err.errno !== 1060) console.warn('[warn] club_overrides:', err?.message); });
+pool.query('ALTER TABLE club_overrides ADD COLUMN coach_photo_url TEXT NULL').catch(err => { if (err.errno !== 1060) console.warn('[warn] club_overrides:', err?.message); });
+pool.query('ALTER TABLE club_overrides ADD COLUMN coach_nationality VARCHAR(100) NULL').catch(err => { if (err.errno !== 1060) console.warn('[warn] club_overrides:', err?.message); });
+pool.query('ALTER TABLE club_overrides ADD COLUMN coach_date_born DATE NULL').catch(err => { if (err.errno !== 1060) console.warn('[warn] club_overrides:', err?.message); });
+
+pool.query(`CREATE TABLE IF NOT EXISTS club_profiles_cache (
+  id INT AUTO_INCREMENT PRIMARY KEY,
+  club_name VARCHAR(255) NOT NULL,
+  data LONGTEXT NOT NULL,
+  cached_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  expires_at DATETIME NOT NULL,
+  UNIQUE KEY uniq_club_profile (club_name(191))
+)`).catch(err => { if (!err?.message?.includes('already exists')) console.warn('[warn] club_profiles_cache table:', err?.message); });
+
+pool.query(`CREATE TABLE IF NOT EXISTS club_scouting_notes (
+  id INT AUTO_INCREMENT PRIMARY KEY,
+  club_name VARCHAR(255) NOT NULL,
+  user_id VARCHAR(36) NOT NULL,
+  content TEXT NOT NULL,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  INDEX idx_csn_club (club_name(191)),
+  INDEX idx_csn_user (user_id)
+)`).catch(err => { if (!err?.message?.includes('already exists')) console.warn('[warn] club_scouting_notes table:', err?.message); });
+pool.query("ALTER TABLE club_scouting_notes MODIFY COLUMN user_id VARCHAR(36) NOT NULL").catch(() => {});
+pool.query("ALTER TABLE club_scouting_notes ADD COLUMN rating TINYINT NULL").catch(err => { if (err.errno !== 1060) console.warn('[warn] club_scouting_notes rating:', err?.message); });
+pool.query("ALTER TABLE club_scouting_notes ADD UNIQUE KEY uniq_csn_club_user (club_name(191), user_id)").catch(err => { if (err.errno !== 1061 && err.errno !== 1060) console.warn('[warn] club_scouting_notes unique:', err?.message); });
+
+pool.query(`CREATE TABLE IF NOT EXISTS championship_scouting_notes (
+  id INT AUTO_INCREMENT PRIMARY KEY,
+  championship_name VARCHAR(255) NOT NULL,
+  user_id VARCHAR(36) NOT NULL,
+  content TEXT NOT NULL,
+  rating TINYINT NULL,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  INDEX idx_csn_champ (championship_name(191)),
+  INDEX idx_csn_champ_user (user_id)
+)`).catch(err => { if (!err?.message?.includes('already exists')) console.warn('[warn] championship_scouting_notes table:', err?.message); });
+pool.query("ALTER TABLE championship_scouting_notes ADD COLUMN rating TINYINT NULL").catch(err => { if (err.errno !== 1060) console.warn('[warn] championship_scouting_notes rating:', err?.message); });
+pool.query("ALTER TABLE championship_scouting_notes ADD UNIQUE KEY uniq_csn_champ_user (championship_name(191), user_id)").catch(err => { if (err.errno !== 1061 && err.errno !== 1060) console.warn('[warn] championship_scouting_notes unique:', err?.message); });
+
 pool.query(`CREATE TABLE IF NOT EXISTS football_buzz (
   id CHAR(36) PRIMARY KEY,
   source_name VARCHAR(100) NOT NULL,
@@ -13248,6 +14487,394 @@ app.get("/api/buzz", authMiddleware, async (req, res) => {
     const [[{ last_scraped }]] = await pool.query("SELECT MAX(scraped_at) as last_scraped FROM football_buzz");
     return res.json({ posts: rows, total, sources, last_scraped });
   } catch (err) {
+    return res.status(500).json({ error: err?.message });
+  }
+});
+
+// ── GET /api/buzz/article — fetch & extract article content ──────────────────
+
+app.get("/api/buzz/article", authMiddleware, async (req, res) => {
+  try {
+    const url = decodeURIComponent(req.query.url || '');
+    if (!url || !/^https?:\/\//i.test(url)) return res.status(400).json({ error: 'invalid_url' });
+
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 10000);
+    let html;
+    try {
+      const r = await fetch(url, {
+        signal: controller.signal,
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36',
+          'Accept': 'text/html,application/xhtml+xml',
+          'Accept-Language': 'fr-FR,fr;q=0.9,en;q=0.8',
+        },
+      });
+      clearTimeout(timeout);
+      const ct = r.headers.get('content-type') || '';
+      if (!ct.includes('html')) return res.status(422).json({ error: 'not_html' });
+      html = await r.text();
+    } catch (e) {
+      clearTimeout(timeout);
+      return res.status(502).json({ error: 'fetch_failed', detail: e?.message });
+    }
+
+    // Extract OG / meta data
+    const ogTitle   = (html.match(/<meta[^>]+property=["']og:title["'][^>]+content=["']([^"']+)/i) || html.match(/<meta[^>]+content=["']([^"']+)["'][^>]+property=["']og:title["']/i) || [])[1] || '';
+    const ogDesc    = (html.match(/<meta[^>]+property=["']og:description["'][^>]+content=["']([^"']+)/i) || html.match(/<meta[^>]+content=["']([^"']+)["'][^>]+property=["']og:description["']/i) || [])[1] || '';
+    const ogImage   = (html.match(/<meta[^>]+property=["']og:image["'][^>]+content=["']([^"']+)/i) || html.match(/<meta[^>]+content=["']([^"']+)["'][^>]+property=["']og:image["']/i) || [])[1] || '';
+    const titleTag  = (html.match(/<title[^>]*>([^<]+)<\/title>/i) || [])[1] || '';
+
+    // Try to extract main article body — ordered by specificity
+    const SELECTORS = [
+      /<article[^>]*>([\s\S]*?)<\/article>/i,
+      /<div[^>]+(?:class|id)=["'][^"']*(?:article[_-]?body|article[_-]?content|article[_-]?text|post[_-]?content|entry[_-]?content|story[_-]?body|news[_-]?content)[^"']*["'][^>]*>([\s\S]*?)<\/div>/i,
+      /<main[^>]*>([\s\S]*?)<\/main>/i,
+    ];
+
+    let rawBody = '';
+    for (const rx of SELECTORS) {
+      const m = html.match(rx);
+      if (m) { rawBody = m[1]; break; }
+    }
+    if (!rawBody) {
+      // Fallback: grab all <p> tags from the page body
+      const bodyM = html.match(/<body[^>]*>([\s\S]*?)<\/body>/i);
+      rawBody = bodyM ? bodyM[1] : html;
+    }
+
+    // Strip scripts, styles, nav, aside, footer, ads
+    rawBody = rawBody
+      .replace(/<script[\s\S]*?<\/script>/gi, '')
+      .replace(/<style[\s\S]*?<\/style>/gi, '')
+      .replace(/<nav[\s\S]*?<\/nav>/gi, '')
+      .replace(/<aside[\s\S]*?<\/aside>/gi, '')
+      .replace(/<footer[\s\S]*?<\/footer>/gi, '')
+      .replace(/<header[\s\S]*?<\/header>/gi, '')
+      .replace(/<!--[\s\S]*?-->/g, '');
+
+    // Extract paragraphs
+    const paragraphs = [];
+    const pRx = /<p[^>]*>([\s\S]*?)<\/p>/gi;
+    let m2;
+    while ((m2 = pRx.exec(rawBody)) !== null) {
+      // Strip inner tags
+      const text = m2[1].replace(/<[^>]+>/g, '').replace(/&nbsp;/g, ' ').replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&#39;/g, "'").replace(/\s+/g, ' ').trim();
+      if (text.length > 40) paragraphs.push(text);
+    }
+
+    return res.json({
+      title: ogTitle || titleTag,
+      description: ogDesc,
+      image: ogImage || null,
+      paragraphs,
+      source_url: url,
+    });
+  } catch (err) {
+    return res.status(500).json({ error: err?.message });
+  }
+});
+
+// ── Club profile cache ─────────────────────────────────────────────────────────
+
+app.get("/api/club-profile-cache", authMiddleware, async (req, res) => {
+  try {
+    const name = (req.query.name || '').trim().toLowerCase();
+    if (!name) return res.status(400).json({ error: 'missing_name' });
+    const [[row]] = await pool.query(
+      "SELECT data FROM club_profiles_cache WHERE club_name = ? AND expires_at > NOW()",
+      [name]
+    );
+    if (!row) return res.status(404).json({ error: 'cache_miss' });
+    return res.json(JSON.parse(row.data));
+  } catch (err) {
+    return res.status(500).json({ error: err?.message });
+  }
+});
+
+app.post("/api/club-profile-cache", authMiddleware, async (req, res) => {
+  try {
+    const { name, data } = req.body || {};
+    if (!name || !data) return res.status(400).json({ error: 'missing_fields' });
+    const key = name.trim().toLowerCase();
+    const expiresAt = new Date(Date.now() + 4 * 60 * 60 * 1000).toISOString().slice(0, 19).replace('T', ' ');
+    await pool.query(
+      "INSERT INTO club_profiles_cache (club_name, data, expires_at) VALUES (?, ?, ?) ON DUPLICATE KEY UPDATE data = VALUES(data), expires_at = VALUES(expires_at), cached_at = NOW()",
+      [key, JSON.stringify(data), expiresAt]
+    );
+    return res.json({ ok: true });
+  } catch (err) {
+    return res.status(500).json({ error: err?.message });
+  }
+});
+
+// ── Club upcoming fixtures (TheSportsDB via DB cache) ──────────────────────────
+
+app.get("/api/club-fixtures", authMiddleware, async (req, res) => {
+  try {
+    const teamId = (req.query.teamId || '').trim();
+    if (!teamId) return res.status(400).json({ error: 'missing_teamId' });
+
+    const cacheKey = `club_fixtures_${teamId}`;
+    const [[cached]] = await pool.query(
+      "SELECT data FROM api_football_cache WHERE cache_key = ? AND expires_at > NOW()",
+      [cacheKey]
+    );
+    if (cached) return res.json(JSON.parse(cached.data));
+
+    const apiKey = process.env.THESPORTSDB_API_KEY || '3';
+    const r = await fetch(`https://www.thesportsdb.com/api/v1/json/${apiKey}/eventsnext.php?id=${teamId}`, { headers: TSDB_HEADERS });
+    if (!r.ok) return res.status(502).json({ error: 'tsdb_error' });
+    const tsdbData = await r.json();
+    const events = tsdbData?.events ?? [];
+
+    const expiresAt = new Date(Date.now() + 3 * 60 * 60 * 1000).toISOString().slice(0, 19).replace('T', ' ');
+    await pool.query(
+      "INSERT INTO api_football_cache (cache_key, data, expires_at) VALUES (?, ?, ?) ON DUPLICATE KEY UPDATE data = VALUES(data), expires_at = VALUES(expires_at)",
+      [cacheKey, JSON.stringify(events), expiresAt]
+    ).catch(() => {});
+
+    return res.json(events);
+  } catch (err) {
+    return res.status(500).json({ error: err?.message });
+  }
+});
+
+// ── Club buzz mentions ─────────────────────────────────────────────────────────
+
+app.get("/api/buzz/club", authMiddleware, async (req, res) => {
+  try {
+    const name = (req.query.name || '').trim();
+    if (!name) return res.status(400).json({ error: 'missing_name' });
+    const [rows] = await pool.query(
+      "SELECT * FROM football_buzz WHERE content LIKE ? ORDER BY published_at DESC LIMIT 6",
+      [`%${name}%`]
+    );
+    return res.json({ posts: rows });
+  } catch (err) {
+    return res.status(500).json({ error: err?.message });
+  }
+});
+
+// ── Club scouting notes ────────────────────────────────────────────────────────
+
+app.get("/api/club-notes", authMiddleware, async (req, res) => {
+  try {
+    const club = (req.query.club || '').trim();
+    console.log(`[club-notes GET] club="${club}" user="${req.user.id}"`);
+    if (!club) return res.status(400).json({ error: 'missing_club' });
+    const [rows] = await pool.query(
+      `SELECT n.id, n.club_name, n.content, n.rating, n.created_at, n.updated_at, n.user_id,
+              COALESCE(p.full_name, u.email) AS author_name
+       FROM club_scouting_notes n
+       LEFT JOIN users    u ON u.id = n.user_id
+       LEFT JOIN profiles p ON p.user_id = n.user_id
+       WHERE n.club_name = ?
+       ORDER BY n.updated_at DESC`,
+      [club]
+    );
+    console.log(`[club-notes GET] rows=${rows.length}`, rows.map(r => ({ id: r.id, user_id: r.user_id, club_name: r.club_name, content_len: r.content?.length })));
+    return res.json({ notes: rows });
+  } catch (err) {
+    console.error('[club-notes GET] ERR:', err?.message);
+    return res.status(500).json({ error: err?.message });
+  }
+});
+
+app.post("/api/club-notes", authMiddleware, async (req, res) => {
+  try {
+    const { club, content, id, rating } = req.body || {};
+    console.log(`[club-notes POST] club="${club}" id=${id} rating=${rating} user="${req.user.id}" content_len=${content?.length}`);
+    if (!club || !content?.trim()) return res.status(400).json({ error: 'missing_fields' });
+    const ratingVal = (rating != null && rating !== '' && Number.isFinite(Number(rating))) ? Number(rating) : null;
+    if (id) {
+      const [upd] = await pool.query(
+        "UPDATE club_scouting_notes SET content = ?, rating = ?, updated_at = NOW() WHERE id = ? AND user_id = ?",
+        [content.trim(), ratingVal, id, req.user.id]
+      );
+      console.log(`[club-notes POST] UPDATE affectedRows=${upd.affectedRows} id=${id}`);
+      return res.json({ ok: true });
+    }
+    const [r] = await pool.query(
+      `INSERT INTO club_scouting_notes (club_name, user_id, content, rating)
+       VALUES (?, ?, ?, ?)
+       ON DUPLICATE KEY UPDATE content = VALUES(content), rating = VALUES(rating), updated_at = NOW()`,
+      [club, req.user.id, content.trim(), ratingVal]
+    );
+    console.log(`[club-notes POST] INSERT insertId=${r.insertId} affectedRows=${r.affectedRows}`);
+    return res.json({ ok: true, id: r.insertId });
+  } catch (err) {
+    console.error('[club-notes POST] ERR:', err?.message);
+    return res.status(500).json({ error: err?.message });
+  }
+});
+
+app.delete("/api/club-notes/:id", authMiddleware, async (req, res) => {
+  try {
+    await pool.query(
+      "DELETE FROM club_scouting_notes WHERE id = ? AND user_id = ?",
+      [req.params.id, req.user.id]
+    );
+    return res.json({ ok: true });
+  } catch (err) {
+    return res.status(500).json({ error: err?.message });
+  }
+});
+
+// ── Championship scouting notes ───────────────────────────────────────────────
+
+app.get("/api/championship-notes", authMiddleware, async (req, res) => {
+  try {
+    const name = (req.query.name || '').trim();
+    console.log(`[champ-notes GET] name="${name}" user="${req.user.id}"`);
+    if (!name) return res.status(400).json({ error: 'missing_name' });
+    const [rows] = await pool.query(
+      `SELECT n.id, n.championship_name, n.content, n.rating, n.created_at, n.updated_at, n.user_id,
+              COALESCE(p.full_name, u.email) AS author_name
+       FROM championship_scouting_notes n
+       LEFT JOIN users    u ON u.id = n.user_id
+       LEFT JOIN profiles p ON p.user_id = n.user_id
+       WHERE n.championship_name = ?
+       ORDER BY n.updated_at DESC`,
+      [name]
+    );
+    console.log(`[champ-notes GET] rows=${rows.length}`, rows.map(r => ({ id: r.id, user_id: r.user_id, champ: r.championship_name, content_len: r.content?.length })));
+    return res.json({ notes: rows });
+  } catch (err) {
+    console.error('[champ-notes GET] ERR:', err?.message);
+    return res.status(500).json({ error: err?.message });
+  }
+});
+
+app.post("/api/championship-notes", authMiddleware, async (req, res) => {
+  try {
+    const { name, content, id, rating } = req.body || {};
+    console.log(`[champ-notes POST] name="${name}" id=${id} rating=${rating} user="${req.user.id}" content_len=${content?.length}`);
+    if (!name || !content?.trim()) return res.status(400).json({ error: 'missing_fields' });
+    const ratingVal = (rating != null && rating !== '' && Number.isFinite(Number(rating))) ? Number(rating) : null;
+    if (id) {
+      const [upd] = await pool.query(
+        "UPDATE championship_scouting_notes SET content = ?, rating = ?, updated_at = NOW() WHERE id = ? AND user_id = ?",
+        [content.trim(), ratingVal, id, req.user.id]
+      );
+      console.log(`[champ-notes POST] UPDATE affectedRows=${upd.affectedRows} id=${id}`);
+      return res.json({ ok: true });
+    }
+    const [r] = await pool.query(
+      `INSERT INTO championship_scouting_notes (championship_name, user_id, content, rating)
+       VALUES (?, ?, ?, ?)
+       ON DUPLICATE KEY UPDATE content = VALUES(content), rating = VALUES(rating), updated_at = NOW()`,
+      [name, req.user.id, content.trim(), ratingVal]
+    );
+    console.log(`[champ-notes POST] INSERT insertId=${r.insertId} affectedRows=${r.affectedRows}`);
+    return res.json({ ok: true, id: r.insertId });
+  } catch (err) {
+    console.error('[champ-notes POST] ERR:', err?.message);
+    return res.status(500).json({ error: err?.message });
+  }
+});
+
+app.delete("/api/championship-notes/:id", authMiddleware, async (req, res) => {
+  try {
+    await pool.query(
+      "DELETE FROM championship_scouting_notes WHERE id = ? AND user_id = ?",
+      [req.params.id, req.user.id]
+    );
+    return res.json({ ok: true });
+  } catch (err) {
+    return res.status(500).json({ error: err?.message });
+  }
+});
+
+// ── Club manual overrides (moderator / admin) ─────────────────────────────────
+
+app.get("/api/club-override", authMiddleware, async (req, res) => {
+  try {
+    const name = (req.query.name || '').trim();
+    if (!name) return res.status(400).json({ error: 'missing_name' });
+    const [[row]] = await pool.query(
+      "SELECT * FROM club_overrides WHERE club_name = ?",
+      [name]
+    );
+    return res.json(row || null);
+  } catch (err) {
+    return res.status(500).json({ error: err?.message });
+  }
+});
+
+app.post("/api/club-override", authMiddleware, ensureAdminOrModerator, async (req, res) => {
+  try {
+    const b = req.body || {};
+    if (!b.club_name) return res.status(400).json({ error: 'missing_club_name' });
+
+    // Helper: convert empty strings to null, coerce integers
+    const str = v => (v === '' || v === undefined) ? null : String(v);
+    const int = v => (v === '' || v === undefined || v === null) ? null : (Number.isFinite(Number(v)) ? Number(v) : null);
+
+    const data = {
+      club_name:          String(b.club_name),
+      city:               str(b.city),
+      official_website:   str(b.official_website),
+      address:            str(b.address),
+      phone:              str(b.phone),
+      email:              str(b.email),
+      founded_year:       int(b.founded_year),
+      stadium:            str(b.stadium),
+      stadium_capacity:   int(b.stadium_capacity),
+      manager:            str(b.manager),
+      description_fr:     str(b.description_fr),
+      description_en:     str(b.description_en),
+      league:             str(b.league),
+      colour1:            str(b.colour1),
+      colour2:            str(b.colour2),
+      badge_url:          str(b.badge_url),
+      country:            str(b.country),
+      division:           str(b.division),
+      staff_technical:    str(b.staff_technical),
+      contact_name:       str(b.contact_name),
+      contact_role:       str(b.contact_role),
+      contact_phone:      str(b.contact_phone),
+      contact_email:      str(b.contact_email),
+      current_ranking:    int(b.current_ranking),
+      current_season:     str(b.current_season),
+      stats_goals_for:    int(b.stats_goals_for),
+      stats_goals_against:int(b.stats_goals_against),
+      stats_clean_sheets: int(b.stats_clean_sheets),
+      stats_wins:         int(b.stats_wins),
+      stats_draws:        int(b.stats_draws),
+      stats_losses:       int(b.stats_losses),
+      transfer_budget:    str(b.transfer_budget),
+      avg_salary:         str(b.avg_salary),
+      partnership_status: str(b.partnership_status),
+      recommended_players:str(b.recommended_players),
+      scout_rating:       int(b.scout_rating),
+      coach_photo_url:    str(b.coach_photo_url),
+      coach_nationality:  str(b.coach_nationality),
+      coach_date_born:    str(b.coach_date_born),
+      updated_by:         String(req.user.id),
+    };
+
+    // Build query dynamically — no risk of placeholder/value count mismatch
+    const cols = Object.keys(data);
+    const vals = cols.map(k => data[k]);
+    const placeholders = cols.map(() => '?').join(', ');
+    const updates = cols
+      .filter(k => k !== 'club_name')
+      .map(k => `\`${k}\` = VALUES(\`${k}\`)`)
+      .join(', ');
+
+    const sql = `INSERT INTO club_overrides (${cols.map(c => `\`${c}\``).join(', ')})
+       VALUES (${placeholders})
+       ON DUPLICATE KEY UPDATE ${updates}, updated_at = NOW()`;
+
+    await pool.query(sql, vals);
+
+    await pool.query("DELETE FROM club_profiles_cache WHERE club_name = ?", [b.club_name.toLowerCase()]).catch(() => {});
+
+    const [[saved]] = await pool.query("SELECT * FROM club_overrides WHERE club_name = ?", [data.club_name]);
+    return res.json({ ok: true, row: saved || null });
+  } catch (err) {
+    console.error('[club-override] ERROR:', err?.message);
     return res.status(500).json({ error: err?.message });
   }
 });
@@ -13777,48 +15404,64 @@ async function runContractAlerts(dryRun = false) {
   const logId = await logJobStart('contract-alerts');
   let notified = 0;
   try {
-    // Players whose contract expires today, in 7 days, or in 30 days
-    const [players] = await pool.query(`
-      SELECT p.id AS player_id, p.name AS player_name, p.contract_end,
-             p.user_id, u.email AS user_email,
-             DATEDIFF(p.contract_end, CURDATE()) AS days_left
-      FROM players p
-      JOIN users u ON u.id = p.user_id
-      WHERE p.contract_end IS NOT NULL
-        AND p.is_archived = 0
-        AND DATEDIFF(p.contract_end, CURDATE()) IN (0, 7, 30)
+    // Fetch all users with their alert_contract_months preference
+    const [users] = await pool.query(`
+      SELECT id, email, notification_prefs FROM users WHERE is_banned = 0
     `);
 
-    for (const row of players) {
-      const daysLeft = row.days_left;
-      const label = daysLeft === 0 ? 'expiré aujourd\'hui'
-                  : daysLeft === 7 ? 'expire dans 7 jours'
-                  : 'expire dans 30 jours';
-      const icon = daysLeft === 0 ? 'AlertTriangle' : 'Clock';
+    for (const u of users) {
+      let prefs = {};
+      try { prefs = JSON.parse(u.notification_prefs || '{}'); } catch {}
+      const monthsPref = Number(prefs.alert_contract_months ?? 3); // default 3 months
+      if (monthsPref === 0) continue; // user disabled contract alerts
 
-      if (!dryRun) {
-        await createNotification(row.user_id, {
-          type: 'contract_alert',
-          title: `Contrat — ${row.player_name}`,
-          message: `Le contrat de ${row.player_name} ${label}.`,
-          icon,
-          link: `/player/${row.player_id}`,
-          playerId: row.player_id,
-        });
-        if (daysLeft <= 7) {
-          sendEmail(row.user_email,
-            `[Scouty] Contrat de ${row.player_name} ${label}`,
-            `<div style="font-family:sans-serif;max-width:520px;margin:0 auto;padding:24px">
-              <h2 style="color:#6366f1">Alerte contrat</h2>
-              <p>Le contrat de <strong>${row.player_name}</strong> ${label}
-              (${row.contract_end ? new Date(row.contract_end).toLocaleDateString('fr-FR') : ''}).</p>
-              <p><a href="https://scouty.app/player/${row.player_id}" style="color:#6366f1">Voir le profil du joueur</a></p>
-              <p style="color:#aaa;font-size:12px;margin-top:24px">Scouty — Football Scouting CRM</p>
-            </div>`
-          ).catch(() => {});
+      // Calculate the alert thresholds in days for this user
+      const thresholdDays = monthsPref * 30;
+      // Notify at: thresholdDays, thresholdDays/2 (midpoint), and 0 (expired)
+      const checkDays = [...new Set([0, Math.round(thresholdDays / 2), thresholdDays])];
+
+      const [players] = await pool.query(`
+        SELECT p.id AS player_id, p.name AS player_name, p.contract_end,
+               DATEDIFF(p.contract_end, CURDATE()) AS days_left
+        FROM players p
+        WHERE p.user_id = ?
+          AND p.contract_end IS NOT NULL
+          AND p.is_archived = 0
+          AND DATEDIFF(p.contract_end, CURDATE()) IN (${checkDays.join(',')})
+      `, [u.id]);
+
+      for (const row of players) {
+        const daysLeft = row.days_left;
+        const months = Math.round(daysLeft / 30);
+        const label = daysLeft === 0 ? 'expiré aujourd\'hui'
+                    : daysLeft <= 30 ? `expire dans ${daysLeft} jour${daysLeft > 1 ? 's' : ''}`
+                    : `expire dans ${months} mois`;
+        const icon = daysLeft === 0 ? 'AlertTriangle' : 'Clock';
+
+        if (!dryRun) {
+          await createNotification(u.id, {
+            type: 'contract_alert',
+            title: `Contrat — ${row.player_name}`,
+            message: `Le contrat de ${row.player_name} ${label}.`,
+            icon,
+            link: `/player/${row.player_id}`,
+            playerId: row.player_id,
+          });
+          if (daysLeft <= 14) {
+            sendEmail(u.email,
+              `[Scouty] Contrat de ${row.player_name} ${label}`,
+              `<div style="font-family:sans-serif;max-width:520px;margin:0 auto;padding:24px">
+                <h2 style="color:#6366f1">Alerte contrat</h2>
+                <p>Le contrat de <strong>${row.player_name}</strong> ${label}
+                (${row.contract_end ? new Date(row.contract_end).toLocaleDateString('fr-FR') : ''}).</p>
+                <p><a href="https://scouty.app/player/${row.player_id}" style="color:#6366f1">Voir le profil du joueur</a></p>
+                <p style="color:#aaa;font-size:12px;margin-top:24px">Scouty — Football Scouting CRM</p>
+              </div>`
+            ).catch(() => {});
+          }
         }
+        notified++;
       }
-      notified++;
     }
 
     await logJobDone(logId, { notified, dry_run: dryRun });
@@ -13826,6 +15469,56 @@ async function runContractAlerts(dryRun = false) {
   } catch (err) {
     await logJobFailed(logId, err);
     console.error('[cron-contracts] Error:', err.message);
+  }
+}
+
+// ── Cron: report reminders — daily 09:30 ────────────────────────────────────
+// Notifies users when a player has no scouting report for X days
+async function runReportReminders(dryRun = false) {
+  const logId = await logJobStart('report-reminders');
+  let notified = 0;
+  try {
+    const [users] = await pool.query(`SELECT id, notification_prefs FROM users WHERE is_banned = 0`);
+
+    for (const u of users) {
+      let prefs = {};
+      try { prefs = JSON.parse(u.notification_prefs || '{}'); } catch {}
+      const daysPref = Number(prefs.alert_no_report_days ?? 30);
+      if (daysPref === 0) continue;
+
+      // Players with no report in the last daysPref days (and not archived)
+      const [players] = await pool.query(`
+        SELECT p.id, p.name,
+               MAX(r.created_at) AS last_report_at,
+               DATEDIFF(CURDATE(), COALESCE(MAX(r.created_at), p.created_at)) AS days_since
+        FROM players p
+        LEFT JOIN reports r ON r.player_id = p.id
+        WHERE p.user_id = ?
+          AND p.is_archived = 0
+        GROUP BY p.id, p.name, p.created_at
+        HAVING days_since >= ?
+      `, [u.id, daysPref]);
+
+      for (const row of players) {
+        if (!dryRun) {
+          await createNotification(u.id, {
+            type: 'report_reminder',
+            title: `Rapport — ${row.name}`,
+            message: `Aucun rapport pour ${row.name} depuis ${row.days_since} jours.`,
+            icon: 'FileText',
+            link: `/player/${row.id}`,
+            playerId: row.id,
+          });
+        }
+        notified++;
+      }
+    }
+
+    await logJobDone(logId, { notified, dry_run: dryRun });
+    console.log(`[cron-report-reminders] ${notified} reminder(s)${dryRun ? ' (dry-run)' : ''}`);
+  } catch (err) {
+    await logJobFailed(logId, err);
+    console.error('[cron-report-reminders] Error:', err.message);
   }
 }
 
@@ -13973,9 +15666,10 @@ async function runSubscriptionExpiryAlerts(dryRun = false) {
 if (!isVercel && cron) {
   cron.schedule('0 7 * * *',   () => runMatchReminders(false),            { timezone: 'Europe/Paris' });
   cron.schedule('0 8 * * *',   () => runContractAlerts(false),            { timezone: 'Europe/Paris' });
+  cron.schedule('30 9 * * *',  () => runReportReminders(false),           { timezone: 'Europe/Paris' });
   cron.schedule('30 4 * * *',  runTokenCleanup,                           { timezone: 'Europe/Paris' });
   cron.schedule('0 9 * * *',   () => runSubscriptionExpiryAlerts(false),  { timezone: 'Europe/Paris' });
-  console.log('[startup] Crons scheduled: match-reminders 07:00 | contract-alerts 08:00 | token-cleanup 04:30 | sub-expiry 09:00');
+  console.log('[startup] Crons scheduled: match-reminders 07:00 | contract-alerts 08:00 | report-reminders 09:30 | token-cleanup 04:30 | sub-expiry 09:00');
 }
 
 // ── Admin: cron job logs & manual triggers ───────────────────────────────────
@@ -13996,6 +15690,7 @@ app.post("/api/admin/cron-trigger", authMiddleware, ensureAdmin, async (req, res
   const jobs = {
     'contract-alerts':    () => runContractAlerts(!!dry_run),
     'match-reminders':    () => runMatchReminders(!!dry_run),
+    'report-reminders':   () => runReportReminders(!!dry_run),
     'token-cleanup':      () => runTokenCleanup(),
     'subscription-expiry':() => runSubscriptionExpiryAlerts(!!dry_run),
     'nightly-enrichment': () => runNightlyEnrichment(),
