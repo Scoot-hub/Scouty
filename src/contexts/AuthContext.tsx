@@ -110,6 +110,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       stopImpersonation();
       return;
     }
+    try { sessionStorage.removeItem('fixtures_day_offset'); } catch {}
     await supabase.auth.signOut();
   };
 

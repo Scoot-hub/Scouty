@@ -52,6 +52,7 @@ const CGU = lazy(() => import("@/pages/CGU"));
 const Booking = lazy(() => import("@/pages/Booking"));
 const Discover = lazy(() => import("@/pages/Discover"));
 const Community = lazy(() => import("@/pages/Community"));
+const CommunityPost = lazy(() => import("@/pages/CommunityPost"));
 const News = lazy(() => import("@/pages/News"));
 const Buzz = lazy(() => import("@/pages/Buzz"));
 const BuzzArticle = lazy(() => import("@/pages/BuzzArticle"));
@@ -67,6 +68,7 @@ const Accessibility = lazy(() => import("@/pages/Accessibility"));
 const AdminAnalytics = lazy(() => import("@/pages/AdminAnalytics"));
 const AdminCredits = lazy(() => import("@/pages/AdminCredits"));
 const AdminCrons = lazy(() => import("@/pages/AdminCrons"));
+const AdminErrors = lazy(() => import("@/pages/AdminErrors"));
 const Championships = lazy(() => import("@/pages/Championships"));
 const MapView = lazy(() => import("@/pages/MapView"));
 const MatchDetail = lazy(() => import("@/pages/MatchDetail"));
@@ -76,6 +78,7 @@ const Editorial = lazy(() => import("@/pages/Editorial"));
 const EditorialEditor = lazy(() => import("@/pages/EditorialEditor"));
 const EditorialView = lazy(() => import("@/pages/EditorialView"));
 const EditorialShare = lazy(() => import("@/pages/EditorialShare"));
+const PlayerCompare = lazy(() => import("@/pages/PlayerCompare"));
 const NotFound = lazy(() => import("@/pages/NotFound"));
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -141,6 +144,7 @@ const App = () => (
                 <Route path="/admin/notifications" element={<AdminNotifications />} />
                 <Route path="/admin/credits" element={<AdminCredits />} />
                 <Route path="/admin/crons" element={<AdminCrons />} />
+                <Route path="/admin/errors" element={<AdminErrors />} />
                 <Route path="/my-tickets" element={<MyTickets />} />
                 <Route path="/premium-success" element={<PremiumSuccess />} />
                 <Route path="/account" element={<Account />} />
@@ -155,6 +159,7 @@ const App = () => (
                 <Route path="/booking" element={<Booking />} />
                 <Route path="/discover" element={<Discover />} />
                 <Route path="/community" element={<Community />} />
+                <Route path="/community/:postId" element={<CommunityPost />} />
                 <Route path="/news" element={<News />} />
                 <Route path="/buzz" element={<Buzz />} />
                 <Route path="/buzz/article" element={<BuzzArticle />} />
@@ -165,6 +170,7 @@ const App = () => (
                 <Route path="/club" element={<ClubProfile />} />
                 <Route path="/my-clubs" element={<MyClubs />} />
                 <Route path="/championships" element={<Championships />} />
+                <Route path="/compare" element={<PlayerCompare />} />
                 <Route path="/map" element={<MapView />} />
                 <Route path="/checkout" element={<Checkout />} />
                 <Route path="/affiliate" element={<Affiliate />} />

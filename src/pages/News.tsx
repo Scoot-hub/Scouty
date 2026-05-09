@@ -337,9 +337,9 @@ function ItemCard({ item, onClick }: { item: UnifiedItem; onClick: () => void })
       {/* Image / type badge */}
       <div className={cn('relative overflow-hidden shrink-0',
         isBuzz ? 'min-h-[60px] bg-gradient-to-br from-orange-500/10 to-amber-500/5'
-        : isEditorial ? 'min-h-[60px] bg-gradient-to-br from-primary/10 to-accent/5'
         : 'aspect-[16/9] bg-muted')}>
-        {!isBuzz && !isEditorial && item.image_url && !imgError ? (
+        {!isBuzz && item.image_url && !imgError ? (
+          /* Article ou éditorial avec image */
           <img src={item.image_url} alt={item.title}
             className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-500"
             onError={() => setImgError(true)} />
@@ -349,20 +349,24 @@ function ItemCard({ item, onClick }: { item: UnifiedItem; onClick: () => void })
             <span className="text-xs font-semibold text-orange-600 dark:text-orange-400">Football Buzz</span>
             {item.author && <span className="text-[10px] text-muted-foreground ml-auto">@{item.author}</span>}
           </div>
-        ) : isEditorial ? (
-          <div className="flex items-center gap-2 px-4 py-3">
-            <PenLine className="w-4 h-4 text-primary shrink-0" />
-            <span className="text-xs font-semibold text-primary">Éditorial Scouty</span>
-            {item.author && <span className="text-[10px] text-muted-foreground ml-auto">{item.author}</span>}
-          </div>
         ) : (
+          /* Fallback sans image */
           <div className="w-full h-full flex items-center justify-center bg-gradient-to-br from-primary/10 to-accent/10">
-            <Newspaper className="w-10 h-10 text-primary/20" />
+            {isEditorial
+              ? <PenLine className="w-10 h-10 text-primary/20" />
+              : <Newspaper className="w-10 h-10 text-primary/20" />}
           </div>
         )}
-        {!isBuzz && !isEditorial && item.category && (
+        {/* Badge catégorie/éditorial en overlay */}
+        {!isBuzz && (
           <div className="absolute top-2.5 left-2.5">
-            <Badge className="text-[10px] px-2 py-0.5 font-bold">{item.category}</Badge>
+            {isEditorial
+              ? <Badge className="text-[10px] px-2 py-0.5 font-bold bg-primary/90 text-primary-foreground gap-1">
+                  <PenLine className="w-2.5 h-2.5" /> Éditorial
+                </Badge>
+              : item.category
+                ? <Badge className="text-[10px] px-2 py-0.5 font-bold">{item.category}</Badge>
+                : null}
           </div>
         )}
       </div>

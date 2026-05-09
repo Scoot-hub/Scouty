@@ -10,7 +10,7 @@ import { Slider } from '@/components/ui/slider';
 import { toast } from 'sonner';
 import {
   ArrowLeft, Clock, CheckCircle2, XCircle, Play, RefreshCw, Loader2,
-  CalendarDays, FileWarning, Trash2, Crown, UserX, Zap, Gauge, Timer, Minus,
+  CalendarDays, FileWarning, Trash2, Crown, UserX, Zap, Gauge, Timer, Minus, Database, Bell,
 } from 'lucide-react';
 
 function authInit(): RequestInit {
@@ -39,6 +39,9 @@ const JOB_META: Record<string, {
   'nightly-enrichment':  { label: 'Enrichissement nocturne',    desc: 'Enrichit les données de tous les joueurs des utilisateurs premium.',          schedule: 'Chaque jour à 02:00',       icon: Zap,           color: 'text-purple-500', supportsDryRun: false },
   'inactive-cleanup':    { label: 'Comptes inactifs',           desc: 'Supprime les comptes sans activité depuis 5 ans. Avertit à 4 ans 11 mois.',   schedule: '1er du mois à 03:00',       icon: UserX,         color: 'text-red-500',    supportsDryRun: true  },
   'buzz-scrape':         { label: 'Buzz Football',              desc: 'Agrège les flux RSS des médias football (L\'Équipe, Goal, RMC...) pour la page Buzz.',  schedule: 'Toutes les 30 minutes', icon: Zap,           color: 'text-orange-500', supportsDryRun: false },
+  'report-reminders':   { label: 'Rappels de rapports',         desc: 'Notifie les scouts quand un joueur suivi n\'a pas de rapport depuis trop longtemps.',    schedule: 'Chaque jour à 09:30',       icon: Bell,          color: 'text-cyan-500',   supportsDryRun: true  },
+  'sb-form-alerts':     { label: 'Alertes forme StatsBomb',     desc: 'Analyse la forme récente des joueurs en watchlist via les données StatsBomb et envoie des alertes.', schedule: 'Chaque mercredi à 09:00', icon: Zap, color: 'text-violet-500', supportsDryRun: false },
+  'sb-sync':            { label: 'Sync StatsBomb Open Data',    desc: 'Synchronise les données StatsBomb depuis GitHub (incrémental — saute si aucun changement de SHA).', schedule: 'Chaque lundi à 03:00', icon: Database, color: 'text-violet-600', supportsDryRun: false },
 };
 
 function resultSummary(log: CronLog): string {
@@ -46,7 +49,8 @@ function resultSummary(log: CronLog): string {
   const r = log.result_json;
   const parts: string[] = [];
   if (r.notified != null)      parts.push(`${r.notified} alertes`);
-  if (r.sent != null)          parts.push(`${r.sent} rappels`);
+  if (r.sent != null && log.job_name !== 'sb-form-alerts') parts.push(`${r.sent} rappels`);
+  if (r.sent != null && log.job_name === 'sb-form-alerts') parts.push(`${r.sent} notifs`);
   if (r.warned != null && log.job_name === 'subscription-expiry') parts.push(`${r.warned} avertis`);
   if (r.users_deleted != null) parts.push(`${r.users_deleted} supprimés`);
   if (r.users_warned != null)  parts.push(`${r.users_warned} avertis`);
@@ -54,6 +58,11 @@ function resultSummary(log: CronLog): string {
   if (r.old_notifications != null) parts.push(`${r.old_notifications} notifs`);
   if (r.old_cache != null)     parts.push(`${r.old_cache} cache`);
   if (r.enriched != null)      parts.push(`${r.enriched} enrichis`);
+  // StatsBomb sync
+  if (r.skipped)                        parts.push('Déjà à jour');
+  if (r.competitionsImported != null)   parts.push(`${r.competitionsImported} compétitions`);
+  if (r.matchesImported != null)        parts.push(`${r.matchesImported} matchs`);
+  if (r.playersImported != null)        parts.push(`${r.playersImported} joueurs`);
   if (r.dry_run)               parts.push('(simulation)');
   return parts.join(' · ');
 }

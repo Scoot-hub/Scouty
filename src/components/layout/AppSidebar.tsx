@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { Link, useLocation, useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import {
-  Users, Menu, X, LogOut, Settings, Shield, UserCircle, Eye, Sparkles, Building2, CalendarDays, CalendarCheck, Shirt, ClipboardList, ChevronLeft, ChevronRight, ChevronDown, Route, MapPinned, Gift, Search, Globe, Heart, MessageSquare, Info, Trophy, FileSpreadsheet, Newspaper, PenLine, Plus, Zap, Twitter, Star, Lock,
+  Users, Menu, X, LogOut, Settings, Shield, UserCircle, Eye, Sparkles, Building2, CalendarDays, CalendarCheck, Shirt, ClipboardList, ChevronLeft, ChevronRight, ChevronDown, Route, MapPinned, Gift, Search, Globe, Heart, MessageSquare, Info, Trophy, FileSpreadsheet, Newspaper, PenLine, Plus, Zap, Twitter, Star, Lock, GitCompareArrows,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { useAuth } from '@/contexts/AuthContext';
@@ -398,6 +398,10 @@ export default function AppSidebar({ collapsed, onToggle }: AppSidebarProps) {
                 </FeatureGate>
               </RestrictedWrapper>
             )}
+            <Link to="/compare" className={subLinkClass(isActive('/compare'))} onClick={() => setMobileOpen(false)}>
+              <GitCompareArrows className="w-3.5 h-3.5 text-violet-500" />
+              {t('sidebar.compare')}
+            </Link>
           </div>
         )}
 

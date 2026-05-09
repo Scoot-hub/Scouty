@@ -8,9 +8,9 @@ import { Badge } from '@/components/ui/badge';
 import { Skeleton } from '@/components/ui/skeleton';
 import {
   ChevronLeft, Edit, Calendar, Eye, User, Tag, Share2, Check,
-  ThumbsUp, ThumbsDown, Link2, Twitter, MessageSquare,
+  ThumbsUp, ThumbsDown, Link2, Twitter, MessageSquare, Globe, X,
 } from 'lucide-react';
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { toast } from 'sonner';
 import { cn } from '@/lib/utils';
 
@@ -29,6 +29,7 @@ interface Article {
   author_name: string | null;
   author_email: string;
   author_photo: string | null;
+  lang: string | null;
 }
 
 interface Reactions {
@@ -43,22 +44,22 @@ function parseKeywords(kw: string[] | string | null): string[] {
   try { return JSON.parse(kw); } catch { return []; }
 }
 
-function formatDate(d: string) {
-  try { return new Intl.DateTimeFormat('fr-FR', { day: 'numeric', month: 'long', year: 'numeric' }).format(new Date(d)); }
-  catch { return d; }
-}
-
-function timeAgo(d: string) {
+function timeAgo(d: string, locale = 'fr') {
   try {
-    const diff = Date.now() - new Date(d).getTime();
-    const h = Math.floor(diff / 3_600_000);
-    if (h < 1) return 'À l\'instant';
-    if (h < 24) return `Il y a ${h}h`;
-    const days = Math.floor(h / 24);
-    if (days < 30) return `Il y a ${days}j`;
-    return formatDate(d);
+    const diff = (Date.now() - new Date(d).getTime()) / 1000;
+    const rtf = new Intl.RelativeTimeFormat(locale, { numeric: 'auto' });
+    if (diff < 60) return rtf.format(-Math.floor(diff), 'second');
+    if (diff < 3600) return rtf.format(-Math.floor(diff / 60), 'minute');
+    if (diff < 86400) return rtf.format(-Math.floor(diff / 3600), 'hour');
+    if (diff < 2592000) return rtf.format(-Math.floor(diff / 86400), 'day');
+    return new Intl.DateTimeFormat(locale, { day: 'numeric', month: 'long', year: 'numeric' }).format(new Date(d));
   } catch { return d; }
 }
+
+const LANG_NAMES: Record<string, string> = {
+  fr: 'français', en: 'English', es: 'español', de: 'Deutsch',
+  pt: 'português', it: 'italiano', nl: 'Nederlands', ar: 'العربية',
+};
 
 // ── Reaction button ───────────────────────────────────────────────────────────
 
@@ -87,6 +88,7 @@ function ReactionButton({
 // ── Share panel ───────────────────────────────────────────────────────────────
 
 function SharePanel({ article }: { article: Article }) {
+  const { t } = useTranslation();
   const [copied, setCopied] = useState(false);
   const shareUrl = `${window.location.origin}/share/article/${article.id}`;
   const tweetText = encodeURIComponent(`${article.title} — ${shareUrl}`);
@@ -94,7 +96,7 @@ function SharePanel({ article }: { article: Article }) {
   const copyLink = () => {
     navigator.clipboard.writeText(shareUrl).then(() => {
       setCopied(true);
-      toast.success('Lien copié !');
+      toast.success(t('editorial.link_copied'));
       setTimeout(() => setCopied(false), 2000);
     });
   };
@@ -114,7 +116,7 @@ function SharePanel({ article }: { article: Article }) {
         className="flex items-center gap-1.5 px-3 py-2 rounded-xl border border-border text-xs text-muted-foreground hover:text-foreground hover:bg-muted/60 transition-all"
       >
         {copied ? <Check className="w-3.5 h-3.5 text-emerald-500" /> : <Link2 className="w-3.5 h-3.5" />}
-        {copied ? 'Copié !' : 'Copier le lien'}
+        {copied ? t('editorial.copied') : t('editorial.copy_link')}
       </button>
       <a
         href={`https://twitter.com/intent/tweet?text=${tweetText}`}
@@ -127,7 +129,7 @@ function SharePanel({ article }: { article: Article }) {
         onClick={nativeShare}
         className="flex items-center gap-1.5 px-3 py-2 rounded-xl border border-border text-xs text-muted-foreground hover:text-foreground hover:bg-muted/60 transition-all"
       >
-        <Share2 className="w-3.5 h-3.5" /> Partager
+        <Share2 className="w-3.5 h-3.5" /> {t('editorial.share')}
       </button>
     </div>
   );
@@ -136,12 +138,13 @@ function SharePanel({ article }: { article: Article }) {
 // ── Main page ─────────────────────────────────────────────────────────────────
 
 export default function EditorialView() {
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
   const { user } = useAuth();
   const { data: isAdmin } = useIsAdmin();
   const qc = useQueryClient();
+  const [translateDismissed, setTranslateDismissed] = useState(false);
 
   const { data: article, isLoading } = useQuery<Article>({
     queryKey: ['editorial-view', id],
@@ -153,6 +156,15 @@ export default function EditorialView() {
     enabled: !!id,
     staleTime: 2 * 60_000,
   });
+
+  // Set html lang attribute so Chrome's native translate can detect the language
+  useEffect(() => {
+    if (!article) return;
+    const effectiveLang = article.lang ?? 'fr'; // default fr since the app is French-first
+    const prev = document.documentElement.lang;
+    document.documentElement.lang = effectiveLang;
+    return () => { document.documentElement.lang = prev || i18n.language; };
+  }, [article?.lang, article?.id, i18n.language]);
 
   const { data: reactions } = useQuery<Reactions>({
     queryKey: ['editorial-reactions', id],
@@ -179,7 +191,7 @@ export default function EditorialView() {
     onSuccess: (data) => {
       qc.setQueryData(['editorial-reactions', id], data);
     },
-    onError: () => toast.error('Impossible d\'enregistrer votre réaction.'),
+    onError: () => toast.error(t('common.error')),
   });
 
   if (isLoading) return (
@@ -207,6 +219,18 @@ export default function EditorialView() {
   const totalReactions = r.likes + r.dislikes;
   const likeRatio = totalReactions > 0 ? Math.round((r.likes / totalReactions) * 100) : null;
 
+  const browserLang = i18n.language.slice(0, 2);
+  // Assume French when lang is not set (app is French-first)
+  const effectiveLang = article.lang ?? 'fr';
+  // Show banner whenever the article language differs from the UI language
+  const showTranslateBanner = !translateDismissed && effectiveLang !== browserLang;
+  const articleLangName = LANG_NAMES[effectiveLang] ?? effectiveLang.toUpperCase();
+  const browserLangName = LANG_NAMES[browserLang] ?? browserLang.toUpperCase();
+  // Use the public share URL so Google Translate can actually fetch the content
+  const shareUrl = `${window.location.origin}/share/article/${article.id}`;
+  const translateUrl = `https://translate.google.com/translate?sl=${effectiveLang}&tl=${browserLang}&u=${encodeURIComponent(shareUrl)}`;
+
+
   return (
     <div className="max-w-3xl mx-auto pb-16">
       {/* Nav */}
@@ -222,6 +246,27 @@ export default function EditorialView() {
           )}
         </div>
       </div>
+
+      {/* Translate banner */}
+      {showTranslateBanner && (
+        <div className="mb-5 flex items-center gap-3 px-4 py-3 rounded-xl bg-blue-50 dark:bg-blue-950/30 border border-blue-200 dark:border-blue-800/50 text-blue-700 dark:text-blue-300">
+          <Globe className="w-4 h-4 shrink-0" />
+          <p className="text-xs flex-1">
+            {t('editorial.translate_offer', { lang: articleLangName })}
+          </p>
+          <a
+            href={translateUrl}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="shrink-0 px-2.5 py-1 rounded-lg bg-blue-600 text-white text-xs font-semibold hover:bg-blue-700 transition-colors whitespace-nowrap"
+          >
+            {t('editorial.translate_with_google', { lang: browserLangName })}
+          </a>
+          <button onClick={() => setTranslateDismissed(true)} className="shrink-0 p-0.5 rounded hover:bg-blue-200/60 dark:hover:bg-blue-800/50 transition-colors">
+            <X className="w-3.5 h-3.5" />
+          </button>
+        </div>
+      )}
 
       {/* Draft badge */}
       {article.status !== 'published' && (
@@ -252,11 +297,11 @@ export default function EditorialView() {
         <div className="flex-1 min-w-0">
           <p className="font-semibold text-sm">{authorName}</p>
           <div className="flex items-center gap-3 text-xs text-muted-foreground mt-0.5 flex-wrap">
-            <span className="flex items-center gap-1"><Calendar className="w-3 h-3" />{timeAgo(article.created_at)}</span>
-            <span className="flex items-center gap-1"><Eye className="w-3 h-3" />{article.views} vue{article.views > 1 ? 's' : ''}</span>
+            <span className="flex items-center gap-1"><Calendar className="w-3 h-3" />{timeAgo(article.created_at, i18n.language)}</span>
+            <span className="flex items-center gap-1"><Eye className="w-3 h-3" />{t('editorial.views', { count: article.views })}</span>
             {totalReactions > 0 && likeRatio !== null && (
               <span className="flex items-center gap-1 text-emerald-500">
-                <ThumbsUp className="w-3 h-3" />{likeRatio}% positif
+                <ThumbsUp className="w-3 h-3" />{likeRatio}{t('editorial.positive_pct')}
               </span>
             )}
           </div>
@@ -296,7 +341,7 @@ export default function EditorialView() {
           {/* Reactions */}
           <div>
             <p className="text-sm font-semibold mb-3 text-muted-foreground">
-              {user ? 'Votre avis sur cet article' : 'Connectez-vous pour réagir'}
+              {user ? t('editorial.your_opinion') : t('editorial.sign_in_to_react')}
             </p>
             <div className="flex items-center gap-3 flex-wrap">
               {user ? (
@@ -315,14 +360,14 @@ export default function EditorialView() {
                   />
                   {r.user_reaction && (
                     <span className="text-xs text-muted-foreground">
-                      {r.user_reaction === 'like' ? '👍 Vous avez aimé cet article' : '👎 Vous n\'avez pas aimé'}
+                      {r.user_reaction === 'like' ? t('editorial.liked_article') : t('editorial.disliked_article')}
                     </span>
                   )}
                 </>
               ) : (
                 <Link to="/auth">
                   <Button variant="outline" size="sm" className="rounded-xl gap-2">
-                    <ThumbsUp className="w-4 h-4" /> Se connecter pour réagir
+                    <ThumbsUp className="w-4 h-4" /> {t('editorial.sign_in_to_react')}
                   </Button>
                 </Link>
               )}
@@ -338,7 +383,7 @@ export default function EditorialView() {
                   />
                 </div>
                 <span className="text-[10px] text-muted-foreground shrink-0">
-                  {totalReactions} réaction{totalReactions > 1 ? 's' : ''}
+                  {t('editorial.reaction_count', { count: totalReactions })}
                 </span>
               </div>
             )}
@@ -346,7 +391,7 @@ export default function EditorialView() {
 
           {/* Share */}
           <div>
-            <p className="text-sm font-semibold mb-3 text-muted-foreground">Partager cet article</p>
+            <p className="text-sm font-semibold mb-3 text-muted-foreground">{t('editorial.share_article')}</p>
             <SharePanel article={article} />
           </div>
 
@@ -354,7 +399,7 @@ export default function EditorialView() {
           <div className="p-4 rounded-2xl bg-muted/30 border border-border/50 flex items-center gap-3">
             <MessageSquare className="w-5 h-5 text-muted-foreground shrink-0" />
             <p className="text-sm text-muted-foreground">
-              Les commentaires seront bientôt disponibles.
+              {t('editorial.comments_coming_soon')}
             </p>
           </div>
         </div>

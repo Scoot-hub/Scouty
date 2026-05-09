@@ -1112,3 +1112,126 @@ CREATE TABLE IF NOT EXISTS org_message_reads (
   FOREIGN KEY (user_id)  REFERENCES users(id)          ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 -- Current season is re-fetched if fetched_at is older than 24h, or on manual refresh.
+
+-- ── StatsBomb Open Data ─────────────────────────────────────────────────────
+-- Import log & versioning (tracks last GitHub commit SHA to enable incremental imports)
+CREATE TABLE IF NOT EXISTS sb_import_log (
+  id            INT AUTO_INCREMENT PRIMARY KEY,
+  commit_sha    CHAR(40)     NOT NULL,
+  status        ENUM('running','done','failed') NOT NULL DEFAULT 'running',
+  competitions_imported INT NOT NULL DEFAULT 0,
+  matches_imported      INT NOT NULL DEFAULT 0,
+  players_imported      INT NOT NULL DEFAULT 0,
+  started_at    DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  finished_at   DATETIME     NULL,
+  error_message TEXT         NULL,
+  INDEX idx_sb_import_sha (commit_sha)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- Competition & season catalog
+CREATE TABLE IF NOT EXISTS sb_competitions (
+  competition_id   INT NOT NULL,
+  season_id        INT NOT NULL,
+  competition_name VARCHAR(100) NOT NULL,
+  season_name      VARCHAR(50)  NOT NULL,
+  country_name     VARCHAR(100) NULL,
+  competition_gender VARCHAR(20) NOT NULL DEFAULT 'male',
+  PRIMARY KEY (competition_id, season_id),
+  INDEX idx_sb_comp_name (competition_name(50))
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- Team catalog
+CREATE TABLE IF NOT EXISTS sb_teams (
+  team_id   INT PRIMARY KEY,
+  team_name VARCHAR(150) NOT NULL,
+  country   VARCHAR(100) NULL,
+  INDEX idx_sb_team_name (team_name(50))
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- Player catalog (deduplicated across all competitions)
+CREATE TABLE IF NOT EXISTS sb_players (
+  player_id       INT PRIMARY KEY,
+  player_name     VARCHAR(150) NOT NULL,
+  player_nickname VARCHAR(150) NULL,
+  country         VARCHAR(100) NULL,
+  INDEX idx_sb_player_name (player_name(50))
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- Match metadata
+CREATE TABLE IF NOT EXISTS sb_matches (
+  match_id          INT PRIMARY KEY,
+  competition_id    INT NOT NULL,
+  season_id         INT NOT NULL,
+  match_date        DATE NOT NULL,
+  kick_off          TIME NULL,
+  home_team_id      INT NOT NULL,
+  away_team_id      INT NOT NULL,
+  home_score        TINYINT UNSIGNED NULL,
+  away_score        TINYINT UNSIGNED NULL,
+  stadium_name      VARCHAR(150) NULL,
+  competition_stage VARCHAR(100) NULL,
+  match_week        TINYINT UNSIGNED NULL,
+  has_360           TINYINT(1) NOT NULL DEFAULT 0,
+  INDEX idx_sb_matches_comp  (competition_id, season_id),
+  INDEX idx_sb_matches_date  (match_date),
+  INDEX idx_sb_matches_teams (home_team_id, away_team_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- Player appearances per match (from lineups)
+CREATE TABLE IF NOT EXISTS sb_lineups (
+  match_id      INT NOT NULL,
+  player_id     INT NOT NULL,
+  player_name   VARCHAR(150) NOT NULL,
+  team_id       INT NOT NULL,
+  jersey_number TINYINT UNSIGNED NULL,
+  PRIMARY KEY (match_id, player_id),
+  INDEX idx_sb_lineups_player (player_id),
+  INDEX idx_sb_lineups_team   (match_id, team_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- Aggregated stats per player per match (computed from raw events at import time)
+-- All per-match totals — roll up to per-season with SUM() GROUP BY
+CREATE TABLE IF NOT EXISTS sb_player_match_stats (
+  match_id              INT NOT NULL,
+  player_id             INT NOT NULL,
+  player_name           VARCHAR(150) NOT NULL,
+  team_id               INT NOT NULL,
+  competition_id        INT NOT NULL,
+  season_id             INT NOT NULL,
+  match_date            DATE NOT NULL,
+  -- Shooting
+  shots                 SMALLINT NOT NULL DEFAULT 0,
+  shots_on_target       SMALLINT NOT NULL DEFAULT 0,
+  goals                 SMALLINT NOT NULL DEFAULT 0,
+  xg                    DECIMAL(6,4) NOT NULL DEFAULT 0,
+  -- Passing
+  passes                SMALLINT NOT NULL DEFAULT 0,
+  passes_completed      SMALLINT NOT NULL DEFAULT 0,
+  key_passes            SMALLINT NOT NULL DEFAULT 0,
+  progressive_passes    SMALLINT NOT NULL DEFAULT 0,
+  -- Carrying
+  carries               SMALLINT NOT NULL DEFAULT 0,
+  progressive_carries   SMALLINT NOT NULL DEFAULT 0,
+  -- Dribbling
+  dribbles_attempted    SMALLINT NOT NULL DEFAULT 0,
+  dribbles_completed    SMALLINT NOT NULL DEFAULT 0,
+  -- Defending
+  pressures             SMALLINT NOT NULL DEFAULT 0,
+  tackles               SMALLINT NOT NULL DEFAULT 0,
+  interceptions         SMALLINT NOT NULL DEFAULT 0,
+  blocks                SMALLINT NOT NULL DEFAULT 0,
+  clearances            SMALLINT NOT NULL DEFAULT 0,
+  -- Duels
+  duels_won             SMALLINT NOT NULL DEFAULT 0,
+  duels_total           SMALLINT NOT NULL DEFAULT 0,
+  -- Aerial
+  aerials_won           SMALLINT NOT NULL DEFAULT 0,
+  aerials_total         SMALLINT NOT NULL DEFAULT 0,
+  -- Fouls
+  fouls_committed       SMALLINT NOT NULL DEFAULT 0,
+  fouls_won             SMALLINT NOT NULL DEFAULT 0,
+  PRIMARY KEY (match_id, player_id),
+  INDEX idx_sb_pms_player    (player_id),
+  INDEX idx_sb_pms_comp_sea  (competition_id, season_id),
+  INDEX idx_sb_pms_date      (match_date)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;

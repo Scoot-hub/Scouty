@@ -1,4 +1,4 @@
-import { useState, useRef, useCallback, useEffect } from 'react';
+import { useState, useRef, useCallback, useEffect, useMemo } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Link, useNavigate } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
@@ -20,7 +20,7 @@ import {
   MessageCircle, HelpCircle, Lightbulb, Trophy, Users as UsersIcon, Heart, ExternalLink, Trash2, AlertTriangle,
   Link2, ImageIcon, Archive, ArchiveRestore, Building2, Search, Pin, PinOff, Eye, ChevronDown, ChevronUp,
   ShieldCheck, MoreVertical, ArrowUp, ArrowDown, X as XClose, CheckSquare, Square,
-  CheckCircle2, Lock, Unlock,
+  CheckCircle2, Lock, Unlock, Globe,
 } from 'lucide-react';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from '@/components/ui/dialog';
 import { moderateFields } from '@/lib/content-moderation';
@@ -49,6 +49,8 @@ interface CommunityPost {
   accepted_reply_id?: string | null;
   closed_at?: string | null;
   created_at: string;
+  lang?: string | null;
+  country?: string | null;
 }
 
 // ---------------------------------------------------------------------------
@@ -551,7 +553,7 @@ function CommunityGate() {
 // ---------------------------------------------------------------------------
 
 function CommunityFull() {
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
   const { user } = useAuth();
   const { data: isPremium } = useIsPremium();
   const { data: isAdmin } = useIsAdmin();
@@ -560,10 +562,12 @@ function CommunityFull() {
   const queryClient = useQueryClient();
 
   const [filter, setFilter] = useState<PostCategory | 'all'>('all');
+  const [countryFilter, setCountryFilter] = useState<string>('all');
   const [composing, setComposing] = useState(false);
   const [title, setTitle] = useState('');
   const [content, setContent] = useState('');
   const [category, setCategory] = useState<PostCategory>('general');
+  const [postLang, setPostLang] = useState<string>(() => i18n.language.split('-')[0]);
   const [replyingTo, setReplyingTo] = useState<string | null>(null);
   const [replyContent, setReplyContent] = useState('');
   const [expandedPost, setExpandedPost] = useState<string | null>(null);
@@ -792,8 +796,18 @@ function CommunityFull() {
     enabled: !!isPremium,
   });
 
-  // Non-admins never see archived posts; admins see everything
-  const visiblePosts = isAdmin ? posts : posts.filter(p => !p.is_archived);
+  // Derive available countries from loaded posts
+  const availableCountries = useMemo(() =>
+    [...new Set(posts.map(p => p.country).filter((c): c is string => !!c))].sort(),
+    [posts]
+  );
+
+  // Non-admins never see archived posts; admins see everything. Also apply country filter.
+  const visiblePosts = useMemo(() => {
+    let filtered = isAdmin ? posts : posts.filter(p => !p.is_archived);
+    if (countryFilter !== 'all') filtered = filtered.filter(p => p.country === countryFilter);
+    return filtered;
+  }, [posts, isAdmin, countryFilter]);
 
   // --- Fetch user's likes ---
   const { data: likedPostIds = [] } = useQuery({
@@ -846,10 +860,10 @@ function CommunityFull() {
 
       const { data: profile } = await supabase
         .from('profiles')
-        .select('full_name')
+        .select('full_name, country')
         .eq('user_id', user!.id)
         .single();
-      const authorName = profile?.full_name || user!.email?.split('@')[0] || 'Scout';
+      const authorName = (profile as any)?.full_name || user!.email?.split('@')[0] || 'Scout';
       const serialized = serializeContent(content.trim());
       const { error } = await supabase.from('community_posts').insert({
         user_id: user!.id,
@@ -859,7 +873,9 @@ function CommunityFull() {
         content: serialized,
         likes: 0,
         replies_count: 0,
-      });
+        lang: postLang || i18n.language.split('-')[0],
+        country: (profile as any)?.country || null,
+      } as any);
       if (error) throw error;
       return { authorName, mentionedIds: extractMentionedUserIds(serialized) };
     },
@@ -870,6 +886,7 @@ function CommunityFull() {
       setTitle('');
       setContent('');
       setComposing(false);
+      setPostLang(i18n.language.split('-')[0]);
       setPostCooldown(300);
       queryClient.invalidateQueries({ queryKey: ['community-posts'] });
       queryClient.invalidateQueries({ queryKey: ['community-mentionable-users'] });
@@ -1178,7 +1195,7 @@ function CommunityFull() {
                 />
               </div>
               <Select value={category} onValueChange={v => setCategory(v as PostCategory)}>
-                <SelectTrigger className="w-[160px]">
+                <SelectTrigger className="w-[150px]">
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
@@ -1187,6 +1204,21 @@ function CommunityFull() {
                   <SelectItem value="match">{t('community.cat_match')}</SelectItem>
                   <SelectItem value="player">{t('community.cat_player')}</SelectItem>
                   <SelectItem value="general">{t('community.cat_general')}</SelectItem>
+                </SelectContent>
+              </Select>
+              <Select value={postLang} onValueChange={setPostLang}>
+                <SelectTrigger className="w-[130px]">
+                  <SelectValue placeholder={t('community.post_lang')} />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="fr">{t('community.lang_fr')}</SelectItem>
+                  <SelectItem value="en">{t('community.lang_en')}</SelectItem>
+                  <SelectItem value="es">{t('community.lang_es')}</SelectItem>
+                  <SelectItem value="pt">{t('community.lang_pt')}</SelectItem>
+                  <SelectItem value="de">{t('community.lang_de')}</SelectItem>
+                  <SelectItem value="it">{t('community.lang_it')}</SelectItem>
+                  <SelectItem value="nl">{t('community.lang_nl')}</SelectItem>
+                  <SelectItem value="ar">{t('community.lang_ar')}</SelectItem>
                 </SelectContent>
               </Select>
             </div>
@@ -1337,7 +1369,7 @@ function CommunityFull() {
         </Card>
       )}
 
-      {/* Category filter */}
+      {/* Category + Country filters */}
       <div className="flex items-center gap-1.5 flex-wrap">
         {CATEGORIES.map(cat => {
           const Icon = cat.icon;
@@ -1356,6 +1388,19 @@ function CommunityFull() {
             </button>
           );
         })}
+        {availableCountries.length > 0 && (
+          <Select value={countryFilter} onValueChange={setCountryFilter}>
+            <SelectTrigger className={`h-7 rounded-full text-xs border px-3 w-auto min-w-[120px] ${countryFilter !== 'all' ? 'border-primary bg-primary/5 text-primary' : 'border-border text-muted-foreground'}`}>
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">{t('community.country_filter')}</SelectItem>
+              {availableCountries.map(c => (
+                <SelectItem key={c} value={c}>{c}</SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        )}
       </div>
 
       {/* Bulk moderation bar */}
@@ -1556,6 +1601,25 @@ function CommunityFull() {
                           )}
                         </div>
 
+                        {/* Language badge + Google Translate link */}
+                        {post.lang && post.lang !== i18n.language.split('-')[0] && (
+                          <div className="flex items-center gap-2 mt-1 mb-1 px-2.5 py-1.5 rounded-lg bg-blue-50 dark:bg-blue-950/30 border border-blue-200 dark:border-blue-800/50 text-blue-700 dark:text-blue-300 w-fit">
+                            <Globe className="w-3 h-3 shrink-0" />
+                            <span className="text-[10px]">
+                              {t(`community.lang_${post.lang}`, { defaultValue: post.lang.toUpperCase() })}
+                            </span>
+                            <a
+                              href={`https://translate.google.com/?sl=${post.lang}&tl=${i18n.language.split('-')[0]}&text=${encodeURIComponent(post.title + '\n\n' + post.content)}&op=translate`}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              onClick={e => e.stopPropagation()}
+                              className="text-[10px] font-semibold underline hover:no-underline shrink-0"
+                            >
+                              Traduire
+                            </a>
+                          </div>
+                        )}
+
                         {/* Title — clickable to expand */}
                         <button
                           onClick={toggleExpand}
@@ -1620,6 +1684,15 @@ function CommunityFull() {
                               <><ChevronDown className="w-3.5 h-3.5" />Voir la discussion</>
                             )}
                           </button>
+                          {/* Open as full page */}
+                          <Link
+                            to={`/community/${post.id}`}
+                            className="flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground transition-colors ml-1"
+                            title="Ouvrir dans une page dédiée"
+                            onClick={e => e.stopPropagation()}
+                          >
+                            <ExternalLink className="w-3 h-3" />
+                          </Link>
                         </div>
 
                         {/* ── Expanded content ── */}

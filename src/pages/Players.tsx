@@ -181,6 +181,11 @@ export default function Players() {
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [enriching, setEnriching] = useState(false);
   const [enrichProgress, setEnrichProgress] = useState({ current: 0, total: 0 });
+  const [reEnrichDialog, setReEnrichDialog] = useState<{
+    open: boolean;
+    recentCount: number;
+    total: number;
+  }>({ open: false, recentCount: 0, total: 0 });
   const [duplicateGroups, setDuplicateGroups] = useState<{ keep: Player; duplicates: Player[] }[]>([]);
   const [duplicateDialogOpen, setDuplicateDialogOpen] = useState(false);
   const [deletingDuplicates, setDeletingDuplicates] = useState(false);
@@ -510,7 +515,7 @@ export default function Players() {
     }
   };
 
-  const handleBulkEnrich = async (mode: 'all' | 'selected') => {
+  const handleBulkEnrich = async (mode: 'all' | 'selected', forceReEnrich = false) => {
     if (mode === 'all') {
       // Fresh credit check before launching (bypass React Query cache)
       try {
@@ -526,8 +531,30 @@ export default function Players() {
         }
       } catch { /* proceed anyway — server will enforce */ }
 
+      // Check if most players are recently enriched (< 6 months) — show confirmation if so
+      if (!forceReEnrich) {
+        try {
+          const statsRes = await supabase.functions.invoke('enrich-all-stats');
+          const stats = statsRes.data as { total: number; recentlyEnriched: number; oldOrNever: number } | null;
+          if (stats && stats.total > 0) {
+            const recentPct = stats.recentlyEnriched / stats.total;
+            if (recentPct > 0.5 && stats.oldOrNever === 0) {
+              // All players recently enriched — ask if they want to re-enrich
+              setReEnrichDialog({ open: true, recentCount: stats.recentlyEnriched, total: stats.total });
+              return;
+            } else if (recentPct > 0.5) {
+              // Most recently enriched but some old/never — show dialog
+              setReEnrichDialog({ open: true, recentCount: stats.recentlyEnriched, total: stats.total });
+              return;
+            }
+          }
+        } catch { /* stats check failed — proceed normally */ }
+      }
+
       // Server-side background enrichment — returns immediately
-      const { data, error } = await supabase.functions.invoke('enrich-all-players');
+      const { data, error } = await supabase.functions.invoke('enrich-all-players', {
+        body: { includeRecentlyEnriched: forceReEnrich },
+      });
       // errCode: from body (200 response) OR from Error.message (non-200 shim behavior)
       const errCode = (data as any)?.error ?? error?.message;
       if (isCreditLimitCode(errCode)) {
@@ -568,17 +595,22 @@ export default function Players() {
       return;
     }
 
-    // Selected players — client-side with priority sort + cooldown filter
-    const ENRICH_COOLDOWN = 60 * 60 * 1000;
+    // Selected players — client-side with priority sort + cooldown filter (7 days)
+    const ENRICH_COOLDOWN_7D = 7 * 24 * 60 * 60 * 1000;
     const allTargets = filtered.filter(p => selectedIds.has(p.id));
     const cooldownFiltered = isAdmin ? allTargets : allTargets.filter(p => {
       if (!p.external_data_fetched_at) return true;
-      return Date.now() - new Date(p.external_data_fetched_at).getTime() > ENRICH_COOLDOWN;
+      return Date.now() - new Date(p.external_data_fetched_at).getTime() > ENRICH_COOLDOWN_7D;
     });
     // Sort: never-enriched or ≤50% completion first; already enriched + >50% last
     const targets = sortByEnrichPriority(cooldownFiltered);
     const skipped = allTargets.length - targets.length;
-    if (targets.length === 0) { toast(skipped > 0 ? t('players.enrichment_skipped') : t('common.error')); return; }
+    if (targets.length === 0) {
+      if (skipped > 0) toast(t('players.enrichment_skipped_recent', { count: skipped }));
+      else toast(t('common.error'));
+      return;
+    }
+    if (skipped > 0) toast(t('players.enrichment_skipped_some', { count: skipped }));
 
     // Pre-check: verify credits are available before starting the loop
     if (!isAdmin) {
@@ -2296,6 +2328,42 @@ export default function Players() {
 
       {/* Credit limit dialog */}
       <CreditLimitDialog open={showCreditLimit} onClose={() => setShowCreditLimit(false)} />
+
+      {/* Re-enrich confirmation dialog */}
+      <Dialog open={reEnrichDialog.open} onOpenChange={open => !open && setReEnrichDialog(d => ({ ...d, open: false }))}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <RefreshCw className="w-4 h-4 text-amber-500" />
+              {t('players.reenrich_title')}
+            </DialogTitle>
+            <DialogDescription>
+              {t('players.reenrich_desc', { count: reEnrichDialog.recentCount, total: reEnrichDialog.total })}
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter className="flex-col sm:flex-row gap-2">
+            <Button
+              variant="outline"
+              onClick={() => {
+                setReEnrichDialog(d => ({ ...d, open: false }));
+                // Enrich only old / never enriched (forceReEnrich = false already applied by server filter)
+                handleBulkEnrich('all', false);
+              }}
+            >
+              {t('players.reenrich_new_only')}
+            </Button>
+            <Button
+              onClick={() => {
+                setReEnrichDialog(d => ({ ...d, open: false }));
+                handleBulkEnrich('all', true);
+              }}
+            >
+              <RefreshCw className="w-4 h-4 mr-2" />
+              {t('players.reenrich_all')}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       {/* Bottom banner for new players */}
       {newsCount > 0 && (

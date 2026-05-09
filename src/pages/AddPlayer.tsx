@@ -1,7 +1,7 @@
 import { useState, useMemo } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
-import { useQueryClient } from '@tanstack/react-query';
+import { useQueryClient, useQuery } from '@tanstack/react-query';
 import { CustomFieldsForm } from '@/components/CustomFieldsDisplay';
 import { useBulkUpsertCustomFieldValues } from '@/hooks/use-custom-fields';
 import { LEAGUES, CLUBS, NATIONALITIES, ZONES, POTENTIAL_SCALE, PLAYER_TASKS, getTaskTranslationKey, getFootTranslationKey, translateCountry, getFlag, type Position, type Foot, type Zone, type PlayerTask } from '@/types/player';
@@ -20,7 +20,7 @@ import { Checkbox } from '@/components/ui/checkbox';
 import { Textarea } from '@/components/ui/textarea';
 import { PhotoUpload } from '@/components/ui/photo-upload';
 import { useToast } from '@/hooks/use-toast';
-import { ArrowLeft, ArrowRight, Check, Search, LinkIcon, Loader2, Sparkles } from 'lucide-react';
+import { ArrowLeft, ArrowRight, Check, Search, LinkIcon, Loader2, Sparkles, Crown } from 'lucide-react';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { type Opinion, ALL_OPINIONS, getOpinionTranslationKey } from '@/types/player';
@@ -179,6 +179,17 @@ export default function AddPlayer() {
   const [videoUrl, setVideoUrl] = useState('');
   const [dateOfBirth, setDateOfBirth] = useState('');
 
+  // Subscription check (for TM import gating)
+  const { data: subData } = useQuery({
+    queryKey: ['subscription'],
+    queryFn: async () => {
+      const { data } = await supabase.functions.invoke('check-subscription');
+      return data;
+    },
+    staleTime: 5 * 60 * 1000,
+  });
+  const isPremium = !!(subData?.subscribed);
+
   // Transfermarkt import
   const [tmUrl, setTmUrl] = useState('');
   const [tmLoading, setTmLoading] = useState(false);
@@ -200,7 +211,12 @@ export default function AddPlayer() {
       });
 
       if (error || !data?.success) {
-        toast({ title: t('common.error'), description: t('player_form.tm_import_failed'), variant: 'destructive' });
+        const isPremiumError = error?.message === 'premium_required';
+        toast({
+          title: isPremiumError ? t('player_form.tm_premium_title') : t('common.error'),
+          description: isPremiumError ? t('player_form.tm_premium_desc') : t('player_form.tm_import_failed'),
+          variant: 'destructive',
+        });
         return;
       }
 
@@ -374,33 +390,42 @@ export default function AddPlayer() {
             </div>
 
             {/* Transfermarkt import */}
-            <div className="rounded-xl border border-dashed border-primary/30 bg-primary/5 p-4 space-y-3">
+            <div className={`rounded-xl border border-dashed p-4 space-y-3 ${isPremium ? 'border-primary/30 bg-primary/5' : 'border-muted-foreground/20 bg-muted/30'}`}>
               <div className="flex items-center gap-2">
-                <LinkIcon className="w-4 h-4 text-primary" />
+                <LinkIcon className={`w-4 h-4 ${isPremium ? 'text-primary' : 'text-muted-foreground'}`} />
                 <span className="text-sm font-semibold">{t('player_form.tm_import_title')}</span>
+                {!isPremium && (
+                  <Badge variant="outline" className="text-[10px] gap-1 text-amber-600 border-amber-300 dark:border-amber-700">
+                    <Crown className="w-3 h-3" /> Premium
+                  </Badge>
+                )}
                 {tmImported && <Badge variant="secondary" className="text-[10px] gap-1"><Check className="w-3 h-3" /> {t('player_form.tm_imported')}</Badge>}
               </div>
-              <p className="text-xs text-muted-foreground">{t('player_form.tm_import_desc')}</p>
-              <div className="flex gap-2">
-                <Input
-                  value={tmUrl}
-                  onChange={e => setTmUrl(e.target.value)}
-                  placeholder="https://www.transfermarkt.fr/joueur/profil/spieler/123456"
-                  className="flex-1 text-sm"
-                  disabled={tmLoading}
-                  onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); handleTmImport(); } }}
-                />
-                <Button
-                  type="button"
-                  size="sm"
-                  onClick={handleTmImport}
-                  disabled={tmLoading || !tmUrl.trim()}
-                  className="shrink-0 gap-1.5"
-                >
-                  {tmLoading ? <Loader2 className="w-4 h-4 animate-spin" /> : <Sparkles className="w-4 h-4" />}
-                  {tmLoading ? t('player_form.tm_loading') : t('player_form.tm_import_btn')}
-                </Button>
-              </div>
+              <p className="text-xs text-muted-foreground">
+                {isPremium ? t('player_form.tm_import_desc') : t('player_form.tm_premium_desc')}
+              </p>
+              {isPremium && (
+                <div className="flex gap-2">
+                  <Input
+                    value={tmUrl}
+                    onChange={e => setTmUrl(e.target.value)}
+                    placeholder="https://www.transfermarkt.fr/joueur/profil/spieler/123456"
+                    className="flex-1 text-sm"
+                    disabled={tmLoading}
+                    onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); handleTmImport(); } }}
+                  />
+                  <Button
+                    type="button"
+                    size="sm"
+                    onClick={handleTmImport}
+                    disabled={tmLoading || !tmUrl.trim()}
+                    className="shrink-0 gap-1.5"
+                  >
+                    {tmLoading ? <Loader2 className="w-4 h-4 animate-spin" /> : <Sparkles className="w-4 h-4" />}
+                    {tmLoading ? t('player_form.tm_loading') : t('player_form.tm_import_btn')}
+                  </Button>
+                </div>
+              )}
             </div>
 
             <div className="relative flex items-center gap-3 py-1">

@@ -123,7 +123,7 @@ export function useRemoveMatch() {
   });
 }
 
-/** Update status of a match assignment */
+/** Update status of a match assignment — uses dedicated endpoint for notifications + credits */
 export function useUpdateMatchStatus() {
   const queryClient = useQueryClient();
   return useMutation({
@@ -131,14 +131,14 @@ export function useUpdateMatchStatus() {
       const payload: Record<string, unknown> = {};
       if (status !== undefined) payload.status = status;
       if (notes !== undefined) payload.notes = notes;
-      const { data, error } = await supabase
-        .from('match_assignments')
-        .update(payload)
-        .eq('id', id)
-        .select()
-        .single();
-      if (error) throw error;
-      return data as MatchAssignment;
+      const res = await fetch(`/api/match-assignments/${id}`, {
+        method: 'PATCH',
+        credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+      if (!res.ok) throw new Error((await res.json()).error ?? 'Erreur');
+      return res.json() as Promise<MatchAssignment>;
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['my-matches'] });
@@ -147,10 +147,9 @@ export function useUpdateMatchStatus() {
   });
 }
 
-/** Assign a match to a scout (org context) */
+/** Assign a match to a scout (org context) — uses dedicated endpoint for notifications */
 export function useAssignMatch() {
   const queryClient = useQueryClient();
-  const { user } = useAuth();
   return useMutation({
     mutationFn: async (params: {
       home_team: string;
@@ -165,27 +164,14 @@ export function useAssignMatch() {
       assigned_to: string;
       notes?: string | null;
     }) => {
-      const { data, error } = await supabase
-        .from('match_assignments')
-        .insert({
-          user_id: user!.id,
-          home_team: params.home_team,
-          away_team: params.away_team,
-          match_date: params.match_date,
-          match_time: params.match_time ?? null,
-          competition: params.competition ?? '',
-          venue: params.venue ?? '',
-          home_badge: params.home_badge ?? null,
-          away_badge: params.away_badge ?? null,
-          organization_id: params.organization_id,
-          assigned_to: params.assigned_to,
-          assigned_by: user!.id,
-          notes: params.notes ?? null,
-        })
-        .select()
-        .single();
-      if (error) throw error;
-      return data as MatchAssignment;
+      const res = await fetch('/api/match-assignments', {
+        method: 'POST',
+        credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(params),
+      });
+      if (!res.ok) throw new Error((await res.json()).error ?? 'Erreur');
+      return res.json() as Promise<MatchAssignment>;
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['org-match-assignments'] });
@@ -193,24 +179,19 @@ export function useAssignMatch() {
   });
 }
 
-/** Update scout assignment on an existing match */
+/** Update scout assignment on an existing match — uses dedicated endpoint for notifications */
 export function useUpdateAssignment() {
   const queryClient = useQueryClient();
-  const { user } = useAuth();
   return useMutation({
     mutationFn: async ({ id, assigned_to }: { id: string; assigned_to: string | null }) => {
-      const payload: Record<string, unknown> = {
-        assigned_to,
-        assigned_by: assigned_to ? user!.id : null,
-      };
-      const { data, error } = await supabase
-        .from('match_assignments')
-        .update(payload)
-        .eq('id', id)
-        .select()
-        .single();
-      if (error) throw error;
-      return data as MatchAssignment;
+      const res = await fetch(`/api/match-assignments/${id}`, {
+        method: 'PATCH',
+        credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ assigned_to }),
+      });
+      if (!res.ok) throw new Error((await res.json()).error ?? 'Erreur');
+      return res.json() as Promise<MatchAssignment>;
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['org-match-assignments'] });

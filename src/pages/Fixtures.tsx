@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useMemo, useState, useEffect, lazy, Suspense } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import {
@@ -20,10 +20,12 @@ import { PlayerAvatar } from '@/components/ui/player-avatar';
 import { useToast } from '@/hooks/use-toast';
 import {
   Building2, CalendarDays, ChevronLeft, ChevronRight,
-  Clock, Globe, Loader2, Search, Star, Plus, Check, UserCircle,
+  Clock, Globe, Loader2, Search, Star, Plus, Check, UserCircle, Zap,
 } from 'lucide-react';
 import { useUtcOffset, formatTimeWithOffset } from '@/hooks/use-utc-offset';
 import { cn } from '@/lib/utils';
+
+const LazyStatsBombFixtures = lazy(() => import('@/components/fixtures/StatsBombFixtures'));
 
 function getDateString(offset: number) {
   const d = new Date();
@@ -161,7 +163,11 @@ interface MyPlayerMatch {
 
 export default function Fixtures() {
   const { t, i18n } = useTranslation();
-  const [dayOffset, setDayOffset] = useState(0);
+  const [viewMode, setViewMode] = useState<'live' | 'statsbomb'>('live');
+  const [dayOffset, setDayOffset] = useState<number>(() => {
+    try { const v = sessionStorage.getItem('fixtures_day_offset'); return v !== null ? parseInt(v, 10) : 0; }
+    catch { return 0; }
+  });
   const [search, setSearch] = useState('');
   const [calendarOpen, setCalendarOpen] = useState(false);
   const { utcOffset, setUtcOffset, getLocalUtcOffset } = useUtcOffset();
@@ -181,6 +187,11 @@ export default function Fixtures() {
 
   // Reset when date changes
   useMemo(() => { setEventsOffset(0); setAllCompetitions([]); setTotalCount(0); setHasMore(false); }, [selectedDate]);
+
+  // Persist selected day across navigation (sessionStorage resets on tab close = "déconnexion")
+  useEffect(() => {
+    try { sessionStorage.setItem('fixtures_day_offset', String(dayOffset)); } catch {}
+  }, [dayOffset]);
 
   // Merge new page into accumulated competitions
   useMemo(() => {
@@ -350,9 +361,17 @@ export default function Fixtures() {
   }, [filtered]);
 
   const filteredCount = sortedFiltered.reduce((sum, c) => sum + c.events.length, 0);
-
-  const displayedCount = sortedFiltered.reduce((sum, c) => sum + c.events.length, 0);
   const hasSearch = !!search.trim();
+
+  // Client-side competition pagination — show max 15 competition groups initially
+  const COMP_GROUP_PAGE = 15;
+  const [visibleCompCount, setVisibleCompCount] = useState(COMP_GROUP_PAGE);
+  // Reset when date or search changes
+  useMemo(() => setVisibleCompCount(COMP_GROUP_PAGE), [selectedDate, search]);
+  const visibleComps = hasSearch ? sortedFiltered : sortedFiltered.slice(0, visibleCompCount);
+  const hiddenComps = hasSearch ? 0 : Math.max(0, sortedFiltered.length - visibleCompCount);
+
+  const displayedCount = visibleComps.reduce((sum, c) => sum + c.events.length, 0);
   const todayStr = new Date().toISOString().slice(0, 10);
   const isToday = selectedDate === todayStr;
 
@@ -373,8 +392,37 @@ export default function Fixtures() {
             </p>
           </div>
         </div>
+        {/* Live / StatsBomb toggle */}
+        <div className="flex items-center gap-1 rounded-xl border border-border p-1 bg-muted/30">
+          <button
+            onClick={() => setViewMode('live')}
+            className={cn('flex items-center gap-2 text-xs font-medium px-3 py-1.5 rounded-lg transition-colors',
+              viewMode === 'live' ? 'bg-background shadow text-foreground' : 'text-muted-foreground hover:text-foreground'
+            )}
+          >
+            <Globe className="w-3.5 h-3.5" />
+            {t('fixtures.live_tab')}
+          </button>
+          <button
+            onClick={() => setViewMode('statsbomb')}
+            className={cn('flex items-center gap-2 text-xs font-medium px-3 py-1.5 rounded-lg transition-colors',
+              viewMode === 'statsbomb' ? 'bg-background shadow text-foreground' : 'text-muted-foreground hover:text-foreground'
+            )}
+          >
+            <Zap className="w-3.5 h-3.5 text-violet-500" />
+            {t('fixtures.statsbomb_tab')}
+          </button>
+        </div>
       </div>
 
+      {/* StatsBomb archives view */}
+      {viewMode === 'statsbomb' && (
+        <Suspense fallback={<div className="flex justify-center py-16"><Loader2 className="w-6 h-6 animate-spin text-muted-foreground" /></div>}>
+          <LazyStatsBombFixtures />
+        </Suspense>
+      )}
+      {viewMode === 'live' && (
+      <>
       {/* Day navigation + search */}
       <div className="flex items-center justify-between mb-6 flex-wrap gap-3">
         <div className="flex items-center gap-2">
@@ -515,11 +563,26 @@ export default function Fixtures() {
       {/* Competitions & events */}
       {!isLoading && sortedFiltered.length > 0 && (
         <div className="space-y-5">
-          {sortedFiltered.map(comp => (
+          {visibleComps.map(comp => (
             <CompetitionGroup key={`${comp.country_code}-${comp.name}`} competition={comp} t={t} onSave={handleSaveMatch} onSaveToOrg={handleSaveToOrg} orgs={myOrgs ?? []} savedMatchKeys={savedMatchKeys} selectedDate={selectedDate} utcOffset={utcOffset} />
           ))}
 
-          {hasMore && !hasSearch && (
+          {/* Show more competition groups (client-side) */}
+          {hiddenComps > 0 && (
+            <div className="text-center pt-2">
+              <Button
+                variant="outline"
+                onClick={() => setVisibleCompCount(c => c + COMP_GROUP_PAGE)}
+                className="rounded-xl"
+              >
+                <ChevronDown className="w-4 h-4 mr-1.5" />
+                {t('fixtures.show_more_groups', { count: hiddenComps })}
+              </Button>
+            </div>
+          )}
+
+          {/* Fetch more from API */}
+          {hasMore && !hasSearch && hiddenComps === 0 && (
             <div className="text-center pt-2">
               <Button
                 variant="outline"
@@ -555,6 +618,7 @@ export default function Fixtures() {
           </div>
         </div>
       )}
+    </> )}
     </div>
   );
 }
@@ -563,8 +627,16 @@ export default function Fixtures() {
 interface OrgItem { id: string; name: string; [key: string]: unknown }
 interface OrgMember { user_id: string; role?: string; profile?: { full_name?: string } }
 
+const COMP_PAGE_SIZE = 6; // events shown per competition before "show more"
+
 function CompetitionGroup({ competition, t, onSave, onSaveToOrg, orgs, savedMatchKeys, selectedDate, utcOffset }: { competition: LivescoreCompetition; t: (key: string) => string; onSave: (ev: LivescoreEvent, competition: string) => void; onSaveToOrg: (ev: LivescoreEvent, competition: string, orgId: string, userId?: string) => void; orgs: OrgItem[]; savedMatchKeys: Set<string>; selectedDate: string; utcOffset: number }) {
+  const [expanded, setExpanded] = useState(false);
   const flag = countryFlag(competition.country_code);
+  const total = competition.events.length;
+  // Always show live/upcoming events first, truncate the rest
+  const visible = expanded ? competition.events : competition.events.slice(0, COMP_PAGE_SIZE);
+  const hidden = total - visible.length;
+
   return (
     <div>
       <div className="flex items-center gap-2 mb-3">
@@ -576,14 +648,32 @@ function CompetitionGroup({ competition, t, onSave, onSaveToOrg, orgs, savedMatc
           <span className="text-[11px] text-muted-foreground">{competition.country}</span>
         )}
         <span className="text-[11px] text-muted-foreground/60">
-          {competition.events.length} {t('fixtures.matches')}
+          {total} {t('fixtures.matches')}
         </span>
       </div>
       <div className="grid gap-2.5 grid-cols-1 md:grid-cols-2 xl:grid-cols-3">
-        {competition.events.map(ev => (
+        {visible.map(ev => (
           <EventCard key={ev.id} event={ev} onSave={() => onSave(ev, competition.name)} onSaveToOrg={(orgId: string, userId?: string) => onSaveToOrg(ev, competition.name, orgId, userId)} orgs={orgs} isSaved={savedMatchKeys.has(`${selectedDate}|${ev.home_team}|${ev.away_team}`)} utcOffset={utcOffset} selectedDate={selectedDate} competition={competition.name} />
         ))}
       </div>
+      {hidden > 0 && !expanded && (
+        <button
+          onClick={() => setExpanded(true)}
+          className="mt-2 w-full flex items-center justify-center gap-1.5 py-1.5 text-xs text-muted-foreground hover:text-primary transition-colors rounded-lg hover:bg-muted/40"
+        >
+          <ChevronDown className="w-3.5 h-3.5" />
+          {t('fixtures.show_more_comp', { count: hidden })}
+        </button>
+      )}
+      {expanded && total > COMP_PAGE_SIZE && (
+        <button
+          onClick={() => setExpanded(false)}
+          className="mt-2 w-full flex items-center justify-center gap-1.5 py-1.5 text-xs text-muted-foreground hover:text-primary transition-colors rounded-lg hover:bg-muted/40"
+        >
+          <ChevronDown className="w-3.5 h-3.5 rotate-180" />
+          {t('fixtures.collapse_comp')}
+        </button>
+      )}
     </div>
   );
 }

@@ -1,7 +1,9 @@
 import { useSearchParams, Link, Navigate, useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
-import { useState, useRef, useEffect, useMemo } from 'react';
+import { useState, useRef, useEffect, useMemo, lazy, Suspense } from 'react';
 import { useQuery, useQueryClient, useMutation } from '@tanstack/react-query';
+
+const LazyStatsBombTactics = lazy(() => import('@/components/club/StatsBombTacticsTab'));
 import { supabase } from '@/integrations/supabase/client';
 import { usePlayers } from '@/hooks/use-players';
 import { useIsAdmin, useIsAdminOrModerator } from '@/hooks/use-admin';
@@ -775,11 +777,11 @@ export default function ClubProfile() {
                 <div className="flex items-center gap-2 shrink-0">
                   {/* Primary action: follow */}
                   {followedEntry ? (
-                    <Button variant="outline" size="sm" onClick={() => unfollowClub.mutate(followedEntry.id)} className="gap-1.5">
+                    <Button variant="outline" size="sm" onClick={() => unfollowClub.mutate(followedEntry.id)} className="gap-1.5" disabled={unfollowClub.isPending}>
                       <HeartOff className="w-4 h-4" /> {t('club.unfollow')}
                     </Button>
                   ) : (
-                    <Button size="sm" onClick={() => followClub.mutate({ club_name: team.strTeam || clubName })} className="gap-1.5">
+                    <Button size="sm" onClick={() => followClub.mutate({ club_name: team?.strTeam || clubName })} className="gap-1.5" disabled={followClub.isPending}>
                       <Heart className="w-4 h-4" /> {t('club.follow')}
                     </Button>
                   )}
@@ -1651,6 +1653,13 @@ export default function ClubProfile() {
             </div>
           </div>
         </div>
+      )}
+
+      {/* ── StatsBomb Tactical Analysis ── */}
+      {clubName && (
+        <Suspense fallback={null}>
+          <LazyStatsBombTactics clubName={clubName} />
+        </Suspense>
       )}
 
       {/* ── Override dialog ── */}

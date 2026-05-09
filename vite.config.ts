@@ -1,7 +1,46 @@
-import { defineConfig } from "vite";
+import { defineConfig, type Plugin } from "vite";
 import react from "@vitejs/plugin-react-swc";
 import path from "path";
 import { componentTagger } from "lovable-tagger";
+
+function buildErrorReporter(): Plugin {
+  const API = "http://localhost:3001/api/errors/report";
+  const seen = new Set<string>();
+
+  async function report(name: string, message: string, stack?: string, file?: string) {
+    const key = `${name}::${message.slice(0, 200)}`;
+    if (seen.has(key)) return;
+    seen.add(key);
+    // Clear dedup cache after 30 s so re-introduced errors are re-reported
+    setTimeout(() => seen.delete(key), 30_000);
+    try {
+      await fetch(API, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ error_name: name, error_message: message, error_stack: stack, page_url: file || "", source: "build" }),
+      });
+    } catch {} // never throw from error reporter
+  }
+
+  return {
+    name: "build-error-reporter",
+    configureServer(server) {
+      // Intercept WS messages sent to the browser — Vite sends { type: 'error', err: {...} } on transform failures
+      const originalSend = server.ws.send.bind(server.ws) as (data: unknown) => void;
+      (server.ws as { send: (data: unknown) => void }).send = (data: unknown) => {
+        if (data && typeof data === "object" && (data as { type?: string }).type === "error") {
+          const payload = data as { type: string; err?: { message?: string; stack?: string; id?: string; plugin?: string } };
+          const err = payload.err;
+          if (err?.message) {
+            const name = err.plugin ? `BuildError [${err.plugin}]` : "BuildError";
+            report(name, err.message, err.stack, err.id).catch(() => {});
+          }
+        }
+        originalSend(data);
+      };
+    },
+  };
+}
 
 // https://vitejs.dev/config/
 export default defineConfig(({ mode }) => ({
@@ -34,7 +73,7 @@ export default defineConfig(({ mode }) => ({
       ].join("; "),
     },
   },
-  plugins: [react(), mode === "development" && componentTagger()].filter(Boolean),
+  plugins: [react(), mode === "development" && componentTagger(), mode === "development" && buildErrorReporter()].filter(Boolean),
   build: {
     chunkSizeWarningLimit: 700,
     rollupOptions: {

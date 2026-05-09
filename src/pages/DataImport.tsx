@@ -308,7 +308,12 @@ export default function DataImport() {
       setResult(data);
       setStep('done');
       if (!data.errors?.length) {
-        toast.success(`Import terminé : ${data.created} créés, ${data.updated} mis à jour.`);
+        const parts = [
+          data.created > 0 && `${data.created} créés`,
+          data.updated > 0 && `${data.updated} mis à jour`,
+          (data.linked ?? 0) > 0 && `${data.linked} liés`,
+        ].filter(Boolean).join(', ');
+        toast.success(`Import terminé : ${parts || 'aucun changement'}.`);
       } else {
         toast.warning(`Import terminé avec ${data.errors.length} erreur(s).`);
       }
@@ -692,7 +697,7 @@ export default function DataImport() {
       {step === 'done' && result && (
         <>
           {/* Summary */}
-          <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+          <div className={cn("grid gap-3", (result.linked ?? 0) > 0 ? "grid-cols-2 sm:grid-cols-5" : "grid-cols-2 sm:grid-cols-4")}>
             <div className="rounded-xl border bg-card p-4 text-center">
               <p className="text-2xl font-bold text-primary">{result.total}</p>
               <p className="text-xs text-muted-foreground mt-1">Lignes traitées</p>
@@ -703,8 +708,14 @@ export default function DataImport() {
             </div>
             <div className="rounded-xl border bg-card p-4 text-center">
               <p className="text-2xl font-bold text-blue-600 dark:text-blue-400">{result.updated}</p>
-              <p className="text-xs text-muted-foreground mt-1">Joueurs mis à jour</p>
+              <p className="text-xs text-muted-foreground mt-1">Mis à jour</p>
             </div>
+            {(result.linked ?? 0) > 0 && (
+              <div className="rounded-xl border bg-card p-4 text-center">
+                <p className="text-2xl font-bold text-violet-600 dark:text-violet-400">{result.linked}</p>
+                <p className="text-xs text-muted-foreground mt-1">Déjà importés (liés)</p>
+              </div>
+            )}
             <div className="rounded-xl border bg-card p-4 text-center">
               <p className={cn("text-2xl font-bold", result.errors.length > 0 ? 'text-destructive' : 'text-muted-foreground')}>
                 {result.errors.length}
@@ -729,7 +740,11 @@ export default function DataImport() {
               result.errors.length === 0 ? "text-green-700 dark:text-green-300" : "text-yellow-700 dark:text-yellow-300"
             )}>
               {result.errors.length === 0
-                ? `Import réussi : ${result.created} joueur${result.created > 1 ? 's' : ''} créé${result.created > 1 ? 's' : ''}, ${result.updated} mis à jour.`
+                ? [
+                    result.created > 0 && `${result.created} joueur${result.created > 1 ? 's' : ''} créé${result.created > 1 ? 's' : ''}`,
+                    result.updated > 0 && `${result.updated} mis à jour`,
+                    (result.linked ?? 0) > 0 && `${result.linked} déjà importés par un autre utilisateur (maintenant visibles pour vous)`,
+                  ].filter(Boolean).join(', ') + '.'
                 : `Import terminé avec ${result.errors.length} erreur${result.errors.length > 1 ? 's' : ''}.`
               }
             </p>

@@ -1,5 +1,5 @@
 import { Component, type ErrorInfo, type ReactNode, useState } from 'react';
-import { Home, RotateCcw, ChevronDown, ChevronUp, AlertTriangle } from 'lucide-react';
+import { Home, RotateCcw, ChevronDown, ChevronUp, AlertTriangle, ShieldCheck } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 
 // ── Random football-themed error messages ──────────────────────────────────
@@ -14,7 +14,7 @@ const errorMessages = [
 
 // ── Fallback UI (function component — can use hooks) ──────────────────────
 
-function FallbackUI({ error, resetError }: { error: Error | null; resetError: () => void }) {
+function FallbackUI({ error, reported, resetError }: { error: Error | null; reported: boolean; resetError: () => void }) {
   const [showDetails, setShowDetails] = useState(false);
   const [msg] = useState(() => errorMessages[Math.floor(Math.random() * errorMessages.length)]);
 
@@ -94,6 +94,14 @@ function FallbackUI({ error, resetError }: { error: Error | null; resetError: ()
           </Button>
         </div>
 
+        {/* Transmitted banner */}
+        {reported && (
+          <div className="eb-fade-4 flex items-center justify-center gap-2 px-4 py-3 rounded-xl bg-emerald-500/10 border border-emerald-500/20 text-emerald-600 dark:text-emerald-400 text-sm font-medium">
+            <ShieldCheck className="w-4 h-4 shrink-0" />
+            Cette erreur a été transmise à nos administrateurs et sera corrigée au plus vite.
+          </div>
+        )}
+
         {/* Collapsible details */}
         <div className="eb-fade-4">
           <button
@@ -118,32 +126,93 @@ function FallbackUI({ error, resetError }: { error: Error | null; resetError: ()
   );
 }
 
+// ── Error reporting helper ────────────────────────────────────────────────
+
+// Tracks errors already reported this session to avoid duplicates
+const _sessionReported = new Set<string>();
+// Tracks errors caught by ErrorBoundary so the global handler doesn't double-report them
+const _reactCaughtKeys = new Set<string>();
+
+function errorKey(name: string, message: string) {
+  return `${name}|${message.slice(0, 200)}`;
+}
+
+export function reportErrorToServer(
+  errorName: string,
+  errorMessage: string,
+  errorStack?: string,
+  componentStack?: string,
+) {
+  const key = errorKey(errorName, errorMessage);
+  if (_sessionReported.has(key)) return;
+  _sessionReported.add(key);
+  try {
+    fetch('/api/errors/report', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        error_name: errorName,
+        error_message: errorMessage,
+        error_stack: errorStack ?? '',
+        component_stack: componentStack ?? '',
+        page_url: window.location.href,
+      }),
+    }).catch(() => {});
+  } catch {}
+}
+
+// ── Global handler for non-React errors (async, event handlers) ──────────
+
+if (typeof window !== 'undefined') {
+  window.addEventListener('error', (event) => {
+    const err = event.error;
+    if (!(err instanceof Error)) {
+      if (event.message) reportErrorToServer('GlobalError', event.message, `${event.filename}:${event.lineno}:${event.colno}`);
+      return;
+    }
+    // Skip errors already caught and reported by React's ErrorBoundary
+    if (_reactCaughtKeys.has(errorKey(err.name, err.message))) return;
+    reportErrorToServer(err.name, err.message, err.stack);
+  });
+  window.addEventListener('unhandledrejection', (event) => {
+    const reason = event.reason;
+    if (reason instanceof Error) {
+      reportErrorToServer(reason.name, reason.message, reason.stack);
+    } else {
+      reportErrorToServer('UnhandledRejection', String(reason));
+    }
+  });
+}
+
 // ── Class component (required for componentDidCatch) ──────────────────────
 
 interface Props { children: ReactNode }
-interface State { hasError: boolean; error: Error | null }
+interface State { hasError: boolean; error: Error | null; reported: boolean }
 
 class ErrorBoundary extends Component<Props, State> {
   constructor(props: Props) {
     super(props);
-    this.state = { hasError: false, error: null };
+    this.state = { hasError: false, error: null, reported: false };
   }
 
-  static getDerivedStateFromError(error: Error): State {
+  static getDerivedStateFromError(error: Error): Partial<State> {
     return { hasError: true, error };
   }
 
   componentDidCatch(error: Error, info: ErrorInfo) {
-    console.error('[ErrorBoundary]', error.message, info.componentStack);
+    // Mark as React-caught before reporting so the global window.error handler skips it
+    _reactCaughtKeys.add(errorKey(error.name, error.message));
+    reportErrorToServer(error.name, error.message, error.stack, info.componentStack ?? '');
+    this.setState({ reported: true });
   }
 
   resetError = () => {
-    this.setState({ hasError: false, error: null });
+    this.setState({ hasError: false, error: null, reported: false });
   };
 
   render() {
     if (this.state.hasError) {
-      return <FallbackUI error={this.state.error} resetError={this.resetError} />;
+      return <FallbackUI error={this.state.error} reported={this.state.reported} resetError={this.resetError} />;
     }
     return this.props.children;
   }

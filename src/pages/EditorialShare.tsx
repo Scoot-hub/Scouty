@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { useParams, Link } from 'react-router-dom';
+import { useTranslation } from 'react-i18next';
 import { Helmet } from 'react-helmet-async';
 import { Calendar, User, Tag, ArrowRight, Sparkles, Users, FileText, Lock } from 'lucide-react';
 import { Button } from '@/components/ui/button';
@@ -17,6 +18,7 @@ interface Article {
   created_at: string;
   author_name: string | null;
   author_photo: string | null;
+  lang: string | null;
 }
 
 function parseKeywords(kw: string[] | string | null): string[] {
@@ -25,8 +27,8 @@ function parseKeywords(kw: string[] | string | null): string[] {
   try { return JSON.parse(kw); } catch { return []; }
 }
 
-function formatDate(d: string) {
-  try { return new Intl.DateTimeFormat('fr-FR', { day: 'numeric', month: 'long', year: 'numeric' }).format(new Date(d)); }
+function formatDate(d: string, locale = 'fr') {
+  try { return new Intl.DateTimeFormat(locale, { day: 'numeric', month: 'long', year: 'numeric' }).format(new Date(d)); }
   catch { return d; }
 }
 
@@ -36,6 +38,7 @@ function stripHtml(html: string) {
 
 export default function EditorialShare() {
   const { id } = useParams<{ id: string }>();
+  const { t, i18n } = useTranslation();
   const [article, setArticle] = useState<Article | null>(null);
   const [loading, setLoading] = useState(true);
   const [notFound, setNotFound] = useState(false);
@@ -47,6 +50,14 @@ export default function EditorialShare() {
       .then(d => { if (d) setArticle(d); setLoading(false); })
       .catch(() => { setNotFound(true); setLoading(false); });
   }, [id]);
+
+  // Set HTML lang to article lang so Chrome offers to translate
+  useEffect(() => {
+    if (!article?.lang) return;
+    const prev = document.documentElement.lang;
+    document.documentElement.lang = article.lang;
+    return () => { document.documentElement.lang = prev || i18n.language; };
+  }, [article?.lang, i18n.language]);
 
   const shareUrl = typeof window !== 'undefined' ? window.location.href : '';
   const description = article ? stripHtml(article.content).slice(0, 200) + '…' : '';
@@ -62,20 +73,27 @@ export default function EditorialShare() {
     <div className="min-h-screen bg-background flex flex-col items-center justify-center gap-6 px-4">
       <img src={logo} alt="Scouty" className="w-16 h-16 rounded-2xl shadow-lg shadow-primary/25" />
       <div className="text-center">
-        <h1 className="text-xl font-bold mb-2">Article introuvable</h1>
-        <p className="text-muted-foreground text-sm mb-6">Cet article n'existe pas ou n'est plus disponible.</p>
+        <h1 className="text-xl font-bold mb-2">{t('editorial.article_not_found')}</h1>
+        <p className="text-muted-foreground text-sm mb-6">{t('editorial.article_not_found_desc')}</p>
         <Link to="/auth?signup=true">
-          <Button className="font-bold">Créer un compte gratuit</Button>
+          <Button className="font-bold">{t('editorial.create_free_account')}</Button>
         </Link>
       </div>
     </div>
   );
+
+  const valuePropItems = [
+    { icon: FileText, label: t('editorial.exclusive_articles'),    desc: t('editorial.exclusive_articles_desc') },
+    { icon: Users,    label: t('editorial.player_profiles_label'), desc: t('editorial.player_profiles_desc') },
+    { icon: Sparkles, label: t('editorial.ai_enrichment'),         desc: t('editorial.ai_enrichment_desc') },
+  ];
 
   return (
     <>
       <Helmet>
         <title>{article.title} — Scouty</title>
         <meta name="description" content={description} />
+        {article.lang && <html lang={article.lang} />}
         <meta property="og:title" content={article.title} />
         <meta property="og:description" content={description} />
         <meta property="og:type" content="article" />
@@ -97,12 +115,12 @@ export default function EditorialShare() {
             </Link>
             <div className="flex items-center gap-2">
               <Link to="/auth">
-                <Button variant="ghost" size="sm" className="rounded-xl text-xs">Se connecter</Button>
+                <Button variant="ghost" size="sm" className="rounded-xl text-xs">{t('editorial.sign_in')}</Button>
               </Link>
               <Link to="/auth?signup=true">
                 <Button size="sm" className="rounded-xl text-xs font-bold gap-1">
                   <Sparkles className="w-3.5 h-3.5" />
-                  Créer un compte
+                  {t('editorial.create_account')}
                 </Button>
               </Link>
             </div>
@@ -144,7 +162,7 @@ export default function EditorialShare() {
               {article.author_name || 'Scouty'}
             </span>
             <span className="flex items-center gap-1">
-              <Calendar className="w-3.5 h-3.5" />{formatDate(article.created_at)}
+              <Calendar className="w-3.5 h-3.5" />{formatDate(article.created_at, i18n.language)}
             </span>
           </div>
 
@@ -163,33 +181,27 @@ export default function EditorialShare() {
               style={{ maxHeight: '380px' }}
               dangerouslySetInnerHTML={{ __html: article.content }}
             />
-            {/* Gradient fade */}
             <div className="absolute inset-x-0 bottom-0 h-52 bg-gradient-to-t from-background via-background/80 to-transparent pointer-events-none" />
           </div>
 
           {/* ── CTA — invite to sign up ── */}
           <div className="mt-4 rounded-2xl border border-primary/20 bg-gradient-to-br from-primary/5 via-background to-accent/5 p-8 text-center space-y-6 shadow-xl shadow-primary/5">
-            {/* Lock icon */}
             <div className="w-14 h-14 rounded-2xl bg-primary/10 flex items-center justify-center mx-auto">
               <Lock className="w-6 h-6 text-primary" />
             </div>
 
             <div className="space-y-2">
               <h2 className="text-xl font-black tracking-tight">
-                Continuez la lecture sur Scouty
+                {t('editorial.continue_reading')}
               </h2>
               <p className="text-sm text-muted-foreground max-w-sm mx-auto leading-relaxed">
-                Créez votre compte gratuit pour accéder à l'article complet et à toute la plateforme de scouting footballistique.
+                {t('editorial.continue_reading_desc')}
               </p>
             </div>
 
             {/* Value props */}
             <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 text-left max-w-lg mx-auto">
-              {[
-                { icon: FileText, label: 'Articles exclusifs', desc: 'Analyses et contenus éditoriaux de scouts pro' },
-                { icon: Users,    label: 'Fiches joueurs',     desc: 'Créez et gérez vos profils de joueurs scoutés' },
-                { icon: Sparkles, label: 'Enrichissement IA',  desc: 'Données Transfermarkt enrichies automatiquement' },
-              ].map(({ icon: Icon, label, desc }) => (
+              {valuePropItems.map(({ icon: Icon, label, desc }) => (
                 <div key={label} className="flex items-start gap-2.5 px-3 py-2.5 rounded-xl bg-background/60 border border-border/60">
                   <div className="w-7 h-7 rounded-lg bg-primary/10 flex items-center justify-center shrink-0 mt-0.5">
                     <Icon className="w-3.5 h-3.5 text-primary" />
@@ -207,19 +219,19 @@ export default function EditorialShare() {
               <Link to="/auth?signup=true">
                 <Button size="lg" className="font-bold px-8 shadow-lg shadow-primary/20 gap-2 w-full sm:w-auto">
                   <Sparkles className="w-4 h-4" />
-                  Créer un compte gratuit
+                  {t('editorial.create_free_account')}
                   <ArrowRight className="w-4 h-4" />
                 </Button>
               </Link>
               <Link to="/auth">
                 <Button variant="outline" size="lg" className="w-full sm:w-auto">
-                  Se connecter
+                  {t('editorial.sign_in')}
                 </Button>
               </Link>
             </div>
 
             <p className="text-[11px] text-muted-foreground/60">
-              Gratuit · Aucune carte bancaire requise · Accès immédiat
+              {t('editorial.free_no_card')}
             </p>
           </div>
         </main>
@@ -230,11 +242,11 @@ export default function EditorialShare() {
             <Link to="/" className="flex items-center gap-2 hover:text-foreground transition-colors">
               <img src={logo} alt="Scouty" className="w-5 h-5 rounded-md" />
               <span className="font-bold">Scouty</span>
-              <span>— Logiciel de scouting footballistique</span>
+              <span>— {t('editorial.tagline')}</span>
             </Link>
             <div className="flex items-center gap-4">
-              <Link to="/legal" className="hover:text-foreground transition-colors">Mentions légales</Link>
-              <Link to="/privacy" className="hover:text-foreground transition-colors">Confidentialité</Link>
+              <Link to="/legal" className="hover:text-foreground transition-colors">{t('editorial.legal')}</Link>
+              <Link to="/privacy" className="hover:text-foreground transition-colors">{t('editorial.privacy')}</Link>
             </div>
           </div>
         </footer>

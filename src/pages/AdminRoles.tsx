@@ -1,14 +1,14 @@
 import { useState, useMemo, Fragment } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useIsAdmin } from '@/hooks/use-admin';
-import { supabase } from '@/integrations/supabase/client';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs';
-import { Shield, Users, Lock, Check, X, Search, Plus, Trash2, ChevronDown, ChevronRight, Palette, Crown, User, ShieldAlert } from 'lucide-react';
+import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuCheckboxItem, DropdownMenuLabel, DropdownMenuSeparator } from '@/components/ui/dropdown-menu';
+import { Shield, Users, Lock, Check, X, Search, Plus, Trash2, ChevronDown, ChevronRight, Palette, Crown, User, ShieldAlert, SlidersHorizontal, Star, LogIn, Ban, CalendarDays, AlertTriangle } from 'lucide-react';
 import { toast } from 'sonner';
 import { Navigate } from 'react-router-dom';
 import { useAuth } from '@/contexts/AuthContext';
@@ -54,7 +54,25 @@ const ALL_PAGES = Object.keys(PAGE_ACTIONS) as (keyof typeof PAGE_ACTIONS)[];
 interface AdminUser {
   id: string;
   email: string;
+  first_name: string | null;
+  last_name: string | null;
   roles: string[];
+  is_premium: boolean;
+  player_count: number;
+  created_at: string;
+  last_sign_in_at: string | null;
+  oauth_provider: string | null;
+  is_banned: boolean;
+  suspicious_referral: boolean;
+}
+
+type UserColumnKey = 'name' | 'email' | 'roles' | 'player_count' | 'is_premium' | 'oauth_provider' | 'created_at' | 'last_sign_in_at' | 'is_banned';
+
+interface UserColumn {
+  key: UserColumnKey;
+  label: string;
+  icon: React.ElementType;
+  defaultVisible: boolean;
 }
 
 interface PagePermission {
@@ -99,6 +117,30 @@ export default function AdminRoles() {
   const [showNewRole, setShowNewRole] = useState(false);
   const [addRoleForUser, setAddRoleForUser] = useState<string | null>(null);
   const [addRoleValue, setAddRoleValue] = useState('');
+
+  const USER_COLUMNS: UserColumn[] = [
+    { key: 'name',           label: t('roles.col_name'),           icon: User,          defaultVisible: true },
+    { key: 'email',          label: t('roles.col_email'),          icon: Search,        defaultVisible: true },
+    { key: 'roles',          label: t('roles.col_roles'),          icon: Shield,        defaultVisible: true },
+    { key: 'player_count',   label: t('roles.col_players'),        icon: Users,         defaultVisible: false },
+    { key: 'is_premium',     label: t('roles.col_premium'),        icon: Star,          defaultVisible: false },
+    { key: 'oauth_provider', label: t('roles.col_auth'),           icon: LogIn,         defaultVisible: false },
+    { key: 'created_at',     label: t('roles.col_created'),        icon: CalendarDays,  defaultVisible: false },
+    { key: 'last_sign_in_at',label: t('roles.col_last_login'),     icon: LogIn,         defaultVisible: false },
+    { key: 'is_banned',      label: t('roles.col_banned'),         icon: Ban,           defaultVisible: false },
+  ];
+
+  const [visibleColumns, setVisibleColumns] = useState<Set<UserColumnKey>>(
+    () => new Set(USER_COLUMNS.filter(c => c.defaultVisible).map(c => c.key))
+  );
+
+  const toggleColumn = (key: UserColumnKey) => {
+    setVisibleColumns(prev => {
+      const next = new Set(prev);
+      next.has(key) ? next.delete(key) : next.add(key);
+      return next;
+    });
+  };
 
   const { data: users = [], isLoading: usersLoading } = useQuery<AdminUser[]>({
     queryKey: ['admin-users'],
@@ -532,11 +574,37 @@ export default function AdminRoles() {
 
         {/* ── Tab: Users ── */}
         <TabsContent value="users" className="space-y-4">
-          <div className="relative max-w-sm">
-            <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
-            <input type="text" value={searchTerm} onChange={e => setSearchTerm(e.target.value)}
-              placeholder={t('roles.search_users')}
-              className="w-full pl-9 pr-3 py-2 rounded-lg border border-input bg-background text-sm focus:outline-none focus:ring-2 focus:ring-ring" />
+          <div className="flex items-center gap-3">
+            <div className="relative flex-1 max-w-sm">
+              <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
+              <input type="text" value={searchTerm} onChange={e => setSearchTerm(e.target.value)}
+                placeholder={t('roles.search_users')}
+                className="w-full pl-9 pr-3 py-2 rounded-lg border border-input bg-background text-sm focus:outline-none focus:ring-2 focus:ring-ring" />
+            </div>
+            {/* Column visibility toggle */}
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <Button variant="outline" size="sm" className="gap-2">
+                  <SlidersHorizontal className="w-3.5 h-3.5" />
+                  {t('roles.columns')}
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end" className="w-52">
+                <DropdownMenuLabel className="text-xs">{t('roles.visible_columns')}</DropdownMenuLabel>
+                <DropdownMenuSeparator />
+                {USER_COLUMNS.map(col => (
+                  <DropdownMenuCheckboxItem
+                    key={col.key}
+                    checked={visibleColumns.has(col.key)}
+                    onCheckedChange={() => toggleColumn(col.key)}
+                    className="text-xs gap-2"
+                  >
+                    <col.icon className="w-3.5 h-3.5 text-muted-foreground" />
+                    {col.label}
+                  </DropdownMenuCheckboxItem>
+                ))}
+              </DropdownMenuContent>
+            </DropdownMenu>
           </div>
 
           <Card className="border-none card-warm overflow-hidden">
@@ -547,8 +615,15 @@ export default function AdminRoles() {
                 <Table>
                   <TableHeader>
                     <TableRow>
-                      <TableHead>{t('roles.email')}</TableHead>
-                      <TableHead>{t('roles.current_role')}</TableHead>
+                      {visibleColumns.has('name') && <TableHead>{t('roles.col_name')}</TableHead>}
+                      {visibleColumns.has('email') && <TableHead>{t('roles.col_email')}</TableHead>}
+                      {visibleColumns.has('roles') && <TableHead>{t('roles.col_roles')}</TableHead>}
+                      {visibleColumns.has('player_count') && <TableHead className="text-right">{t('roles.col_players')}</TableHead>}
+                      {visibleColumns.has('is_premium') && <TableHead className="text-center">{t('roles.col_premium')}</TableHead>}
+                      {visibleColumns.has('oauth_provider') && <TableHead>{t('roles.col_auth')}</TableHead>}
+                      {visibleColumns.has('created_at') && <TableHead>{t('roles.col_created')}</TableHead>}
+                      {visibleColumns.has('last_sign_in_at') && <TableHead>{t('roles.col_last_login')}</TableHead>}
+                      {visibleColumns.has('is_banned') && <TableHead className="text-center">{t('roles.col_banned')}</TableHead>}
                       <TableHead>{t('roles.add_role_action')}</TableHead>
                     </TableRow>
                   </TableHeader>
@@ -558,45 +633,112 @@ export default function AdminRoles() {
                       const isUpdating = updatingUser === u.id;
                       const userRoles = u.roles.length > 0 ? u.roles : ['user'];
                       const availableToAdd = allRoles.filter(r => !userRoles.includes(r));
+                      const displayName = [u.first_name, u.last_name].filter(Boolean).join(' ') || null;
 
                       return (
-                        <TableRow key={u.id}>
-                          <TableCell className="font-medium">
-                            <div className="flex items-center gap-2">
-                              <span className="truncate max-w-[220px]">{u.email}</span>
-                              {isCurrentUser && <Badge variant="secondary" className="text-[10px]">{t('roles.you')}</Badge>}
-                            </div>
-                          </TableCell>
-                          <TableCell>
-                            <div className="flex items-center flex-wrap gap-1.5">
-                              {userRoles.map(role => (
-                                <Badge
-                                  key={role}
-                                  variant="secondary"
-                                  className="capitalize flex items-center gap-1 pr-1 border-transparent"
-                                  style={{
-                                    backgroundColor: `${getRoleColor(role, roleColors)}18`,
-                                    color: getRoleColor(role, roleColors),
-                                  }}
-                                >
-                                  {(() => {
-                                    const Icon = getRoleIcon(role);
-                                    return <Icon className="w-2.5 h-2.5" />;
-                                  })()}
-                                  {role}
-                                  {!isCurrentUser && !(isCurrentUser && role === 'admin') && (
-                                    <button
-                                      onClick={() => removeRoleFromUser(u.id, role)}
-                                      disabled={isUpdating}
-                                      className="ml-0.5 rounded hover:bg-destructive/20 hover:text-destructive transition-colors p-0.5"
-                                    >
-                                      <X className="w-2.5 h-2.5" />
-                                    </button>
-                                  )}
-                                </Badge>
-                              ))}
-                            </div>
-                          </TableCell>
+                        <TableRow key={u.id} className={cn(u.is_banned && 'opacity-60')}>
+                          {/* Name */}
+                          {visibleColumns.has('name') && (
+                            <TableCell className="font-medium">
+                              <div className="flex items-center gap-2 min-w-[120px]">
+                                {displayName ? (
+                                  <span className="truncate max-w-[160px]">{displayName}</span>
+                                ) : (
+                                  <span className="text-muted-foreground/50 italic text-xs">{t('roles.no_name')}</span>
+                                )}
+                                {isCurrentUser && <Badge variant="secondary" className="text-[10px] shrink-0">{t('roles.you')}</Badge>}
+                                {u.is_banned && <Badge variant="destructive" className="text-[10px] shrink-0"><Ban className="w-2.5 h-2.5 mr-0.5" />{t('roles.banned')}</Badge>}
+                                {u.suspicious_referral && (
+                                  <Badge variant="outline" className="text-[10px] border-amber-500/40 text-amber-600 dark:text-amber-400 gap-1 shrink-0" title={t('admin.suspicious_referral_hint')}>
+                                    <AlertTriangle className="w-2.5 h-2.5" />
+                                    {t('admin.suspicious_referral')}
+                                  </Badge>
+                                )}
+                              </div>
+                            </TableCell>
+                          )}
+                          {/* Email */}
+                          {visibleColumns.has('email') && (
+                            <TableCell>
+                              <div className="flex items-center gap-2">
+                                <span className="truncate max-w-[200px] text-sm">{u.email}</span>
+                                {!visibleColumns.has('name') && isCurrentUser && (
+                                  <Badge variant="secondary" className="text-[10px] shrink-0">{t('roles.you')}</Badge>
+                                )}
+                              </div>
+                            </TableCell>
+                          )}
+                          {/* Roles */}
+                          {visibleColumns.has('roles') && (
+                            <TableCell>
+                              <div className="flex items-center flex-wrap gap-1.5">
+                                {userRoles.map(role => (
+                                  <Badge
+                                    key={role}
+                                    variant="secondary"
+                                    className="capitalize flex items-center gap-1 pr-1 border-transparent"
+                                    style={{
+                                      backgroundColor: `${getRoleColor(role, roleColors)}18`,
+                                      color: getRoleColor(role, roleColors),
+                                    }}
+                                  >
+                                    {(() => { const Icon = getRoleIcon(role); return <Icon className="w-2.5 h-2.5" />; })()}
+                                    {role}
+                                    {!isCurrentUser && !(isCurrentUser && role === 'admin') && (
+                                      <button
+                                        onClick={() => removeRoleFromUser(u.id, role)}
+                                        disabled={isUpdating}
+                                        className="ml-0.5 rounded hover:bg-destructive/20 hover:text-destructive transition-colors p-0.5"
+                                      >
+                                        <X className="w-2.5 h-2.5" />
+                                      </button>
+                                    )}
+                                  </Badge>
+                                ))}
+                              </div>
+                            </TableCell>
+                          )}
+                          {/* Player count */}
+                          {visibleColumns.has('player_count') && (
+                            <TableCell className="text-right tabular-nums text-sm">{u.player_count}</TableCell>
+                          )}
+                          {/* Premium */}
+                          {visibleColumns.has('is_premium') && (
+                            <TableCell className="text-center">
+                              {u.is_premium
+                                ? <Badge className="bg-amber-500/10 text-amber-600 border-amber-500/20 text-[10px]"><Star className="w-2.5 h-2.5 mr-1 fill-amber-500" />Premium</Badge>
+                                : <span className="text-muted-foreground/40 text-xs">—</span>}
+                            </TableCell>
+                          )}
+                          {/* Auth provider */}
+                          {visibleColumns.has('oauth_provider') && (
+                            <TableCell>
+                              {u.oauth_provider
+                                ? <Badge variant="outline" className="text-[10px] capitalize">{u.oauth_provider}</Badge>
+                                : <span className="text-xs text-muted-foreground">Email</span>}
+                            </TableCell>
+                          )}
+                          {/* Created at */}
+                          {visibleColumns.has('created_at') && (
+                            <TableCell className="text-xs text-muted-foreground whitespace-nowrap">
+                              {u.created_at ? new Date(u.created_at).toLocaleDateString() : '—'}
+                            </TableCell>
+                          )}
+                          {/* Last sign-in */}
+                          {visibleColumns.has('last_sign_in_at') && (
+                            <TableCell className="text-xs text-muted-foreground whitespace-nowrap">
+                              {u.last_sign_in_at ? new Date(u.last_sign_in_at).toLocaleDateString() : '—'}
+                            </TableCell>
+                          )}
+                          {/* Banned */}
+                          {visibleColumns.has('is_banned') && (
+                            <TableCell className="text-center">
+                              {u.is_banned
+                                ? <Badge variant="destructive" className="text-[10px]"><Ban className="w-2.5 h-2.5 mr-0.5" />{t('roles.banned')}</Badge>
+                                : <span className="text-muted-foreground/40 text-xs">—</span>}
+                            </TableCell>
+                          )}
+                          {/* Add role */}
                           <TableCell>
                             {!isCurrentUser && availableToAdd.length > 0 && (
                               addRoleForUser === u.id ? (

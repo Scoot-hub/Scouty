@@ -10,7 +10,7 @@ import { Badge } from '@/components/ui/badge';
 import { Input } from '@/components/ui/input';
 import { Separator } from '@/components/ui/separator';
 import { toast } from 'sonner';
-import { Crown, Mail, Lock, Building2, User, CalendarDays, ExternalLink, Loader2, Shield, ShieldCheck, ShieldOff, Download, Trash2, AlertTriangle, CreditCard, Camera, Phone, MapPin, Briefcase, Zap, Globe, Info } from 'lucide-react';
+import { Crown, Mail, Lock, Building2, User, CalendarDays, ExternalLink, Loader2, Shield, ShieldCheck, ShieldOff, Download, Trash2, AlertTriangle, CreditCard, Camera, Phone, MapPin, Briefcase, Zap, Globe, Info, Users } from 'lucide-react';
 import { COUNTRY_LIST } from '@/data/country-names';
 import { getFlag } from '@/types/player';
 import { useCredits } from '@/hooks/use-credits';
@@ -490,6 +490,35 @@ export default function Account() {
       toast.error(err instanceof Error ? err.message : String(err));
     } finally {
       setDeleteLoading(false);
+    }
+  };
+
+  const [referralCode, setReferralCode] = useState('');
+  const [referralApplying, setReferralApplying] = useState(false);
+
+  const handleApplyReferral = async () => {
+    if (!referralCode.trim()) return;
+    setReferralApplying(true);
+    try {
+      const res = await fetch(`${apiBase}/account/apply-referral`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify({ referral_code: referralCode.trim() }),
+      });
+      if (!res.ok) {
+        let msg = `Erreur ${res.status}`;
+        try { const d = await res.json(); msg = d.error || msg; } catch {}
+        throw new Error(msg);
+      }
+      await res.json();
+      toast.success(t('account.referral_code_success'));
+      setReferralCode('');
+      queryClient.invalidateQueries({ queryKey: ['profile', user!.id] });
+    } catch (err: unknown) {
+      toast.error(err instanceof Error ? err.message : String(err));
+    } finally {
+      setReferralApplying(false);
     }
   };
 
@@ -1098,6 +1127,40 @@ export default function Account() {
                 {t('credits.upgrade_cta')}
               </Button>
             )}
+          </CardContent>
+        </Card>
+      )}
+
+      {/* Referral code — only shown when not yet affiliated */}
+      {profile && !profile.referred_by && (
+        <Card>
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2 text-lg">
+              <Users className="w-5 h-5 text-primary" />
+              {t('account.referral_code_title')}
+            </CardTitle>
+            <CardDescription>{t('account.referral_code_desc')}</CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-3">
+            <div>
+              <label className="text-sm font-medium text-muted-foreground">{t('auth.referral_code')}</label>
+              <Input
+                className="mt-1 font-mono uppercase"
+                value={referralCode}
+                onChange={e => setReferralCode(e.target.value.toUpperCase())}
+                placeholder={t('auth.referral_code_placeholder')}
+                maxLength={15}
+              />
+              <p className="text-xs text-muted-foreground mt-1">{t('auth.referral_code_invalid')}</p>
+            </div>
+            <Button
+              size="sm"
+              onClick={handleApplyReferral}
+              disabled={referralApplying || !referralCode.trim()}
+            >
+              {referralApplying ? <Loader2 className="w-4 h-4 animate-spin mr-2" /> : <Users className="w-4 h-4 mr-2" />}
+              {t('account.referral_code_apply')}
+            </Button>
           </CardContent>
         </Card>
       )}

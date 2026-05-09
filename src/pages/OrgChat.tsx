@@ -260,6 +260,8 @@ export default function OrgChat() {
   const [input, setInput] = useState('');
   const [replyTo, setReplyTo] = useState<OrgMessage | null>(null);
   const [editTarget, setEditTarget] = useState<OrgMessage | null>(null);
+  const [sendCooldown, setSendCooldown] = useState(0); // seconds remaining
+  const cooldownTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const [showScrollBtn, setShowScrollBtn] = useState(false);
   const [unreadStartId, setUnreadStartId] = useState<string | null>(null);
   const [animatingIds, setAnimatingIds] = useState<Set<string>>(new Set());
@@ -384,9 +386,27 @@ export default function OrgChat() {
     if (typingTimerRef.current) clearTimeout(typingTimerRef.current);
   }, [broadcastTyping]);
 
+  // Cleanup cooldown interval on unmount
+  useEffect(() => () => { if (cooldownTimerRef.current) clearInterval(cooldownTimerRef.current); }, []);
+
+  const startCooldown = (seconds: number) => {
+    if (cooldownTimerRef.current) clearInterval(cooldownTimerRef.current);
+    setSendCooldown(seconds);
+    cooldownTimerRef.current = setInterval(() => {
+      setSendCooldown(prev => {
+        if (prev <= 1) {
+          clearInterval(cooldownTimerRef.current!);
+          cooldownTimerRef.current = null;
+          return 0;
+        }
+        return prev - 1;
+      });
+    }, 1000);
+  };
+
   const handleSend = async () => {
     const content = input.trim();
-    if (!content || content.length > MAX_CHARS) return;
+    if (!content || content.length > MAX_CHARS || sendCooldown > 0) return;
     // Guard: if the replied-to message was deleted in the meantime, clear the reply
     const safeReplyId = replyTo && !replyTo.deleted_at ? replyTo.id : undefined;
     setInput('');
@@ -394,12 +414,15 @@ export default function OrgChat() {
     setEditTarget(null);
     try {
       await sendMsg.mutateAsync({ content, reply_to_id: safeReplyId });
+      startCooldown(60);
       scrollToBottom();
     } catch (err: any) {
       if (err?.error === 'moderation_failed') {
         toast.error(t('org.chat_moderation_error'));
       } else if (err?.error === 'rate_limit') {
-        toast.error(t('org.chat_rate_limit', { seconds: err.retry_after ?? 60 }));
+        const seconds = err.retry_after ?? 60;
+        startCooldown(seconds);
+        toast.error(t('org.chat_rate_limit', { seconds }));
       } else {
         toast.error(t('common.error'));
       }
@@ -573,7 +596,8 @@ export default function OrgChat() {
                 onKeyDown={e => {
                   if (e.key === 'Enter' && !e.shiftKey) {
                     e.preventDefault();
-                    editTarget ? handleEdit() : handleSend();
+                    if (editTarget) handleEdit();
+                    else if (sendCooldown === 0) handleSend();
                   }
                 }}
                 placeholder={t('org.chat_placeholder')}
@@ -590,12 +614,15 @@ export default function OrgChat() {
             <Button
               size="sm"
               onClick={editTarget ? handleEdit : handleSend}
-              disabled={!canSend || sendMsg.isPending || editMsg.isPending}
-              className="rounded-xl h-[42px] px-3 shrink-0"
+              disabled={!canSend || sendMsg.isPending || editMsg.isPending || (!editTarget && sendCooldown > 0)}
+              className="rounded-xl h-[42px] px-3 shrink-0 relative"
+              title={sendCooldown > 0 && !editTarget ? `Anti-spam : encore ${sendCooldown}s` : undefined}
             >
               {(sendMsg.isPending || editMsg.isPending)
                 ? <Loader2 className="w-4 h-4 animate-spin" />
-                : <Send className="w-4 h-4" />
+                : sendCooldown > 0 && !editTarget
+                  ? <span className="text-[11px] font-mono font-bold tabular-nums">{sendCooldown}s</span>
+                  : <Send className="w-4 h-4" />
               }
             </Button>
           </div>

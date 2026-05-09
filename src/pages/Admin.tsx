@@ -6,10 +6,13 @@ import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
+import { Input } from '@/components/ui/input';
 import { Textarea } from '@/components/ui/textarea';
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from '@/components/ui/dialog';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs';
-import { Shield, Crown, Users, Mail, UserCheck, BarChart3, Lock, Check, X, Search, Plus, Trash2, ShieldCheck, ChevronDown, ChevronRight, Building2, UserPlus, UserMinus, Palette, User, ShieldAlert, Bell, Zap, Clock } from 'lucide-react';
+import { Shield, Crown, Users, Mail, UserCheck, BarChart3, Lock, Check, X, Search, Plus, Trash2, ShieldCheck, ChevronDown, ChevronRight, Building2, UserPlus, UserMinus, Palette, User, ShieldAlert, Bell, Zap, Clock, AlertTriangle, Coins } from 'lucide-react';
 import { toast } from 'sonner';
 import { Navigate, Link } from 'react-router-dom';
 import { useAuth } from '@/contexts/AuthContext';
@@ -71,6 +74,7 @@ interface AdminUser {
   premium_since: string | null;
   roles: string[];
   player_count: number;
+  suspicious_referral: boolean;
 }
 
 interface PagePermission {
@@ -113,6 +117,41 @@ export default function Admin() {
   const [impersonatingId, setImpersonatingId] = useState<string | null>(null);
   const [deletingUser, setDeletingUser] = useState<AdminUser | null>(null);
   const [deletingId, setDeletingId] = useState<string | null>(null);
+
+  // ── Credits grant dialog ──
+  const [grantTarget, setGrantTarget] = useState<AdminUser | null>(null);
+  const [grantAmount, setGrantAmount] = useState('');
+  const [grantDirection, setGrantDirection] = useState<'earn' | 'spend'>('earn');
+  const [grantDescription, setGrantDescription] = useState('');
+  const [granting, setGranting] = useState(false);
+
+  const handleGrantCredits = async () => {
+    if (!grantTarget || !grantAmount || isNaN(Number(grantAmount)) || Number(grantAmount) <= 0) return;
+    setGranting(true);
+    try {
+      const res = await fetch(`${API_BASE}/admin/credits/grant`, {
+        method: 'POST',
+        ...authFetchInit(),
+        body: JSON.stringify({
+          userId: grantTarget.id,
+          amount: Math.round(Number(grantAmount)),
+          direction: grantDirection,
+          description: grantDescription.trim() || undefined,
+        }),
+      });
+      if (!res.ok) { const d = await res.json(); throw new Error(d.error); }
+      toast.success(`${grantDirection === 'earn' ? '+' : '-'}${grantAmount} crédit(s) attribué(s) à ${grantTarget.email}`);
+      setGrantTarget(null);
+      setGrantAmount('');
+      setGrantDirection('earn');
+      setGrantDescription('');
+      queryClient.invalidateQueries({ queryKey: ['admin-users'] });
+    } catch (err: unknown) {
+      toast.error(`Erreur : ${err instanceof Error ? err.message : 'inconnue'}`);
+    } finally {
+      setGranting(false);
+    }
+  };
 
   // ── Roles section state ──
   const [selectedRole, setSelectedRole] = useState('user');
@@ -564,6 +603,12 @@ export default function Admin() {
               {t('admin.crons')}
             </Button>
           </Link>
+          <Link to="/admin/errors">
+            <Button variant="outline" className="rounded-xl gap-2">
+              <AlertTriangle className="w-4 h-4 text-destructive" />
+              Erreurs
+            </Button>
+          </Link>
         </div>
       </div>
 
@@ -639,6 +684,16 @@ export default function Admin() {
                             {u.roles.includes('admin') && (
                               <Badge variant="outline" className="text-[10px]">{t('admin.admin_badge')}</Badge>
                             )}
+                            {u.suspicious_referral && (
+                              <Badge
+                                variant="outline"
+                                className="text-[10px] border-amber-500/40 text-amber-600 dark:text-amber-400 gap-1 shrink-0"
+                                title={t('admin.suspicious_referral_hint')}
+                              >
+                                <AlertTriangle className="w-2.5 h-2.5" />
+                                {t('admin.suspicious_referral')}
+                              </Badge>
+                            )}
                           </div>
                         </TableCell>
                         <TableCell className="text-sm text-muted-foreground whitespace-nowrap">
@@ -668,6 +723,15 @@ export default function Admin() {
                               title={u.is_premium ? t('admin.remove') : t('admin.premium')}
                             >
                               <Crown className="w-3.5 h-3.5" />
+                            </Button>
+                            <Button
+                              variant="outline"
+                              size="icon"
+                              className="rounded-lg h-7 w-7 text-amber-600 hover:text-amber-700 hover:bg-amber-50 border-amber-200"
+                              onClick={() => { setGrantTarget(u); setGrantAmount(''); setGrantDirection('earn'); setGrantDescription(''); }}
+                              title={t('admin.grant_credits')}
+                            >
+                              <Coins className="w-3.5 h-3.5" />
                             </Button>
                             <Button
                               variant="ghost"
@@ -918,6 +982,88 @@ export default function Admin() {
           )}
         </TabsContent>
       </Tabs>
+      {/* ── Grant credits dialog ── */}
+      <Dialog open={!!grantTarget} onOpenChange={open => { if (!open) setGrantTarget(null); }}>
+        <DialogContent className="max-w-sm">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <Coins className="w-4 h-4 text-amber-500" />
+              {t('admin.grant_credits_title')}
+            </DialogTitle>
+            <DialogDescription>
+              {grantTarget?.email}
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4 py-2">
+            <div className="grid grid-cols-2 gap-3">
+              <div className="space-y-1.5">
+                <label className="text-sm font-medium">{t('admin.grant_credits_amount')}</label>
+                <Input
+                  type="number"
+                  min={1}
+                  value={grantAmount}
+                  onChange={e => setGrantAmount(e.target.value)}
+                  placeholder="100"
+                  className="rounded-xl"
+                  autoFocus
+                />
+              </div>
+              <div className="space-y-1.5">
+                <label className="text-sm font-medium">{t('admin.grant_credits_direction')}</label>
+                <Select value={grantDirection} onValueChange={(v: 'earn' | 'spend') => setGrantDirection(v)}>
+                  <SelectTrigger className="rounded-xl">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="earn">
+                      <span className="flex items-center gap-1.5">
+                        <span className="text-emerald-600 font-bold">+</span> {t('admin.grant_credits_earn')}
+                      </span>
+                    </SelectItem>
+                    <SelectItem value="spend">
+                      <span className="flex items-center gap-1.5">
+                        <span className="text-red-500 font-bold">−</span> {t('admin.grant_credits_spend')}
+                      </span>
+                    </SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+            </div>
+            <div className="space-y-1.5">
+              <label className="text-sm font-medium">{t('admin.grant_credits_reason')}</label>
+              <Input
+                value={grantDescription}
+                onChange={e => setGrantDescription(e.target.value)}
+                placeholder={t('admin.grant_credits_reason_placeholder')}
+                className="rounded-xl"
+              />
+            </div>
+            {grantAmount && Number(grantAmount) > 0 && (
+              <div className={`rounded-xl px-3 py-2 text-sm font-medium flex items-center gap-2 ${
+                grantDirection === 'earn'
+                  ? 'bg-emerald-500/10 text-emerald-700 border border-emerald-500/20'
+                  : 'bg-red-500/10 text-red-700 border border-red-500/20'
+              }`}>
+                <Coins className="w-4 h-4" />
+                {grantDirection === 'earn' ? '+' : '−'}{grantAmount} crédit(s) → {grantTarget?.email}
+              </div>
+            )}
+          </div>
+          <DialogFooter>
+            <Button variant="outline" className="rounded-xl" onClick={() => setGrantTarget(null)}>
+              {t('common.cancel')}
+            </Button>
+            <Button
+              className="rounded-xl"
+              disabled={!grantAmount || Number(grantAmount) <= 0 || granting}
+              onClick={handleGrantCredits}
+            >
+              {granting ? t('common.loading') : t('admin.grant_credits_confirm')}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
       <AlertDialog open={!!deletingUser} onOpenChange={open => { if (!open) setDeletingUser(null); }}>
         <AlertDialogContent>
           <AlertDialogHeader>

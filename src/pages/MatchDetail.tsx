@@ -1,13 +1,16 @@
-import { useState } from 'react';
+import { useState, lazy, Suspense } from 'react';
 import { useParams, useSearchParams, Link } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { useMatchDetail, type MatchEvent, type MatchStat } from '@/hooks/use-api-football';
+import { useScoreBatVideos, useFotMobXG, useFDOrgForm, useFDOrgH2H, type FormEntry } from '@/hooks/use-match-enrichment';
 import { Card, CardContent } from '@/components/ui/card';
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs';
-import { Loader2, ChevronLeft, MapPin, User, AlertTriangle, ExternalLink } from 'lucide-react';
+import { Loader2, ChevronLeft, MapPin, User, AlertTriangle, ExternalLink, Play, TrendingUp, History, Zap } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { useUtcOffset, formatTimeWithOffset } from '@/hooks/use-utc-offset';
 import { useResolvePlayerNames, type PlayerNameMatch } from '@/hooks/use-resolve-player-names';
+
+const LazyStatsBombMatchDetail = lazy(() => import('@/components/fixtures/StatsBombMatchDetail'));
 
 // ── Helpers ────────────────────────────────────────────────────────────────────
 
@@ -42,9 +45,14 @@ function formatMatchDate(dateStr: string | null, locale?: string) {
 function EventIcon({ type }: { type: MatchEvent['type'] }) {
   switch (type) {
     case 'goal':
-      return <span className="text-base">⚽</span>;
+      return <span className="text-base leading-none">⚽</span>;
     case 'own_goal':
-      return <span className="text-base">⚽</span>;
+      return (
+        <span className="inline-flex items-center gap-0.5">
+          <span className="text-base leading-none opacity-70">⚽</span>
+          <span className="text-[9px] font-black text-red-500 leading-none">OG</span>
+        </span>
+      );
     case 'yellow_card':
       return <span className="inline-block w-3 h-4 rounded-sm bg-yellow-400 shrink-0" />;
     case 'second_yellow':
@@ -70,10 +78,19 @@ function EventIcon({ type }: { type: MatchEvent['type'] }) {
 // ── Stat Bar ──────────────────────────────────────────────────────────────────
 
 function StatBar({ stat, t }: { stat: MatchStat; t: (k: string, o?: object) => string }) {
-  const homeVal = stat.home != null ? parseFloat(String(stat.home)) : null;
-  const awayVal = stat.away != null ? parseFloat(String(stat.away)) : null;
-  const total = (homeVal ?? 0) + (awayVal ?? 0);
-  const homePercent = total > 0 ? Math.round(((homeVal ?? 0) / total) * 100) : 50;
+  const homeStr = String(stat.home ?? '');
+  const awayStr = String(stat.away ?? '');
+  const isAlreadyPercent = homeStr.includes('%') || awayStr.includes('%')
+    || /possession|accuracy/i.test(stat.type);
+  const homeVal = stat.home != null ? parseFloat(homeStr.replace('%', '')) : null;
+  const awayVal = stat.away != null ? parseFloat(awayStr.replace('%', '')) : null;
+  let homePercent: number;
+  if (isAlreadyPercent) {
+    homePercent = homeVal != null ? Math.min(100, Math.max(0, Math.round(homeVal))) : 50;
+  } else {
+    const total = (homeVal ?? 0) + (awayVal ?? 0);
+    homePercent = total > 0 ? Math.round(((homeVal ?? 0) / total) * 100) : 50;
+  }
   const awayPercent = 100 - homePercent;
 
   const statLabel = (key: string) => {
@@ -119,6 +136,88 @@ function StatBar({ stat, t }: { stat: MatchStat; t: (k: string, o?: object) => s
           style={{ width: `${awayPercent}%` }}
         />
       </div>
+    </div>
+  );
+}
+
+// ── Form strip (W/D/L badges, last 5 matches) ─────────────────────────────────
+
+function FormStrip({ form, align }: { form: FormEntry[]; align: 'left' | 'right' }) {
+  const colors: Record<string, string> = {
+    W: 'bg-green-500 text-white',
+    D: 'bg-amber-400 text-white',
+    L: 'bg-red-500 text-white',
+  };
+  const dots = align === 'left' ? form : [...form].reverse();
+  return (
+    <div className={cn('flex gap-1 mt-1', align === 'right' ? 'justify-end' : 'justify-start')}>
+      {dots.map((f, i) => (
+        <span
+          key={i}
+          title={`${f.isHome ? 'D' : 'E'} vs ${f.opponent} ${f.myScore}-${f.opScore}`}
+          className={cn(
+            'inline-flex items-center justify-center w-5 h-5 rounded-full text-[9px] font-black shrink-0',
+            colors[f.result] ?? 'bg-muted text-muted-foreground'
+          )}
+        >
+          {f.result}
+        </span>
+      ))}
+    </div>
+  );
+}
+
+// ── xG display row ────────────────────────────────────────────────────────────
+
+function XGRow({ home, away }: { home: number; away: number }) {
+  const total = home + away;
+  const homePct = total > 0 ? Math.round((home / total) * 100) : 50;
+  return (
+    <div className="space-y-1 py-2 border-t border-primary/20">
+      <div className="flex items-center justify-between text-xs font-bold text-primary">
+        <span className="w-12 text-left tabular-nums">{home.toFixed(2)}</span>
+        <span className="flex items-center gap-1 text-[11px] text-center flex-1 justify-center">
+          <TrendingUp className="w-3 h-3" />
+          xG
+        </span>
+        <span className="w-12 text-right tabular-nums">{away.toFixed(2)}</span>
+      </div>
+      <div className="flex h-1.5 rounded-full overflow-hidden bg-muted">
+        <div className="bg-primary transition-all" style={{ width: `${homePct}%` }} />
+        <div className="bg-muted-foreground/30" style={{ width: `${100 - homePct}%` }} />
+      </div>
+      <p className="text-[9px] text-muted-foreground/50 text-center">Source : FotMob</p>
+    </div>
+  );
+}
+
+// ── H2H mini-table ────────────────────────────────────────────────────────────
+
+function H2HSection({ matches, homeTeam, t }: { matches: import('@/hooks/use-match-enrichment').H2HMatch[]; homeTeam: string; t: (k: string, o?: Record<string, unknown>) => string }) {
+  if (!matches.length) return null;
+  return (
+    <div className="mt-4 pt-4 border-t border-border/40 space-y-2">
+      <p className="flex items-center gap-1.5 text-[11px] font-bold text-muted-foreground uppercase tracking-wide">
+        <History className="w-3.5 h-3.5" />
+        {t('match_detail.h2h')}
+      </p>
+      <div className="space-y-1">
+        {matches.map((m, i) => {
+          const isHomeHome = m.homeTeam.toLowerCase().includes(homeTeam.toLowerCase().split(' ')[0]);
+          const myScore = isHomeHome ? m.homeScore : m.awayScore;
+          const opScore = isHomeHome ? m.awayScore : m.homeScore;
+          const result = myScore > opScore ? 'W' : myScore < opScore ? 'L' : 'D';
+          const col = result === 'W' ? 'text-green-600 dark:text-green-400' : result === 'L' ? 'text-red-500' : 'text-amber-500';
+          return (
+            <div key={i} className="flex items-center justify-between text-xs text-muted-foreground gap-2">
+              <span className="text-[10px] shrink-0">{new Date(m.date).toLocaleDateString('fr-FR', { day: 'numeric', month: 'short', year: '2-digit' })}</span>
+              <span className="truncate text-[10px] flex-1 text-center">{m.homeTeam} {m.homeScore}–{m.awayScore} {m.awayTeam}</span>
+              <span className={cn('font-black text-[10px] shrink-0', col)}>{result}</span>
+            </div>
+          );
+        })}
+      </div>
+      <p className="text-[9px] text-muted-foreground/50">Source : football-data.org</p>
     </div>
   );
 }
@@ -224,6 +323,18 @@ export default function MatchDetail() {
   const { t, i18n } = useTranslation();
   const { utcOffset } = useUtcOffset();
 
+  // StatsBomb match: matchId starts with "sb-"
+  const isSbMatch = matchId?.startsWith('sb-');
+  const sbMatchId = isSbMatch ? parseInt(matchId!.slice(3)) : null;
+
+  if (isSbMatch && sbMatchId) {
+    return (
+      <Suspense fallback={<div className="flex justify-center py-16"><Loader2 className="w-6 h-6 animate-spin text-muted-foreground" /></div>}>
+        <LazyStatsBombMatchDetail matchId={sbMatchId} />
+      </Suspense>
+    );
+  }
+
   // Fallback info from URL params while loading
   const initHomeTeam = searchParams.get('home') ?? '';
   const initAwayTeam = searchParams.get('away') ?? '';
@@ -242,6 +353,22 @@ export default function MatchDetail() {
   const homeTeam = data?.home_team || initHomeTeam;
   const awayTeam = data?.away_team || initAwayTeam;
   const competition = data?.competition || initCompetition;
+
+  // ── Enrichment (free external APIs) ──────────────────────────────────────────
+  const { data: videosData } = useScoreBatVideos(homeTeam || null, awayTeam || null);
+  const { data: xgData }     = useFotMobXG(homeTeam || null, awayTeam || null, (data?.match_date || initDate) || null);
+  const { data: homeFormData } = useFDOrgForm(homeTeam || null);
+  const { data: awayFormData } = useFDOrgForm(awayTeam || null);
+  const { data: h2hData }    = useFDOrgH2H(homeTeam || null, awayTeam || null);
+
+  const videos   = videosData?.videos ?? [];
+  const xg       = xgData?.xg ?? null;
+  const homeForm = homeFormData?.form ?? null;
+  const awayForm = awayFormData?.form ?? null;
+  const h2hMatches = h2hData?.matches ?? [];
+  const hasVideos = videos.length > 0;
+
+  const [activeVideoIdx, setActiveVideoIdx] = useState<number | null>(null);
   const matchDate = data?.match_date || initDate;
   const flag = data ? countryFlag(data.country_code) : '';
 
@@ -250,7 +377,7 @@ export default function MatchDetail() {
   const awayEvents = data?.events.filter(e => e.team === 'away').sort((a, b) => a.minute - b.minute) ?? [];
   const allEventsSorted = data?.events.slice().sort((a, b) => a.minute - b.minute) ?? [];
 
-  const [tab, setTab] = useState<'events' | 'stats' | 'lineup'>('events');
+  const [tab, setTab] = useState<'events' | 'stats' | 'lineup' | 'videos'>('events');
 
   // Resolve lineup names against the user's own roster so matched players become clickable
   const lineupNames = data?.lineups.available
@@ -349,6 +476,9 @@ export default function MatchDetail() {
                     </div>
                   )}
                   <span className="text-sm font-bold text-center leading-tight">{homeTeam}</span>
+                  {homeForm && homeForm.length > 0 && (
+                    <FormStrip form={homeForm} align="left" />
+                  )}
                 </div>
 
                 {/* Score */}
@@ -382,8 +512,16 @@ export default function MatchDetail() {
                     </div>
                   )}
                   <span className="text-sm font-bold text-center leading-tight">{awayTeam}</span>
+                  {awayForm && awayForm.length > 0 && (
+                    <FormStrip form={awayForm} align="right" />
+                  )}
                 </div>
               </div>
+
+              {/* H2H section */}
+              {h2hMatches.length > 0 && (
+                <H2HSection matches={h2hMatches} homeTeam={homeTeam} t={t} />
+              )}
 
               {/* Venue / Referee */}
               {(data?.venue || data?.referee) && (
@@ -408,7 +546,7 @@ export default function MatchDetail() {
       </Card>
 
       {/* ── Tabs: Events / Stats / Lineup ── */}
-      {!isLoading && !isError && data && (hasEvents || hasStats || hasLineups) && (
+      {!isLoading && !isError && data && (hasEvents || hasStats || hasLineups || hasVideos) && (
         <Tabs value={tab} onValueChange={(v) => setTab(v as typeof tab)}>
           <TabsList className="rounded-xl mb-4 w-full">
             <TabsTrigger value="events" className="flex-1 rounded-lg">
@@ -425,6 +563,15 @@ export default function MatchDetail() {
             <TabsTrigger value="lineup" className="flex-1 rounded-lg" disabled={!hasLineups}>
               {t('match_detail.tab_lineup')}
             </TabsTrigger>
+            <TabsTrigger value="videos" className="flex-1 rounded-lg" disabled={!hasVideos}>
+              <Play className="w-3 h-3 mr-1" />
+              {t('match_detail.tab_videos')}
+              {hasVideos && (
+                <span className="ml-1 text-[10px] bg-muted-foreground/20 rounded-full px-1.5 py-0.5 font-bold">
+                  {videos.length}
+                </span>
+              )}
+            </TabsTrigger>
           </TabsList>
 
           {/* Events */}
@@ -432,6 +579,18 @@ export default function MatchDetail() {
             {!hasEvents ? (
               <NoData label={t('match_detail.no_events')} />
             ) : (
+              <>
+              {/* Warn when goal events count doesn't match the final score */}
+              {hasScore && (() => {
+                const goalEvents = data.events.filter(e => e.type === 'goal' || e.type === 'own_goal').length;
+                const scoreGoals = (data.score_home ?? 0) + (data.score_away ?? 0);
+                return goalEvents !== scoreGoals ? (
+                  <div className="flex items-center gap-2 mb-3 px-3 py-2 rounded-xl bg-amber-500/10 border border-amber-500/20 text-amber-700 dark:text-amber-400 text-xs">
+                    <AlertTriangle className="w-3.5 h-3.5 shrink-0" />
+                    {t('match_detail.events_incomplete')}
+                  </div>
+                ) : null;
+              })()}
               <div className="space-y-1.5">
                 {/* Show events on both sides like a real timeline */}
                 {allEventsSorted.map((ev, i) => {
@@ -472,6 +631,7 @@ export default function MatchDetail() {
                   );
                 })}
               </div>
+              </>
             )}
           </TabsContent>
 
@@ -482,6 +642,10 @@ export default function MatchDetail() {
             ) : (
               <Card>
                 <CardContent className="p-4 space-y-4">
+                  <div className="flex items-center gap-1.5 text-[10px] text-muted-foreground/70 italic">
+                    <AlertTriangle className="w-3 h-3 shrink-0" />
+                    {t('match_detail.stats_disclaimer')}
+                  </div>
                   {/* Team labels */}
                   <div className="flex items-center justify-between text-xs font-bold">
                     <div className="flex items-center gap-2">
@@ -493,6 +657,10 @@ export default function MatchDetail() {
                       <span className="truncate max-w-[120px]">{data.away_team}</span>
                     </div>
                   </div>
+                  {/* xG row — from FotMob (free) */}
+                  {xg && xg.home !== null && xg.away !== null && (
+                    <XGRow home={xg.home} away={xg.away} />
+                  )}
                   <div className="h-px bg-border" />
                   {data.stats.map((s, i) => (
                     <StatBar key={i} stat={s} t={t} />
@@ -530,6 +698,53 @@ export default function MatchDetail() {
                   </div>
                 </CardContent>
               </Card>
+            )}
+          </TabsContent>
+
+          {/* Videos — ScoreBat (free) */}
+          <TabsContent value="videos">
+            {!hasVideos ? (
+              <NoData label={t('match_detail.no_videos')} />
+            ) : (
+              <div className="space-y-4">
+                <p className="text-[10px] text-muted-foreground/60 italic flex items-center gap-1">
+                  <ExternalLink className="w-3 h-3" /> {t('match_detail.video_source')}
+                </p>
+                {videos.map((v, i) => (
+                  <div key={i} className="rounded-xl border bg-card overflow-hidden">
+                    {activeVideoIdx === i ? (
+                      <div
+                        className="aspect-video [&_iframe]:w-full [&_iframe]:h-full"
+                        dangerouslySetInnerHTML={{ __html: v.videos?.[0]?.embed ?? '' }}
+                      />
+                    ) : (
+                      <button
+                        className="relative w-full group"
+                        onClick={() => setActiveVideoIdx(i)}
+                      >
+                        {v.thumbnail ? (
+                          <img src={v.thumbnail} alt={v.title} className="w-full aspect-video object-cover" />
+                        ) : (
+                          <div className="w-full aspect-video bg-muted flex items-center justify-center">
+                            <Play className="w-8 h-8 text-muted-foreground" />
+                          </div>
+                        )}
+                        <div className="absolute inset-0 bg-black/40 group-hover:bg-black/50 transition-colors flex items-center justify-center">
+                          <div className="w-12 h-12 rounded-full bg-white/20 backdrop-blur-sm flex items-center justify-center">
+                            <Play className="w-5 h-5 text-white ml-0.5" />
+                          </div>
+                        </div>
+                      </button>
+                    )}
+                    <div className="p-3">
+                      <p className="text-sm font-medium line-clamp-2">{v.title}</p>
+                      {v.competition?.name && (
+                        <p className="text-[11px] text-muted-foreground mt-0.5">{v.competition.name}</p>
+                      )}
+                    </div>
+                  </div>
+                ))}
+              </div>
             )}
           </TabsContent>
         </Tabs>

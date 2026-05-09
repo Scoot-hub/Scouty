@@ -478,7 +478,7 @@ const ALLOWED_TABLES = {
   organization_members: ["id", "organization_id", "user_id", "role", "joined_at"],
   player_org_shares: ["id", "player_id", "organization_id", "user_id", "created_at"],
   match_assignments: ["id", "user_id", "organization_id", "assigned_to", "assigned_by", "home_team", "away_team", "match_date", "match_time", "competition", "venue", "home_badge", "away_badge", "notes", "status", "created_at", "updated_at"],
-  community_posts: ["id", "user_id", "author_name", "category", "title", "content", "likes", "replies_count", "is_archived", "views", "is_pinned", "display_order", "is_closed", "accepted_reply_id", "closed_by", "closed_at", "created_at"],
+  community_posts: ["id", "user_id", "author_name", "category", "title", "content", "likes", "replies_count", "is_archived", "views", "is_pinned", "display_order", "is_closed", "accepted_reply_id", "closed_by", "closed_at", "created_at", "lang", "country"],
   community_replies: ["id", "post_id", "user_id", "author_name", "content", "created_at"],
   community_likes: ["id", "post_id", "user_id", "created_at"],
 };
@@ -881,6 +881,7 @@ async function _legacyRunMigrations() {
     "ALTER TABLE `users` ADD COLUMN `bot_score`        INT          NOT NULL DEFAULT 0",
     "ALTER TABLE `users` ADD COLUMN `registration_ip`  VARCHAR(45)  NULL",
     "ALTER TABLE `users` ADD COLUMN `registration_ip_hash` CHAR(64) NULL",
+    "ALTER TABLE `users` ADD COLUMN `suspicious_referral` TINYINT(1) NOT NULL DEFAULT 0",
   ]) {
     try { await pool.query(col); } catch (e) { if (e?.errno !== 1060) console.warn('[migration] users ban cols:', e?.message); }
   }
@@ -898,6 +899,25 @@ async function _legacyRunMigrations() {
     `);
   } catch (err) {
     if (!err?.message?.includes('already exists')) console.warn('[migration] signup_ip_log:', err?.message);
+  }
+
+  // referrals — tracks who referred whom
+  try {
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS referrals (
+        id            CHAR(36)     NOT NULL PRIMARY KEY,
+        referrer_id   CHAR(36)     NOT NULL,
+        referred_id   CHAR(36)     NOT NULL,
+        referral_code VARCHAR(50)  NOT NULL DEFAULT '',
+        created_at    DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE KEY uniq_referred (referred_id),
+        INDEX idx_referrals_referrer (referrer_id),
+        FOREIGN KEY (referrer_id) REFERENCES users(id) ON DELETE CASCADE,
+        FOREIGN KEY (referred_id) REFERENCES users(id) ON DELETE CASCADE
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+    `);
+  } catch (err) {
+    if (!err?.message?.includes('already exists')) console.warn('[migration] referrals:', err?.message);
   }
 
   // Create editorial_reactions table (likes / dislikes on editorial articles)
@@ -1105,6 +1125,8 @@ async function _legacyRunMigrations() {
     'accepted_reply_id CHAR(36) NULL',
     'closed_by CHAR(36) NULL',
     'closed_at DATETIME NULL',
+    'lang VARCHAR(10) NULL',
+    'country VARCHAR(100) NULL',
   ]) {
     try { await pool.query(`ALTER TABLE community_posts ADD COLUMN ${col}`); } catch { /* already exists */ }
   }
@@ -2293,24 +2315,31 @@ app.post("/api/auth/signup", rateLimitAuth, async (req, res) => {
 
     // Resolve referrer from referral code (format: SCOUTY-XXXXXXXX)
     let referrerId = null;
+    let referralBlockedSameIp = false;
     if (referralCode) {
       const codeUpper = String(referralCode).trim().toUpperCase();
       const prefix = codeUpper.startsWith('SCOUTY-') ? codeUpper.slice(7) : codeUpper;
       if (prefix.length === 8) {
         const [refRows] = await conn.query(
-          "SELECT id FROM users WHERE UPPER(SUBSTRING(id, 1, 8)) = ? LIMIT 1",
+          "SELECT id, registration_ip_hash FROM users WHERE UPPER(SUBSTRING(id, 1, 8)) = ? LIMIT 1",
           [prefix]
         );
         if (refRows.length && refRows[0].id !== userId) {
-          referrerId = refRows[0].id;
+          // Block referral if referrer and new user share the same IP
+          if (ipHash && refRows[0].registration_ip_hash && ipHash === refRows[0].registration_ip_hash) {
+            referralBlockedSameIp = true;
+            console.warn(`[signup/referral] Same-IP referral blocked: referrer=${refRows[0].id} newUser=${userId} ip=${ip}`);
+          } else {
+            referrerId = refRows[0].id;
+          }
         }
       }
     }
 
     await conn.query(
-      `INSERT INTO users (id, email, password_hash, registration_ip, registration_ip_hash, bot_score, created_at, updated_at, last_sign_in_at)
-       VALUES (?, ?, ?, ?, ?, ?, NOW(), NOW(), NOW())`,
-      [userId, normalizedEmail, hash, ip, ipHash, botScore],
+      `INSERT INTO users (id, email, password_hash, registration_ip, registration_ip_hash, bot_score, suspicious_referral, created_at, updated_at, last_sign_in_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, NOW(), NOW(), NOW())`,
+      [userId, normalizedEmail, hash, ip, ipHash, botScore, referralBlockedSameIp ? 1 : 0],
     );
 
     await conn.query(
@@ -2343,21 +2372,94 @@ app.post("/api/auth/signup", rateLimitAuth, async (req, res) => {
       ).catch(() => {});
     }
 
-    // Award 100 affiliate credits to the referrer
+    // If same-IP referral was blocked, flag both the new account and the referrer
+    if (referralBlockedSameIp) {
+      try {
+        // Flag the new account (already inserted with suspicious_referral=1 above)
+        // Flag the referrer as well
+        const [refRows2] = await pool.query(
+          "SELECT id FROM users WHERE UPPER(SUBSTRING(id, 1, 8)) = ? LIMIT 1",
+          [String(referralCode).trim().toUpperCase().replace(/^SCOUTY-/, '').slice(0, 8)]
+        );
+        if (refRows2.length) {
+          await pool.query("UPDATE users SET suspicious_referral = 1 WHERE id = ?", [refRows2[0].id]);
+        }
+      } catch (e) {
+        console.warn('[signup] suspicious_referral flag failed:', e.message);
+      }
+    }
+
+    // Award 100 affiliate credits + notifications + tier check
     if (referrerId) {
       try {
         await ensureCreditTable();
+
+        // 1. Insert into referrals table (idempotent)
+        await pool.query(
+          `INSERT IGNORE INTO referrals (id, referrer_id, referred_id, referral_code, created_at)
+           VALUES (?, ?, ?, ?, NOW())`,
+          [uuidv4(), referrerId, userId, referralCode ? String(referralCode).trim().toUpperCase() : '']
+        );
+
+        // 2. Award 100 credits
         await pool.query(
           "INSERT INTO user_credit_events (id, user_id, action_type, direction, amount, description) VALUES (?, ?, 'affiliate_reward', 'earn', 100, ?)",
           [uuidv4(), referrerId, `Parrainage de ${normalizedEmail}`]
         );
+
+        // 3. Notification "nouveau filleul"
+        await createNotification(referrerId, {
+          type: 'affiliate_new',
+          title: '🎉 Nouveau filleul !',
+          message: `${normalizedEmail} vient de rejoindre Scouty grâce à votre code de parrainage.`,
+          icon: 'users',
+          link: '/affiliate',
+        });
+
+        // 4. Notification "crédits reçus"
+        await createNotification(referrerId, {
+          type: 'affiliate_credits',
+          title: '+100 crédits de parrainage',
+          message: `Vous avez reçu 100 crédits suite au parrainage de ${normalizedEmail}.`,
+          icon: 'zap',
+          link: '/affiliate',
+        });
+
+        // 5. Tier upgrade check
+        const [[{ total }]] = await pool.query(
+          "SELECT COUNT(*) as total FROM profiles WHERE referred_by = ?",
+          [referrerId]
+        );
+        const tierCount = Number(total);
+        const AFFILIATE_TIERS = [
+          { threshold: 50, name: 'Elite',      emoji: '👑' },
+          { threshold: 11, name: 'Partenaire', emoji: '🤝' },
+          { threshold: 1,  name: 'Ambassadeur',emoji: '⭐' },
+        ];
+        for (const tier of AFFILIATE_TIERS) {
+          if (tierCount === tier.threshold) {
+            await createNotification(referrerId, {
+              type: 'affiliate_tier',
+              title: `${tier.emoji} Vous êtes maintenant ${tier.name} !`,
+              message: `Félicitations ! Avec ${tierCount} parrainage${tierCount > 1 ? 's' : ''}, vous accédez au statut ${tier.name} et débloquez de nouveaux avantages.`,
+              icon: 'award',
+              link: '/affiliate',
+            });
+            break;
+          }
+        }
       } catch (e) {
-        console.warn('[signup] affiliate credit award failed:', e.message);
+        console.warn('[signup] affiliate reward failed:', e.message);
       }
     }
 
     const user = await getUserById(userId);
-    return res.json({ user: normalizeUserRow(user), session: buildSession(user, res) });
+    const response = normalizeUserRow(user);
+    return res.json({
+      user: response,
+      session: buildSession(user, res),
+      ...(referralBlockedSameIp ? { referral_warning: "Le code de parrainage n'a pas été appliqué car il ne respecte pas nos politiques d'utilisation (même adresse réseau)." } : {}),
+    });
   } catch (err) {
     console.error(err);
     if (conn) {
@@ -2394,6 +2496,26 @@ app.post("/api/auth/google", rateLimitAuth, async (req, res) => {
   if (!email) return res.status(400).json({ error: "Email manquant dans le token Google." });
   const normalizedEmail = String(email).toLowerCase().trim();
 
+  // IP checks (same rules as email signup)
+  const ip = (req.headers["x-forwarded-for"] || "").split(",")[0].trim() || req.socket?.remoteAddress || null;
+  const ipHash = hashIp(ip);
+  if (ipHash) {
+    try {
+      const [[banned]] = await pool.query(
+        'SELECT COUNT(*) as cnt FROM users WHERE registration_ip_hash = ? AND is_banned = 1', [ipHash]
+      );
+      if ((banned?.cnt || 0) > 0) {
+        return res.status(403).json({ error: "Inscription non autorisée depuis cette adresse réseau." });
+      }
+      const [[{ cnt }]] = await pool.query(
+        'SELECT COUNT(*) as cnt FROM users WHERE registration_ip_hash = ?', [ipHash]
+      );
+      if (cnt >= 3) {
+        return res.status(429).json({ error: "Trop de comptes créés depuis cette adresse réseau. Contactez le support si vous pensez à une erreur." });
+      }
+    } catch { /* ne pas bloquer sur erreur DB */ }
+  }
+
   let conn;
   try {
     conn = await pool.getConnection();
@@ -2423,8 +2545,8 @@ app.post("/api/auth/google", rateLimitAuth, async (req, res) => {
       await conn.beginTransaction();
 
       await conn.query(
-        "INSERT INTO users (id, email, oauth_provider, oauth_sub, created_at, updated_at, last_sign_in_at) VALUES (?, ?, 'google', ?, NOW(), NOW(), NOW())",
-        [userId, normalizedEmail, oauthSub]
+        "INSERT INTO users (id, email, oauth_provider, oauth_sub, registration_ip, registration_ip_hash, created_at, updated_at, last_sign_in_at) VALUES (?, ?, 'google', ?, ?, ?, NOW(), NOW(), NOW())",
+        [userId, normalizedEmail, oauthSub, ip, ipHash]
       );
 
       const fullName = [given_name, family_name].filter(Boolean).join(" ").trim();
@@ -3304,9 +3426,12 @@ app.get("/api/player-wyscout-stats/:playerId", authMiddleware, async (req, res) 
   try {
     const [rows] = await pool.query(
       `SELECT * FROM player_wyscout_stats
-       WHERE player_id = ? AND user_id = ?
+       WHERE player_id = ? AND (
+         user_id = ?
+         OR EXISTS (SELECT 1 FROM player_viewer_links WHERE player_id = ? AND viewer_user_id = ?)
+       )
        ORDER BY year_end DESC, year_start DESC, season DESC`,
-      [req.params.playerId, req.user.id]
+      [req.params.playerId, req.user.id, req.params.playerId, req.user.id]
     );
     return res.json(rows);
   } catch (err) {
@@ -3372,12 +3497,24 @@ app.get("/api/followed-clubs", authMiddleware, async (req, res) => {
 
 app.post("/api/followed-clubs", authMiddleware, async (req, res) => {
   const { club_name, notes } = req.body || {};
-  if (!club_name) return res.status(400).json({ error: "Nom du club requis." });
+  if (!club_name?.trim()) return res.status(400).json({ error: "Nom du club requis." });
+  const trimmed = club_name.trim();
   try {
+    // Check if already followed — return existing id if so
+    const [existing] = await pool.query(
+      "SELECT id FROM followed_clubs WHERE user_id = ? AND club_name = ?",
+      [req.user.id, trimmed]
+    );
+    if (existing.length > 0) {
+      if (notes !== undefined) {
+        await pool.query("UPDATE followed_clubs SET notes = ? WHERE id = ?", [notes || null, existing[0].id]);
+      }
+      return res.json({ ok: true, id: existing[0].id, already_followed: true });
+    }
     const id = uuidv4();
     await pool.query(
-      "INSERT INTO followed_clubs (id, user_id, club_name, notes) VALUES (?, ?, ?, ?) ON DUPLICATE KEY UPDATE notes = VALUES(notes)",
-      [id, req.user.id, club_name.trim(), notes || null]
+      "INSERT INTO followed_clubs (id, user_id, club_name, notes) VALUES (?, ?, ?, ?)",
+      [id, req.user.id, trimmed, notes || null]
     );
     return res.json({ ok: true, id });
   } catch (err) {
@@ -4027,8 +4164,8 @@ app.get("/api/players", authMiddleware, async (req, res) => {
     const hasTaskCol = await playersHasColumn("task");
     const hasNewsCol = await playersHasColumn("has_news");
 
-    const clauses = ["`user_id` = ?"];
-    const params = [userId];
+    const clauses = ["(`user_id` = ? OR `id` IN (SELECT `player_id` FROM `player_viewer_links` WHERE `viewer_user_id` = ?))"];
+    const params = [userId, userId];
 
     // Archived (column may not exist on older DBs)
     if (hasArchivedCol) {
@@ -5531,14 +5668,13 @@ app.post("/api/import/wyscout", authMiddleware, wyscoutUploadMiddleware, async (
   const errors = [];
 
   log('step 1: loading existing players');
-  // ── STEP 1 — Load all existing players in ONE query (avoids N+2 queries per row) ──
+  // ── STEP 1 — Load current user's players + cross-user global lookup ──────────
   const [existingPlayers] = await pool.query(
     'SELECT id, name, club FROM players WHERE user_id = ?',
     [userId]
   );
-  // Build lookup maps: name+club → id  (and name-only fallback)
-  const byNameClub = new Map();
-  const byName     = new Map();
+  const byNameClub = new Map(); // name\0club → id  (current user)
+  const byName     = new Map(); // name → id  (current user)
   for (const p of existingPlayers) {
     const nm = (p.name || '').toLowerCase().trim();
     const cl = (p.club  || '').toLowerCase().trim();
@@ -5546,7 +5682,21 @@ app.post("/api/import/wyscout", authMiddleware, wyscoutUploadMiddleware, async (
     if (!byName.has(nm)) byName.set(nm, p.id);
   }
 
-  log(`step 1 done: ${existingPlayers.length} existing players loaded`);
+  // Cross-user dedup: find players imported by OTHER users (Wyscout only)
+  const [globalPlayers] = await pool.query(
+    "SELECT id, name, club FROM players WHERE user_id != ? AND wyscout_division IS NOT NULL",
+    [userId]
+  );
+  const globalByNameClub = new Map(); // name\0club → id  (other users)
+  const globalByName     = new Map(); // name → id  (other users)
+  for (const p of globalPlayers) {
+    const nm = (p.name || '').toLowerCase().trim();
+    const cl = (p.club  || '').toLowerCase().trim();
+    if (!globalByNameClub.has(`${nm}\0${cl}`)) globalByNameClub.set(`${nm}\0${cl}`, p.id);
+    if (!globalByName.has(nm)) globalByName.set(nm, p.id);
+  }
+
+  log(`step 1 done: ${existingPlayers.length} own players, ${globalPlayers.length} global (other users) loaded`);
   log('step 2: building memory records');
   // ── STEP 2 — Parse all rows into memory records (no DB calls here) ────────
   const playerRecs = []; // bio fields
@@ -5583,19 +5733,31 @@ app.post("/api/import/wyscout", authMiddleware, wyscoutUploadMiddleware, async (
     const matchesPlayed  = parseInt(row['Matches played']) || null;
     const minutesPlayed  = parseInt(row['Minutes played']) || null;
 
-    // Resolve player ID from the in-memory map (no DB round-trip)
+    // Resolve player ID: check current user first, then global (other users)
     const nm = playerName.toLowerCase().trim();
     const cl = club.toLowerCase().trim();
     let playerId = byNameClub.get(`${nm}\0${cl}`) || byName.get(nm) || null;
-    const isNew = !playerId;
-    if (isNew) {
-      playerId = uuidv4();
-      byNameClub.set(`${nm}\0${cl}`, playerId); // register for subsequent rows of same player
-      byName.set(nm, playerId);
+    let isNew = false, isLinked = false;
+    if (playerId) {
+      // Exists for this user — update in place
+    } else {
+      const globalId = globalByNameClub.get(`${nm}\0${cl}`) || globalByName.get(nm) || null;
+      if (globalId) {
+        playerId = globalId;
+        isLinked = true;
+        // Register so subsequent rows of same player resolve correctly
+        byNameClub.set(`${nm}\0${cl}`, playerId);
+        byName.set(nm, playerId);
+      } else {
+        playerId = uuidv4();
+        isNew = true;
+        byNameClub.set(`${nm}\0${cl}`, playerId);
+        byName.set(nm, playerId);
+      }
     }
 
     playerRecs.push({
-      id: playerId, isNew, name: playerName, club, division: division || '',
+      id: playerId, isNew, isLinked, name: playerName, club, division: division || '',
       position: posMap.position, zone: posMap.zone, nationality, foot, generation,
       marketValue, contractEnd, height, weight, onLoan, matchesPlayed, minutesPlayed,
       passportCountry, season, wyscoutDivision: division, teamInTF,
@@ -5630,9 +5792,13 @@ app.post("/api/import/wyscout", authMiddleware, wyscoutUploadMiddleware, async (
     'wyscout_season', 'wyscout_division', 'wyscout_team_in_timeframe', 'updated_at',
   ];
 
-  let created = 0, updated = 0;
-  for (let i = 0; i < playerRecs.length; i += PLAYER_CHUNK) {
-    const chunk = playerRecs.slice(i, i + PLAYER_CHUNK);
+  // Separate bio records: only process own (new or update) — skip linked (already exist in DB)
+  const bioRecs    = playerRecs.filter(r => !r.isLinked);
+  const linkedRecs = playerRecs.filter(r => r.isLinked);
+
+  let created = 0, updated = 0, linked = 0;
+  for (let i = 0; i < bioRecs.length; i += PLAYER_CHUNK) {
+    const chunk = bioRecs.slice(i, i + PLAYER_CHUNK);
     if (!chunk.length) continue;
 
     const rowPlaceholders = chunk.map(() => `(${playerCols.map(() => '?').join(',')})`).join(',');
@@ -5652,18 +5818,37 @@ app.post("/api/import/wyscout", authMiddleware, wyscoutUploadMiddleware, async (
     }
 
     try {
-      const [result] = await pool.query(
+      await pool.query(
         `INSERT INTO players (${playerCols.join(',')}) VALUES ${rowPlaceholders}
          ON DUPLICATE KEY UPDATE ${updateClause}`,
         vals
       );
-      // affectedRows = 1 for insert, 2 for update, 0 for no-op
-      created  += chunk.filter(r => r.isNew).length;
-      updated  += chunk.filter(r => !r.isNew).length;
+      created += chunk.filter(r => r.isNew).length;
+      updated += chunk.filter(r => !r.isNew).length;
     } catch (err) {
-      // On batch error, record the whole chunk as failed
       for (const r of chunk) errors.push({ name: r.name, error: err?.message });
     }
+  }
+
+  // ── STEP 3.5 — Batch-insert viewer links for cross-user matched players ──────
+  const newViewerLinks = [];
+  const seenLinked = new Set();
+  for (const r of linkedRecs) {
+    const key = `${r.id}\0${userId}`;
+    if (!seenLinked.has(key)) {
+      seenLinked.add(key);
+      newViewerLinks.push({ player_id: r.id, viewer_user_id: userId });
+    }
+  }
+  if (newViewerLinks.length > 0) {
+    const pvlPlaceholders = newViewerLinks.map(() => '(?, ?)').join(', ');
+    const pvlVals = newViewerLinks.flatMap(l => [l.player_id, l.viewer_user_id]);
+    await pool.query(
+      `INSERT IGNORE INTO player_viewer_links (player_id, viewer_user_id) VALUES ${pvlPlaceholders}`,
+      pvlVals
+    ).catch(err => console.warn('[import/wyscout] viewer_links insert:', err?.message));
+    linked = newViewerLinks.length;
+    log(`step 3.5: ${linked} viewer links inserted`);
   }
 
   log(`step 3 done: ${created} created, ${updated} updated, ${errors.filter(e=>!e.error.startsWith('stats:')).length} bio errors`);
@@ -5686,8 +5871,12 @@ app.post("/api/import/wyscout", authMiddleware, wyscoutUploadMiddleware, async (
     'source_file_path = VALUES(source_file_path)', 'updated_at = NOW()',
   ].join(', ');
 
-  for (let i = 0; i < statsRecs.length; i += STATS_CHUNK) {
-    const chunk = statsRecs.slice(i, i + STATS_CHUNK);
+  // Skip stats for linked players (stats already exist under the original player_id)
+  const linkedPlayerIds = new Set(linkedRecs.map(r => r.id));
+  const statsToInsert = statsRecs.filter(s => !linkedPlayerIds.has(s.playerId));
+
+  for (let i = 0; i < statsToInsert.length; i += STATS_CHUNK) {
+    const chunk = statsToInsert.slice(i, i + STATS_CHUNK);
     if (!chunk.length) continue;
 
     const rowPlaceholders = chunk.map(() => `(${allStatCols.map(() => '?').join(',')})`).join(',');
@@ -5716,14 +5905,14 @@ app.post("/api/import/wyscout", authMiddleware, wyscoutUploadMiddleware, async (
   }
 
   const durationMs = Date.now() - t0;
-  log(`step 4 done — total ${durationMs}ms. created=${created} updated=${updated} errors=${errors.length}`);
+  log(`step 4 done — total ${durationMs}ms. created=${created} updated=${updated} linked=${linked} errors=${errors.length}`);
 
   const bioErrors  = errors.filter(e => !e.error?.startsWith('stats:'));
   const statErrors = errors.filter(e =>  e.error?.startsWith('stats:'));
   return res.json({
-    created, updated, total: rows.length,
-    errors: bioErrors,          // per-row bio errors shown to user
-    statErrors: statErrors.length, // count only, stats errors are secondary
+    created, updated, linked, total: rows.length,
+    errors: bioErrors,
+    statErrors: statErrors.length,
     durationMs,
   });
 
@@ -5761,7 +5950,13 @@ async function ensurePremiumOrAdmin(req, res, next) {
 }
 
 app.get("/api/admin/users", authMiddleware, ensureAdmin, async (_req, res) => {
-  const [users] = await pool.query("SELECT id, email, created_at, last_sign_in_at FROM users ORDER BY created_at DESC");
+  const [users] = await pool.query(`
+    SELECT u.id, u.email, u.created_at, u.last_sign_in_at, u.oauth_provider, u.is_banned, u.suspicious_referral,
+           p.first_name, p.last_name
+    FROM users u
+    LEFT JOIN profiles p ON p.user_id = u.id
+    ORDER BY u.created_at DESC
+  `);
   const [subs] = await pool.query("SELECT user_id, is_premium, premium_since FROM user_subscriptions");
   const [roles] = await pool.query("SELECT user_id, role FROM user_roles");
   const [counts] = await pool.query("SELECT user_id, COUNT(*) as count FROM players GROUP BY user_id");
@@ -5780,8 +5975,13 @@ app.get("/api/admin/users", authMiddleware, ensureAdmin, async (_req, res) => {
     return {
       id: u.id,
       email: u.email,
+      first_name: u.first_name || null,
+      last_name: u.last_name || null,
       created_at: u.created_at,
       last_sign_in_at: u.last_sign_in_at,
+      oauth_provider: u.oauth_provider || null,
+      is_banned: !!u.is_banned,
+      suspicious_referral: !!u.suspicious_referral,
       is_premium: !!sub?.is_premium,
       premium_since: sub?.premium_since || null,
       roles: rolesByUser.get(u.id) || ["user"],
@@ -6781,6 +6981,98 @@ app.get("/api/affiliate/referrer", authMiddleware, async (req, res) => {
   }
 });
 
+// POST /api/account/apply-referral — apply a referral code post-signup
+app.post("/api/account/apply-referral", authMiddleware, async (req, res) => {
+  const userId = req.user.id;
+  const { referral_code } = req.body;
+  if (!referral_code) return res.status(400).json({ error: "Code manquant." });
+
+  const codeUpper = String(referral_code).trim().toUpperCase();
+  const prefix = codeUpper.startsWith('SCOUTY-') ? codeUpper.slice(7) : codeUpper;
+  if (prefix.length !== 8) return res.status(400).json({ error: "Format invalide. Attendu : SCOUTY-XXXXXXXX" });
+
+  try {
+    // Check the user doesn't already have a referrer
+    const [[me]] = await pool.query(
+      "SELECT p.referred_by, u.registration_ip_hash FROM profiles p JOIN users u ON u.id = p.user_id WHERE p.user_id = ? LIMIT 1",
+      [userId]
+    );
+    if (!me) return res.status(404).json({ error: "Profil introuvable." });
+    if (me.referred_by) return res.status(409).json({ error: "Vous avez déjà un parrain." });
+
+    // Resolve referrer
+    const [refRows] = await pool.query(
+      "SELECT id, registration_ip_hash FROM users WHERE UPPER(SUBSTRING(id, 1, 8)) = ? LIMIT 1",
+      [prefix]
+    );
+    if (!refRows.length || refRows[0].id === userId) {
+      return res.status(404).json({ error: "Code de parrainage invalide." });
+    }
+    const referrerId = refRows[0].id;
+
+    // Same-IP block
+    if (me.registration_ip_hash && refRows[0].registration_ip_hash && me.registration_ip_hash === refRows[0].registration_ip_hash) {
+      return res.status(403).json({ error: "Ce code ne peut pas être utilisé car votre compte et celui du parrain partagent la même adresse IP, conformément à nos politiques d'utilisation." });
+    }
+
+    // Apply referral
+    await pool.query("UPDATE profiles SET referred_by = ?, updated_at = NOW() WHERE user_id = ?", [referrerId, userId]);
+    await pool.query(
+      `INSERT IGNORE INTO referrals (id, referrer_id, referred_id, referral_code, created_at)
+       VALUES (?, ?, ?, ?, NOW())`,
+      [uuidv4(), referrerId, userId, codeUpper]
+    );
+
+    // Award credits + notify referrer (same as signup flow)
+    try {
+      await ensureCreditTable();
+      const meEmail = req.user.email || 'un utilisateur';
+      await pool.query(
+        `INSERT INTO user_credit_events (id, user_id, type, amount, description, created_at)
+         VALUES (?, ?, 'affiliate', 100, ?, NOW())`,
+        [uuidv4(), referrerId, `Parrainage de ${meEmail}`]
+      );
+      await createNotification(referrerId, {
+        type: 'affiliate_new',
+        title: '🎉 Nouveau filleul !',
+        message: `${meEmail} vient de rejoindre Scouty grâce à votre code de parrainage.`,
+        icon: 'users',
+      });
+      await createNotification(referrerId, {
+        type: 'affiliate_credits',
+        title: '+100 crédits de parrainage',
+        message: `Vous avez reçu 100 crédits suite au parrainage de ${meEmail}.`,
+        icon: 'zap',
+      });
+      const [[{ total }]] = await pool.query("SELECT COUNT(*) as total FROM profiles WHERE referred_by = ?", [referrerId]);
+      const tierCount = Number(total);
+      const AFFILIATE_TIERS = [
+        { threshold: 50, name: 'Elite',       emoji: '👑' },
+        { threshold: 11, name: 'Partenaire',  emoji: '🤝' },
+        { threshold: 1,  name: 'Ambassadeur', emoji: '⭐' },
+      ];
+      for (const tier of AFFILIATE_TIERS) {
+        if (tierCount === tier.threshold) {
+          await createNotification(referrerId, {
+            type: 'affiliate_tier',
+            title: `${tier.emoji} Vous êtes maintenant ${tier.name} !`,
+            message: `Félicitations ! Avec ${tierCount} parrainage${tierCount > 1 ? 's' : ''}, vous accédez au statut ${tier.name} et débloquez de nouveaux avantages.`,
+            icon: 'award',
+          });
+          break;
+        }
+      }
+    } catch (e) {
+      console.warn('[apply-referral] reward failed:', e.message);
+    }
+
+    return res.json({ success: true });
+  } catch (err) {
+    console.error("[apply-referral] error:", err);
+    return res.status(500).json({ error: "Erreur serveur." });
+  }
+});
+
 // PATCH /api/organizations/:id/logo — upload org logo (owner/admin only)
 app.patch("/api/organizations/:id/logo", authMiddleware, upload.single("file"), async (req, res) => {
   const { id } = req.params;
@@ -6951,6 +7243,123 @@ app.delete("/api/organizations/:id", authMiddleware, async (req, res) => {
   } catch (err) {
     console.error("[org/delete] Error:", err);
     return res.status(500).json({ error: "Erreur serveur." });
+  }
+});
+
+// ── Match assignments (dedicated endpoints with notifications + credits) ──────
+
+// POST /api/match-assignments — create assignment and notify assignee
+app.post("/api/match-assignments", authMiddleware, async (req, res) => {
+  try {
+    const { organization_id, assigned_to, home_team, away_team, match_date, match_time,
+            competition, venue, home_badge, away_badge, notes } = req.body || {};
+    if (!home_team || !away_team || !match_date) {
+      return res.status(400).json({ error: 'home_team, away_team, match_date requis' });
+    }
+    const id = uuidv4();
+    await pool.query(
+      `INSERT INTO match_assignments
+         (id, user_id, organization_id, assigned_to, assigned_by, home_team, away_team,
+          match_date, match_time, competition, venue, home_badge, away_badge, notes)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [id, req.user.id, organization_id || null,
+       assigned_to || null, assigned_to ? req.user.id : null,
+       home_team, away_team, match_date, match_time || null,
+       competition || '', venue || '',
+       home_badge || null, away_badge || null, notes || null]
+    );
+    // Notify assignee
+    if (assigned_to && assigned_to !== req.user.id) {
+      const [[assigner]] = await pool.query(
+        'SELECT p.full_name, u.email FROM users u LEFT JOIN profiles p ON p.user_id = u.id WHERE u.id = ? LIMIT 1',
+        [req.user.id]
+      );
+      const name = assigner?.full_name || assigner?.email || 'Un responsable';
+      await createNotification(assigned_to, {
+        type: 'match_assignment',
+        title: 'Nouvelle affectation de match',
+        message: `${name} vous a assigné : ${home_team} – ${away_team} le ${match_date}.`,
+        icon: 'calendar',
+        link: '/org/roadmap',
+      });
+    }
+    const [[row]] = await pool.query('SELECT * FROM match_assignments WHERE id = ?', [id]);
+    return res.json(row);
+  } catch (err) {
+    console.error('[match-assignments/create]', err?.message);
+    return res.status(500).json({ error: err?.message });
+  }
+});
+
+// PATCH /api/match-assignments/:id — update status or reassign, with notifications + credits
+app.patch("/api/match-assignments/:id", authMiddleware, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { status, notes, assigned_to } = req.body || {};
+    const [[existing]] = await pool.query('SELECT * FROM match_assignments WHERE id = ?', [id]);
+    if (!existing) return res.status(404).json({ error: 'Affectation introuvable' });
+    // Auth: must be owner or the assigned scout
+    if (existing.user_id !== req.user.id && existing.assigned_to !== req.user.id) {
+      return res.status(403).json({ error: 'Non autorisé' });
+    }
+
+    const setClauses = [];
+    const params = [];
+    if (status !== undefined)   { setClauses.push('status = ?');      params.push(status); }
+    if (notes  !== undefined)   { setClauses.push('notes = ?');       params.push(notes);  }
+    if (assigned_to !== undefined) {
+      setClauses.push('assigned_to = ?');  params.push(assigned_to || null);
+      setClauses.push('assigned_by = ?');  params.push(assigned_to ? req.user.id : null);
+    }
+    if (setClauses.length === 0) return res.status(400).json({ error: 'Rien à mettre à jour' });
+    params.push(id);
+    await pool.query(`UPDATE match_assignments SET ${setClauses.join(', ')} WHERE id = ?`, params);
+
+    // Notify assigner when assignee confirms
+    if (status === 'confirmed' && existing.assigned_by && existing.assigned_by !== req.user.id) {
+      const [[scout]] = await pool.query(
+        'SELECT p.full_name, u.email FROM users u LEFT JOIN profiles p ON p.user_id = u.id WHERE u.id = ? LIMIT 1',
+        [req.user.id]
+      );
+      const scoutName = scout?.full_name || scout?.email || 'Le scout';
+      await createNotification(existing.assigned_by, {
+        type: 'assignment_confirmed',
+        title: 'Affectation confirmée',
+        message: `${scoutName} a confirmé le match ${existing.home_team} – ${existing.away_team} (${existing.match_date}).`,
+        icon: 'check-circle',
+        link: '/org/roadmap',
+      });
+      // Award 5 credits to the scout who confirmed
+      await ensureCreditTable();
+      await pool.query(
+        `INSERT INTO user_credit_events (id, user_id, action_type, direction, amount, description)
+         VALUES (?, ?, 'assignment_confirmed', 'earn', 5, ?)`,
+        [uuidv4(), req.user.id, `Affectation confirmée : ${existing.home_team} – ${existing.away_team}`]
+      );
+    }
+
+    // Notify new assignee on (re)assignment
+    const newAssignee = assigned_to !== undefined ? assigned_to : null;
+    if (newAssignee && newAssignee !== req.user.id && newAssignee !== existing.assigned_to) {
+      const [[assigner]] = await pool.query(
+        'SELECT p.full_name, u.email FROM users u LEFT JOIN profiles p ON p.user_id = u.id WHERE u.id = ? LIMIT 1',
+        [req.user.id]
+      );
+      const assignerName = assigner?.full_name || assigner?.email || 'Un responsable';
+      await createNotification(newAssignee, {
+        type: 'match_assignment',
+        title: 'Nouvelle affectation de match',
+        message: `${assignerName} vous a assigné : ${existing.home_team} – ${existing.away_team} le ${existing.match_date}.`,
+        icon: 'calendar',
+        link: '/org/roadmap',
+      });
+    }
+
+    const [[row]] = await pool.query('SELECT * FROM match_assignments WHERE id = ?', [id]);
+    return res.json(row);
+  } catch (err) {
+    console.error('[match-assignments/update]', err?.message);
+    return res.status(500).json({ error: err?.message });
   }
 });
 
@@ -7728,6 +8137,32 @@ app.get("/api/admin/credits", authMiddleware, ensureAdmin, async (req, res) => {
     return res.json(rows);
   } catch (err) {
     return res.status(500).json({ error: err.message });
+  }
+});
+
+// POST /api/admin/credits/grant — manually add or remove credits for a user
+app.post("/api/admin/credits/grant", authMiddleware, ensureAdmin, async (req, res) => {
+  try {
+    await ensureCreditTable();
+    const { userId, amount, direction = 'earn', description = '' } = req.body || {};
+    if (!userId || !amount || !Number.isFinite(Number(amount)) || Number(amount) <= 0) {
+      return res.status(400).json({ error: 'userId et amount (>0) requis' });
+    }
+    if (!['earn', 'spend'].includes(direction)) {
+      return res.status(400).json({ error: 'direction doit être earn ou spend' });
+    }
+    // Check user exists
+    const [[user]] = await pool.query('SELECT id, email FROM users WHERE id = ? LIMIT 1', [userId]);
+    if (!user) return res.status(404).json({ error: 'Utilisateur introuvable' });
+
+    await pool.query(
+      `INSERT INTO user_credit_events (id, user_id, action_type, direction, amount, description)
+       VALUES (?, ?, 'admin_grant', ?, ?, ?)`,
+      [uuidv4(), userId, direction, Math.round(Number(amount)), description.trim() || `Attribution manuelle par admin`]
+    );
+    return res.json({ ok: true, userId, amount: Math.round(Number(amount)), direction });
+  } catch (err) {
+    return res.status(500).json({ error: err?.message });
   }
 });
 
@@ -10597,11 +11032,8 @@ app.post("/api/functions/:name", authMiddleware, async (req, res) => {
         const titleM = html.match(/<title>([^<]+)<\/title>/);
         if (titleM) playerName = titleM[1].split(' - ')[0].split(' | ')[0].trim();
       }
-      // Fallback: capitalise slug from URL path
-      if (!playerName) {
-        const slugM = tmPath.match(/^\/([^/]+)\//);
-        if (slugM) playerName = slugM[1].replace(/-/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
-      }
+      // No slug fallback — never invent a name from the URL (could be wrong after accent stripping)
+      if (!playerName) return res.status(422).json({ error: 'Could not extract player name from TM page' });
 
       // ── Date of birth / generation year ──
       const dobRaw = extractBetween(html, 'Date de naissance:</span>', '</span>')
@@ -10625,17 +11057,9 @@ app.post("/api/functions/:name", authMiddleware, async (req, res) => {
           const yearM = dobRaw.match(/(\d{4})/);
           if (yearM) generation = parseInt(yearM[1]);
         }
-        // Fallback: extract age from "(25 ans)" or "(25)" to compute generation
-        if (!generation) {
-          const ageM = dobRaw.match(/\((\d{1,2})\s*(?:ans)?\s*\)/);
-          if (ageM) generation = new Date().getFullYear() - parseInt(ageM[1]);
-        }
+        // Age-only fallback removed: "(25 ans)" → year is ambiguous by ±1; better no value than a wrong one
       }
-      // Last resort: look for age in the page header area (TM always shows age)
-      if (!generation) {
-        const ageHeaderM = html.match(/class="data-header__label"[^>]*>[^<]*?(\d{1,2})\s*(?:ans|jaar|years?|Jahre?)/i);
-        if (ageHeaderM) generation = new Date().getFullYear() - parseInt(ageHeaderM[1]);
-      }
+      // Age-header last resort removed for same reason — only generation derived from a real DOB year is reliable
       console.log(`[fetch-tm-profile] dobRaw=${JSON.stringify(dobRaw)} → dateOfBirth=${dateOfBirth} generation=${generation}`);
 
       // ── Nationality (first one listed) ──
@@ -10829,11 +11253,13 @@ app.post("/api/functions/:name", authMiddleware, async (req, res) => {
           // Now we have a real name link — mark as seen
           seenIds.add(tmId);
 
-          // Prefer the title attribute of the <a> tag (canonical "FirstName LastName")
-          // over the anchor text which may be abbreviated (e.g. "K. Mbappé")
-          const tagCtx = sectionHtml.slice(Math.max(0, linkStart - 150), linkStart);
-          const titleAttrM = tagCtx.match(/title="([^"]{2,60})"\s*$/);
-          const name = decodeHtmlEntities(titleAttrM ? titleAttrM[1].trim() : anchorText);
+          // Prefer title attribute for canonical "FirstName LastName" — TM anchor text is often abbreviated ("K. Mbappé")
+          // title may appear before OR after href depending on TM page variant
+          const backCtxTitle = sectionHtml.slice(Math.max(0, linkStart - 200), linkStart + 300);
+          const titleBeforeM = backCtxTitle.match(/title="([^"]{2,80})"[^>]*href="[^"]*\/spieler\/\d+"/);
+          const titleAfterM  = backCtxTitle.match(/href="[^"]*\/spieler\/\d+"[^>]*title="([^"]{2,80})"/);
+          const titleVal = titleBeforeM ? titleBeforeM[1] : (titleAfterM ? titleAfterM[1] : null);
+          const name = decodeHtmlEntities(titleVal ? titleVal.trim() : anchorText);
 
           const linkIdx = plMatch.index;
 
@@ -10864,17 +11290,16 @@ app.post("/api/functions/:name", authMiddleware, async (req, res) => {
             : '';
 
 
-          // Date of birth / generation: parse full DOB first, fallback to age
+          // Date of birth: only parse when we have a real full date (never guess from age alone — off by ±1 year)
           let dateOfBirth = null;
           let generation = null;
           const cellTexts = [...outerCells.matchAll(/<td[^>]*class="zentriert"[^>]*>([\s\S]*?)<\/td>/g)]
             .map(m => m[1].replace(/<[^>]*>/g, '').replace(/&nbsp;/g, ' ').trim());
           for (const cellText of cellTexts) {
             if (dateOfBirth) break;
-            // Try full date: "1 juil. 1999 (26)" or "01.07.1999 (26)"
+            // Only accept a fully-parsed date: "1 juil. 1999 (26)" or "01.07.1999 (26)"
             const dob = parseFrDateAny(cellText);
             if (dob) {
-              // Validate year range: must be a plausible birth year (not a contract end date)
               const dobYear = parseInt(dob.split('-')[0], 10);
               if (dobYear >= 1970 && dobYear <= new Date().getFullYear() - 10) {
                 dateOfBirth = dob;
@@ -10882,17 +11307,8 @@ app.post("/api/functions/:name", authMiddleware, async (req, res) => {
                 break;
               }
             }
-            // Try age in parentheses: "(26 ans)" or "(26)"
-            if (!generation) {
-              const ageInParens = cellText.match(/\((\d{1,2})\s*(?:ans)?\s*\)/);
-              if (ageInParens) generation = new Date().getFullYear() - parseInt(ageInParens[1]);
-            }
           }
-          // Fallback: bare age number in a zentriert cell
-          if (!generation) {
-            const ageM = outerCells.match(/<td[^>]*class="zentriert"[^>]*>\s*(\d{1,2})\s*<\/td>/);
-            if (ageM) generation = new Date().getFullYear() - parseInt(ageM[1]);
-          }
+          // age-only fallback removed: "(26 ans)" → year is ambiguous by ±1; better no value than a wrong one
 
           // Contract end: look for a future date in zentriert cells (not already used as DOB)
           let contractEnd = null;
@@ -11037,18 +11453,35 @@ app.post("/api/functions/:name", authMiddleware, async (req, res) => {
         const formationHtml = benchMarker >= 0 ? section.slice(0, benchMarker) : section;
         const benchHtml = benchMarker >= 0 ? section.slice(benchMarker) : '';
 
-        // ── Starters: from formation-player-container divs ──
-        const starterRegex = /formation-player-container[\s\S]*?tm-shirt-number[^>]*>\s*(\d+)\s*<\/div>[\s\S]*?href="(\/[^"]*\/profil\/spieler\/(\d+))">([^<]+)<\/a>/g;
-        let sm;
-        while ((sm = starterRegex.exec(formationHtml)) !== null) {
-          const tmId = sm[3];
+        // Helper: extract full name preferring title attribute over anchor text (TM uses abbreviated names in formations)
+        const extractTmName = (block) => {
+          const titleBeforeM = block.match(/title="([^"]{2,80})"[^>]*href="[^"]*\/spieler\/\d+"/);
+          const titleAfterM  = block.match(/href="[^"]*\/spieler\/\d+"[^>]*title="([^"]{2,80})"/);
+          const titleVal = titleBeforeM ? titleBeforeM[1] : (titleAfterM ? titleAfterM[1] : null);
+          if (titleVal) return decodeHtmlEntities(titleVal.trim());
+          // Fallback: anchor text (strip HTML tags, keep text)
+          const anchorM = block.match(/href="[^"]*\/spieler\/\d+"[^>]*>([^<]+)<\/a>/);
+          return anchorM ? decodeHtmlEntities(anchorM[1].trim()) : null;
+        };
+
+        // ── Starters: iterate per formation-player-container block ──
+        const containerBlocks = [...formationHtml.matchAll(/formation-player-container([\s\S]*?)(?=formation-player-container|$)/g)];
+        for (const cm of containerBlocks) {
+          const block = cm[1];
+          const numM = block.match(/tm-shirt-number[^>]*>\s*(\d+)\s*<\/div>/);
+          if (!numM) continue;
+          const hrefM = block.match(/href="(\/[^"]*\/profil\/spieler\/(\d+))"/);
+          if (!hrefM) continue;
+          const tmId = hrefM[2];
           if (seenIds.has(tmId)) continue;
+          const name = extractTmName(block);
+          if (!name || name.length < 2) continue;
           seenIds.add(tmId);
           starters.push({
             tmId,
-            tmProfilePath: sm[2],
-            name: decodeHtmlEntities(sm[4].trim()),
-            shirtNumber: parseInt(sm[1]),
+            tmProfilePath: hrefM[1],
+            name,
+            shirtNumber: parseInt(numM[1]),
             starter: true,
             position: null,
           });
@@ -11059,22 +11492,23 @@ app.post("/api/functions/:name", authMiddleware, async (req, res) => {
         let br;
         while ((br = benchRowRegex.exec(benchHtml)) !== null) {
           const row = br[1];
-          const linkM = row.match(/href="(\/[^"]*\/profil\/spieler\/(\d+))"[^>]*>([^<]+)<\/a>/);
-          if (!linkM) continue;
-          const tmId = linkM[2];
+          const hrefM = row.match(/href="(\/[^"]*\/profil\/spieler\/(\d+))"/);
+          if (!hrefM) continue;
+          const tmId = hrefM[2];
           if (seenIds.has(tmId)) continue;
+          const name = extractTmName(row);
+          if (!name || name.length < 2) continue;
           seenIds.add(tmId);
 
           const numM = row.match(/tm-shirt-number[^>]*>\s*(\d+)\s*<\/div>/);
-          // Position abbreviation is in the last <td>
           const posM = row.match(/<td>\s*([A-ZÀ-Ü][A-Za-zÀ-ü]+)\s*<\/td>\s*$/);
           const posAbbr = posM ? posM[1].trim() : null;
           const posExpanded = posAbbr && TM_BENCH_POS[posAbbr] ? TM_BENCH_POS[posAbbr] : posAbbr;
 
           bench.push({
             tmId,
-            tmProfilePath: linkM[1],
-            name: decodeHtmlEntities(linkM[3].trim()),
+            tmProfilePath: hrefM[1],
+            name,
             shirtNumber: numM ? parseInt(numM[1]) : null,
             starter: false,
             position: posExpanded,
@@ -11113,9 +11547,29 @@ app.post("/api/functions/:name", authMiddleware, async (req, res) => {
     return res.json(progress);
   }
 
+  // Returns counts to help the client decide whether to show the re-enrich confirmation
+  if (name === "enrich-all-stats") {
+    const sixMonthsAgo = new Date(Date.now() - 6 * 30 * 24 * 60 * 60 * 1000);
+    const [[totalRow]] = await pool.query("SELECT COUNT(*) AS cnt FROM players WHERE user_id = ? AND is_archived = 0", [req.user.id]);
+    const [[recentRow]] = await pool.query(
+      "SELECT COUNT(*) AS cnt FROM players WHERE user_id = ? AND is_archived = 0 AND external_data_fetched_at >= ?",
+      [req.user.id, sixMonthsAgo]
+    );
+    const [[neverRow]] = await pool.query(
+      "SELECT COUNT(*) AS cnt FROM players WHERE user_id = ? AND is_archived = 0 AND external_data_fetched_at IS NULL",
+      [req.user.id]
+    );
+    const total = Number(totalRow.cnt);
+    const recentlyEnriched = Number(recentRow.cnt);
+    const neverEnriched = Number(neverRow.cnt);
+    return res.json({ total, recentlyEnriched, neverEnriched, oldOrNever: total - recentlyEnriched });
+  }
+
   if (name === "enrich-all-players") {
     const [_adminR2] = await pool.query("SELECT id FROM user_roles WHERE user_id = ? AND role = 'admin' LIMIT 1", [req.user.id]);
     const _isAdmin2 = !!_adminR2.length;
+    // includeRecentlyEnriched: when true, re-enrich players enriched within 6 months too
+    const includeRecentlyEnriched = !!(req.body?.includeRecentlyEnriched);
     // Credit check before starting — must have at least 1 credit
     if (!_isAdmin2) {
       const creditCheck = await canUseCredit(req.user.id);
@@ -11129,15 +11583,18 @@ app.post("/api/functions/:name", authMiddleware, async (req, res) => {
       return res.json({ total: existing.total, message: 'Enrichissement déjà en cours', alreadyRunning: true });
     }
 
+    const sixMonthsAgo = new Date(Date.now() - 6 * 30 * 24 * 60 * 60 * 1000);
     const [playersRaw] = await pool.query(
       `SELECT id, name, club, nationality, generation,
               photo_url, date_of_birth, contract_end, market_value,
               notes, general_opinion, transfermarkt_id, external_data,
               external_data_fetched_at
-       FROM players WHERE user_id = ? ORDER BY name`,
-      [req.user.id]
+       FROM players WHERE user_id = ?
+       ${!includeRecentlyEnriched ? 'AND (external_data_fetched_at IS NULL OR external_data_fetched_at < ?)' : ''}
+       ORDER BY name`,
+      !includeRecentlyEnriched ? [req.user.id, sixMonthsAgo] : [req.user.id]
     );
-    if (!playersRaw.length) return res.json({ total: 0, message: 'No players to enrich' });
+    if (!playersRaw.length) return res.json({ total: 0, message: 'No players to enrich', allRecentlyEnriched: true });
 
     // Same completion% logic as client — 10 fields
     function serverCompletionPct(p) {
@@ -14155,11 +14612,30 @@ app.get("/api/news/unified", authMiddleware, async (req, res) => {
       [...allParams, limit, offset]
     );
 
+    // Strip HTML tags from editorial excerpts (content is stored as rich HTML)
+    const items = rows.map(row => {
+      if (row.type === 'editorial' && row.excerpt) {
+        const plain = String(row.excerpt)
+          .replace(/<[^>]+>/g, ' ')   // remove tags
+          .replace(/&nbsp;/g, ' ')
+          .replace(/&amp;/g, '&')
+          .replace(/&lt;/g, '<')
+          .replace(/&gt;/g, '>')
+          .replace(/&quot;/g, '"')
+          .replace(/&#39;/g, "'")
+          .replace(/\s+/g, ' ')
+          .trim()
+          .slice(0, 240);
+        return { ...row, excerpt: plain || null };
+      }
+      return row;
+    });
+
     const [cats] = await pool.query(
       "SELECT DISTINCT category, COUNT(*) as count FROM news_articles WHERE category IS NOT NULL GROUP BY category ORDER BY count DESC LIMIT 20"
     );
 
-    return res.json({ items: rows, total, categories: cats });
+    return res.json({ items, total, categories: cats });
   } catch (err) {
     console.error('[GET /api/news/unified]', err?.message);
     return res.status(500).json({ error: err?.message });
@@ -14304,6 +14780,16 @@ pool.query('ALTER TABLE club_overrides ADD COLUMN coach_photo_url TEXT NULL').ca
 pool.query('ALTER TABLE club_overrides ADD COLUMN coach_nationality VARCHAR(100) NULL').catch(err => { if (err.errno !== 1060) console.warn('[warn] club_overrides:', err?.message); });
 pool.query('ALTER TABLE club_overrides ADD COLUMN coach_date_born DATE NULL').catch(err => { if (err.errno !== 1060) console.warn('[warn] club_overrides:', err?.message); });
 
+// ── player_viewer_links: cross-user Wyscout import dedup ──────────────────────
+pool.query(`CREATE TABLE IF NOT EXISTS player_viewer_links (
+  player_id CHAR(36) NOT NULL,
+  viewer_user_id CHAR(36) NOT NULL,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (player_id, viewer_user_id),
+  INDEX idx_pvl_viewer (viewer_user_id),
+  FOREIGN KEY (player_id) REFERENCES players(id) ON DELETE CASCADE
+)`).catch(err => { if (!err?.message?.includes('already exists')) console.warn('[warn] player_viewer_links:', err?.message); });
+
 pool.query(`CREATE TABLE IF NOT EXISTS club_profiles_cache (
   id INT AUTO_INCREMENT PRIMARY KEY,
   club_name VARCHAR(255) NOT NULL,
@@ -14325,7 +14811,129 @@ pool.query(`CREATE TABLE IF NOT EXISTS club_scouting_notes (
 )`).catch(err => { if (!err?.message?.includes('already exists')) console.warn('[warn] club_scouting_notes table:', err?.message); });
 pool.query("ALTER TABLE club_scouting_notes MODIFY COLUMN user_id VARCHAR(36) NOT NULL").catch(() => {});
 pool.query("ALTER TABLE club_scouting_notes ADD COLUMN rating TINYINT NULL").catch(err => { if (err.errno !== 1060) console.warn('[warn] club_scouting_notes rating:', err?.message); });
-pool.query("ALTER TABLE club_scouting_notes ADD UNIQUE KEY uniq_csn_club_user (club_name(191), user_id)").catch(err => { if (err.errno !== 1061 && err.errno !== 1060) console.warn('[warn] club_scouting_notes unique:', err?.message); });
+// Deduplicate before adding unique key: keep the row with the highest id per (club_name, user_id)
+pool.query(`
+  DELETE n1 FROM club_scouting_notes n1
+  INNER JOIN club_scouting_notes n2
+    ON n1.club_name = n2.club_name AND n1.user_id = n2.user_id AND n1.id < n2.id
+`).catch(() => {});
+pool.query("ALTER TABLE club_scouting_notes ADD UNIQUE KEY uniq_csn_club_user (club_name(191), user_id)").catch(err => {
+  // 1061 = key already exists, 1060 = duplicate column, 1062 = duplicate entry (dedup may not have run yet on first boot)
+  if (err.errno !== 1061 && err.errno !== 1060 && err.errno !== 1062) console.warn('[warn] club_scouting_notes unique:', err?.message);
+});
+
+// ── Frontend error tracking ───────────────────────────────────────────────────
+pool.query(`CREATE TABLE IF NOT EXISTS frontend_errors (
+  id            INT AUTO_INCREMENT PRIMARY KEY,
+  user_id       VARCHAR(36)   NULL,
+  user_email    VARCHAR(255)  NULL,
+  page_url      VARCHAR(1000) NULL,
+  error_name    VARCHAR(255)  NULL,
+  error_message TEXT          NULL,
+  error_stack   TEXT          NULL,
+  component_stack TEXT        NULL,
+  source        VARCHAR(50)   NOT NULL DEFAULT 'frontend',
+  is_resolved   TINYINT(1)    NOT NULL DEFAULT 0,
+  resolved_at   DATETIME      NULL,
+  resolution_note TEXT        NULL,
+  created_at    DATETIME      NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  INDEX idx_fe_user (user_id),
+  INDEX idx_fe_resolved (is_resolved),
+  INDEX idx_fe_created (created_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`
+).catch(err => { if (!err?.message?.includes('already exists')) console.warn('[warn] frontend_errors:', err?.message); });
+pool.query("ALTER TABLE frontend_errors ADD COLUMN source VARCHAR(50) NOT NULL DEFAULT 'frontend'").catch(err => { if (err.errno !== 1060) console.warn('[warn] frontend_errors source:', err?.message); });
+
+// POST /api/errors/report — called by ErrorBoundary and Vite build plugin (no auth required)
+app.post("/api/errors/report", async (req, res) => {
+  try {
+    const { error_name, error_message, error_stack, component_stack, page_url, source } = req.body || {};
+    const eSource = ['frontend', 'build', 'server'].includes(source) ? source : 'frontend';
+    let userId = null, userEmail = null;
+    // Try to identify user from cookie (optional — build errors have no user)
+    if (eSource === 'frontend') {
+      try {
+        const token = req.cookies?.[AUTH_COOKIE] || null;
+        if (token) {
+          const payload = jwt.verify(token, jwtSecret);
+          const user = await getUserById(payload.sub);
+          if (user) { userId = user.id; userEmail = user.email; }
+        }
+      } catch {} // ignore auth errors — error reporting must never fail
+    }
+
+    const eName = String(error_name || '').slice(0, 255);
+    const eMsg  = String(error_message || '').slice(0, 1000);
+    const eUrl  = String(page_url || '').slice(0, 1000);
+
+    // Deduplicate: skip if this (source, error_name, error_message) already exists unresolved
+    const [[existing]] = await pool.query(
+      `SELECT id FROM frontend_errors
+       WHERE is_resolved = 0
+         AND source = ?
+         AND error_name = ?
+         AND LEFT(error_message, 500) = LEFT(?, 500)
+       LIMIT 1`,
+      [eSource, eName, eMsg]
+    );
+    if (existing) return res.json({ ok: true, skipped: true });
+
+    await pool.query(
+      `INSERT INTO frontend_errors (user_id, user_email, page_url, error_name, error_message, error_stack, component_stack, source)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        userId,
+        userEmail,
+        eUrl,
+        eName,
+        eMsg,
+        String(error_stack || '').slice(0, 8000),
+        String(component_stack || '').slice(0, 8000),
+        eSource,
+      ]
+    );
+    return res.json({ ok: true });
+  } catch (err) {
+    console.error('[error-report]', err?.message);
+    return res.status(500).json({ error: err?.message });
+  }
+});
+
+// GET /api/admin/errors — list frontend errors (admin only)
+app.get("/api/admin/errors", authMiddleware, ensureAdmin, async (req, res) => {
+  try {
+    const resolved = req.query.resolved; // 'all' | '0' | '1'
+    let where = '';
+    if (resolved === '0') where = 'WHERE is_resolved = 0';
+    else if (resolved === '1') where = 'WHERE is_resolved = 1';
+    const [rows] = await pool.query(
+      `SELECT id, user_id, user_email, page_url, error_name, error_message, error_stack,
+              component_stack, is_resolved, resolved_at, resolution_note, created_at
+       FROM frontend_errors ${where} ORDER BY created_at DESC LIMIT 500`
+    );
+    return res.json({ errors: rows });
+  } catch (err) { return res.status(500).json({ error: err?.message }); }
+});
+
+// PUT /api/admin/errors/:id/resolve — mark as resolved
+app.put("/api/admin/errors/:id/resolve", authMiddleware, ensureAdmin, async (req, res) => {
+  try {
+    const { resolution_note } = req.body || {};
+    await pool.query(
+      "UPDATE frontend_errors SET is_resolved = 1, resolved_at = NOW(), resolution_note = ? WHERE id = ?",
+      [String(resolution_note || '').trim() || null, req.params.id]
+    );
+    return res.json({ ok: true });
+  } catch (err) { return res.status(500).json({ error: err?.message }); }
+});
+
+// DELETE /api/admin/errors/:id — delete a reported error
+app.delete("/api/admin/errors/:id", authMiddleware, ensureAdmin, async (req, res) => {
+  try {
+    await pool.query("DELETE FROM frontend_errors WHERE id = ?", [req.params.id]);
+    return res.json({ ok: true });
+  } catch (err) { return res.status(500).json({ error: err?.message }); }
+});
 
 pool.query(`CREATE TABLE IF NOT EXISTS championship_scouting_notes (
   id INT AUTO_INCREMENT PRIMARY KEY,
@@ -14519,6 +15127,12 @@ app.get("/api/buzz/article", authMiddleware, async (req, res) => {
       return res.status(502).json({ error: 'fetch_failed', detail: e?.message });
     }
 
+    // Detect article language from <html lang="..."> attribute
+    const htmlLangM = html.match(/<html[^>]+lang=["']([a-zA-Z]{2,5})(?:-[^"']+)?["']/i);
+    const contentLangM = html.match(/<meta[^>]+http-equiv=["']content-language["'][^>]+content=["']([a-zA-Z]{2})/i)
+      || html.match(/<meta[^>]+content=["']([a-zA-Z]{2})["'][^>]+http-equiv=["']content-language["']/i);
+    const detectedLang = (htmlLangM?.[1] || contentLangM?.[1] || '').toLowerCase().slice(0, 2) || null;
+
     // Extract OG / meta data
     const ogTitle   = (html.match(/<meta[^>]+property=["']og:title["'][^>]+content=["']([^"']+)/i) || html.match(/<meta[^>]+content=["']([^"']+)["'][^>]+property=["']og:title["']/i) || [])[1] || '';
     const ogDesc    = (html.match(/<meta[^>]+property=["']og:description["'][^>]+content=["']([^"']+)/i) || html.match(/<meta[^>]+content=["']([^"']+)["'][^>]+property=["']og:description["']/i) || [])[1] || '';
@@ -14569,6 +15183,7 @@ app.get("/api/buzz/article", authMiddleware, async (req, res) => {
       image: ogImage || null,
       paragraphs,
       source_url: url,
+      lang: detectedLang,
     });
   } catch (err) {
     return res.status(500).json({ error: err?.message });
@@ -14661,7 +15276,6 @@ app.get("/api/buzz/club", authMiddleware, async (req, res) => {
 app.get("/api/club-notes", authMiddleware, async (req, res) => {
   try {
     const club = (req.query.club || '').trim();
-    console.log(`[club-notes GET] club="${club}" user="${req.user.id}"`);
     if (!club) return res.status(400).json({ error: 'missing_club' });
     const [rows] = await pool.query(
       `SELECT n.id, n.club_name, n.content, n.rating, n.created_at, n.updated_at, n.user_id,
@@ -14673,7 +15287,6 @@ app.get("/api/club-notes", authMiddleware, async (req, res) => {
        ORDER BY n.updated_at DESC`,
       [club]
     );
-    console.log(`[club-notes GET] rows=${rows.length}`, rows.map(r => ({ id: r.id, user_id: r.user_id, club_name: r.club_name, content_len: r.content?.length })));
     return res.json({ notes: rows });
   } catch (err) {
     console.error('[club-notes GET] ERR:', err?.message);
@@ -14684,15 +15297,13 @@ app.get("/api/club-notes", authMiddleware, async (req, res) => {
 app.post("/api/club-notes", authMiddleware, async (req, res) => {
   try {
     const { club, content, id, rating } = req.body || {};
-    console.log(`[club-notes POST] club="${club}" id=${id} rating=${rating} user="${req.user.id}" content_len=${content?.length}`);
     if (!club || !content?.trim()) return res.status(400).json({ error: 'missing_fields' });
     const ratingVal = (rating != null && rating !== '' && Number.isFinite(Number(rating))) ? Number(rating) : null;
     if (id) {
-      const [upd] = await pool.query(
+      await pool.query(
         "UPDATE club_scouting_notes SET content = ?, rating = ?, updated_at = NOW() WHERE id = ? AND user_id = ?",
         [content.trim(), ratingVal, id, req.user.id]
       );
-      console.log(`[club-notes POST] UPDATE affectedRows=${upd.affectedRows} id=${id}`);
       return res.json({ ok: true });
     }
     const [r] = await pool.query(
@@ -14701,7 +15312,6 @@ app.post("/api/club-notes", authMiddleware, async (req, res) => {
        ON DUPLICATE KEY UPDATE content = VALUES(content), rating = VALUES(rating), updated_at = NOW()`,
       [club, req.user.id, content.trim(), ratingVal]
     );
-    console.log(`[club-notes POST] INSERT insertId=${r.insertId} affectedRows=${r.affectedRows}`);
     return res.json({ ok: true, id: r.insertId });
   } catch (err) {
     console.error('[club-notes POST] ERR:', err?.message);
@@ -14721,12 +15331,241 @@ app.delete("/api/club-notes/:id", authMiddleware, async (req, res) => {
   }
 });
 
+// ── ScoreBat video proxy ──────────────────────────────────────────────────────
+// Free API (scorebat.com/video-api). SCOREBAT_TOKEN env var optional (improves rate limits).
+
+const _scorebatCache = { data: null, fetchedAt: 0 };
+
+async function getScoreBatFeed() {
+  const TTL = 15 * 60 * 1000;
+  if (_scorebatCache.data && Date.now() - _scorebatCache.fetchedAt < TTL) return _scorebatCache.data;
+  const token = process.env.SCOREBAT_TOKEN || '';
+  const url = token
+    ? `https://www.scorebat.com/video-api/v3/feed/?token=${token}`
+    : `https://www.scorebat.com/video-api/v3/feed/`;
+  const r = await fetch(url, { headers: { 'User-Agent': 'Mozilla/5.0 (compatible; Scouty/1.0)' } });
+  if (!r.ok) throw new Error(`ScoreBat ${r.status}`);
+  const json = await r.json();
+  const list = Array.isArray(json) ? json : (json.response || []);
+  _scorebatCache.data = list;
+  _scorebatCache.fetchedAt = Date.now();
+  return list;
+}
+
+app.get("/api/scorebat/videos", async (req, res) => {
+  try {
+    const team1 = String(req.query.team1 || '').toLowerCase().trim();
+    const team2 = String(req.query.team2 || '').toLowerCase().trim();
+    if (!team1 && !team2) return res.json({ videos: [] });
+    const feed = await getScoreBatFeed();
+    const scoreV = (title) => {
+      const t = title.toLowerCase();
+      let s = 0;
+      if (team1 && t.includes(team1)) s += 3;
+      if (team2 && t.includes(team2)) s += 3;
+      const t1w = team1.split(' ')[0]; const t2w = team2.split(' ')[0];
+      if (t1w?.length >= 4 && t.includes(t1w)) s += 1;
+      if (t2w?.length >= 4 && t.includes(t2w)) s += 1;
+      return s;
+    };
+    const videos = feed
+      .map(v => ({ ...v, _s: scoreV(v.title || '') }))
+      .filter(v => v._s >= 3)
+      .sort((a, b) => b._s - a._s)
+      .slice(0, 6)
+      .map(({ _s, ...v }) => v);
+    return res.json({ videos });
+  } catch (err) {
+    console.error('[scorebat]', err?.message);
+    return res.json({ videos: [] });
+  }
+});
+
+// ── FotMob xG proxy (unofficial API — free, no key required) ─────────────────
+
+const _fotmobDateCache = new Map(); // dateKey → { data, t }
+
+app.get("/api/fotmob/xg", async (req, res) => {
+  try {
+    const team1 = String(req.query.team1 || '').trim();
+    const team2 = String(req.query.team2 || '').trim();
+    const date  = String(req.query.date  || '').trim();
+    if (!team1 || !team2 || !date) return res.json({ xg: null });
+
+    const dateKey = date.replace(/-/g, '');
+    const norm = s => s.toLowerCase().replace(/[^a-z0-9]/g, '');
+
+    let matchesData;
+    const fc = _fotmobDateCache.get(dateKey);
+    if (fc && Date.now() - fc.t < 30 * 60 * 1000) {
+      matchesData = fc.data;
+    } else {
+      const r = await fetch(`https://www.fotmob.com/api/matches?date=${dateKey}`, {
+        headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36', 'Accept': 'application/json' },
+      });
+      if (!r.ok) return res.json({ xg: null });
+      matchesData = await r.json();
+      _fotmobDateCache.set(dateKey, { data: matchesData, t: Date.now() });
+    }
+
+    let fotmobId = null;
+    const t1 = norm(team1); const t2 = norm(team2);
+    for (const league of (matchesData.leagues || [])) {
+      for (const match of (league.matches || [])) {
+        const hn = norm(match.home?.name || ''); const an = norm(match.away?.name || '');
+        if ((hn.includes(t1) || t1.includes(hn)) && (an.includes(t2) || t2.includes(an))) {
+          fotmobId = match.id; break;
+        }
+      }
+      if (fotmobId) break;
+    }
+    if (!fotmobId) return res.json({ xg: null });
+
+    const dr = await fetch(`https://www.fotmob.com/api/matchDetails?matchId=${fotmobId}`, {
+      headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36', 'Accept': 'application/json' },
+    });
+    if (!dr.ok) return res.json({ xg: null });
+    const detail = await dr.json();
+
+    let xgHome = null, xgAway = null;
+    const allStats = detail?.content?.stats?.Periods?.All?.stats;
+    if (Array.isArray(allStats)) {
+      const s = allStats.find(x =>
+        String(x.type || '').toLowerCase().includes('expected') ||
+        String(x.title || '').toLowerCase().includes('xg') ||
+        String(x.title || '').toLowerCase().includes('expected')
+      );
+      if (s?.stats?.length >= 2) {
+        xgHome = parseFloat(String(s.stats[0]).replace(',', '.')) || null;
+        xgAway = parseFloat(String(s.stats[1]).replace(',', '.')) || null;
+      }
+    }
+    return res.json({ xg: xgHome !== null ? { home: xgHome, away: xgAway } : null });
+  } catch (err) {
+    console.error('[fotmob-xg]', err?.message);
+    return res.json({ xg: null });
+  }
+});
+
+// ── football-data.org — forme récente + H2H (gratuit, 10 req/min) ─────────────
+// Inscrivez-vous sur football-data.org et ajoutez FOOTBALL_DATA_API_KEY dans .env
+
+const FDORG_KEY   = process.env.FOOTBALL_DATA_API_KEY || '';
+const FDORG_BASE  = 'https://api.football-data.org/v4';
+const FDORG_COMPS = ['PL','PD','BL1','SA','FL1','CL','EL','EC','WC','PPL','DED','ELC','BSA'];
+
+const _fdTeamMap   = {};
+let   _fdMapReady  = false;
+let   _fdMapLoading = false;
+
+async function loadFdOrgTeamMap() {
+  if (_fdMapReady || _fdMapLoading || !FDORG_KEY) return;
+  _fdMapLoading = true;
+  const normK = s => s.toLowerCase().replace(/[^a-z0-9]/g, '');
+  for (const comp of FDORG_COMPS) {
+    try {
+      const r = await fetch(`${FDORG_BASE}/competitions/${comp}/teams`, {
+        headers: { 'X-Auth-Token': FDORG_KEY },
+      });
+      if (r.ok) {
+        const data = await r.json();
+        for (const t of (data.teams || [])) {
+          for (const k of [t.name, t.shortName, t.tla].filter(Boolean)) {
+            _fdTeamMap[normK(k)] = { id: t.id, name: t.name };
+          }
+        }
+      }
+    } catch (e) { console.error('[fdorg-load]', e.message); }
+    await new Promise(r => setTimeout(r, 6500)); // 10 req/min
+  }
+  _fdMapReady = true;
+  _fdMapLoading = false;
+  console.log(`[fdorg] Team map loaded: ${Object.keys(_fdTeamMap).length} entries`);
+}
+
+function findFdTeam(name) {
+  const n = name.toLowerCase().replace(/[^a-z0-9]/g, '');
+  if (_fdTeamMap[n]) return _fdTeamMap[n];
+  for (const [k, v] of Object.entries(_fdTeamMap)) {
+    if (k.length >= 4 && (k.includes(n) || n.includes(k))) return v;
+  }
+  return null;
+}
+
+const _fdFormCache = new Map(); // teamId → { form, fetchedAt }
+
+app.get("/api/fdorg/form", async (req, res) => {
+  try {
+    if (!FDORG_KEY) return res.json({ form: null });
+    if (!_fdMapReady) { loadFdOrgTeamMap().catch(() => {}); return res.json({ form: null }); }
+    const teamName = String(req.query.team || '').trim();
+    if (!teamName) return res.json({ form: null });
+    const team = findFdTeam(teamName);
+    if (!team) return res.json({ form: null });
+    const fc = _fdFormCache.get(team.id);
+    if (fc && Date.now() - fc.fetchedAt < 60 * 60 * 1000) return res.json({ form: fc.form, teamName: team.name });
+    const r = await fetch(`${FDORG_BASE}/teams/${team.id}/matches?status=FINISHED&limit=5`, {
+      headers: { 'X-Auth-Token': FDORG_KEY },
+    });
+    if (!r.ok) return res.json({ form: null });
+    const data = await r.json();
+    const form = (data.matches || []).reverse().slice(0, 5).map(m => {
+      const isHome = m.homeTeam.id === team.id;
+      const my = isHome ? m.score.fullTime.home : m.score.fullTime.away;
+      const op = isHome ? m.score.fullTime.away : m.score.fullTime.home;
+      return {
+        result: my > op ? 'W' : my < op ? 'L' : 'D',
+        myScore: my, opScore: op,
+        opponent: isHome ? m.awayTeam.name : m.homeTeam.name,
+        date: m.utcDate, isHome,
+      };
+    });
+    _fdFormCache.set(team.id, { form, fetchedAt: Date.now() });
+    return res.json({ form, teamName: team.name });
+  } catch (err) {
+    console.error('[fdorg-form]', err?.message);
+    return res.json({ form: null });
+  }
+});
+
+app.get("/api/fdorg/h2h", async (req, res) => {
+  try {
+    if (!FDORG_KEY) return res.json({ matches: [] });
+    if (!_fdMapReady) { loadFdOrgTeamMap().catch(() => {}); return res.json({ matches: [] }); }
+    const team1Name = String(req.query.team1 || '').trim();
+    const team2Name = String(req.query.team2 || '').trim();
+    if (!team1Name || !team2Name) return res.json({ matches: [] });
+    const team1 = findFdTeam(team1Name);
+    const team2 = findFdTeam(team2Name);
+    if (!team1 || !team2) return res.json({ matches: [] });
+    const r = await fetch(`${FDORG_BASE}/teams/${team1.id}/matches?status=FINISHED&limit=40`, {
+      headers: { 'X-Auth-Token': FDORG_KEY },
+    });
+    if (!r.ok) return res.json({ matches: [] });
+    const data = await r.json();
+    const h2h = (data.matches || [])
+      .filter(m => m.homeTeam.id === team2.id || m.awayTeam.id === team2.id)
+      .slice(0, 5)
+      .map(m => ({
+        date: m.utcDate,
+        homeTeam: m.homeTeam.name, awayTeam: m.awayTeam.name,
+        homeScore: m.score.fullTime.home, awayScore: m.score.fullTime.away,
+        competition: m.competition?.name,
+      }));
+    return res.json({ matches: h2h });
+  } catch (err) {
+    console.error('[fdorg-h2h]', err?.message);
+    return res.json({ matches: [] });
+  }
+});
+
+if (FDORG_KEY) setTimeout(() => loadFdOrgTeamMap().catch(e => console.error('[fdorg-init]', e.message)), 10000);
+
 // ── Championship scouting notes ───────────────────────────────────────────────
 
 app.get("/api/championship-notes", authMiddleware, async (req, res) => {
   try {
     const name = (req.query.name || '').trim();
-    console.log(`[champ-notes GET] name="${name}" user="${req.user.id}"`);
     if (!name) return res.status(400).json({ error: 'missing_name' });
     const [rows] = await pool.query(
       `SELECT n.id, n.championship_name, n.content, n.rating, n.created_at, n.updated_at, n.user_id,
@@ -14738,7 +15577,6 @@ app.get("/api/championship-notes", authMiddleware, async (req, res) => {
        ORDER BY n.updated_at DESC`,
       [name]
     );
-    console.log(`[champ-notes GET] rows=${rows.length}`, rows.map(r => ({ id: r.id, user_id: r.user_id, champ: r.championship_name, content_len: r.content?.length })));
     return res.json({ notes: rows });
   } catch (err) {
     console.error('[champ-notes GET] ERR:', err?.message);
@@ -14749,15 +15587,13 @@ app.get("/api/championship-notes", authMiddleware, async (req, res) => {
 app.post("/api/championship-notes", authMiddleware, async (req, res) => {
   try {
     const { name, content, id, rating } = req.body || {};
-    console.log(`[champ-notes POST] name="${name}" id=${id} rating=${rating} user="${req.user.id}" content_len=${content?.length}`);
     if (!name || !content?.trim()) return res.status(400).json({ error: 'missing_fields' });
     const ratingVal = (rating != null && rating !== '' && Number.isFinite(Number(rating))) ? Number(rating) : null;
     if (id) {
-      const [upd] = await pool.query(
+      await pool.query(
         "UPDATE championship_scouting_notes SET content = ?, rating = ?, updated_at = NOW() WHERE id = ? AND user_id = ?",
         [content.trim(), ratingVal, id, req.user.id]
       );
-      console.log(`[champ-notes POST] UPDATE affectedRows=${upd.affectedRows} id=${id}`);
       return res.json({ ok: true });
     }
     const [r] = await pool.query(
@@ -14766,7 +15602,6 @@ app.post("/api/championship-notes", authMiddleware, async (req, res) => {
        ON DUPLICATE KEY UPDATE content = VALUES(content), rating = VALUES(rating), updated_at = NOW()`,
       [name, req.user.id, content.trim(), ratingVal]
     );
-    console.log(`[champ-notes POST] INSERT insertId=${r.insertId} affectedRows=${r.affectedRows}`);
     return res.json({ ok: true, id: r.insertId });
   } catch (err) {
     console.error('[champ-notes POST] ERR:', err?.message);
@@ -15661,6 +16496,86 @@ async function runSubscriptionExpiryAlerts(dryRun = false) {
   }
 }
 
+// ── StatsBomb watchlist form alerts ──────────────────────────────────────────
+async function runWatchlistFormAlerts() {
+  const logId = await logJobStart('sb-form-alerts');
+  let sent = 0;
+  try {
+    // All users with at least one watchlist player
+    const [users] = await pool.query(`
+      SELECT DISTINCT w.user_id
+      FROM watchlists w
+      JOIN watchlist_players wp ON wp.watchlist_id = w.id
+    `);
+
+    for (const u of users) {
+      // Get their watchlisted player names
+      const [wlPlayers] = await pool.query(`
+        SELECT DISTINCT p.id AS player_id, p.name
+        FROM players p
+        JOIN watchlist_players wp ON wp.player_id = p.id
+        JOIN watchlists w ON w.id = wp.watchlist_id
+        WHERE w.user_id = ? AND p.is_archived = 0
+        LIMIT 50
+      `, [u.user_id]);
+
+      for (const player of wlPlayers) {
+        // Find in StatsBomb (fuzzy match)
+        const [sbMatches] = await pool.query(
+          `SELECT player_id, player_name FROM sb_players
+           WHERE player_name LIKE ? LIMIT 1`,
+          [`%${player.name.split(' ').slice(-1)[0]}%`] // match on last name
+        );
+        if (!sbMatches.length) continue;
+
+        const sbPid = sbMatches[0].player_id;
+        const sbName = sbMatches[0].player_name;
+
+        // Last 3 matches stats
+        const [recent] = await pool.query(`
+          SELECT xg, goals, match_date FROM sb_player_match_stats
+          WHERE player_id = ? ORDER BY match_date DESC LIMIT 3
+        `, [sbPid]);
+        if (recent.length < 2) continue;
+
+        // All-time average
+        const [[avg]] = await pool.query(
+          `SELECT AVG(xg) as avg_xg FROM sb_player_match_stats WHERE player_id = ?`,
+          [sbPid]
+        );
+        const seasonAvg = parseFloat(avg.avg_xg) || 0;
+        const recentAvg = recent.reduce((s, r) => s + parseFloat(r.xg), 0) / recent.length;
+
+        // En forme: recent average >= 1.5x career average AND >= 0.25
+        if (seasonAvg < 0.05 || recentAvg < seasonAvg * 1.5 || recentAvg < 0.25) continue;
+
+        // Dedup: skip if similar notification sent in last 7 days
+        const [[existing]] = await pool.query(
+          `SELECT id FROM notifications WHERE user_id = ? AND player_id = ? AND type = 'form_alert'
+           AND created_at > DATE_SUB(NOW(), INTERVAL 7 DAY) LIMIT 1`,
+          [u.user_id, player.player_id]
+        );
+        if (existing) continue;
+
+        await createNotification(u.user_id, {
+          type: 'form_alert',
+          title: `⚡ ${sbName} est en forme`,
+          message: `xG moyen sur les ${recent.length} derniers matchs : ${recentAvg.toFixed(2)} (moyenne : ${seasonAvg.toFixed(2)}/match)`,
+          icon: 'trending-up',
+          link: `/player/${player.player_id}`,
+          playerId: player.player_id,
+        });
+        sent++;
+      }
+    }
+    await logJobSuccess(logId, { sent });
+    console.log(`[sb-form-alerts] ${sent} notifications envoyées`);
+  } catch (err) {
+    await logJobError(logId, err);
+    console.error('[sb-form-alerts]', err?.message);
+  }
+}
+
 // ── Cron schedules (non-Vercel only) ────────────────────────────────────────
 
 if (!isVercel && cron) {
@@ -15669,7 +16584,30 @@ if (!isVercel && cron) {
   cron.schedule('30 9 * * *',  () => runReportReminders(false),           { timezone: 'Europe/Paris' });
   cron.schedule('30 4 * * *',  runTokenCleanup,                           { timezone: 'Europe/Paris' });
   cron.schedule('0 9 * * *',   () => runSubscriptionExpiryAlerts(false),  { timezone: 'Europe/Paris' });
-  console.log('[startup] Crons scheduled: match-reminders 07:00 | contract-alerts 08:00 | report-reminders 09:30 | token-cleanup 04:30 | sub-expiry 09:00');
+  // StatsBomb weekly sync — every Monday at 03:00, incremental (skips if SHA unchanged)
+  cron.schedule('0 3 * * 1', () => runStatsBombSyncJob(false), { timezone: 'Europe/Paris' });
+  // StatsBomb form alerts — every Wednesday at 09:00
+  cron.schedule('0 9 * * 3', () => runWatchlistFormAlerts(), { timezone: 'Europe/Paris' });
+  console.log('[startup] Crons scheduled: match-reminders 07:00 | contract-alerts 08:00 | report-reminders 09:30 | token-cleanup 04:30 | sub-expiry 09:00 | statsbomb-sync Mon 03:00 | form-alerts Wed 09:00');
+}
+
+// ── StatsBomb sync job wrapper (logs to cron_job_logs) ───────────────────────
+// sbImportRunning declared near /api/admin/statsbomb/import — shared to prevent concurrent runs
+async function runStatsBombSyncJob(force = false) {
+  if (sbImportRunning) return;
+  sbImportRunning = true;
+  const logId = await logJobStart('sb-sync');
+  try {
+    const { runStatsBombImport } = await import('./statsbomb-import.js');
+    const result = await runStatsBombImport({ force });
+    await logJobDone(logId, result);
+    console.log(`[cron/statsbomb] done`, result);
+  } catch (e) {
+    await logJobFailed(logId, e);
+    console.error('[cron/statsbomb]', e?.message);
+  } finally {
+    sbImportRunning = false;
+  }
 }
 
 // ── Admin: cron job logs & manual triggers ───────────────────────────────────
@@ -15696,6 +16634,8 @@ app.post("/api/admin/cron-trigger", authMiddleware, ensureAdmin, async (req, res
     'nightly-enrichment': () => runNightlyEnrichment(),
     'inactive-cleanup':   () => runInactiveUserCleanup(!!dry_run),
     'buzz-scrape':        () => runBuzzScrape(),
+    'sb-form-alerts':     () => runWatchlistFormAlerts(),
+    'sb-sync':            () => runStatsBombSyncJob(true),
   };
   if (!jobs[job]) return res.status(400).json({ error: 'Unknown job' });
   jobs[job]();
@@ -15949,6 +16889,7 @@ pool.query(`CREATE TABLE IF NOT EXISTS editorial_articles (
   INDEX idx_editorial_status (status, created_at),
   FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
 )`).catch(err => { if (!err?.message?.includes('already exists')) console.warn('[warn] editorial_articles table:', err?.message); });
+pool.query("ALTER TABLE editorial_articles ADD COLUMN lang VARCHAR(10) NULL").catch(err => { if (err.errno !== 1060) console.warn('[warn] editorial lang col:', err?.message); });
 
 function hasEditorialRole(roles) {
   return roles.some(r => ['admin','rédacteur','redacteur','editeur','éditeur'].includes(r.toLowerCase()));
@@ -16047,7 +16988,7 @@ app.get("/api/editorial/:id", authMiddleware, async (req, res) => {
 app.post("/api/editorial", authMiddleware, async (req, res) => {
   const [roleRows] = await pool.query("SELECT role FROM user_roles WHERE user_id = ?", [req.user.id]);
   if (!hasEditorialRole(roleRows.map(r => r.role))) return res.status(403).json({ error: "Rôle rédacteur requis." });
-  const { title, content, banner_url, keywords, status = 'draft' } = req.body || {};
+  const { title, content, banner_url, keywords, status = 'draft', lang } = req.body || {};
   if (!title?.trim() || !content?.trim()) return res.status(400).json({ error: "Titre et contenu requis." });
   try {
     const id = uuidv4();
@@ -16055,10 +16996,10 @@ app.post("/api/editorial", authMiddleware, async (req, res) => {
     const [ex] = await pool.query("SELECT id FROM editorial_articles WHERE slug = ?", [slug]);
     if (ex.length) slug = `${slug}-${Date.now()}`;
     await pool.query(
-      `INSERT INTO editorial_articles (id, user_id, title, slug, content, banner_url, keywords, status)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO editorial_articles (id, user_id, title, slug, content, banner_url, keywords, lang, status)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [id, req.user.id, title.trim(), slug, content, banner_url || null,
-       keywords ? JSON.stringify(keywords) : null, status]
+       keywords ? JSON.stringify(keywords) : null, lang || null, status]
     );
     const [rows] = await pool.query("SELECT * FROM editorial_articles WHERE id = ?", [id]);
     return res.status(201).json(rows[0]);
@@ -16076,13 +17017,14 @@ app.put("/api/editorial/:id", authMiddleware, async (req, res) => {
     const [rows] = await pool.query("SELECT user_id FROM editorial_articles WHERE id = ?", [req.params.id]);
     if (!rows[0]) return res.status(404).json({ error: "Article introuvable" });
     if (rows[0].user_id !== req.user.id && !isAdmin) return res.status(403).json({ error: "Accès refusé" });
-    const { title, content, banner_url, keywords, status } = req.body || {};
+    const { title, content, banner_url, keywords, status, lang } = req.body || {};
     const updates = {};
     if (title !== undefined) updates.title = title.trim();
     if (content !== undefined) updates.content = content;
     if (banner_url !== undefined) updates.banner_url = banner_url || null;
     if (keywords !== undefined) updates.keywords = JSON.stringify(keywords);
     if (status !== undefined) updates.status = status;
+    if (lang !== undefined) updates.lang = lang || null;
     if (!Object.keys(updates).length) return res.json(rows[0]);
     const setClauses = Object.keys(updates).map(k => `\`${k}\` = ?`).join(', ');
     await pool.query(`UPDATE editorial_articles SET ${setClauses} WHERE id = ?`, [...Object.values(updates), req.params.id]);
@@ -16195,6 +17137,354 @@ app.post("/api/editorial/banner", authMiddleware, upload.single("file"), async (
     return res.json({ url: bannerUrl });
   } catch (err) {
     return res.status(500).json({ error: "Erreur serveur" });
+  }
+});
+
+// ── StatsBomb tables (created at startup, idempotent) ─────────────────────────
+for (const sql of [
+  `CREATE TABLE IF NOT EXISTS sb_import_log (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    commit_sha CHAR(40) NOT NULL,
+    status ENUM('running','done','failed') NOT NULL DEFAULT 'running',
+    competitions_imported INT NOT NULL DEFAULT 0,
+    matches_imported INT NOT NULL DEFAULT 0,
+    players_imported INT NOT NULL DEFAULT 0,
+    started_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    finished_at DATETIME NULL,
+    error_message TEXT NULL,
+    INDEX idx_sb_import_sha (commit_sha)
+  ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
+  `CREATE TABLE IF NOT EXISTS sb_competitions (
+    competition_id INT NOT NULL, season_id INT NOT NULL,
+    competition_name VARCHAR(100) NOT NULL, season_name VARCHAR(50) NOT NULL,
+    country_name VARCHAR(100) NULL, competition_gender VARCHAR(20) NOT NULL DEFAULT 'male',
+    PRIMARY KEY (competition_id, season_id)
+  ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
+  `CREATE TABLE IF NOT EXISTS sb_teams (
+    team_id INT PRIMARY KEY, team_name VARCHAR(150) NOT NULL, country VARCHAR(100) NULL
+  ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
+  `CREATE TABLE IF NOT EXISTS sb_players (
+    player_id INT PRIMARY KEY, player_name VARCHAR(150) NOT NULL,
+    player_nickname VARCHAR(150) NULL, country VARCHAR(100) NULL,
+    INDEX idx_sb_player_name (player_name(50))
+  ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
+  `CREATE TABLE IF NOT EXISTS sb_matches (
+    match_id INT PRIMARY KEY, competition_id INT NOT NULL, season_id INT NOT NULL,
+    match_date DATE NOT NULL, kick_off TIME NULL,
+    home_team_id INT NOT NULL, away_team_id INT NOT NULL,
+    home_score TINYINT UNSIGNED NULL, away_score TINYINT UNSIGNED NULL,
+    stadium_name VARCHAR(150) NULL, competition_stage VARCHAR(100) NULL,
+    match_week TINYINT UNSIGNED NULL, has_360 TINYINT(1) NOT NULL DEFAULT 0,
+    INDEX idx_sb_matches_comp (competition_id, season_id),
+    INDEX idx_sb_matches_date (match_date)
+  ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
+  `CREATE TABLE IF NOT EXISTS sb_lineups (
+    match_id INT NOT NULL, player_id INT NOT NULL, player_name VARCHAR(150) NOT NULL,
+    team_id INT NOT NULL, jersey_number TINYINT UNSIGNED NULL,
+    PRIMARY KEY (match_id, player_id),
+    INDEX idx_sb_lineups_player (player_id)
+  ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
+  `CREATE TABLE IF NOT EXISTS sb_player_match_stats (
+    match_id INT NOT NULL, player_id INT NOT NULL, player_name VARCHAR(150) NOT NULL,
+    team_id INT NOT NULL, competition_id INT NOT NULL, season_id INT NOT NULL,
+    match_date DATE NOT NULL,
+    shots SMALLINT NOT NULL DEFAULT 0, shots_on_target SMALLINT NOT NULL DEFAULT 0,
+    goals SMALLINT NOT NULL DEFAULT 0, xg DECIMAL(6,4) NOT NULL DEFAULT 0,
+    passes SMALLINT NOT NULL DEFAULT 0, passes_completed SMALLINT NOT NULL DEFAULT 0,
+    key_passes SMALLINT NOT NULL DEFAULT 0, progressive_passes SMALLINT NOT NULL DEFAULT 0,
+    carries SMALLINT NOT NULL DEFAULT 0, progressive_carries SMALLINT NOT NULL DEFAULT 0,
+    dribbles_attempted SMALLINT NOT NULL DEFAULT 0, dribbles_completed SMALLINT NOT NULL DEFAULT 0,
+    pressures SMALLINT NOT NULL DEFAULT 0, tackles SMALLINT NOT NULL DEFAULT 0,
+    interceptions SMALLINT NOT NULL DEFAULT 0, blocks SMALLINT NOT NULL DEFAULT 0,
+    clearances SMALLINT NOT NULL DEFAULT 0,
+    duels_won SMALLINT NOT NULL DEFAULT 0, duels_total SMALLINT NOT NULL DEFAULT 0,
+    aerials_won SMALLINT NOT NULL DEFAULT 0, aerials_total SMALLINT NOT NULL DEFAULT 0,
+    fouls_committed SMALLINT NOT NULL DEFAULT 0, fouls_won SMALLINT NOT NULL DEFAULT 0,
+    PRIMARY KEY (match_id, player_id),
+    INDEX idx_sb_pms_player (player_id),
+    INDEX idx_sb_pms_comp_sea (competition_id, season_id)
+  ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
+]) {
+  pool.query(sql).catch(err => { if (!err?.message?.includes('already exists')) console.warn('[warn] sb table:', err?.message); });
+}
+
+// ── StatsBomb admin endpoints ─────────────────────────────────────────────────
+
+// GET /api/admin/statsbomb/status — import history & last SHA
+app.get('/api/admin/statsbomb/status', authMiddleware, ensureAdmin, async (_req, res) => {
+  try {
+    const [logs] = await pool.query(
+      'SELECT * FROM sb_import_log ORDER BY started_at DESC LIMIT 10'
+    );
+    const [[matchCount]] = await pool.query('SELECT COUNT(*) as cnt FROM sb_matches');
+    const [[playerCount]] = await pool.query('SELECT COUNT(*) as cnt FROM sb_players');
+    const [[compCount]] = await pool.query('SELECT COUNT(*) as cnt FROM sb_competitions');
+    return res.json({
+      logs,
+      totals: { matches: matchCount.cnt, players: playerCount.cnt, competitions: compCount.cnt },
+    });
+  } catch (err) {
+    return res.status(500).json({ error: err?.message });
+  }
+});
+
+// POST /api/admin/statsbomb/import — trigger manual import
+let sbImportRunning = false;
+app.post('/api/admin/statsbomb/import', authMiddleware, ensureAdmin, async (req, res) => {
+  if (sbImportRunning) return res.status(409).json({ error: 'Import already running.' });
+  sbImportRunning = true;
+  const force = req.body?.force === true;
+  // Return immediately — import runs in background
+  res.json({ ok: true, message: 'Import started in background. Check /status for progress.' });
+  try {
+    const { runStatsBombImport } = await import('./statsbomb-import.js');
+    await runStatsBombImport({ force });
+  } catch (e) {
+    console.error('[statsbomb/import]', e?.message);
+  } finally {
+    sbImportRunning = false;
+  }
+});
+
+// GET /api/statsbomb/player — search player stats by name
+// POST /api/statsbomb/compare-credit — Premium/Admin required; deducts 1 credit to unlock a comparison
+app.post('/api/statsbomb/compare-credit', authMiddleware, ensurePremiumOrAdmin, async (req, res) => {
+  try {
+    const userId = req.user.id;
+    // Admins bypass credit system entirely
+    const [adminRows] = await pool.query("SELECT id FROM user_roles WHERE user_id = ? AND role = 'admin' LIMIT 1", [userId]);
+    if (adminRows.length) return res.json({ ok: true, free: true });
+
+    const creditCheck = await canUseCredit(userId);
+    if (!creditCheck.ok) {
+      return res.status(402).json({ error: creditCheck.error, quota: creditCheck.quota, used: creditCheck.used });
+    }
+    await spendCredit(userId, 'Comparaison de joueurs');
+    return res.json({ ok: true });
+  } catch (err) {
+    return res.status(500).json({ error: err?.message });
+  }
+});
+
+app.get('/api/statsbomb/player', authMiddleware, async (req, res) => {
+  try {
+    const name = (req.query.name || '').trim();
+    if (!name) return res.status(400).json({ error: 'missing name' });
+
+    // Find matching player(s) — fuzzy match on name
+    const [players] = await pool.query(
+      `SELECT player_id, player_name, player_nickname, country
+       FROM sb_players
+       WHERE player_name LIKE ? OR player_nickname LIKE ?
+       ORDER BY player_name LIMIT 5`,
+      [`%${name}%`, `%${name}%`]
+    );
+    if (!players.length) return res.json({ players: [], stats: [] });
+
+    const playerIds = players.map(p => p.player_id);
+    const placeholders = playerIds.map(() => '?').join(',');
+
+    // Aggregate stats per player per competition/season
+    const [stats] = await pool.query(
+      `SELECT
+         s.player_id, s.player_name,
+         c.competition_name, c.season_name, c.competition_gender,
+         s.competition_id, s.season_id,
+         COUNT(DISTINCT s.match_id)     AS matches,
+         SUM(s.goals)                   AS goals,
+         ROUND(SUM(s.xg), 2)            AS xg,
+         SUM(s.shots)                   AS shots,
+         SUM(s.shots_on_target)         AS shots_on_target,
+         SUM(s.passes)                  AS passes,
+         SUM(s.passes_completed)        AS passes_completed,
+         ROUND(100.0 * SUM(s.passes_completed) / NULLIF(SUM(s.passes),0), 1) AS pass_pct,
+         SUM(s.key_passes)              AS key_passes,
+         SUM(s.progressive_passes)      AS progressive_passes,
+         SUM(s.dribbles_completed)      AS dribbles_completed,
+         SUM(s.dribbles_attempted)      AS dribbles_attempted,
+         SUM(s.pressures)               AS pressures,
+         SUM(s.tackles)                 AS tackles,
+         SUM(s.interceptions)           AS interceptions,
+         SUM(s.duels_won)               AS duels_won,
+         SUM(s.duels_total)             AS duels_total
+       FROM sb_player_match_stats s
+       JOIN sb_competitions c ON c.competition_id = s.competition_id AND c.season_id = s.season_id
+       WHERE s.player_id IN (${placeholders})
+       GROUP BY s.player_id, s.player_name, s.competition_id, s.season_id
+       ORDER BY s.player_id, c.competition_name, c.season_name DESC`,
+      playerIds
+    );
+
+    return res.json({ players, stats });
+  } catch (err) {
+    return res.status(500).json({ error: err?.message });
+  }
+});
+
+// GET /api/statsbomb/team-analysis — tactical profile for a club
+app.get('/api/statsbomb/team-analysis', authMiddleware, async (req, res) => {
+  try {
+    const teamName = (req.query.team || '').trim();
+    if (!teamName) return res.status(400).json({ error: 'missing team' });
+
+    // Find matching teams
+    const [teams] = await pool.query(
+      `SELECT team_id, team_name FROM sb_teams WHERE team_name LIKE ? LIMIT 5`,
+      [`%${teamName}%`]
+    );
+    if (!teams.length) return res.json({ teams: [], selected: null, stats: [], topScorers: [] });
+
+    const teamId = teams[0].team_id;
+
+    // Aggregate team stats across all matches (home + away)
+    const [aggRows] = await pool.query(`
+      SELECT
+        c.competition_name, c.season_name, c.competition_id, c.season_id,
+        COUNT(DISTINCT s.match_id) AS matches,
+        SUM(s.goals) AS goals,
+        ROUND(SUM(s.xg), 2) AS xg_total,
+        ROUND(SUM(s.xg) / NULLIF(COUNT(DISTINCT s.match_id), 0), 3) AS xg_per_game,
+        SUM(s.shots) AS shots,
+        ROUND(SUM(s.shots) / NULLIF(COUNT(DISTINCT s.match_id), 0), 1) AS shots_per_game,
+        SUM(s.passes) AS passes,
+        ROUND(100.0 * SUM(s.passes_completed) / NULLIF(SUM(s.passes), 0), 1) AS pass_pct,
+        ROUND(SUM(s.passes) / NULLIF(COUNT(DISTINCT s.match_id), 0), 1) AS passes_per_game,
+        SUM(s.progressive_passes) AS prog_passes,
+        ROUND(SUM(s.progressive_passes) / NULLIF(COUNT(DISTINCT s.match_id), 0), 1) AS prog_passes_per_game,
+        SUM(s.pressures) AS pressures,
+        ROUND(SUM(s.pressures) / NULLIF(COUNT(DISTINCT s.match_id), 0), 1) AS pressures_per_game,
+        SUM(s.tackles) AS tackles,
+        SUM(s.interceptions) AS interceptions,
+        SUM(s.dribbles_completed) AS dribbles,
+        ROUND(SUM(s.dribbles_completed) / NULLIF(COUNT(DISTINCT s.match_id), 0), 1) AS dribbles_per_game,
+        ROUND(100.0 * SUM(s.duels_won) / NULLIF(SUM(s.duels_total), 0), 1) AS duel_win_pct
+      FROM sb_player_match_stats s
+      JOIN sb_competitions c ON c.competition_id = s.competition_id AND c.season_id = s.season_id
+      WHERE s.team_id = ?
+      GROUP BY s.competition_id, s.season_id
+      ORDER BY c.competition_name, c.season_name DESC
+    `, [teamId]);
+
+    // Top scorers for this team
+    const [topScorers] = await pool.query(`
+      SELECT player_name, SUM(goals) AS goals, ROUND(SUM(xg), 2) AS xg, COUNT(DISTINCT match_id) AS matches
+      FROM sb_player_match_stats
+      WHERE team_id = ?
+      GROUP BY player_id, player_name
+      ORDER BY goals DESC
+      LIMIT 10
+    `, [teamId]);
+
+    return res.json({ teams, selected: teams[0], stats: aggRows, topScorers });
+  } catch (err) {
+    return res.status(500).json({ error: err?.message });
+  }
+});
+
+// GET /api/statsbomb/competitions — list all available competitions
+app.get('/api/statsbomb/competitions', authMiddleware, async (_req, res) => {
+  try {
+    const [rows] = await pool.query(
+      `SELECT competition_id, season_id, competition_name, season_name, country_name, competition_gender
+       FROM sb_competitions ORDER BY competition_name, season_name DESC`
+    );
+    return res.json({ competitions: rows });
+  } catch (err) {
+    return res.status(500).json({ error: err?.message });
+  }
+});
+
+// GET /api/statsbomb/matches — list matches, filterable by competition_id + season_id
+app.get('/api/statsbomb/matches', authMiddleware, async (req, res) => {
+  try {
+    const competitionId = parseInt(req.query.competition_id) || null;
+    const seasonId      = parseInt(req.query.season_id) || null;
+    const search        = (req.query.search || '').trim();
+    const limit         = Math.min(parseInt(req.query.limit) || 50, 200);
+    const offset        = parseInt(req.query.offset) || 0;
+
+    let where = '1=1';
+    const params = [];
+    if (competitionId) { where += ' AND m.competition_id = ?'; params.push(competitionId); }
+    if (seasonId)      { where += ' AND m.season_id = ?';      params.push(seasonId); }
+    if (search) {
+      where += ' AND (ht.team_name LIKE ? OR at.team_name LIKE ?)';
+      params.push(`%${search}%`, `%${search}%`);
+    }
+
+    const [rows] = await pool.query(
+      `SELECT m.match_id, m.match_date, m.kick_off,
+              m.home_score, m.away_score, m.competition_stage, m.match_week,
+              m.competition_id, m.season_id, m.has_360,
+              c.competition_name, c.season_name, c.country_name,
+              ht.team_name AS home_team, at.team_name AS away_team
+       FROM sb_matches m
+       JOIN sb_teams ht ON ht.team_id = m.home_team_id
+       JOIN sb_teams at ON at.team_id = m.away_team_id
+       JOIN sb_competitions c ON c.competition_id = m.competition_id AND c.season_id = m.season_id
+       WHERE ${where}
+       ORDER BY m.match_date DESC, m.kick_off DESC
+       LIMIT ? OFFSET ?`,
+      [...params, limit, offset]
+    );
+
+    const [[{ total }]] = await pool.query(
+      `SELECT COUNT(*) as total FROM sb_matches m
+       JOIN sb_teams ht ON ht.team_id = m.home_team_id
+       JOIN sb_teams at ON at.team_id = m.away_team_id
+       WHERE ${where}`,
+      params
+    );
+
+    return res.json({ matches: rows, total, limit, offset });
+  } catch (err) {
+    return res.status(500).json({ error: err?.message });
+  }
+});
+
+// GET /api/statsbomb/match/:id — single match with top performers
+app.get('/api/statsbomb/match/:id', authMiddleware, async (req, res) => {
+  try {
+    const matchId = parseInt(req.params.id);
+    const [[match]] = await pool.query(
+      `SELECT m.*, c.competition_name, c.season_name,
+              ht.team_name AS home_team, at.team_name AS away_team
+       FROM sb_matches m
+       JOIN sb_teams ht ON ht.team_id = m.home_team_id
+       JOIN sb_teams at ON at.team_id = m.away_team_id
+       JOIN sb_competitions c ON c.competition_id = m.competition_id AND c.season_id = m.season_id
+       WHERE m.match_id = ?`,
+      [matchId]
+    );
+    if (!match) return res.status(404).json({ error: 'Match not found' });
+
+    // Top performers — ordered by goals + xg + key_passes
+    const [performers] = await pool.query(
+      `SELECT player_name, team_id, goals, xg, shots, key_passes, passes, passes_completed,
+              dribbles_completed, pressures, tackles, interceptions
+       FROM sb_player_match_stats
+       WHERE match_id = ?
+       ORDER BY (goals * 3 + xg + key_passes + tackles + interceptions) DESC
+       LIMIT 10`,
+      [matchId]
+    );
+
+    // Lineups
+    const [lineups] = await pool.query(
+      `SELECT l.player_id, l.player_name, l.team_id, l.jersey_number,
+              t.team_name,
+              s.goals, s.xg, s.key_passes, s.passes_completed, s.passes, s.tackles, s.pressures
+       FROM sb_lineups l
+       JOIN sb_teams t ON t.team_id = l.team_id
+       LEFT JOIN sb_player_match_stats s ON s.match_id = l.match_id AND s.player_id = l.player_id
+       WHERE l.match_id = ?
+       ORDER BY l.team_id, l.jersey_number`,
+      [matchId]
+    );
+
+    return res.json({ match, performers, lineups });
+  } catch (err) {
+    return res.status(500).json({ error: err?.message });
   }
 });
 

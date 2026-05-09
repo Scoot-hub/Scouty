@@ -6,6 +6,7 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Badge } from '@/components/ui/badge';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { toast } from 'sonner';
 import {
   ChevronLeft, Save, Eye, Upload, X, Plus, Tag, ImageIcon, Loader2, Globe, FileEdit,
@@ -23,7 +24,19 @@ interface Article {
   banner_url: string | null;
   keywords: string[] | string | null;
   status: 'draft' | 'published' | 'archived';
+  lang: string | null;
 }
+
+const ARTICLE_LANGS = [
+  { value: 'fr', label: '🇫🇷 Français' },
+  { value: 'en', label: '🇬🇧 English' },
+  { value: 'es', label: '🇪🇸 Español' },
+  { value: 'pt', label: '🇵🇹 Português' },
+  { value: 'de', label: '🇩🇪 Deutsch' },
+  { value: 'it', label: '🇮🇹 Italiano' },
+  { value: 'nl', label: '🇳🇱 Nederlands' },
+  { value: 'ar', label: '🇸🇦 العربية' },
+];
 
 function parseKeywords(kw: string[] | string | null): string[] {
   if (!kw) return [];
@@ -32,7 +45,7 @@ function parseKeywords(kw: string[] | string | null): string[] {
 }
 
 export default function EditorialEditor() {
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
   const qc = useQueryClient();
@@ -46,9 +59,10 @@ export default function EditorialEditor() {
   const [keywords, setKeywords] = useState<string[]>([]);
   const [kwInput, setKwInput] = useState('');
   const [status, setStatus] = useState<'draft' | 'published'>('draft');
+  const [articleLang, setArticleLang] = useState<string>(() => i18n.language.split('-')[0]);
   const [bannerUploading, setBannerUploading] = useState(false);
 
-  const { isLoading: loadingArticle } = useQuery<Article>({
+  const { data: articleData, isLoading: loadingArticle } = useQuery<Article>({
     queryKey: ['editorial-edit', id],
     queryFn: async () => {
       const res = await fetch(`${API}/editorial/${id}`, { credentials: 'include' });
@@ -59,23 +73,21 @@ export default function EditorialEditor() {
     staleTime: Infinity,
   });
 
-  // Load article data into state when fetched
+  // Populate form fields once article data arrives
   useEffect(() => {
-    if (!isEdit) return;
-    const cached = qc.getQueryData<Article>(['editorial-edit', id]);
-    if (cached) {
-      setTitle(cached.title);
-      setContent(cached.content);
-      setBannerUrl(cached.banner_url);
-      setBannerPreview(cached.banner_url);
-      setKeywords(parseKeywords(cached.keywords));
-      setStatus(cached.status === 'archived' ? 'draft' : cached.status);
-    }
-  }, [isEdit, id, qc]);
+    if (!articleData) return;
+    setTitle(articleData.title);
+    setContent(articleData.content);
+    setBannerUrl(articleData.banner_url);
+    setBannerPreview(articleData.banner_url);
+    setKeywords(parseKeywords(articleData.keywords));
+    setStatus(articleData.status === 'archived' ? 'draft' : articleData.status);
+    if (articleData.lang) setArticleLang(articleData.lang);
+  }, [articleData]);
 
   const saveMut = useMutation({
     mutationFn: async (publishStatus: 'draft' | 'published') => {
-      const body = { title: title.trim(), content, banner_url: bannerUrl, keywords, status: publishStatus };
+      const body = { title: title.trim(), content, banner_url: bannerUrl, keywords, status: publishStatus, lang: articleLang };
       if (isEdit) {
         const res = await fetch(`${API}/editorial/${id}`, {
           method: 'PUT',
@@ -105,7 +117,7 @@ export default function EditorialEditor() {
   });
 
   const handleBannerUpload = async (file: File) => {
-    if (!file.type.startsWith('image/')) { toast.error('Fichier image requis'); return; }
+    if (!file.type.startsWith('image/')) { toast.error(t('editorial.image_file_required')); return; }
     setBannerUploading(true);
     // Preview immediately
     const reader = new FileReader();
@@ -158,6 +170,17 @@ export default function EditorialEditor() {
           </div>
         </div>
         <div className="flex items-center gap-2">
+          <Select value={articleLang} onValueChange={setArticleLang}>
+            <SelectTrigger className="rounded-xl gap-1.5 h-9 w-auto text-xs border-dashed">
+              <Globe className="w-3.5 h-3.5 text-muted-foreground" />
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              {ARTICLE_LANGS.map(l => (
+                <SelectItem key={l.value} value={l.value} className="text-xs">{l.label}</SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
           <Button
             variant="outline"
             onClick={() => saveMut.mutate('draft')}
@@ -303,27 +326,43 @@ export default function EditorialEditor() {
       </Card>
 
       {/* Bottom save bar */}
-      <div className="flex justify-end gap-2 pb-8">
-        <Button variant="outline" onClick={() => navigate('/editorial')} className="rounded-xl">
-          {t('common.cancel')}
-        </Button>
-        <Button
-          variant="outline"
-          onClick={() => saveMut.mutate('draft')}
-          disabled={!canSave || saveMut.isPending}
-          className="rounded-xl gap-2"
-        >
-          <Save className="w-4 h-4" />
-          {t('editorial.save_draft')}
-        </Button>
-        <Button
-          onClick={() => saveMut.mutate('published')}
-          disabled={!canSave || saveMut.isPending}
-          className="rounded-xl gap-2"
-        >
-          {saveMut.isPending ? <Loader2 className="w-4 h-4 animate-spin" /> : <Globe className="w-4 h-4" />}
-          {t('editorial.publish')}
-        </Button>
+      <div className="flex items-center justify-between gap-2 pb-8">
+        <div className="flex items-center gap-2 text-xs text-muted-foreground">
+          <Globe className="w-3.5 h-3.5" />
+          {t('editorial.post_lang')} :
+          <Select value={articleLang} onValueChange={setArticleLang}>
+            <SelectTrigger className="rounded-lg h-7 w-auto text-xs border-dashed">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              {ARTICLE_LANGS.map(l => (
+                <SelectItem key={l.value} value={l.value} className="text-xs">{l.label}</SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </div>
+        <div className="flex gap-2">
+          <Button variant="outline" onClick={() => navigate('/editorial')} className="rounded-xl">
+            {t('common.cancel')}
+          </Button>
+          <Button
+            variant="outline"
+            onClick={() => saveMut.mutate('draft')}
+            disabled={!canSave || saveMut.isPending}
+            className="rounded-xl gap-2"
+          >
+            <Save className="w-4 h-4" />
+            {t('editorial.save_draft')}
+          </Button>
+          <Button
+            onClick={() => saveMut.mutate('published')}
+            disabled={!canSave || saveMut.isPending}
+            className="rounded-xl gap-2"
+          >
+            {saveMut.isPending ? <Loader2 className="w-4 h-4 animate-spin" /> : <Globe className="w-4 h-4" />}
+            {t('editorial.publish')}
+          </Button>
+        </div>
       </div>
     </div>
   );

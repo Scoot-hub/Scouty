@@ -1265,13 +1265,13 @@ function ShadowTeamDetail({
         <aside className="lg:max-h-[calc(100vh-8rem)] min-w-0">
           <Tabs value={sidePanel} onValueChange={(v) => setSidePanel(v as 'stats' | 'bench')} className="h-full flex flex-col">
             <TabsList className="w-full grid grid-cols-2 h-9 bg-muted/60 rounded-xl p-1">
-              <TabsTrigger value="stats" className="rounded-lg gap-1.5 data-[state=active]:shadow-sm">
-                <BarChart3 className="w-3.5 h-3.5" aria-hidden="true" />
-                <span>{t('shadow_team.stats_title')}</span>
+              <TabsTrigger value="stats" className="rounded-lg gap-1 data-[state=active]:shadow-sm min-w-0">
+                <BarChart3 className="w-3.5 h-3.5 shrink-0" aria-hidden="true" />
+                <span className="truncate text-xs">{t('shadow_team.stats_tab')}</span>
               </TabsTrigger>
-              <TabsTrigger value="bench" className="rounded-lg gap-1.5 data-[state=active]:shadow-sm">
-                <Armchair className="w-3.5 h-3.5" aria-hidden="true" />
-                <span>{t('shadow_team.bench')}</span>
+              <TabsTrigger value="bench" className="rounded-lg gap-1 data-[state=active]:shadow-sm min-w-0">
+                <Armchair className="w-3.5 h-3.5 shrink-0" aria-hidden="true" />
+                <span className="truncate text-xs">{t('shadow_team.bench')}</span>
               </TabsTrigger>
             </TabsList>
             <TabsContent value="stats" className="flex-1 overflow-y-auto mt-3">
