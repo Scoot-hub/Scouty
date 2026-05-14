@@ -8,6 +8,7 @@ export interface CustomField {
   field_type: 'text' | 'textarea' | 'number' | 'price' | 'select' | 'multiselect' | 'link' | 'boolean' | 'date' | 'datetime' | 'phone' | 'email' | 'password' | 'separator' | 'player' | 'match' | 'championship';
   field_options: string[];
   field_hint?: string | null;
+  applies_to_all: boolean;
   display_order: number;
   created_at: string;
 }
@@ -39,6 +40,7 @@ export function useCustomFields() {
       return (data ?? []).map(d => ({
         ...d,
         field_options: Array.isArray(d.field_options) ? d.field_options as string[] : [],
+        applies_to_all: (d as { applies_to_all?: boolean | number | null }).applies_to_all !== false && (d as { applies_to_all?: boolean | number | null }).applies_to_all !== 0,
       })) as CustomField[];
     },
   });
@@ -64,7 +66,7 @@ export function useCustomFieldValues(playerId: string | undefined) {
 export function useCreateCustomField() {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: async (field: { field_name: string; field_type: string; field_options?: string[]; field_hint?: string; display_order?: number }) => {
+    mutationFn: async (field: { field_name: string; field_type: string; field_options?: string[]; field_hint?: string; applies_to_all?: boolean; display_order?: number }) => {
       const userId = await getCurrentUserId();
       const { data, error } = await supabase
         .from('custom_fields')
@@ -74,6 +76,7 @@ export function useCreateCustomField() {
           field_type: field.field_type,
           field_options: field.field_options ?? [],
           field_hint: field.field_hint ?? null,
+          applies_to_all: field.applies_to_all !== false,
           display_order: field.display_order ?? 0,
         })
         .select()
@@ -90,7 +93,7 @@ export function useCreateCustomField() {
 export function useUpdateCustomField() {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: async ({ id, ...updates }: { id: string; field_name?: string; field_type?: string; field_options?: string[]; field_hint?: string | null; display_order?: number }) => {
+    mutationFn: async ({ id, ...updates }: { id: string; field_name?: string; field_type?: string; field_options?: string[]; field_hint?: string | null; applies_to_all?: boolean; display_order?: number }) => {
       const { error } = await supabase
         .from('custom_fields')
         .update(updates)
@@ -150,6 +153,29 @@ export function useUpsertCustomFieldValue() {
           });
         if (error) throw error;
       }
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['custom_field_values'] });
+    },
+  });
+}
+
+export function useDeleteCustomFieldValue() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async ({ customFieldId, playerId }: { customFieldId: string; playerId: string }) => {
+      const { data: existing } = await supabase
+        .from('custom_field_values')
+        .select('id')
+        .eq('custom_field_id', customFieldId)
+        .eq('player_id', playerId)
+        .maybeSingle();
+      if (!existing) return;
+      const { error } = await supabase
+        .from('custom_field_values')
+        .delete()
+        .eq('id', (existing as { id: string }).id);
+      if (error) throw error;
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['custom_field_values'] });

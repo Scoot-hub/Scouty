@@ -1432,9 +1432,13 @@ function ShadowTeamDetail({
                               {posShort[player.position]}
                             </span>
                             <span className="text-sm font-bold font-mono">
-                              {player.current_level}
+                              <span className={player.current_level > 0 ? '' : 'text-muted-foreground font-normal'}>
+                                {player.current_level > 0 ? player.current_level : 'NA'}
+                              </span>
                               <span className="text-muted-foreground font-normal">/</span>
-                              <span className="text-primary">{player.potential}</span>
+                              <span className={player.potential > 0 ? 'text-primary' : 'text-muted-foreground font-normal'}>
+                                {player.potential > 0 ? player.potential : 'NA'}
+                              </span>
                             </span>
                           </div>
                         </button>
@@ -1608,7 +1612,9 @@ function PlayerHoverCardContent({ player, lang }: { player: Player; lang: string
       <div className="flex items-center justify-between text-xs">
         <span className="px-2 py-0.5 rounded-md bg-muted font-bold">{positionShort[player.position]}</span>
         <span className="font-mono font-bold">
-          {player.current_level}<span className="text-muted-foreground font-normal">/</span><span className="text-primary">{player.potential}</span>
+          <span className={player.current_level > 0 ? '' : 'text-muted-foreground font-normal'}>{player.current_level > 0 ? player.current_level : 'NA'}</span>
+          <span className="text-muted-foreground font-normal">/</span>
+          <span className={player.potential > 0 ? 'text-primary' : 'text-muted-foreground font-normal'}>{player.potential > 0 ? player.potential : 'NA'}</span>
         </span>
       </div>
       {contractYear && (
@@ -2328,7 +2334,9 @@ function SortablePlayerItem({
         <p className="text-[10px] text-muted-foreground truncate">{player.club}</p>
       </div>
       <span className="text-[10px] font-bold font-mono shrink-0">
-        {player.current_level}<span className="text-muted-foreground font-normal">/</span><span className="text-primary">{player.potential}</span>
+        <span className={player.current_level > 0 ? '' : 'text-muted-foreground font-normal'}>{player.current_level > 0 ? player.current_level : 'NA'}</span>
+        <span className="text-muted-foreground font-normal">/</span>
+        <span className={player.potential > 0 ? 'text-primary' : 'text-muted-foreground font-normal'}>{player.potential > 0 ? player.potential : 'NA'}</span>
       </span>
       <button
         onClick={onRemove}

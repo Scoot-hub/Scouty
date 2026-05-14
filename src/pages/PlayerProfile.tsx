@@ -16,7 +16,7 @@ import { CustomFieldsDisplay } from '@/components/CustomFieldsDisplay';
 import { CustomFieldsManager } from '@/components/CustomFieldsManager';
 import { MoreHorizontal } from 'lucide-react';
 import { supabase } from '@/integrations/supabase/client';
-import { getPlayerAge, getPotentialDescription, translateFoot, getOpinionTranslationKey, ALL_OPINIONS, resolveLeagueName, translateCountry, type Opinion, type Foot, type Report } from '@/types/player';
+import { getPlayerAge, getPotentialDescription, translateFoot, getOpinionTranslationKey, ALL_OPINIONS, resolveLeagueName, translateCountry, type Opinion, type Foot, type Position, type Report } from '@/types/player';
 import { usePositions } from '@/hooks/use-positions';
 import { FlagIcon } from '@/components/ui/flag-icon';
 import { OpinionBadge } from '@/components/ui/opinion-badge';
@@ -40,7 +40,7 @@ import { useWyscoutStats } from '@/hooks/use-wyscout-stats';
 import { usePlayerMarketValue } from '@/hooks/use-player-market-value';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from '@/components/ui/dropdown-menu';
-import { ArrowLeft, Edit, ExternalLink, PlusCircle, Trash2, RefreshCw, Globe, TrendingUp, Calendar, Ruler, User, MapPin, Hash, Pencil, Euro, Briefcase, LayoutDashboard, ListPlus, Check, Building2, AlertCircle, FileText, Upload, X, Clock, Youtube, Newspaper, Link2, StickyNote, Plus, Activity, Info, Video, ClipboardList, BarChart3, Play, HeartPulse, ChevronDown, Plug, Loader2, Loader2 as ModuleLoader, CheckCircle2 as ModuleOk, Award, Zap } from 'lucide-react';
+import { ArrowLeft, Edit, ExternalLink, PlusCircle, Trash2, RefreshCw, Globe, TrendingUp, Calendar, Ruler, User, MapPin, Hash, Pencil, Euro, Briefcase, LayoutDashboard, ListPlus, Check, Building2, AlertCircle, FileText, Upload, X, Clock, Youtube, Newspaper, Link2, StickyNote, Plus, Activity, Info, Video, ClipboardList, BarChart3, Play, HeartPulse, ChevronDown, Plug, Loader2, Loader2 as ModuleLoader, CheckCircle2 as ModuleOk, Award, Zap, Instagram, Twitter, Linkedin, BookOpen } from 'lucide-react';
 import { toast } from 'sonner';
 import { parseScoutingNotes, serializeScoutingNotes, loadLayout, saveLayout, type CardId, type CardSize, type LayoutConfig, type ScoutingNotes } from '@/lib/scouting-notes';
 import { formatDate as fmtDate, formatDateShort, formatDateTime, convertMV } from '@/lib/format-utils';
@@ -413,6 +413,14 @@ export default function PlayerProfile() {
   const ext = (player.external_data || {}) as Record<string, unknown>;
   const contractDate = player.contract_end ? new Date(player.contract_end) : null;
   const contractSoon = contractDate && (contractDate.getTime() - Date.now()) / (1000 * 60 * 60 * 24) < 180;
+
+  // Hero values: prefer enriched data so the hero never disagrees with the
+  // career list / details displayed in the "infos" tab.
+  const careerEntries = (Array.isArray(ext.career) ? ext.career : []) as { club: string; from?: string; to?: string }[];
+  const currentCareerClub = careerEntries.find(e => !e.to)?.club || careerEntries[0]?.club || null;
+  const heroClub = currentCareerClub || (ext.enriched_club as string | undefined) || player.club;
+  const heroLeague = (ext.enriched_league as string | undefined) || player.league;
+  const heroPosition = ((ext.position_canonical as Position | undefined) || player.position) as Position;
 
   const similarPlayers = allPlayers.filter(
     p => p.id !== player.id && p.position === player.position && Math.abs(p.potential - player.potential) <= 1
@@ -894,7 +902,9 @@ export default function PlayerProfile() {
                 <p className="text-xs text-muted-foreground flex items-center justify-center gap-1">
                   <FlagIcon nationality={sp.nationality} size="sm" />{sp.club}
                 </p>
-                <p className="text-lg font-bold font-mono mt-1">{sp.potential}</p>
+                <p className={`text-lg font-bold font-mono mt-1 ${sp.potential > 0 ? '' : 'text-muted-foreground font-normal'}`}>
+                  {sp.potential > 0 ? sp.potential : 'NA'}
+                </p>
               </div>
             </Link>
           ))}
@@ -933,7 +943,7 @@ export default function PlayerProfile() {
             <div className="flex items-start gap-5">
               <div className="relative">
                 <PlayerAvatar name={player.name} photoUrl={player.photo_url} size="hero" />
-                <div className="absolute -bottom-2 -right-2"><ClubBadge club={player.club} size="lg" /></div>
+                <div className="absolute -bottom-2 -right-2"><ClubBadge club={heroClub} size="lg" /></div>
               </div>
               <div className="pt-2">
                 <h1 className="text-2xl md:text-3xl font-bold">{player.name}</h1>
@@ -942,21 +952,21 @@ export default function PlayerProfile() {
                     <FlagIcon nationality={player.nationality} size="lg" />{translateCountry(player.nationality, i18n.language)}
                   </span>
                   <span>{age} {t('common.year')} ({player.generation})</span>
-                  <span>{posShort[player.position]} · {posLabels[player.position]}{player.position_secondaire ? ` / ${player.position_secondaire}` : ''} · {translateFoot(player.foot, t)}</span>
+                  <span>{posShort[heroPosition]} · {posLabels[heroPosition]}{player.position_secondaire ? ` / ${player.position_secondaire}` : ''} · {translateFoot(player.foot, t)}</span>
                 </div>
                 <div className="flex items-center gap-3 mt-3">
                   <div className="flex items-center gap-2">
-                    <ClubBadge club={player.club} size="sm" />
+                    <ClubBadge club={heroClub} size="sm" />
                     <div>
-                      <ClubLink club={player.club} className="text-sm font-semibold">{player.club}</ClubLink>
+                      <ClubLink club={heroClub} className="text-sm font-semibold">{heroClub}</ClubLink>
                       {ext.on_loan && ext.parent_club ? (
                         <div className="flex items-center gap-1.5 mt-0.5">
                           <span className="text-xs text-amber-600 dark:text-amber-400 font-medium">{t('profile.on_loan')}</span>
-                          <ClubBadge club={ext.parent_club} size="xs" />
-                          <span className="text-xs text-muted-foreground">{ext.parent_club}</span>
+                          <ClubBadge club={ext.parent_club as string} size="xs" />
+                          <span className="text-xs text-muted-foreground">{ext.parent_club as string}</span>
                         </div>
                       ) : (
-                        <p className="text-xs text-muted-foreground">{resolveLeagueName(player.club, player.league)}</p>
+                        <p className="text-xs text-muted-foreground">{resolveLeagueName(heroClub, heroLeague)}</p>
                       )}
                     </div>
                   </div>
@@ -1829,7 +1839,7 @@ export default function PlayerProfile() {
           </Card>
         </TabsContent>
 
-        {/* ── Tab: Links (personal notes, youtube, articles) ── */}
+        {/* ── Tab: Links (personal notes, articles, social profiles) ── */}
         <TabsContent value="links" className="mt-4 space-y-4">
           {/* Add research form */}
           <Card className="card-warm">
@@ -1843,16 +1853,28 @@ export default function PlayerProfile() {
               </Button>
             </CardHeader>
             <CardContent>
-              {showResearchForm && (
+              {showResearchForm && (() => {
+                const SOCIAL_LABELS: Record<string, string> = {
+                  instagram: 'Instagram',
+                  twitter: 'Twitter',
+                  linkedin: 'LinkedIn',
+                  wikipedia: 'Wikipédia',
+                  transfermarkt: 'Transfermarkt',
+                };
+                const isSocial = researchForm.type in SOCIAL_LABELS;
+                const autoTitle = isSocial ? `${SOCIAL_LABELS[researchForm.type]} de ${player.name}` : '';
+                const effectiveTitle = isSocial ? autoTitle : researchForm.title;
+                const canSubmit = !!effectiveTitle.trim();
+                return (
                 <form
                   className="space-y-3 mb-6 p-4 rounded-xl bg-muted/30 border border-border"
                   onSubmit={e => {
                     e.preventDefault();
-                    if (!researchForm.title.trim() || !id) return;
+                    if (!canSubmit || !id) return;
                     addResearch.mutate({
                       player_id: id,
                       type: researchForm.type,
-                      title: researchForm.title,
+                      title: effectiveTitle,
                       url: researchForm.url || undefined,
                       content: researchForm.content || undefined,
                     }, {
@@ -1863,7 +1885,7 @@ export default function PlayerProfile() {
                     });
                   }}
                 >
-                  <div className="grid grid-cols-2 gap-3">
+                  <div className={isSocial ? '' : 'grid grid-cols-2 gap-3'}>
                     <div className="space-y-1">
                       <label className="text-xs font-medium text-muted-foreground">{t('profile.research_type')}</label>
                       <Select value={researchForm.type} onValueChange={v => setResearchForm(f => ({ ...f, type: v }))}>
@@ -1872,22 +1894,28 @@ export default function PlayerProfile() {
                         </SelectTrigger>
                         <SelectContent>
                           <SelectItem value="note"><span className="flex items-center gap-2"><StickyNote className="w-3 h-3" /> {t('profile.research_type_note')}</span></SelectItem>
-                          <SelectItem value="youtube"><span className="flex items-center gap-2"><Youtube className="w-3 h-3" /> YouTube</span></SelectItem>
                           <SelectItem value="article"><span className="flex items-center gap-2"><Newspaper className="w-3 h-3" /> {t('profile.research_type_article')}</span></SelectItem>
                           <SelectItem value="link"><span className="flex items-center gap-2"><Link2 className="w-3 h-3" /> {t('profile.research_type_link')}</span></SelectItem>
+                          <SelectItem value="instagram"><span className="flex items-center gap-2"><Instagram className="w-3 h-3 text-pink-500" /> Instagram</span></SelectItem>
+                          <SelectItem value="twitter"><span className="flex items-center gap-2"><Twitter className="w-3 h-3 text-sky-500" /> Twitter / X</span></SelectItem>
+                          <SelectItem value="linkedin"><span className="flex items-center gap-2"><Linkedin className="w-3 h-3 text-blue-600" /> LinkedIn</span></SelectItem>
+                          <SelectItem value="wikipedia"><span className="flex items-center gap-2"><BookOpen className="w-3 h-3 text-muted-foreground" /> Wikipédia</span></SelectItem>
+                          <SelectItem value="transfermarkt"><span className="flex items-center gap-2"><TrendingUp className="w-3 h-3 text-emerald-600" /> Transfermarkt</span></SelectItem>
                         </SelectContent>
                       </Select>
                     </div>
-                    <div className="space-y-1">
-                      <label className="text-xs font-medium text-muted-foreground">{t('profile.research_title_label')}</label>
-                      <Input
-                        value={researchForm.title}
-                        onChange={e => setResearchForm(f => ({ ...f, title: e.target.value }))}
-                        placeholder={t('profile.research_title_placeholder')}
-                        className="h-8 text-xs"
-                        required
-                      />
-                    </div>
+                    {!isSocial && (
+                      <div className="space-y-1">
+                        <label className="text-xs font-medium text-muted-foreground">{t('profile.research_title_label')}</label>
+                        <Input
+                          value={researchForm.title}
+                          onChange={e => setResearchForm(f => ({ ...f, title: e.target.value }))}
+                          placeholder={t('profile.research_title_placeholder')}
+                          className="h-8 text-xs"
+                          required
+                        />
+                      </div>
+                    )}
                   </div>
                   {researchForm.type !== 'note' && (
                     <div className="space-y-1">
@@ -1895,7 +1923,7 @@ export default function PlayerProfile() {
                       <Input
                         value={researchForm.url}
                         onChange={e => setResearchForm(f => ({ ...f, url: e.target.value }))}
-                        placeholder={researchForm.type === 'youtube' ? 'https://youtube.com/watch?v=...' : 'https://...'}
+                        placeholder="https://..."
                         className="h-8 text-xs"
                         type="url"
                       />
@@ -1912,7 +1940,7 @@ export default function PlayerProfile() {
                     />
                   </div>
                   <div className="flex gap-2">
-                    <Button type="submit" size="sm" disabled={addResearch.isPending || !researchForm.title.trim()}>
+                    <Button type="submit" size="sm" disabled={addResearch.isPending || !canSubmit}>
                       {t('common.save')}
                     </Button>
                     <Button type="button" size="sm" variant="ghost" onClick={() => setShowResearchForm(false)}>
@@ -1920,7 +1948,8 @@ export default function PlayerProfile() {
                     </Button>
                   </div>
                 </form>
-              )}
+                );
+              })()}
 
               {/* Research items list */}
               {research.length === 0 && !showResearchForm ? (
@@ -1934,12 +1963,14 @@ export default function PlayerProfile() {
                   {research.map(item => {
                     const typeIcons: Record<string, React.ReactNode> = {
                       note: <StickyNote className="w-4 h-4" />,
-                      youtube: <Youtube className="w-4 h-4 text-red-500" />,
                       article: <Newspaper className="w-4 h-4 text-blue-500" />,
                       link: <Link2 className="w-4 h-4 text-primary" />,
+                      instagram: <Instagram className="w-4 h-4 text-pink-500" />,
+                      twitter: <Twitter className="w-4 h-4 text-sky-500" />,
+                      linkedin: <Linkedin className="w-4 h-4 text-blue-600" />,
+                      wikipedia: <BookOpen className="w-4 h-4 text-muted-foreground" />,
+                      transfermarkt: <TrendingUp className="w-4 h-4 text-emerald-600" />,
                     };
-                    const isYoutube = item.type === 'youtube' && item.url;
-                    const ytId = isYoutube ? item.url!.match(/(?:v=|youtu\.be\/|embed\/)([a-zA-Z0-9_-]{11})/)?.[1] : null;
 
                     return (
                       <div key={item.id} className="p-4 rounded-xl bg-muted/30 hover:bg-muted/50 transition-colors space-y-2 group">
@@ -1973,21 +2004,6 @@ export default function PlayerProfile() {
                             </button>
                           </div>
                         </div>
-
-                        {/* YouTube embed */}
-                        {ytId && (
-                          <div className="rounded-lg overflow-hidden aspect-video">
-                            <iframe
-                              src={`https://www.youtube.com/embed/${ytId}`}
-                              title={item.title}
-                              className="w-full h-full"
-                              allowFullScreen
-                              referrerPolicy="no-referrer-when-downgrade"
-                              sandbox="allow-scripts allow-same-origin allow-presentation allow-popups"
-                              allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
-                            />
-                          </div>
-                        )}
                       </div>
                     );
                   })}

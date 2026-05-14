@@ -159,7 +159,9 @@ export default function Tri() {
                             <span className="px-2 py-0.5 rounded-md bg-muted text-xs font-medium">{posShort[player.position]}</span>
                             <div className="text-center">
                               <p className="text-xs text-muted-foreground">Pot.</p>
-                              <p className="text-sm font-bold font-mono">{player.potential}</p>
+                              <p className={`text-sm font-bold font-mono ${player.potential > 0 ? '' : 'text-muted-foreground font-normal'}`}>
+                                {player.potential > 0 ? player.potential : 'NA'}
+                              </p>
                             </div>
                             <OpinionBadge opinion={player.general_opinion} size="sm" />
                           </div>

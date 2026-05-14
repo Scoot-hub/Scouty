@@ -195,6 +195,7 @@ export default function Players() {
   const [filtersOpen, setFiltersOpen] = useState<boolean>(() => loadFilters().filtersOpen ?? false);
   const [viewMode, setViewMode] = useState<'compact' | 'detailed' | 'table'>(() => loadFilters().viewMode ?? 'compact');
   const [updatedSince, setUpdatedSince] = useState<string>(() => loadFilters().updatedSince ?? '');
+  const [enrichment, setEnrichment] = useState<'' | 'enriched' | 'not_enriched'>(() => loadFilters().enrichment ?? '');
   const [debouncedSearch, setDebouncedSearch] = useState(search);
   const sentinelRef = useRef<HTMLDivElement>(null);
 
@@ -224,10 +225,10 @@ export default function Players() {
       search, opinions, positions, selectedLeagues, selectedClubs, selectedRoles,
       ageMin, ageMax, levelMin, levelMax, potMin, potMax,
       selectedContractRanges, selectedTasks, sort, filtersOpen, extraFiltersOpen, viewMode,
-      ratingMin, ratingMax, goalsMin, assistsMin, minutesMin, updatedSince,
+      ratingMin, ratingMax, goalsMin, assistsMin, minutesMin, updatedSince, enrichment,
       xgMin, xaMin, duelsWonPctMin, shotsOnMin, interceptionsMin, dribblesSuccessPctMin,
     }));
-  }, [search, opinions, positions, selectedLeagues, selectedClubs, selectedRoles, ageMin, ageMax, levelMin, levelMax, potMin, potMax, selectedContractRanges, selectedTasks, sort, filtersOpen, extraFiltersOpen, viewMode, ratingMin, ratingMax, goalsMin, assistsMin, minutesMin, updatedSince, xgMin, xaMin, duelsWonPctMin, shotsOnMin, interceptionsMin, dribblesSuccessPctMin]);
+  }, [search, opinions, positions, selectedLeagues, selectedClubs, selectedRoles, ageMin, ageMax, levelMin, levelMax, potMin, potMax, selectedContractRanges, selectedTasks, sort, filtersOpen, extraFiltersOpen, viewMode, ratingMin, ratingMax, goalsMin, assistsMin, minutesMin, updatedSince, enrichment, xgMin, xaMin, duelsWonPctMin, shotsOnMin, interceptionsMin, dribblesSuccessPctMin]);
 
   const queryClient = useQueryClient();
 
@@ -258,8 +259,9 @@ export default function Players() {
     assistsMin: assistsMin || undefined,
     minutesMin: minutesMin || undefined,
     updatedSince: updatedSince || undefined,
+    enrichment: enrichment || undefined,
     sort: sort || undefined,
-  }), [debouncedSearch, showArchived, opinions, positions, selectedLeagues, selectedClubs, selectedRoles, selectedTasks, levelMin, levelMax, potMin, potMax, ageMin, ageMax, selectedContractRanges, ratingMin, ratingMax, goalsMin, assistsMin, minutesMin, updatedSince, sort, leagueParam, positionParam, opinionParam]);
+  }), [debouncedSearch, showArchived, opinions, positions, selectedLeagues, selectedClubs, selectedRoles, selectedTasks, levelMin, levelMax, potMin, potMax, ageMin, ageMax, selectedContractRanges, ratingMin, ratingMax, goalsMin, assistsMin, minutesMin, updatedSince, enrichment, sort, leagueParam, positionParam, opinionParam]);
 
   const {
     data: paginatedData,
@@ -918,6 +920,7 @@ export default function Players() {
     setXgMin(''); setXaMin(''); setDuelsWonPctMin('');
     setShotsOnMin(''); setInterceptionsMin(''); setDribblesSuccessPctMin('');
     setUpdatedSince('');
+    setEnrichment('');
   };
 
   const activeFilterCount =
@@ -935,7 +938,8 @@ export default function Players() {
     + (shotsOnMin ? 1 : 0)
     + (interceptionsMin ? 1 : 0)
     + (dribblesSuccessPctMin ? 1 : 0)
-    + (updatedSince ? 1 : 0);
+    + (updatedSince ? 1 : 0)
+    + (enrichment ? 1 : 0);
 
   const allOpinions = ALL_OPINIONS;
   const allPositions = Object.entries(posLabels) as [Position, string][];
@@ -1523,6 +1527,12 @@ export default function Players() {
                 {shotsOnMin && <FilterChip label={`${t('players.filter_shots_on')} ≥ ${shotsOnMin}`} onRemove={() => setShotsOnMin('')} />}
                 {interceptionsMin && <FilterChip label={`${t('players.filter_interceptions')} ≥ ${interceptionsMin}`} onRemove={() => setInterceptionsMin('')} />}
                 {dribblesSuccessPctMin && <FilterChip label={`${t('players.filter_dribbles_pct')} ≥ ${dribblesSuccessPctMin}%`} onRemove={() => setDribblesSuccessPctMin('')} />}
+                {enrichment && (
+                  <FilterChip
+                    label={enrichment === 'enriched' ? t('players.filter_enrichment_enriched') : t('players.filter_enrichment_not_enriched')}
+                    onRemove={() => setEnrichment('')}
+                  />
+                )}
               </div>
             )}
 
@@ -1551,6 +1561,30 @@ export default function Players() {
                         type="button"
                         onClick={() => setUpdatedSince(opt.value)}
                         className={`px-2.5 py-1 rounded-full text-[11px] font-semibold border transition-colors ${updatedSince === opt.value ? 'bg-primary text-primary-foreground border-primary' : 'border-border bg-background text-foreground hover:bg-muted'}`}
+                      >
+                        {opt.label}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                {/* Statut d'enrichissement */}
+                <div className="space-y-2">
+                  <p className="text-[10px] font-black uppercase tracking-wider text-muted-foreground flex items-center gap-1.5">
+                    <Sparkles className="w-3 h-3" />
+                    {t('players.filter_enrichment')}
+                  </p>
+                  <div className="flex flex-wrap gap-1.5">
+                    {([
+                      { label: t('players.filter_enrichment_all'), value: '' as const },
+                      { label: t('players.filter_enrichment_enriched'), value: 'enriched' as const },
+                      { label: t('players.filter_enrichment_not_enriched'), value: 'not_enriched' as const },
+                    ]).map(opt => (
+                      <button
+                        key={opt.value || 'all'}
+                        type="button"
+                        onClick={() => setEnrichment(opt.value)}
+                        className={`px-2.5 py-1 rounded-full text-[11px] font-semibold border transition-colors ${enrichment === opt.value ? 'bg-primary text-primary-foreground border-primary' : 'border-border bg-background text-foreground hover:bg-muted'}`}
                       >
                         {opt.label}
                       </button>
@@ -2053,8 +2087,8 @@ export default function Players() {
                           <td className="text-center px-2 py-2">{p.perf.minutes ?? '—'}</td>
                           <td className="text-center px-2 py-2">{p.perf.pass_accuracy != null ? `${Math.round(p.perf.pass_accuracy)}%` : '—'}</td>
                           <td className="text-center px-2 py-2">{p.perf.duels_won_pct != null ? `${p.perf.duels_won_pct}%` : '—'}</td>
-                          <td className="text-center px-2 py-2 font-bold">{p.current_level}</td>
-                          <td className="text-center px-2 py-2 font-bold text-primary">{p.potential}</td>
+                          <td className="text-center px-2 py-2 font-bold">{p.current_level > 0 ? p.current_level : <span className="text-muted-foreground font-normal">NA</span>}</td>
+                          <td className="text-center px-2 py-2 font-bold text-primary">{p.potential > 0 ? p.potential : <span className="text-muted-foreground font-normal">NA</span>}</td>
                         </tr>
                       );
                     });
@@ -2121,9 +2155,13 @@ export default function Players() {
                           <span className="px-1.5 sm:px-2 py-0.5 rounded-md bg-muted text-[11px] sm:text-xs font-medium">{getPlayerAge(player.generation, player.date_of_birth)} {t('common.year')}</span>
                           <span className="px-1.5 sm:px-2 py-0.5 rounded-md bg-muted text-[11px] sm:text-xs font-medium">{posShort[player.position]}</span>
                           <div className="ml-auto flex items-center gap-1.5 sm:gap-2 text-sm font-bold font-mono">
-                            <span title={t('players.level')}>{player.current_level}</span>
+                            <span title={t('players.level')} className={player.current_level > 0 ? '' : 'text-muted-foreground font-normal'}>
+                              {player.current_level > 0 ? player.current_level : 'NA'}
+                            </span>
                             <span className="text-muted-foreground font-normal">/</span>
-                            <span className="text-primary" title={t('players.potential')}>{player.potential}</span>
+                            <span className={player.potential > 0 ? 'text-primary' : 'text-muted-foreground font-normal'} title={t('players.potential')}>
+                              {player.potential > 0 ? player.potential : 'NA'}
+                            </span>
                           </div>
                         </div>
                         {/* Level/potential bars */}

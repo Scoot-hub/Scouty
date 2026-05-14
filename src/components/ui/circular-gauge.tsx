@@ -32,6 +32,7 @@ export function CircularGauge({
   }, []);
 
   const strokeColor = variant === 'success' ? 'hsl(var(--success))' : 'hsl(var(--primary))';
+  const isUnrated = !value || value <= 0;
 
   // Responsive text sizing based on gauge size
   const textClass = size >= 100 ? 'text-2xl' : size >= 70 ? 'text-lg' : size >= 50 ? 'text-sm' : 'text-xs';
@@ -63,7 +64,9 @@ export function CircularGauge({
           />
         </svg>
         <div className="absolute inset-0 flex items-center justify-center">
-          <span className={`${textClass} font-bold font-mono`}>{value}</span>
+          <span className={`${textClass} font-bold font-mono ${isUnrated ? 'text-muted-foreground' : ''}`}>
+            {isUnrated ? 'NA' : value}
+          </span>
         </div>
       </div>
       {label && <span className={`${labelClass} font-medium text-muted-foreground`}>{label}</span>}

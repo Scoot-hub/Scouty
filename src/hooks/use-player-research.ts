@@ -6,7 +6,7 @@ export interface ResearchItem {
   id: string;
   user_id: string;
   player_id: string;
-  type: 'note' | 'youtube' | 'article' | 'link';
+  type: 'note' | 'article' | 'link' | 'instagram' | 'twitter' | 'linkedin' | 'wikipedia' | 'transfermarkt';
   title: string;
   url: string | null;
   content: string | null;

@@ -921,7 +921,11 @@ export default function ClubProfile() {
                               <p className="text-[11px] text-muted-foreground truncate">{p.position}{p.nationality ? ` · ${translateCountry(p.nationality, i18n.language)}` : ''}</p>
                             </div>
                           </div>
-                          <Badge variant="outline" className="text-[10px] shrink-0 font-mono">{p.current_level}/10</Badge>
+                          {p.current_level > 0 ? (
+                            <Badge variant="outline" className="text-[10px] shrink-0 font-mono">{p.current_level}/10</Badge>
+                          ) : (
+                            <Badge variant="outline" className="text-[10px] shrink-0 font-mono text-muted-foreground">NA</Badge>
+                          )}
                         </Link>
                       ))}
                     </div>

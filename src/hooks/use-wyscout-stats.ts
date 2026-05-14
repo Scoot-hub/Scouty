@@ -152,3 +152,15 @@ export function useWyscoutStats(playerId: string | undefined) {
     staleTime: 5 * 60 * 1000,
   });
 }
+
+export function useAllWyscoutSummaries() {
+  return useQuery<WyscoutStatRow[]>({
+    queryKey: ['wyscout-summaries'],
+    queryFn: async () => {
+      const res = await fetch(`${API_BASE}/players-wyscout-summary`, { credentials: 'include' });
+      if (!res.ok) return [];
+      return res.json();
+    },
+    staleTime: 5 * 60 * 1000,
+  });
+}

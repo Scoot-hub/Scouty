@@ -82,12 +82,12 @@ export const CHART_COLORS = [
 
 export const RADAR_PRESETS: Record<string, { stats: string[] }> = {
   'profile-9': {
-    stats: ['goals', 'expected_goals', 'shots_on', 'big_chances_created', 'duels_won', 'aerial_duels_won'],
+    stats: ['goals_per90', 'xg_per90', 'shots_per90', 'shots_on_target_pct', 'touches_in_box_per90', 'aerial_duels_won_pct'],
   },
   'box-to-box': {
-    stats: ['tackles', 'interceptions', 'passes_key', 'dribbles_success', 'duels_won', 'goals'],
+    stats: ['interceptions_per90', 'sliding_tackles_per90', 'progressive_passes_per90', 'dribbles_success_pct', 'duels_won_pct', 'goals_per90'],
   },
   'playmaker': {
-    stats: ['assists', 'expected_assists', 'passes_key', 'passes_accuracy', 'dribbles_success', 'big_chances_created'],
+    stats: ['assists_per90', 'xa_per90', 'key_passes_per90', 'passes_accurate_pct', 'smart_passes_per90', 'progressive_passes_per90'],
   },
 };

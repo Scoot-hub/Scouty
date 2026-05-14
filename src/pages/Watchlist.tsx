@@ -499,9 +499,13 @@ function WatchlistDetail({
                       <span className="px-2 py-0.5 rounded-md bg-muted text-xs font-medium">{getPlayerAge(player.generation, player.date_of_birth)} {t('common.year')}</span>
                       <span className="px-2 py-0.5 rounded-md bg-muted text-xs font-medium">{posShort[player.position]}</span>
                       <div className="ml-auto flex items-center gap-2 text-sm font-bold font-mono">
-                        <span>{player.current_level}</span>
+                        <span className={player.current_level > 0 ? '' : 'text-muted-foreground font-normal'}>
+                          {player.current_level > 0 ? player.current_level : 'NA'}
+                        </span>
                         <span className="text-muted-foreground font-normal">/</span>
-                        <span className="text-primary">{player.potential}</span>
+                        <span className={player.potential > 0 ? 'text-primary' : 'text-muted-foreground font-normal'}>
+                          {player.potential > 0 ? player.potential : 'NA'}
+                        </span>
                       </div>
                     </div>
                   </div>
