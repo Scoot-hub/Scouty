@@ -210,7 +210,7 @@ function H2HSection({ matches, homeTeam, t }: { matches: import('@/hooks/use-mat
           const col = result === 'W' ? 'text-green-600 dark:text-green-400' : result === 'L' ? 'text-red-500' : 'text-amber-500';
           return (
             <div key={i} className="flex items-center justify-between text-xs text-muted-foreground gap-2">
-              <span className="text-[10px] shrink-0">{new Date(m.date).toLocaleDateString('fr-FR', { day: 'numeric', month: 'short', year: '2-digit' })}</span>
+              <span className="text-[10px] shrink-0">{new Date(m.date).toLocaleDateString(i18n.language, { day: 'numeric', month: 'short', year: '2-digit' })}</span>
               <span className="truncate text-[10px] flex-1 text-center">{m.homeTeam} {m.homeScore}–{m.awayScore} {m.awayTeam}</span>
               <span className={cn('font-black text-[10px] shrink-0', col)}>{result}</span>
             </div>

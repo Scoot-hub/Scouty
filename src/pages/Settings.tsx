@@ -13,7 +13,11 @@ import {
   Plus, GripVertical, ShieldAlert, Plug, CheckCircle2, XCircle, Loader2,
   KeyRound, ExternalLink, Crown, Bell, Mail, BellRing, Clock, Ruler, X,
   Euro, FileText, AlertTriangle,
+  AlignLeft, ListChecks, Banknote, Phone, Lock, Minus, Info,
 } from 'lucide-react';
+import {
+  Tooltip, TooltipContent, TooltipTrigger,
+} from '@/components/ui/tooltip';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import LanguageSwitcher from '@/components/LanguageSwitcher';
@@ -100,15 +104,24 @@ const INTEGRATION_MODULES: ModuleDef[] = [
 
 // ── Field type icons ─────────────────────────────────────────────────────────
 
-const TYPE_META: Record<string, { icon: React.ElementType; color: string }> = {
-  text:         { icon: Type,          color: 'text-blue-500 bg-blue-500/10' },
-  number:       { icon: Hash,          color: 'text-violet-500 bg-violet-500/10' },
-  select:       { icon: ListOrdered,   color: 'text-amber-500 bg-amber-500/10' },
-  link:         { icon: Link2,         color: 'text-sky-500 bg-sky-500/10' },
-  boolean:      { icon: ToggleLeft,    color: 'text-emerald-500 bg-emerald-500/10' },
-  player:       { icon: User,          color: 'text-primary bg-primary/10' },
-  match:        { icon: CalendarDays,  color: 'text-orange-500 bg-orange-500/10' },
-  championship: { icon: Trophy,        color: 'text-yellow-500 bg-yellow-500/10' },
+const TYPE_META: Record<string, { icon: React.ElementType; color: string; label: string }> = {
+  separator:    { icon: Minus,        color: 'text-muted-foreground bg-muted/60',      label: 'Séparateur' },
+  text:         { icon: Type,         color: 'text-blue-500 bg-blue-500/10',           label: 'Texte court' },
+  textarea:     { icon: AlignLeft,    color: 'text-blue-400 bg-blue-400/10',           label: 'Texte long' },
+  number:       { icon: Hash,         color: 'text-violet-500 bg-violet-500/10',       label: 'Nombre' },
+  price:        { icon: Banknote,     color: 'text-emerald-600 bg-emerald-600/10',     label: 'Prix' },
+  date:         { icon: CalendarDays, color: 'text-rose-500 bg-rose-500/10',           label: 'Date' },
+  datetime:     { icon: Clock,        color: 'text-orange-400 bg-orange-400/10',       label: 'Date & heure' },
+  select:       { icon: ListOrdered,  color: 'text-amber-500 bg-amber-500/10',         label: 'Choix unique' },
+  multiselect:  { icon: ListChecks,   color: 'text-amber-600 bg-amber-600/10',         label: 'Choix multiple' },
+  boolean:      { icon: ToggleLeft,   color: 'text-emerald-500 bg-emerald-500/10',     label: 'Oui / Non' },
+  link:         { icon: Link2,        color: 'text-sky-500 bg-sky-500/10',             label: 'Lien URL' },
+  phone:        { icon: Phone,        color: 'text-teal-500 bg-teal-500/10',           label: 'Téléphone' },
+  email:        { icon: Mail,         color: 'text-indigo-500 bg-indigo-500/10',       label: 'Email' },
+  password:     { icon: Lock,         color: 'text-gray-500 bg-gray-500/10',           label: 'Mot de passe' },
+  player:       { icon: User,         color: 'text-primary bg-primary/10',             label: 'Lien vers un joueur' },
+  match:        { icon: CalendarDays, color: 'text-orange-500 bg-orange-500/10',       label: 'Lien vers un match' },
+  championship: { icon: Trophy,       color: 'text-yellow-500 bg-yellow-500/10',       label: 'Lien vers un championnat' },
 };
 
 // ── Notification toggle row ──────────────────────────────────────────────────
@@ -851,6 +864,8 @@ export default function Settings() {
                   {fields.map((f, i) => {
                     const meta = TYPE_META[f.field_type] ?? TYPE_META.text;
                     const Icon = meta.icon;
+                    const opts = f.field_options ?? [];
+                    const isOptionType = f.field_type === 'select' || f.field_type === 'multiselect';
                     return (
                       <div
                         key={f.id}
@@ -858,33 +873,54 @@ export default function Settings() {
                         style={{ animationDelay: `${i * 40}ms` }}
                       >
                         <GripVertical className="w-4 h-4 text-muted-foreground/30 shrink-0 group-hover:text-muted-foreground/60 transition-colors" />
+
+                        {/* Type icon */}
                         <div className={`w-8 h-8 rounded-lg flex items-center justify-center shrink-0 ${meta.color}`}>
                           <Icon className="w-4 h-4" />
                         </div>
+
+                        {/* Name + type label */}
                         <div className="flex-1 min-w-0">
-                          <p className="text-sm font-semibold truncate">{f.field_name}</p>
+                          <div className="flex items-center gap-1.5">
+                            <p className="text-sm font-semibold truncate">{f.field_name}</p>
+                            {f.field_hint && (
+                              <Tooltip>
+                                <TooltipTrigger asChild>
+                                  <span className="shrink-0 cursor-default">
+                                    <Info className="w-3.5 h-3.5 text-primary/60 hover:text-primary transition-colors" />
+                                  </span>
+                                </TooltipTrigger>
+                                <TooltipContent side="top" className="max-w-[240px] text-xs">
+                                  {f.field_hint}
+                                </TooltipContent>
+                              </Tooltip>
+                            )}
+                          </div>
                           <p className="text-xs text-muted-foreground">{t(`custom_fields.type_${f.field_type}`)}</p>
                         </div>
-                        <div className="hidden sm:flex items-center gap-1.5 flex-wrap max-w-[200px]">
-                          {f.field_type === 'select' && (f.field_options ?? []).slice(0, 3).map((opt, oi) => (
-                            <span key={oi} className="px-2 py-0.5 rounded-full bg-primary/10 text-primary text-[11px] font-medium">{String(opt)}</span>
-                          ))}
-                          {f.field_type === 'select' && (f.field_options ?? []).length > 3 && (
-                            <span className="text-[11px] text-muted-foreground">+{(f.field_options ?? []).length - 3}</span>
-                          )}
-                          {f.field_type === 'championship' && (
-                            <span className="flex items-center gap-1 text-[11px] text-muted-foreground">
-                              <Trophy className="w-3 h-3 text-yellow-500" />
-                              {t('custom_fields.type_championship')}
-                            </span>
-                          )}
-                          {f.field_type === 'link' && (
-                            <span className="text-[11px] text-muted-foreground">URL</span>
-                          )}
-                          {f.field_type === 'boolean' && (
-                            <span className="text-[11px] text-muted-foreground">✓ / ✗</span>
+
+                        {/* Right-side contextual info — uniforme pour tous les types */}
+                        <div className="hidden sm:flex items-center gap-1.5 flex-wrap max-w-[240px] justify-end">
+                          {/* Chip [ICONE] Label — présent pour tous les types */}
+                          <span className={`flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-medium border ${meta.color} border-current/20`}>
+                            <Icon className="w-3 h-3 shrink-0" />
+                            {meta.label}
+                          </span>
+
+                          {/* Options en plus pour select / multiselect */}
+                          {isOptionType && opts.length > 0 && (
+                            <>
+                              {opts.slice(0, 2).map((opt, oi) => (
+                                <span key={oi} className="px-1.5 py-0.5 rounded-full bg-muted text-muted-foreground text-[11px]">{String(opt)}</span>
+                              ))}
+                              {opts.length > 2 && (
+                                <span className="text-[11px] text-muted-foreground">+{opts.length - 2}</span>
+                              )}
+                            </>
                           )}
                         </div>
+
+                        {/* Actions */}
                         <div className="flex items-center gap-1 shrink-0">
                           <button
                             onClick={() => openEdit(f)}

@@ -162,8 +162,8 @@ export function useMyTicketReply() {
       return res.json();
     },
     onSuccess: (_, vars) => {
+      // Only refresh the detail view — the list is refreshed when the user returns to it (onBack)
       qc.invalidateQueries({ queryKey: ['my-ticket', vars.ticketId] });
-      qc.invalidateQueries({ queryKey: ['my-tickets'] });
     },
   });
 }

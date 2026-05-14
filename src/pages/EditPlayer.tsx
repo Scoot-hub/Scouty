@@ -16,6 +16,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Slider } from '@/components/ui/slider';
 import { Textarea } from '@/components/ui/textarea';
 import { PhotoUpload } from '@/components/ui/photo-upload';
+import DateInput from '@/components/ui/date-input';
 import { useToast } from '@/hooks/use-toast';
 import { ArrowLeft, Save, Search } from 'lucide-react';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
@@ -266,7 +267,7 @@ export default function EditPlayer() {
             <h2 className="text-xs font-bold uppercase tracking-wider text-muted-foreground">{t('player_form.eval_label')}</h2>
             <div><Label>{t('player_form.current_level')} <span className="font-mono font-bold">{level[0]}</span>/10</Label><Slider value={level} onValueChange={setLevel} min={0} max={10} step={0.5} className="mt-3" /></div>
             <div><Label>{t('player_form.potential')} <span className="font-mono font-bold">{potential[0]}</span>/10</Label><Slider value={potential} onValueChange={setPotential} min={0} max={10} step={0.5} className="mt-3" /><p className="text-xs text-muted-foreground mt-2 italic">{getPotentialLabel(potential[0])}</p></div>
-            <div><Label>{t('player_form.contract_end')}</Label><Input type="date" value={contractEnd} onChange={e => setContractEnd(e.target.value)} className="mt-1" /></div>
+            <div><Label>{t('player_form.contract_end')}</Label><DateInput value={contractEnd} onChange={setContractEnd} className="mt-1" /></div>
             <div><Label>{t('player_form.task')}</Label><div className="flex gap-3 mt-1">
               <Button type="button" variant={task === '' ? 'default' : 'outline'} size="sm" onClick={() => setTask('')}>{t('player_form.task_none')}</Button>
               {PLAYER_TASKS.map(tk => (<Button key={tk} type="button" variant={task === tk ? 'default' : 'outline'} size="sm" onClick={() => setTask(tk)}>{t(getTaskTranslationKey(tk))}</Button>))}

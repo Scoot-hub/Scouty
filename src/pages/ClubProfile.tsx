@@ -14,6 +14,7 @@ import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Textarea } from '@/components/ui/textarea';
 import { Input } from '@/components/ui/input';
+import DateInput from '@/components/ui/date-input';
 import { Label } from '@/components/ui/label';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '@/components/ui/dialog';
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from '@/components/ui/dropdown-menu';
@@ -29,6 +30,9 @@ import {
   Zap, StickyNote, Pencil, Check, X as XIcon, Link2, MoreHorizontal, Camera,
 } from 'lucide-react';
 import { toast } from 'sonner';
+import { formatDate, convertMV } from '@/lib/format-utils';
+import { useUiPreferences } from '@/contexts/UiPreferencesContext';
+import { useRatesMap } from '@/hooks/use-exchange-rates';
 
 const API = (import.meta.env.API_URL || '/api').replace(/\/$/, '');
 
@@ -164,8 +168,28 @@ interface ClubOverride {
   scout_rating?: number | null;
 }
 
+// Defer a section's data fetch until it enters the viewport (200px lookahead).
+function useLazySection() {
+  const ref = useRef<HTMLDivElement>(null);
+  const [visible, setVisible] = useState(false);
+  useEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    if (typeof IntersectionObserver === 'undefined') { setVisible(true); return; }
+    const obs = new IntersectionObserver(
+      ([e]) => { if (e.isIntersecting) { setVisible(true); obs.disconnect(); } },
+      { rootMargin: '300px' },
+    );
+    obs.observe(el);
+    return () => obs.disconnect();
+  }, []);
+  return { ref, visible };
+}
+
 export default function ClubProfile() {
   const { t, i18n } = useTranslation();
+  const { dateFormat, currency } = useUiPreferences();
+  const rates = useRatesMap();
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
   const clubName = searchParams.get('club') || '';
@@ -178,6 +202,12 @@ export default function ClubProfile() {
   const { data: canOverride } = useIsAdminOrModerator();
   const queryClient = useQueryClient();
   const followedEntry = followedClubs.find(c => c.club_name.toLowerCase() === clubName.toLowerCase());
+
+  // Lazy sections — only fetch when scrolled into view
+  const { ref: staffSectionRef,   visible: staffVisible   } = useLazySection();
+  const { ref: honoursSectionRef, visible: honoursVisible } = useLazySection();
+  const { ref: historySectionRef, visible: historyVisible } = useLazySection();
+  const { ref: buzzSectionRef,    visible: buzzVisible    } = useLazySection();
 
   // Resolve common abbreviations
   const resolvedClub = clubName ? resolveClubName(clubName) : '';
@@ -374,7 +404,7 @@ export default function ClubProfile() {
       });
       return (data?.honours ?? []) as ClubHonour[];
     },
-    enabled: !!team?.idTeam,
+    enabled: !!team?.idTeam && honoursVisible,
     staleTime: 24 * 60 * 60 * 1000,
   });
 
@@ -407,7 +437,7 @@ export default function ClubProfile() {
       if (!resp.ok) return null;
       return resp.json();
     },
-    enabled: !!tmId,
+    enabled: !!tmId && historyVisible,
     staleTime: 24 * 60 * 60 * 1000,
   });
 
@@ -428,7 +458,7 @@ export default function ClubProfile() {
       if (!res.ok) return null;
       return res.json();
     },
-    enabled: !!clubLookupName,
+    enabled: !!clubLookupName && staffVisible,
     staleTime: 7 * 24 * 60 * 60 * 1000,
   });
 
@@ -473,7 +503,7 @@ export default function ClubProfile() {
       if (!res.ok) return { posts: [] };
       return res.json();
     },
-    enabled: !!team?.strTeam || !!clubName,
+    enabled: !!team && buzzVisible,
     staleTime: 5 * 60 * 1000,
   });
 
@@ -1017,7 +1047,7 @@ export default function ClubProfile() {
                             )}
                             <div className="flex-1 min-w-0">
                               <p className="text-sm font-medium truncate">{isHome ? `vs ${opp}` : `@ ${opp}`}</p>
-                              <p className="text-[11px] text-muted-foreground">{ev.strLeague && `${ev.strLeague} · `}{ev.dateEvent && new Date(ev.dateEvent + 'T00:00:00').toLocaleDateString()}</p>
+                              <p className="text-[11px] text-muted-foreground">{ev.strLeague && `${ev.strLeague} · `}{ev.dateEvent && formatDate(ev.dateEvent + 'T00:00:00', dateFormat)}</p>
                             </div>
                             {hasScore && (
                               <span className={`text-xs font-bold px-2 py-0.5 rounded-full shrink-0 ${
@@ -1051,7 +1081,7 @@ export default function ClubProfile() {
                           const isHome = ev.strHomeTeam?.toLowerCase() === team.strTeam?.toLowerCase();
                           const opp = isHome ? ev.strAwayTeam : ev.strHomeTeam;
                           const oppBadge = isHome ? ev.strAwayTeamBadge : ev.strHomeTeamBadge;
-                          const dateStr = ev.dateEvent ? new Date(ev.dateEvent + 'T00:00:00').toLocaleDateString(undefined, { weekday: 'short', day: 'numeric', month: 'short' }) : '';
+                          const dateStr = ev.dateEvent ? formatDate(ev.dateEvent + 'T00:00:00', dateFormat) : '';
                           return (
                             <div key={ev.idEvent} className="flex items-center gap-3 p-2 rounded-xl hover:bg-muted/40 transition-colors">
                               {oppBadge ? (
@@ -1133,6 +1163,7 @@ export default function ClubProfile() {
               })()}
 
               {/* ── Palmarès (TheSportsDB) ── */}
+              <div ref={honoursSectionRef}>
               {sortedHonours.length > 0 && (
                 <Card>
                   <CardHeader className="pb-3">
@@ -1163,12 +1194,17 @@ export default function ClubProfile() {
                 </Card>
               )}
 
+              </div>{/* end honoursSectionRef */}
+
               {/* ── Anciens joueurs (Transfermarkt) ── */}
+              <div ref={historySectionRef}>
               {(clubHistory?.formerPlayers?.length ?? 0) > 0 && (
                 <FormerPlayersCard players={clubHistory!.formerPlayers} t={t} />
               )}
+              </div>
 
               {/* ── Actualités buzz mentionnant le club ── */}
+              <div ref={buzzSectionRef}>
               <Card>
                 <CardHeader className="pb-3">
                   <CardTitle className="flex items-center gap-2 text-base">
@@ -1204,6 +1240,7 @@ export default function ClubProfile() {
                   )}
                 </CardContent>
               </Card>
+              </div>{/* end buzzSectionRef */}
 
               {/* ── Partenariat & joueurs recommandés (override) ── */}
               {(override?.partnership_status || override?.recommended_players) && (
@@ -1300,6 +1337,7 @@ export default function ClubProfile() {
               })()}
 
               {/* ── Coach / Manager ── */}
+              <div ref={staffSectionRef}>
               {coachName && (
                 <Card>
                   <CardHeader className="pb-3">
@@ -1343,7 +1381,7 @@ export default function ClubProfile() {
                         )}
                         {displayCoachDateBorn && (
                           <p className="text-xs text-muted-foreground mt-0.5">
-                            {t('club.born')} {new Date(displayCoachDateBorn + 'T00:00:00').toLocaleDateString()}
+                            {t('club.born')} {formatDate(displayCoachDateBorn.split('T')[0], dateFormat)}
                           </p>
                         )}
                         <a
@@ -1407,6 +1445,7 @@ export default function ClubProfile() {
                   </CardContent>
                 </Card>
               )}
+              </div>{/* end staffSectionRef */}
 
               {/* ── Contact scouting (override) — en haut de sidebar car actionnable ── */}
               {(override?.contact_name || override?.contact_email || override?.contact_phone) && (
@@ -1466,7 +1505,7 @@ export default function ClubProfile() {
                         <div><p className="text-muted-foreground mb-0.5">{t('club.avg_age')}</p><p className="font-medium">{team._tmAvgAge}</p></div>
                       )}
                       {team._tmMarketValue && (
-                        <div className="col-span-2"><p className="text-muted-foreground mb-0.5">{t('club.market_value')}</p><p className="font-semibold text-green-600">{team._tmMarketValue}</p></div>
+                        <div className="col-span-2"><p className="text-muted-foreground mb-0.5">{t('club.market_value')}</p><p className="font-semibold text-green-600">{convertMV(team._tmMarketValue, currency, rates)}</p></div>
                       )}
                       {(override?.transfer_budget || override?.avg_salary) && (
                         <div className="col-span-2 border-t border-border/40 pt-2 grid grid-cols-2 gap-x-3 gap-y-2.5">
@@ -1641,7 +1680,7 @@ export default function ClubProfile() {
                           )}
                           <p className="text-xs leading-relaxed whitespace-pre-line">{note.content}</p>
                           <p className="text-[10px] text-muted-foreground mt-1.5">
-                            {note.author_name?.trim() || '?'} · {new Date(note.updated_at).toLocaleDateString()}
+                            {note.author_name?.trim() || '?'} · {formatDate(note.updated_at, dateFormat)}
                           </p>
                         </div>
                       ))}
@@ -1811,7 +1850,7 @@ export default function ClubProfile() {
                 </div>
                 <div className="space-y-1.5">
                   <Label className="text-xs">{t('club.coach_dob')}</Label>
-                  <Input type="date" value={overrideForm.coach_date_born || ''} onChange={e => setOverrideForm(f => ({ ...f, coach_date_born: e.target.value }))} className="h-8 text-sm" />
+                  <DateInput value={overrideForm.coach_date_born || ''} onChange={v => setOverrideForm(f => ({ ...f, coach_date_born: v }))} className="h-8 text-sm" />
                 </div>
                 <div className="space-y-1.5 sm:col-span-2">
                   <Label className="text-xs">{t('club.staff_technical')}</Label>

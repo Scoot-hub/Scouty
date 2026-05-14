@@ -1,5 +1,8 @@
 import { useState, useRef, useEffect } from 'react';
 import { useTranslation } from 'react-i18next';
+import { useQueryClient } from '@tanstack/react-query';
+import { formatDate, formatDateTime } from '@/lib/format-utils';
+import { useUiPreferences } from '@/contexts/UiPreferencesContext';
 import { useIsAdmin } from '@/hooks/use-admin';
 import {
   useAdminTickets,
@@ -35,6 +38,7 @@ const statusBadge = (status: string, t: (k: string) => string) => {
 
 export default function AdminTickets() {
   const { t } = useTranslation();
+  const { dateFormat, timeFormat, timezone } = useUiPreferences();
   const { data: isAdmin, isLoading: adminLoading } = useIsAdmin();
   const { data: tickets = [], isLoading } = useAdminTickets();
   const [selectedId, setSelectedId] = useState<string | null>(null);
@@ -116,7 +120,7 @@ export default function AdminTickets() {
                     <div className="flex items-center gap-2">
                       {statusBadge(ticket.status, t)}
                       <span className="text-[10px] text-muted-foreground">
-                        {new Date(ticket.created_at).toLocaleDateString()}
+                        {formatDate(ticket.created_at, dateFormat)}
                       </span>
                     </div>
                   </div>
@@ -148,16 +152,26 @@ export default function AdminTickets() {
 
 function ChatPanel({ ticketId, onBack }: { ticketId: string; onBack: () => void }) {
   const { t } = useTranslation();
+  const { dateFormat, timeFormat, timezone } = useUiPreferences();
   const { data, isLoading, refetch } = useAdminTicketDetail(ticketId);
   const reply = useAdminReplyTicket();
   const sendEmailMut = useAdminSendTicketEmail();
   const updateStatus = useAdminUpdateTicketStatus();
+  const qc = useQueryClient();
   const [msg, setMsg] = useState('');
   const chatEndRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     chatEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [data?.messages?.length]);
+
+  // Once messages are visible, refresh the admin lists so the badge clears
+  useEffect(() => {
+    if (data) {
+      qc.invalidateQueries({ queryKey: ['admin-tickets'] });
+      qc.invalidateQueries({ queryKey: ['admin-tickets-unread'] });
+    }
+  }, [data?.ticket?.id]);
 
   const handleReply = async () => {
     if (!msg.trim()) return;
@@ -197,7 +211,7 @@ function ChatPanel({ ticketId, onBack }: { ticketId: string; onBack: () => void 
           </div>
         </div>
         <div className="flex items-center justify-between text-[11px] text-muted-foreground">
-          <span>{ticket.user_name || ticket.user_email} · {new Date(ticket.created_at).toLocaleString()}</span>
+          <span>{ticket.user_name || ticket.user_email} · {formatDateTime(ticket.created_at, dateFormat, timeFormat, timezone)}</span>
           <div className="flex items-center gap-1.5">
             {ticket.status !== 'closed' && (
               <Button variant="outline" size="sm" className="text-[10px] h-6 rounded-lg" onClick={() => handleStatusChange('closed')}>
@@ -235,7 +249,7 @@ function ChatPanel({ ticketId, onBack }: { ticketId: string; onBack: () => void 
           <div className="max-w-[80%] rounded-2xl rounded-tl-md px-4 py-2.5 bg-muted text-sm">
             <div className="text-[10px] text-muted-foreground mb-1 font-semibold">{ticket.user_name || ticket.user_email}</div>
             <div className="whitespace-pre-wrap leading-relaxed">{ticket.message}</div>
-            <div className="text-[9px] text-muted-foreground mt-1">{new Date(ticket.created_at).toLocaleString()}</div>
+            <div className="text-[9px] text-muted-foreground mt-1">{formatDateTime(ticket.created_at, dateFormat, timeFormat, timezone)}</div>
           </div>
         </div>
 
@@ -253,7 +267,7 @@ function ChatPanel({ ticketId, onBack }: { ticketId: string; onBack: () => void 
               </div>
               <div className="whitespace-pre-wrap leading-relaxed">{m.body}</div>
               <div className={cn('text-[9px] mt-1', m.is_admin ? 'text-primary-foreground/50' : 'text-muted-foreground')}>
-                {new Date(m.created_at).toLocaleString()}
+                {formatDateTime(m.created_at, dateFormat, timeFormat, timezone)}
               </div>
             </div>
           </div>

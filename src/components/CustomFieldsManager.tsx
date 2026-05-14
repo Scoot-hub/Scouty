@@ -6,15 +6,28 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
-import { PlusCircle, Pencil, Trash2, Settings2, X, Trophy, Type, Hash, ListOrdered, Link2, ToggleLeft, User, CalendarDays } from 'lucide-react';
+import {
+  PlusCircle, Pencil, Trash2, Settings2, X, Trophy,
+  Type, Hash, List, Link2, ToggleLeft, User, CalendarDays,
+  Clock, AlignLeft, Banknote, Phone, Mail, Lock, Minus, ListChecks,
+} from 'lucide-react';
 import { toast } from 'sonner';
 
 const FIELD_TYPES = [
+  { value: 'separator',    label: 'custom_fields.type_separator',    icon: Minus,        noOptions: true },
   { value: 'text',         label: 'custom_fields.type_text',         icon: Type },
+  { value: 'textarea',     label: 'custom_fields.type_textarea',     icon: AlignLeft },
   { value: 'number',       label: 'custom_fields.type_number',       icon: Hash },
-  { value: 'select',       label: 'custom_fields.type_select',       icon: ListOrdered },
-  { value: 'link',         label: 'custom_fields.type_link',         icon: Link2 },
+  { value: 'price',        label: 'custom_fields.type_price',        icon: Banknote },
+  { value: 'date',         label: 'custom_fields.type_date',         icon: CalendarDays },
+  { value: 'datetime',     label: 'custom_fields.type_datetime',     icon: Clock },
+  { value: 'select',       label: 'custom_fields.type_select',       icon: List,         hasOptions: true },
+  { value: 'multiselect',  label: 'custom_fields.type_multiselect',  icon: ListChecks,   hasOptions: true },
   { value: 'boolean',      label: 'custom_fields.type_boolean',      icon: ToggleLeft },
+  { value: 'link',         label: 'custom_fields.type_link',         icon: Link2 },
+  { value: 'phone',        label: 'custom_fields.type_phone',        icon: Phone },
+  { value: 'email',        label: 'custom_fields.type_email',        icon: Mail },
+  { value: 'password',     label: 'custom_fields.type_password',     icon: Lock },
   { value: 'player',       label: 'custom_fields.type_player',       icon: User },
   { value: 'match',        label: 'custom_fields.type_match',        icon: CalendarDays },
   { value: 'championship', label: 'custom_fields.type_championship', icon: Trophy },
@@ -44,15 +57,16 @@ export function CustomFieldsManager({
   const [editingField, setEditingField] = useState<CustomField | null>(null);
   const [fieldName, setFieldName] = useState('');
   const [fieldType, setFieldType] = useState<string>('text');
+  const [fieldHint, setFieldHint] = useState('');
   const [options, setOptions] = useState<string[]>([]);
   const [newOption, setNewOption] = useState('');
 
-  // When opened with initialField from parent, pre-populate
   useEffect(() => {
     if (open && initialField) {
       setEditingField(initialField);
       setFieldName(initialField.field_name);
       setFieldType(initialField.field_type);
+      setFieldHint(initialField.field_hint ?? '');
       setOptions(initialField.field_options ?? []);
     }
   }, [open, initialField]);
@@ -61,6 +75,7 @@ export function CustomFieldsManager({
     setEditingField(null);
     setFieldName('');
     setFieldType('text');
+    setFieldHint('');
     setOptions([]);
     setNewOption('');
   };
@@ -69,33 +84,26 @@ export function CustomFieldsManager({
     setEditingField(field);
     setFieldName(field.field_name);
     setFieldType(field.field_type);
+    setFieldHint(field.field_hint ?? '');
     setOptions(field.field_options ?? []);
     setOpen(true);
   };
 
-  const openCreate = () => {
-    resetForm();
-    setOpen(true);
-  };
+  const openCreate = () => { resetForm(); setOpen(true); };
+
+  const isSeparator = fieldType === 'separator';
+  const hasOptions = ['select', 'multiselect'].includes(fieldType);
+  const canSave = isSeparator ? true : !!fieldName.trim();
 
   const handleSave = async () => {
-    if (!fieldName.trim()) return;
+    if (!canSave) return;
     try {
+      const name = isSeparator ? (fieldName.trim() || '') : fieldName.trim();
       if (editingField) {
-        await updateField.mutateAsync({
-          id: editingField.id,
-          field_name: fieldName.trim(),
-          field_type: fieldType,
-          field_options: options,
-        });
+        await updateField.mutateAsync({ id: editingField.id, field_name: name, field_type: fieldType, field_options: options, field_hint: fieldHint || null });
         toast.success(t('custom_fields.updated'));
       } else {
-        await createField.mutateAsync({
-          field_name: fieldName.trim(),
-          field_type: fieldType,
-          field_options: options,
-          display_order: fields.length,
-        });
+        await createField.mutateAsync({ field_name: name, field_type: fieldType, field_options: options, field_hint: fieldHint || undefined, display_order: fields.length });
         toast.success(t('custom_fields.created'));
       }
       resetForm();
@@ -121,9 +129,7 @@ export function CustomFieldsManager({
     }
   };
 
-  const removeOption = (idx: number) => {
-    setOptions(options.filter((_, i) => i !== idx));
-  };
+  const removeOption = (idx: number) => setOptions(options.filter((_, i) => i !== idx));
 
   return (
     <>
@@ -144,7 +150,7 @@ export function CustomFieldsManager({
             <DialogDescription>{t('custom_fields.manage_desc')}</DialogDescription>
           </DialogHeader>
 
-          {/* Existing fields list (only in create mode) */}
+          {/* Existing fields list */}
           {!editingField && fields.length > 0 && (
             <div className="space-y-1.5 mb-2 max-h-44 overflow-y-auto pr-1">
               {fields.map(f => {
@@ -153,7 +159,7 @@ export function CustomFieldsManager({
                 return (
                   <div key={f.id} className="flex items-center gap-2 p-2 rounded-lg bg-muted/40 hover:bg-muted/60 transition-colors">
                     <FIcon className="w-3.5 h-3.5 text-muted-foreground shrink-0" />
-                    <span className="flex-1 text-sm font-medium truncate">{f.field_name}</span>
+                    <span className="flex-1 text-sm font-medium truncate">{f.field_name || <span className="text-muted-foreground italic">—</span>}</span>
                     <span className="text-xs text-muted-foreground hidden sm:block">{t(`custom_fields.type_${f.field_type}`)}</span>
                     <button onClick={() => openEdit(f)} className="p-1 hover:bg-muted rounded transition-colors"><Pencil className="w-3.5 h-3.5" /></button>
                     <button onClick={() => handleDelete(f.id)} className="p-1 hover:bg-destructive/10 rounded text-destructive transition-colors"><Trash2 className="w-3.5 h-3.5" /></button>
@@ -164,10 +170,6 @@ export function CustomFieldsManager({
           )}
 
           <div className="space-y-4 border-t pt-4">
-            <div>
-              <Label>{t('custom_fields.field_name')}</Label>
-              <Input value={fieldName} onChange={e => setFieldName(e.target.value)} placeholder={t('custom_fields.field_name_placeholder')} className="mt-1" />
-            </div>
             <div>
               <Label>{t('custom_fields.field_type')}</Label>
               <Select value={fieldType} onValueChange={setFieldType}>
@@ -188,7 +190,32 @@ export function CustomFieldsManager({
               </Select>
             </div>
 
-            {/* Type-specific help text */}
+            <div>
+              <Label>{t('custom_fields.field_name')}{isSeparator && <span className="ml-1 text-muted-foreground text-xs">({t('common.optional')})</span>}</Label>
+              <Input
+                value={fieldName}
+                onChange={e => setFieldName(e.target.value)}
+                placeholder={isSeparator ? t('custom_fields.separator_placeholder') : t('custom_fields.field_name_placeholder')}
+                className="mt-1"
+              />
+            </div>
+
+            {!isSeparator && (
+              <div>
+                <Label className="flex items-center gap-1">
+                  {t('custom_fields.field_hint')}
+                  <span className="text-muted-foreground text-xs">({t('common.optional')})</span>
+                </Label>
+                <Input
+                  value={fieldHint}
+                  onChange={e => setFieldHint(e.target.value)}
+                  placeholder={t('custom_fields.field_hint_placeholder')}
+                  className="mt-1"
+                />
+              </div>
+            )}
+
+            {/* Championship hint */}
             {fieldType === 'championship' && (
               <div className="flex items-start gap-2 p-3 rounded-lg bg-yellow-500/10 border border-yellow-500/20 text-sm text-yellow-700 dark:text-yellow-400">
                 <Trophy className="w-4 h-4 shrink-0 mt-0.5" />
@@ -196,7 +223,8 @@ export function CustomFieldsManager({
               </div>
             )}
 
-            {fieldType === 'select' && (
+            {/* Options (select / multiselect) */}
+            {hasOptions && (
               <div>
                 <Label>{t('custom_fields.options')}</Label>
                 <div className="flex gap-2 mt-1">
@@ -222,7 +250,7 @@ export function CustomFieldsManager({
 
           <DialogFooter>
             <Button variant="outline" onClick={() => { setOpen(false); resetForm(); }}>{t('common.cancel')}</Button>
-            <Button onClick={handleSave} disabled={!fieldName.trim()}>
+            <Button onClick={handleSave} disabled={!canSave}>
               {editingField ? t('common.save') : t('custom_fields.add')}
             </Button>
           </DialogFooter>

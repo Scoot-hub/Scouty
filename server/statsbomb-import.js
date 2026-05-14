@@ -54,6 +54,9 @@ async function sbFetch(url, json = true) {
 // ── GitHub latest commit SHA ──────────────────────────────────────────────────
 async function getLatestCommitSha() {
   const data = await sbFetch(`${GH_API}/commits?per_page=1&sha=master`);
+  if (!Array.isArray(data)) {
+    throw new Error(`GitHub API returned non-array (rate-limit?): ${JSON.stringify(data).slice(0, 200)}`);
+  }
   return data[0]?.sha || null;
 }
 
@@ -224,7 +227,9 @@ async function importMatch(conn, match, competitionId, seasonId) {
   // Fetch lineups
   let lineups = [];
   try {
-    lineups = await sbFetch(`${RAW}/lineups/${mid}.json`);
+    const raw = await sbFetch(`${RAW}/lineups/${mid}.json`);
+    lineups = Array.isArray(raw) ? raw : [];
+    if (!Array.isArray(raw)) console.warn(`  [warn] lineups ${mid}: expected array, got ${typeof raw}`);
   } catch (e) {
     console.warn(`  [warn] lineups ${mid}: ${e.message}`);
   }
@@ -246,7 +251,12 @@ async function importMatch(conn, match, competitionId, seasonId) {
   // Fetch events and aggregate
   let events = [];
   try {
-    events = await sbFetch(`${RAW}/events/${mid}.json`);
+    const raw = await sbFetch(`${RAW}/events/${mid}.json`);
+    if (!Array.isArray(raw)) {
+      console.warn(`  [warn] events ${mid}: expected array, got ${typeof raw} — skipping`);
+      return;
+    }
+    events = raw;
   } catch (e) {
     console.warn(`  [warn] events ${mid}: ${e.message}`);
     return;
@@ -314,7 +324,11 @@ export async function runStatsBombImport({ force = false, onProgress = null } = 
   try {
     // Fetch competition catalog
     log('Fetching competitions.json...');
-    const competitions = await sbFetch(`${RAW}/competitions.json`);
+    const rawCompetitions = await sbFetch(`${RAW}/competitions.json`);
+    if (!Array.isArray(rawCompetitions)) {
+      throw new Error(`competitions.json not an array: ${JSON.stringify(rawCompetitions).slice(0, 200)}`);
+    }
+    const competitions = rawCompetitions;
 
     const conn = await pool.getConnection();
     try {
@@ -339,7 +353,12 @@ export async function runStatsBombImport({ force = false, onProgress = null } = 
         await sleep(FETCH_DELAY_MS);
         let matches;
         try {
-          matches = await sbFetch(`${RAW}/matches/${cid}/${sid}.json`);
+          const raw = await sbFetch(`${RAW}/matches/${cid}/${sid}.json`);
+          if (!Array.isArray(raw)) {
+            console.warn(`  [warn] matches ${cid}/${sid}: expected array, got ${typeof raw} — skipping`);
+            continue;
+          }
+          matches = raw;
         } catch (e) {
           console.warn(`  [warn] matches ${cid}/${sid}: ${e.message}`);
           continue;

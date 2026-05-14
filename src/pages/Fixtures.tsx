@@ -19,10 +19,11 @@ import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover
 import { PlayerAvatar } from '@/components/ui/player-avatar';
 import { useToast } from '@/hooks/use-toast';
 import {
-  Building2, CalendarDays, ChevronLeft, ChevronRight,
+  Building2, CalendarDays, ChevronDown, ChevronLeft, ChevronRight,
   Clock, Globe, Loader2, Search, Star, Plus, Check, UserCircle, Zap,
 } from 'lucide-react';
-import { useUtcOffset, formatTimeWithOffset } from '@/hooks/use-utc-offset';
+import { useUtcOffset, formatTimeWithOffset, timezoneToUtcOffset } from '@/hooks/use-utc-offset';
+import { useUiPreferences } from '@/contexts/UiPreferencesContext';
 import { cn } from '@/lib/utils';
 
 const LazyStatsBombFixtures = lazy(() => import('@/components/fixtures/StatsBombFixtures'));
@@ -171,7 +172,16 @@ export default function Fixtures() {
   const [search, setSearch] = useState('');
   const [calendarOpen, setCalendarOpen] = useState(false);
   const { utcOffset, setUtcOffset, getLocalUtcOffset } = useUtcOffset();
+  const { timezone } = useUiPreferences();
   const [utcOpen, setUtcOpen] = useState(false);
+
+  // Sync UTC offset from user preferences on mount (only if user hasn't manually overridden)
+  useEffect(() => {
+    const stored = localStorage.getItem('scouthub-utc-offset');
+    if (stored === null && timezone) {
+      setUtcOffset(timezoneToUtcOffset(timezone));
+    }
+  }, [timezone]);
   const selectedDate = useMemo(() => getDateString(dayOffset), [dayOffset]);
   const { toast } = useToast();
 

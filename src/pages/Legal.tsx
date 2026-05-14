@@ -5,6 +5,7 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import logo from '@/assets/logo.png';
 import PageSEO from '@/components/PageSEO';
+import LanguageSwitcher from '@/components/LanguageSwitcher';
 
 export default function Legal() {
   const { t } = useTranslation();
@@ -40,6 +41,7 @@ export default function Legal() {
             <img src={logo} alt="Scouty" className="w-5 h-5" />
             <span className="text-lg font-extrabold tracking-tight">Scouty</span>
           </div>
+          <div className="ml-auto"><LanguageSwitcher variant="ghost" /></div>
         </div>
       </header>
 

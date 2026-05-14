@@ -96,6 +96,56 @@ export function convertMV(
 
 export type DateFormat = 'DD/MM/YYYY' | 'MM/DD/YYYY' | 'YYYY-MM-DD';
 
+/** Convert an ISO date string (YYYY-MM-DD) to the user's display format. */
+export function isoToDisplay(iso: string | null | undefined, format: DateFormat): string {
+  if (!iso) return '';
+  const clean = iso.slice(0, 10);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(clean)) return iso;
+  const [yyyy, mm, dd] = clean.split('-');
+  switch (format) {
+    case 'MM/DD/YYYY': return `${mm}/${dd}/${yyyy}`;
+    case 'YYYY-MM-DD': return clean;
+    default:           return `${dd}/${mm}/${yyyy}`;
+  }
+}
+
+/** Parse a user-typed date string into ISO (YYYY-MM-DD). Returns null if invalid. */
+export function displayToIso(text: string, format: DateFormat): string | null {
+  const clean = text.trim();
+  if (!clean) return null;
+  // Already ISO
+  if (/^\d{4}-\d{2}-\d{2}$/.test(clean)) {
+    const d = new Date(clean + 'T00:00:00');
+    return isNaN(d.getTime()) ? null : clean;
+  }
+  const sep = clean.includes('/') ? '/' : clean.includes('-') ? '-' : clean.includes('.') ? '.' : null;
+  if (!sep) return null;
+  const parts = clean.split(sep);
+  if (parts.length !== 3) return null;
+  let dd: string, mm: string, yyyy: string;
+  switch (format) {
+    case 'MM/DD/YYYY': [mm, dd, yyyy] = parts; break;
+    case 'YYYY-MM-DD': [yyyy, mm, dd] = parts; break;
+    default:           [dd, mm, yyyy] = parts;
+  }
+  const day = parseInt(dd, 10), month = parseInt(mm, 10), year = parseInt(yyyy, 10);
+  if (isNaN(day) || isNaN(month) || isNaN(year)) return null;
+  if (day < 1 || day > 31 || month < 1 || month > 12 || year < 1900 || year > 2100) return null;
+  const iso = `${String(year).padStart(4, '0')}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+  const d = new Date(iso + 'T00:00:00');
+  if (isNaN(d.getTime()) || d.getDate() !== day || d.getMonth() + 1 !== month || d.getFullYear() !== year) return null;
+  return iso;
+}
+
+/** Placeholder string for a date input in a given format. */
+export function datePlaceholder(format: DateFormat): string {
+  switch (format) {
+    case 'MM/DD/YYYY': return 'mm/dd/yyyy';
+    case 'YYYY-MM-DD': return 'yyyy-mm-dd';
+    default:           return 'jj/mm/aaaa';
+  }
+}
+
 export function formatDate(
   raw: string | Date | null | undefined,
   format: DateFormat,

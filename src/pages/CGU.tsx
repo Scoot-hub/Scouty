@@ -4,6 +4,8 @@ import { ArrowLeft } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import logo from '@/assets/logo.png';
 import PageSEO from '@/components/PageSEO';
+import LanguageSwitcher from '@/components/LanguageSwitcher';
+import GoogleTranslateBanner from '@/components/GoogleTranslateBanner';
 
 export default function CGU() {
   const { t } = useTranslation();
@@ -27,10 +29,12 @@ export default function CGU() {
             <img src={logo} alt="Scouty" className="w-5 h-5" />
             <span className="text-lg font-extrabold tracking-tight">Scouty</span>
           </div>
+          <div className="ml-auto"><LanguageSwitcher variant="ghost" /></div>
         </div>
       </header>
 
       <main className="max-w-4xl mx-auto px-6 py-12">
+        <GoogleTranslateBanner />
         <h1 className="text-3xl font-extrabold tracking-tight mb-2">Conditions Generales d'Utilisation</h1>
         <p className="text-muted-foreground mb-10">En vigueur au 1er avril 2026</p>
 

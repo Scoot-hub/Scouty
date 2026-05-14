@@ -145,6 +145,9 @@ export default {
     referral_code: 'Código de referido',
     referral_code_placeholder: 'Ej.: SCOUTY-5B354D95',
     referral_code_invalid: 'Código de referido inválido. Formato esperado: SCOUTY-XXXXXXXX',
+    country: 'País',
+    country_placeholder: 'Francia, España, Marruecos…',
+    country_hint: 'Completado automáticamente desde tu selección de idioma',
   },
 
   sidebar: {
@@ -262,6 +265,8 @@ export default {
     refresh_standings: 'Actualizar',
     from_db: 'Datos locales',
     historical: 'Histórico',
+    note_modified: 'Modificado el',
+    no_note: 'Sin nota guardada',
   },
 
   feedback: {
@@ -1148,6 +1153,30 @@ export default {
     title: '404',
     message: 'Página no encontrada',
     back: 'Volver al inicio',
+    previous_page: 'Página anterior',
+    hint: 'Si el problema persiste,',
+    report: 'repórtalo',
+    messages: [
+      { title: '¡Fuera de los límites del campo!', sub: 'El árbitro levanta la bandera — esta página está en fuera de juego.' },
+      { title: '¡Tiro por encima del larguero!', sub: 'Apuntaste demasiado alto. Esta URL no existe.' },
+      { title: 'El balón salió por la banda.', sub: 'Esta página abandonó el campo. Vuélvela a poner en juego.' },
+      { title: '¡Tarjeta roja para esta URL!', sub: 'Expulsada del partido. Esta página no va a volver.' },
+      { title: 'VAR en revisión…', sub: 'Tras la revisión, esta página nunca existió.' },
+    ],
+  },
+
+  landing: {
+    scenes: [
+      { tag: '01 — Perfiles de jugadores', title: 'Cada jugador,\nun perfil completo.',   sub: 'Centraliza toda tu información en un solo lugar: identidad, estadísticas, fotos, notas de observación e historial de seguimiento.' },
+      { tag: '02 — Enriquecimiento',       title: 'Datos que\nse actualizan solos.',      sub: 'Conectado a Transfermarkt, TheSportsDB y API-Football para enriquecer automáticamente valores de mercado, estadísticas y noticias.' },
+      { tag: '03 — Shadow Teams',          title: 'Construye\ntus tácticas.',             sub: 'Compón tus equipos ideales con tus jugadores seguidos. Listas, equipos tipo y ligas organizadas según tu lógica.' },
+      { tag: '04 — Colaboración',          title: 'Tu célula\nde reclutamiento.',         sub: 'Comparte tus análisis dentro de tu organización. Varios ojeadores, una sola herramienta. Roles, permisos y opiniones cruzadas.' },
+    ],
+    ui: {
+      watch: 'A seguir', level: 'Nivel', potential: 'Potencial', value: 'Valor',
+      goals: 'Goles', assists: 'Asistencias', pass_pct: 'Pases', minutes: 'Minutos',
+      stats_season: 'Estadísticas temporada', enriched_via: 'Enriquecido via Transfermarkt · TheSportsDB', collab_live: 'En directo',
+    },
   },
 
   admin: {
@@ -1261,6 +1290,8 @@ export default {
     deleted: 'Notificación eliminada.',
     purged: '{{count}} notificación(es) eliminada(s) con más de {{days}} días.',
     days_invalid: 'El número de días debe ser mayor o igual a 1.',
+    types_title: 'Tipos de notificaciones',
+    types_desc: 'Pasa el ratón por encima de un tipo para ver cuándo se activa. El número indica cuántas aparecen en los resultados actuales.',
   },
 
   analytics: {
@@ -1607,6 +1638,7 @@ export default {
     col_duration: 'Duración',
     col_status: 'Estado',
     col_result: 'Resultado',
+    already_running: 'Esta tarea ya está en ejecución. Espera a que termine antes de volver a lanzarla.',
   },
 
   credits: {
@@ -1926,14 +1958,26 @@ export default {
     field_name: 'Nombre del campo',
     field_name_placeholder: 'Ej: Velocidad, Agente, Enlace de vídeo...',
     field_type: 'Tipo de campo',
-    type_text: 'Texto',
+    type_text: 'Texto corto (256 car.)',
+    type_textarea: 'Texto largo',
     type_number: 'Número',
-    type_select: 'Lista desplegable',
+    type_price: 'Precio',
+    type_date: 'Fecha',
+    type_datetime: 'Fecha y hora',
+    type_select: 'Selección única',
+    type_multiselect: 'Selección múltiple',
     type_link: 'Enlace URL',
     type_boolean: 'Sí / No',
+    type_phone: 'Teléfono',
+    type_email: 'Email',
+    type_password: 'Contraseña',
+    type_separator: 'Separador',
     type_player: 'Enlace a un jugador',
     type_match: 'Enlace a un partido',
     type_championship: 'Enlace a un campeonato',
+    separator_placeholder: 'Título de sección (opcional)…',
+    field_hint: 'Info emergente',
+    field_hint_placeholder: 'Ej: Este campo indica la velocidad máxima en km/h…',
     search_player: 'Buscar un jugador...',
     search_match: 'Buscar un partido...',
     search_championship: 'Buscar un campeonato...',

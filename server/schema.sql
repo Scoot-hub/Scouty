@@ -204,6 +204,7 @@ CREATE TABLE IF NOT EXISTS custom_fields (
   field_name VARCHAR(255) NOT NULL,
   field_type VARCHAR(30) NOT NULL DEFAULT 'text',
   field_options JSON NULL,
+  field_hint TEXT NULL,
   display_order INT NOT NULL DEFAULT 0,
   created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   INDEX idx_custom_fields_user_order (user_id, display_order),

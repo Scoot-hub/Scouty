@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useMemo, useRef, useCallback } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useIsAdmin } from '@/hooks/use-admin';
 import { useQuery } from '@tanstack/react-query';
@@ -591,6 +591,175 @@ function StatCard({ icon: Icon, label, value, sub, trend, className }: {
   );
 }
 
+// ── Ticket Word Cloud ─────────────────────────────────────────────────────────
+
+interface WordFreq { word: string; count: number; }
+interface PlacedWord extends WordFreq { x: number; y: number; r: number; colorIdx: number; }
+
+const BUBBLE_COLORS = [
+  '#6366f1', '#0ea5e9', '#10b981', '#f59e0b', '#ef4444',
+  '#8b5cf6', '#ec4899', '#14b8a6', '#f97316', '#84cc16',
+];
+
+function placeWords(words: WordFreq[]): PlacedWord[] {
+  if (!words.length) return [];
+  const maxC = Math.max(...words.map(w => w.count));
+  const minC = Math.min(...words.map(w => w.count));
+  const range = maxC - minC || 1;
+  const placed: PlacedWord[] = [];
+
+  words.forEach((item, idx) => {
+    const t = (item.count - minC) / range;
+    const r = Math.round(26 + t * 54); // radius 26–80
+    let found = false;
+    // Golden-angle spiral outward from center
+    for (let step = 0; step < 800 && !found; step++) {
+      const angle = step * 2.39996; // golden angle in radians
+      const dist = step * 2.2;
+      const x = Math.cos(angle) * dist;
+      const y = Math.sin(angle) * dist * 0.72; // slight vertical squish
+      if (placed.every(p => Math.hypot(x - p.x, y - p.y) >= r + p.r + 6)) {
+        placed.push({ ...item, x, y, r, colorIdx: idx % BUBBLE_COLORS.length });
+        found = true;
+      }
+    }
+    if (!found) {
+      // Fallback: place at an offset without collision check
+      placed.push({ ...item, x: (idx - words.length / 2) * (r * 2 + 8), y: 0, r, colorIdx: idx % BUBBLE_COLORS.length });
+    }
+  });
+  return placed;
+}
+
+function TicketWordCloud() {
+  const { data, isLoading } = useQuery<WordFreq[]>({
+    queryKey: ['admin-ticket-word-cloud'],
+    queryFn: async () => {
+      const res = await fetch(`${API_BASE}/admin/analytics/ticket-words`, { credentials: 'include' });
+      if (!res.ok) throw new Error('Failed');
+      return res.json();
+    },
+    staleTime: 5 * 60_000,
+  });
+
+  const [zoom, setZoom] = useState(1);
+  const containerRef = useRef<HTMLDivElement>(null);
+
+  const placed = useMemo(() => placeWords(data ?? []), [data]);
+
+  const { vbX, vbY, vbW, vbH } = useMemo(() => {
+    if (!placed.length) return { vbX: -300, vbY: -200, vbW: 600, vbH: 400 };
+    const pad = 24;
+    const minX = Math.min(...placed.map(p => p.x - p.r)) - pad;
+    const minY = Math.min(...placed.map(p => p.y - p.r)) - pad;
+    const maxX = Math.max(...placed.map(p => p.x + p.r)) + pad;
+    const maxY = Math.max(...placed.map(p => p.y + p.r)) + pad;
+    return { vbX: minX, vbY: minY, vbW: maxX - minX, vbH: maxY - minY };
+  }, [placed]);
+
+  const handleWheel = useCallback((e: React.WheelEvent) => {
+    e.preventDefault();
+    setZoom(z => Math.min(5, Math.max(0.3, z * (e.deltaY > 0 ? 0.92 : 1.09))));
+  }, []);
+
+  if (isLoading) {
+    return <div className="flex justify-center py-16"><div className="animate-spin w-6 h-6 border-2 border-primary border-t-transparent rounded-full" /></div>;
+  }
+  if (!placed.length) {
+    return (
+      <div className="flex flex-col items-center justify-center py-12 text-muted-foreground">
+        <MessageSquare className="w-8 h-8 mb-2 opacity-20" />
+        <p className="text-sm">Aucun message dans le centre d'aide.</p>
+      </div>
+    );
+  }
+
+  const maxCount = Math.max(...placed.map(p => p.count));
+
+  return (
+    <div
+      ref={containerRef}
+      className="relative rounded-xl bg-muted/20 overflow-hidden select-none"
+      style={{ height: 460 }}
+      onWheel={handleWheel}
+    >
+      {/* Zoom controls */}
+      <div className="absolute top-3 right-3 z-10 flex items-center gap-1">
+        <button
+          onClick={() => setZoom(z => Math.min(5, z * 1.2))}
+          className="w-7 h-7 rounded-lg bg-background/80 backdrop-blur border text-sm font-bold hover:bg-muted transition-colors flex items-center justify-center"
+        >+</button>
+        <button
+          onClick={() => setZoom(1)}
+          className="h-7 px-2 rounded-lg bg-background/80 backdrop-blur border text-[10px] font-medium hover:bg-muted transition-colors"
+        >{Math.round(zoom * 100)}%</button>
+        <button
+          onClick={() => setZoom(z => Math.max(0.3, z * 0.83))}
+          className="w-7 h-7 rounded-lg bg-background/80 backdrop-blur border text-sm font-bold hover:bg-muted transition-colors flex items-center justify-center"
+        >−</button>
+      </div>
+      <p className="absolute bottom-2 left-3 text-[10px] text-muted-foreground/40 pointer-events-none">
+        Molette ou boutons pour zoomer
+      </p>
+
+      <svg
+        viewBox={`${vbX} ${vbY} ${vbW} ${vbH}`}
+        className="w-full h-full"
+        style={{ transform: `scale(${zoom})`, transformOrigin: 'center center', transition: 'transform 0.1s ease-out' }}
+      >
+        <defs>
+          {BUBBLE_COLORS.map((color, i) => (
+            <radialGradient key={i} id={`wcg-${i}`} cx="38%" cy="32%" r="70%">
+              <stop offset="0%" stopColor={color} stopOpacity="0.22" />
+              <stop offset="100%" stopColor={color} stopOpacity="0.05" />
+            </radialGradient>
+          ))}
+        </defs>
+
+        {placed.map(p => {
+          const color = BUBBLE_COLORS[p.colorIdx];
+          const opacity = 0.45 + (p.count / maxCount) * 0.55;
+          const fontSize = Math.max(8, Math.min(p.r * 0.36, 13));
+          const countSize = Math.max(7, fontSize * 0.72);
+
+          return (
+            <g key={p.word} style={{ opacity }}>
+              {/* Outer glow circle */}
+              <circle cx={p.x} cy={p.y} r={p.r + 3} fill={color} fillOpacity="0.04" />
+              {/* Main bubble */}
+              <circle cx={p.x} cy={p.y} r={p.r} fill={`url(#wcg-${p.colorIdx})`} stroke={color} strokeWidth="1.5" strokeOpacity="0.45" />
+              {/* Word */}
+              <text
+                x={p.x} y={p.y - countSize * 0.6}
+                textAnchor="middle"
+                dominantBaseline="middle"
+                fontSize={fontSize}
+                fontWeight="700"
+                fill={color}
+                style={{ letterSpacing: '-0.02em', fontFamily: 'inherit' }}
+              >
+                {p.word.length > Math.floor(p.r * 0.28) ? p.word.slice(0, Math.max(3, Math.floor(p.r * 0.28))) + '…' : p.word}
+              </text>
+              {/* Count */}
+              <text
+                x={p.x} y={p.y + fontSize * 0.8}
+                textAnchor="middle"
+                dominantBaseline="middle"
+                fontSize={countSize}
+                fill={color}
+                fillOpacity="0.65"
+                style={{ fontFamily: 'inherit', fontVariantNumeric: 'tabular-nums' }}
+              >
+                {p.count}×
+              </text>
+            </g>
+          );
+        })}
+      </svg>
+    </div>
+  );
+}
+
 export default function AdminAnalytics() {
   const { t, i18n } = useTranslation();
   const { data: isAdmin, isLoading: adminLoading } = useIsAdmin();
@@ -1007,6 +1176,22 @@ export default function AdminAnalytics() {
               </CardContent>
             </Card>
           )}
+
+          {/* Section 10: Ticket word cloud */}
+          <Card className="border-none card-warm">
+            <CardHeader className="pb-1">
+              <CardTitle className="text-sm font-bold flex items-center gap-2">
+                <MessageSquare className="w-4 h-4 text-primary" />
+                Mots-clés du centre d'aide
+              </CardTitle>
+              <p className="text-xs text-muted-foreground">
+                Mots les plus fréquents dans les tickets et messages support. La taille de la bulle reflète la fréquence.
+              </p>
+            </CardHeader>
+            <CardContent className="pt-2">
+              <TicketWordCloud />
+            </CardContent>
+          </Card>
         </>
       ))}
     </div>

@@ -351,6 +351,7 @@ const flagSizeMap = {
 };
 
 export function LeagueLogo({ league, size = 'md', className, fallback }: LeagueLogoProps) {
+  if (!league) return null;
   const key = league.toLowerCase().trim();
   const flagCode = LEAGUE_FLAG_CODE[key] ?? null;
 

@@ -61,7 +61,9 @@ export default function ProtectedRoute() {
   const { data: permsData, isLoading: permsLoading } = useMyPermissions();
   const { data: isAdmin } = useIsAdmin();
 
-  if (loading || permsLoading) {
+  // Block only on auth loading — permissions load in the background.
+  // Waiting for permsLoading can cause an infinite spinner if the API is slow.
+  if (loading) {
     return (
       <div className="min-h-screen bg-background flex items-center justify-center">
         <div className="flex flex-col items-center gap-3">

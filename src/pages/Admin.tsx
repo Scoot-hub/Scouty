@@ -146,6 +146,7 @@ export default function Admin() {
       setGrantDirection('earn');
       setGrantDescription('');
       queryClient.invalidateQueries({ queryKey: ['admin-users'] });
+      queryClient.invalidateQueries({ queryKey: ['credits-me'] });
     } catch (err: unknown) {
       toast.error(`Erreur : ${err instanceof Error ? err.message : 'inconnue'}`);
     } finally {

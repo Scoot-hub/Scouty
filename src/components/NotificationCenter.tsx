@@ -1,33 +1,39 @@
-import { useState } from 'react';
+import { useState, useRef, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
-import { Bell, Check, CheckCheck, Crown, FileSearch, Inbox, Sparkles, Trash2, Users, Zap, X, Heart, MessageCircle, AtSign } from 'lucide-react';
+import { Bell, CheckCheck, Crown, FileSearch, Inbox, Sparkles, Trash2, Users, Zap, X, Heart, MessageCircle, AtSign, TrendingUp, Calendar, CheckCircle2, Building2, Shield, Settings, Trophy } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { useNotifications, useUnreadCount, useMarkAsRead, useMarkAllAsRead, useDeleteNotification, type Notification } from '@/hooks/use-notifications';
 import { cn } from '@/lib/utils';
 
-function getIcon(notification: Notification) {
-  switch (notification.type) {
-    case 'like':         return <Heart className="w-4 h-4" />;
-    case 'comment':      return <MessageCircle className="w-4 h-4" />;
-    case 'mention':      return <AtSign className="w-4 h-4" />;
-    case 'enrichment':   return <Zap className="w-4 h-4" />;
-    case 'subscription': return <Crown className="w-4 h-4" />;
-    case 'player_news':  return <Sparkles className="w-4 h-4" />;
-    default:             return <Bell className="w-4 h-4" />;
-  }
+const TYPE_CONFIG: Record<string, { Icon: React.ElementType; color: string }> = {
+  like:                 { Icon: Heart,          color: 'text-rose-500 bg-rose-500/10' },
+  comment:              { Icon: MessageCircle,  color: 'text-blue-500 bg-blue-500/10' },
+  mention:              { Icon: AtSign,         color: 'text-purple-500 bg-purple-500/10' },
+  enrichment:           { Icon: Sparkles,       color: 'text-amber-500 bg-amber-500/10' },
+  subscription:         { Icon: Crown,          color: 'text-violet-500 bg-violet-500/10' },
+  player_news:          { Icon: Sparkles,       color: 'text-green-500 bg-green-500/10' },
+  affiliate_new:        { Icon: Users,          color: 'text-emerald-500 bg-emerald-500/10' },
+  affiliate_credits:    { Icon: Zap,            color: 'text-yellow-500 bg-yellow-500/10' },
+  affiliate_tier:       { Icon: Trophy,         color: 'text-amber-500 bg-amber-500/10' },
+  form_alert:           { Icon: TrendingUp,     color: 'text-orange-500 bg-orange-500/10' },
+  report_reminder:      { Icon: FileSearch,     color: 'text-rose-500 bg-rose-500/10' },
+  match_assignment:     { Icon: Calendar,       color: 'text-blue-500 bg-blue-500/10' },
+  assignment_confirmed: { Icon: CheckCircle2,   color: 'text-teal-500 bg-teal-500/10' },
+  community:            { Icon: MessageCircle,  color: 'text-indigo-500 bg-indigo-500/10' },
+  organization:         { Icon: Building2,      color: 'text-cyan-500 bg-cyan-500/10' },
+  squad:                { Icon: Shield,         color: 'text-lime-600 bg-lime-500/10' },
+  system:               { Icon: Settings,       color: 'text-slate-500 bg-slate-500/10' },
+};
+
+function getIconEl(notification: Notification) {
+  const cfg = TYPE_CONFIG[notification.type];
+  const Icon = cfg?.Icon ?? Bell;
+  return <Icon className="w-4 h-4" />;
 }
 
 function getTypeColor(type: string) {
-  switch (type) {
-    case 'like':         return 'text-rose-500 bg-rose-500/10';
-    case 'comment':      return 'text-blue-500 bg-blue-500/10';
-    case 'mention':      return 'text-purple-500 bg-purple-500/10';
-    case 'enrichment':   return 'text-amber-500 bg-amber-500/10';
-    case 'subscription': return 'text-primary bg-primary/10';
-    case 'player_news':  return 'text-green-500 bg-green-500/10';
-    default:             return 'text-muted-foreground bg-muted';
-  }
+  return TYPE_CONFIG[type]?.color ?? 'text-muted-foreground bg-muted';
 }
 
 function timeAgo(dateStr: string, t: (key: string, opts?: Record<string, unknown>) => string) {
@@ -45,54 +51,51 @@ export default function NotificationCenter() {
   const { t } = useTranslation();
   const navigate = useNavigate();
   const [open, setOpen] = useState(false);
+  const [panelPos, setPanelPos] = useState<{ top: number; right: number } | null>(null);
+  const buttonRef = useRef<HTMLButtonElement>(null);
   const { data: notifications = [] } = useNotifications();
   const unreadCount = useUnreadCount();
   const markAsRead = useMarkAsRead();
   const markAllAsRead = useMarkAllAsRead();
   const deleteNotif = useDeleteNotification();
 
+  const handleToggle = useCallback(() => {
+    if (!open && buttonRef.current) {
+      const rect = buttonRef.current.getBoundingClientRect();
+      setPanelPos({ top: rect.bottom + 8, right: window.innerWidth - rect.right });
+    }
+    setOpen(v => !v);
+  }, [open]);
+
   const handleClick = (notif: Notification) => {
     if (!notif.is_read) markAsRead.mutate(notif.id);
-    if (notif.link) {
-      navigate(notif.link);
-      setOpen(false);
-    }
+    if (notif.link) { navigate(notif.link); setOpen(false); }
   };
 
   return (
     <div className="relative">
-      {/* Bell button with tooltip */}
-      <div className="relative group/notif-tip">
-        <button
-          onClick={() => setOpen(!open)}
-          className="relative p-2 rounded-xl hover:bg-accent transition-colors"
-          aria-label={t('notifications.title')}
-        >
-          <Bell className="w-5 h-5 text-muted-foreground" />
-          {unreadCount > 0 && (
-            <span className="absolute -top-0.5 -right-0.5 min-w-[18px] h-[18px] flex items-center justify-center rounded-full bg-primary text-primary-foreground text-[10px] font-bold px-1">
-              {unreadCount > 99 ? '99+' : unreadCount}
-            </span>
-          )}
-        </button>
-        {!open && (
-          <div className="absolute right-0 top-full mt-1.5 pointer-events-none opacity-0 group-hover/notif-tip:opacity-100 transition-opacity duration-150 z-50">
-            <div className="bg-popover border border-border rounded-xl shadow-xl p-2.5 min-w-[180px] max-w-[220px]">
-              <p className="text-xs font-semibold text-popover-foreground mb-0.5">{t('notifications.title')}</p>
-              <p className="text-[11px] text-muted-foreground leading-snug">{t('notifications.tooltip')}</p>
-            </div>
-          </div>
+      {/* Bell button */}
+      <button
+        ref={buttonRef}
+        onClick={handleToggle}
+        className="relative p-2 rounded-xl hover:bg-accent transition-colors"
+        aria-label={t('notifications.title')}
+      >
+        <Bell className="w-5 h-5 text-muted-foreground" />
+        {unreadCount > 0 && (
+          <span className="absolute -top-0.5 -right-0.5 min-w-[18px] h-[18px] flex items-center justify-center rounded-full bg-primary text-primary-foreground text-[10px] font-bold px-1">
+            {unreadCount > 99 ? '99+' : unreadCount}
+          </span>
         )}
-      </div>
+      </button>
 
-      {/* Dropdown panel */}
-      {open && (
+      {/* Dropdown panel — fixed so it always renders above sidebar */}
+      {open && panelPos && (
         <>
-          {/* Backdrop */}
-          <div className="fixed inset-0 z-40" onClick={() => setOpen(false)} />
-
-          {/* Panel */}
-          <div className="absolute right-0 top-full mt-2 w-[380px] max-w-[calc(100vw-1rem)] bg-popover border border-border rounded-xl shadow-xl z-50 overflow-hidden">
+          <div className="fixed inset-0 z-[90]" onClick={() => setOpen(false)} />
+          <div
+            style={{ top: panelPos.top, right: panelPos.right }}
+            className="fixed w-[380px] max-w-[calc(100vw-1rem)] bg-popover border border-border rounded-xl shadow-xl z-[100] overflow-hidden">
             {/* Header */}
             <div className="flex items-center justify-between px-4 py-3 border-b border-border">
               <h3 className="text-sm font-bold">{t('notifications.title')}</h3>
@@ -134,7 +137,7 @@ export default function NotificationCenter() {
                   >
                     {/* Icon */}
                     <div className={cn('w-8 h-8 rounded-lg flex items-center justify-center shrink-0 mt-0.5', getTypeColor(notif.type))}>
-                      {getIcon(notif)}
+                      {getIconEl(notif)}
                     </div>
 
                     {/* Content */}

@@ -19,6 +19,7 @@ import { Badge } from '@/components/ui/badge';
 import { Checkbox } from '@/components/ui/checkbox';
 import { Textarea } from '@/components/ui/textarea';
 import { PhotoUpload } from '@/components/ui/photo-upload';
+import DateInput from '@/components/ui/date-input';
 import { useToast } from '@/hooks/use-toast';
 import { ArrowLeft, ArrowRight, Check, Search, LinkIcon, Loader2, Sparkles, Crown } from 'lucide-react';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
@@ -531,7 +532,7 @@ export default function AddPlayer() {
             <div><Label>{t('player_form.role')}</Label><Input value={role} onChange={e => setRole(e.target.value)} placeholder={t('player_form.role_placeholder')} className="mt-1" /></div>
             <div><Label>{t('player_form.strong_foot')}</Label><div className="flex gap-3 mt-1">{(['Gaucher', 'Droitier', 'Ambidextre'] as Foot[]).map(f => (<Button key={f} type="button" variant={foot === f ? 'default' : 'outline'} size="sm" onClick={() => setFoot(f)} disabled={tmImported}>{t(getFootTranslationKey(f)!)}</Button>))}</div></div>
             </>)}
-            <div><Label>{t('player_form.contract_end')}</Label><Input type="date" value={contractEnd} onChange={e => setContractEnd(e.target.value)} className="mt-1" disabled={tmImported && !!contractEnd} /></div>
+            <div><Label>{t('player_form.contract_end')}</Label><DateInput value={contractEnd} onChange={setContractEnd} className="mt-1" disabled={tmImported && !!contractEnd} /></div>
           </>)}
           {step === 2 && (<>
             <div><Label>{t('player_form.current_level')} <span className="font-mono font-bold">{level[0]}</span>/10</Label><Slider value={level} onValueChange={setLevel} min={0} max={10} step={0.5} className="mt-3" /></div>
@@ -545,7 +546,7 @@ export default function AddPlayer() {
             <label className="flex items-center gap-2 cursor-pointer"><Checkbox checked={addReportFlag} onCheckedChange={(v) => setAddReportFlag(!!v)} /><span className="text-sm font-medium">{t('player_form.add_report')}</span></label>
             {addReportFlag && (
               <div className="space-y-4 pl-6 border-l-2 border-primary/20">
-                <div><Label>{t('player_form.report_date')}</Label><Input type="date" value={reportDate} onChange={e => setReportDate(e.target.value)} className="mt-1" /></div>
+                <div><Label>{t('player_form.report_date')}</Label><DateInput value={reportDate} onChange={setReportDate} className="mt-1" /></div>
                 <div><Label>{t('player_form.report_opinion')}</Label><div className="flex gap-3 mt-1">{ALL_OPINIONS.map(o => (<Button key={o} type="button" variant={reportOpinion === o ? 'default' : 'outline'} size="sm" onClick={() => setReportOpinion(o)}>{t(getOpinionTranslationKey(o))}</Button>))}</div></div>
                 <div><Label>{t('player_form.drive_link')}</Label><Input value={driveLink} onChange={e => setDriveLink(e.target.value)} placeholder={t('player_form.drive_placeholder')} className="mt-1" /></div>
 

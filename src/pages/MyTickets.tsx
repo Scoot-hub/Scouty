@@ -1,5 +1,7 @@
 import { useState, useRef, useEffect } from 'react';
 import { useTranslation } from 'react-i18next';
+import { formatDateTime } from '@/lib/format-utils';
+import { useUiPreferences } from '@/contexts/UiPreferencesContext';
 import { useMyTickets, useMyTicketDetail, useMyTicketReply } from '@/hooks/use-tickets';
 import { useQueryClient } from '@tanstack/react-query';
 import { moderateFields } from '@/lib/content-moderation';
@@ -145,14 +147,20 @@ function NewTicketForm({ onCreated }: { onCreated: () => void }) {
 // ── Main page ───────────────────────────────────────────────────────────────
 export default function MyTickets() {
   const { t } = useTranslation();
+  const { dateFormat, timeFormat, timezone } = useUiPreferences();
   const { data: tickets = [], isLoading } = useMyTickets();
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [showForm, setShowForm] = useState(false);
+  const qc = useQueryClient();
 
   if (isLoading) return <div className="flex items-center justify-center py-20"><Loader2 className="w-5 h-5 animate-spin" /></div>;
 
   if (selectedId) {
-    return <TicketChat ticketId={selectedId} onBack={() => setSelectedId(null)} />;
+    return <TicketChat ticketId={selectedId} onBack={() => {
+      setSelectedId(null);
+      // Refresh list now that the user is back — badge reflects actual unread state
+      qc.invalidateQueries({ queryKey: ['my-tickets'] });
+    }} />;
   }
 
   const openCount = tickets.filter(t => t.status !== 'closed').length;
@@ -239,7 +247,7 @@ export default function MyTickets() {
                         </div>
                       </div>
                       <p className="text-xs text-muted-foreground line-clamp-1">{ticket.message}</p>
-                      <p className="text-[10px] text-muted-foreground/60 mt-1">{new Date(ticket.created_at).toLocaleString()}</p>
+                      <p className="text-[10px] text-muted-foreground/60 mt-1">{formatDateTime(ticket.created_at, dateFormat, timeFormat, timezone)}</p>
                     </div>
                   </div>
                 </button>
@@ -255,14 +263,23 @@ export default function MyTickets() {
 // ── Ticket chat ─────────────────────────────────────────────────────────────
 function TicketChat({ ticketId, onBack }: { ticketId: string; onBack: () => void }) {
   const { t } = useTranslation();
+  const { dateFormat, timeFormat, timezone } = useUiPreferences();
   const { data, isLoading } = useMyTicketDetail(ticketId);
   const replyMut = useMyTicketReply();
+  const qc = useQueryClient();
   const [msg, setMsg] = useState('');
   const chatEndRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     chatEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [data?.messages?.length]);
+
+  // Once messages are visible, refresh the ticket list so the badge clears
+  useEffect(() => {
+    if (data) {
+      qc.invalidateQueries({ queryKey: ['my-tickets'] });
+    }
+  }, [data?.ticket?.id]);
 
   const handleReply = async () => {
     if (!msg.trim()) return;
@@ -288,7 +305,7 @@ function TicketChat({ ticketId, onBack }: { ticketId: string; onBack: () => void
         <div className="flex-1 min-w-0">
           <h2 className="text-lg font-bold truncate">{ticket.subject}</h2>
           <p className="text-xs text-muted-foreground flex items-center gap-2">
-            {new Date(ticket.created_at).toLocaleString()} {statusBadge(ticket.status, t)}
+            {formatDateTime(ticket.created_at, dateFormat, timeFormat, timezone)} {statusBadge(ticket.status, t)}
           </p>
         </div>
       </div>
@@ -298,7 +315,7 @@ function TicketChat({ ticketId, onBack }: { ticketId: string; onBack: () => void
         <div className="flex justify-end">
           <div className="max-w-[80%] rounded-2xl rounded-tr-md px-4 py-2.5 bg-primary text-primary-foreground text-sm">
             <div className="whitespace-pre-wrap leading-relaxed">{ticket.message}</div>
-            <div className="text-[9px] mt-1 text-primary-foreground/50">{new Date(ticket.created_at).toLocaleString()}</div>
+            <div className="text-[9px] mt-1 text-primary-foreground/50">{formatDateTime(ticket.created_at, dateFormat, timeFormat, timezone)}</div>
           </div>
         </div>
 
@@ -308,10 +325,10 @@ function TicketChat({ ticketId, onBack }: { ticketId: string; onBack: () => void
               'max-w-[80%] rounded-2xl px-4 py-2.5 text-sm',
               m.is_admin ? 'bg-muted rounded-tl-md' : 'bg-primary text-primary-foreground rounded-tr-md',
             )}>
-              {m.is_admin && <div className="text-[10px] text-muted-foreground mb-1 font-semibold">{t('tickets.admin_team')}</div>}
+              {!!m.is_admin && <div className="text-[10px] text-muted-foreground mb-1 font-semibold">{t('tickets.admin_team')}</div>}
               <div className="whitespace-pre-wrap leading-relaxed">{m.body}</div>
               <div className={cn('text-[9px] mt-1', m.is_admin ? 'text-muted-foreground' : 'text-primary-foreground/50')}>
-                {new Date(m.created_at).toLocaleString()}
+                {formatDateTime(m.created_at, dateFormat, timeFormat, timezone)}
               </div>
             </div>
           </div>

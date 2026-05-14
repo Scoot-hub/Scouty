@@ -40,6 +40,7 @@ import {
   Shield, ChevronDown, ChevronUp, Download, UserPlus, Sparkles, ArrowRightLeft,
 } from 'lucide-react';
 import { Checkbox } from '@/components/ui/checkbox';
+import DateInput from '@/components/ui/date-input';
 import { cn } from '@/lib/utils';
 import * as XLSX from 'xlsx';
 
@@ -906,7 +907,7 @@ export default function Squad() {
               </div>
               <div>
                 <Label>{t('squad.date_of_birth')}</Label>
-                <Input type="date" value={form.date_of_birth} onChange={e => setForm(f => ({ ...f, date_of_birth: e.target.value }))} />
+                <DateInput value={form.date_of_birth} onChange={v => setForm(f => ({ ...f, date_of_birth: v }))} />
               </div>
               <div>
                 <Label>{t('squad.nationality')}</Label>
@@ -968,11 +969,11 @@ export default function Squad() {
             <div className="grid grid-cols-2 gap-3">
               <div>
                 <Label>{t('squad.contract_start')}</Label>
-                <Input type="date" value={form.contract_start} onChange={e => setForm(f => ({ ...f, contract_start: e.target.value }))} />
+                <DateInput value={form.contract_start} onChange={v => setForm(f => ({ ...f, contract_start: v }))} />
               </div>
               <div>
                 <Label>{t('squad.contract_end')}</Label>
-                <Input type="date" value={form.contract_end} onChange={e => setForm(f => ({ ...f, contract_end: e.target.value }))} />
+                <DateInput value={form.contract_end} onChange={v => setForm(f => ({ ...f, contract_end: v }))} />
               </div>
               <div className="col-span-2">
                 <Label>{t('squad.monthly_salary')}</Label>

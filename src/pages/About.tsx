@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
+import LanguageSwitcher from '@/components/LanguageSwitcher';
 import { Link } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import PageSEO from '@/components/PageSEO';
@@ -432,6 +433,7 @@ export default function About() {
                 <img src={logo} alt="Scouty" className="w-8 h-8 rounded-lg float-y" />
                 <span className="text-lg font-extrabold tracking-tight text-white">Scouty</span>
               </div>
+              <div className="ml-auto"><LanguageSwitcher variant="ghost" /></div>
             </div>
           </header>
           <div className="flex-1 flex items-center justify-center text-center px-6">

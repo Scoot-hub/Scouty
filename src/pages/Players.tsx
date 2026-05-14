@@ -10,7 +10,7 @@ import { useIsPremium, useIsAdmin } from '@/hooks/use-admin';
 import { PermGate } from '@/components/PermGate';
 import { getPlayerAge, getOpinionBgClass, getOpinionEmoji, getOpinionTranslationKey, ALL_OPINIONS, getTaskBgClass, getTaskEmoji, getTaskTranslationKey, translateFoot, PLAYER_TASKS, resolveLeagueName, translateCountry, type Opinion, type Position, type Foot, type PlayerTask, type Player } from '@/types/player';
 import type { PerfStats } from '@/lib/player-stats';
-import { convertMV, formatDateShort } from '@/lib/format-utils';
+import { convertMV, formatDate, formatDateShort, type DateFormat } from '@/lib/format-utils';
 import { useUiPreferences } from '@/contexts/UiPreferencesContext';
 import { useRatesMap } from '@/hooks/use-exchange-rates';
 import { usePositions } from '@/hooks/use-positions';
@@ -23,6 +23,7 @@ import { ClubLink } from '@/components/ui/club-link';
 import { LeagueLogo } from '@/components/ui/league-logo';
 import { Card, CardContent } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
+import DateInput from '@/components/ui/date-input';
 import { Button } from '@/components/ui/button';
 import { Checkbox } from '@/components/ui/checkbox';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
@@ -66,16 +67,18 @@ function completionColor(pct: number): string {
   return 'text-rose-600 bg-rose-500/10 dark:text-rose-400';
 }
 
-/** Relative date for enrichment badge: "aujourd'hui", "il y a 2j", "le 12 jan." */
-function formatEnrichDate(isoDate: string, locale: string): string {
+/** Relative date for enrichment badge. Falls back to user's preferred date format. */
+function formatEnrichDate(
+  isoDate: string,
+  dateFormat: DateFormat,
+  t: (key: string, opts?: Record<string, unknown>) => string,
+): string {
   const d = new Date(isoDate);
-  const now = Date.now();
-  const diff = now - d.getTime();
-  const days = Math.floor(diff / 86_400_000);
-  if (days === 0) return "aujourd'hui";
-  if (days === 1) return 'hier';
-  if (days < 30) return `il y a ${days}j`;
-  return d.toLocaleDateString(locale, { day: 'numeric', month: 'short' });
+  const days = Math.floor((Date.now() - d.getTime()) / 86_400_000);
+  if (days === 0) return t('common.today');
+  if (days === 1) return t('common.yesterday');
+  if (days < 30) return t('common.days_ago', { count: days });
+  return formatDate(d, dateFormat);
 }
 
 /** Sort players: primary (never enriched OR ≤50% completion) first, preserving relative order */
@@ -869,7 +872,7 @@ export default function Players() {
           'Niveau': p.current_level,
           'Potentiel': p.potential,
           'Avis général': p.general_opinion,
-          'Fin de contrat': p.contract_end ?? '',
+          'Fin de contrat': p.contract_end ? formatDate(p.contract_end, dateFormat) : '',
           'Notes': p.notes ?? '',
           'TS Report publié': p.ts_report_published ? 'Oui' : '',
           'Poste secondaire': p.position_secondaire ?? '',
@@ -1233,7 +1236,7 @@ export default function Players() {
                 </div>
                 <div className="space-y-2">
                   <label className="text-sm font-medium">{t('player_form.report_date')}</label>
-                  <Input type="date" value={bulkReportDate} onChange={e => setBulkReportDate(e.target.value)} className="rounded-xl" />
+                  <DateInput value={bulkReportDate} onChange={setBulkReportDate} className="rounded-xl" />
                 </div>
                 <div className="space-y-2">
                   <label className="text-sm font-medium">{t('player_form.report_opinion')}</label>
@@ -2165,7 +2168,7 @@ export default function Players() {
                             <div className="flex items-center gap-1 mt-0.5">
                               <Zap className="w-2.5 h-2.5 text-sky-500 shrink-0" />
                               <span className="text-[9px] text-sky-600 dark:text-sky-400">
-                                {t('players.enriched_on', { date: formatEnrichDate(player.external_data_fetched_at, i18n.language) })}
+                                {t('players.enriched_on', { date: formatEnrichDate(player.external_data_fetched_at, dateFormat, t) })}
                               </span>
                             </div>
                           ) : (

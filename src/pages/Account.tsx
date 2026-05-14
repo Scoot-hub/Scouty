@@ -1,5 +1,7 @@
 import { useState, useEffect, useRef } from 'react';
 import { useTranslation } from 'react-i18next';
+import { formatDate } from '@/lib/format-utils';
+import { useUiPreferences } from '@/contexts/UiPreferencesContext';
 import { useAuth } from '@/contexts/AuthContext';
 import { useMyPermissions } from '@/hooks/use-admin';
 import { supabase } from '@/integrations/supabase/client';
@@ -19,6 +21,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, Di
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import PasswordStrengthIndicator, { validatePassword } from '@/components/PasswordStrengthIndicator';
 import { InputOTP, InputOTPGroup, InputOTPSlot } from '@/components/ui/input-otp';
+import DateInput from '@/components/ui/date-input';
 
 function CountrySelect({ value, onChange, placeholder }: { value: string; onChange: (v: string) => void; placeholder: string }) {
   const [query, setQuery] = useState(value);
@@ -87,6 +90,7 @@ function CountrySelect({ value, onChange, placeholder }: { value: string; onChan
 
 export default function Account() {
   const { t } = useTranslation();
+  const { dateFormat } = useUiPreferences();
   const { user } = useAuth();
   const queryClient = useQueryClient();
   const { data: myPermissions } = useMyPermissions();
@@ -635,7 +639,7 @@ export default function Account() {
               <label className="text-xs font-medium text-muted-foreground flex items-center gap-1.5">
                 <CalendarDays className="w-3 h-3" />{t('account.dob')}
               </label>
-              <Input className="mt-1" type="date" value={dob} onChange={e => setDob(e.target.value)} />
+              <DateInput className="mt-1" value={dob} onChange={setDob} />
             </div>
           </div>
 
@@ -702,7 +706,7 @@ export default function Account() {
           <div>
             <label className="text-sm font-medium text-muted-foreground">{t('settings.member_since')}</label>
             <p className="text-sm mt-1 p-3 rounded-xl bg-muted/40 border border-border/50">
-              {user?.created_at ? new Date(user.created_at).toLocaleDateString(undefined, { day: 'numeric', month: 'long', year: 'numeric' }) : '—'}
+              {user?.created_at ? formatDate(user.created_at, dateFormat) : '—'}
             </p>
           </div>
 
@@ -1039,13 +1043,13 @@ export default function Account() {
                 {subRow?.premium_since && (
                   <p className="text-sm text-muted-foreground flex items-center gap-2">
                     <CalendarDays className="w-4 h-4" />
-                    {t('account.subscribed_since')} {new Date(subRow.premium_since).toLocaleDateString(undefined, { day: 'numeric', month: 'long', year: 'numeric' })}
+                    {t('account.subscribed_since')} {formatDate(subRow.premium_since, dateFormat)}
                   </p>
                 )}
                 {subscription?.subscription_end && (
                   <p className="text-sm text-muted-foreground flex items-center gap-2">
                     <CalendarDays className="w-4 h-4" />
-                    {t('account.next_renewal')} {new Date(subscription.subscription_end).toLocaleDateString(undefined, { day: 'numeric', month: 'long', year: 'numeric' })}
+                    {t('account.next_renewal')} {formatDate(subscription.subscription_end, dateFormat)}
                   </p>
                 )}
                 {paymentMethod && (

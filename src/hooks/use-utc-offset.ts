@@ -31,6 +31,21 @@ export function useUtcOffset() {
   return { utcOffset, setUtcOffset: set, getLocalUtcOffset };
 }
 
+export function timezoneToUtcOffset(tz: string): number {
+  try {
+    const now = new Date();
+    const parts = new Intl.DateTimeFormat('en', { timeZone: tz, timeZoneName: 'shortOffset' })
+      .formatToParts(now);
+    const tzName = parts.find(p => p.type === 'timeZoneName')?.value ?? '';
+    const match = tzName.match(/GMT([+-])(\d+)(?::(\d+))?/);
+    if (!match) return 0;
+    const sign = match[1] === '+' ? 1 : -1;
+    return sign * parseInt(match[2], 10);
+  } catch {
+    return getLocalUtcOffset();
+  }
+}
+
 export function formatTimeWithOffset(time: string | null, utcOffset = 0): string {
   if (!time) return '';
   const hh = parseInt(time.slice(0, 2), 10);

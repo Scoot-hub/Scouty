@@ -2,7 +2,7 @@ import { useEffect, useState, useRef } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { Button } from '@/components/ui/button';
-import { Users, BarChart3, FileSearch, Shield, Zap, Globe, UserCircle, Star, ChevronLeft, ChevronRight, Layers, Share2 } from 'lucide-react';
+import { Users, BarChart3, FileSearch, Shield, Zap, Globe, UserCircle, Star, ChevronLeft, ChevronRight, Layers, Share2, Menu, X } from 'lucide-react';
 import stadiumHero from '@/assets/stadium-hero.jpg';
 import { useAuth } from '@/contexts/AuthContext';
 import LanguageSwitcher from '@/components/LanguageSwitcher';
@@ -16,46 +16,16 @@ const featureIcons = [Users, FileSearch, BarChart3, Shield, Zap, Globe];
 
 const SCENE_DURATION = 5000; // ms per scene
 
-const SCENES = [
-  {
-    id: 1,
-    tag: '01 — Profils joueurs',
-    title: 'Chaque joueur,\nune fiche complète.',
-    sub: 'Centraliser toutes vos informations en un seul endroit : identité, statistiques, photos, notes d\'observation et historique de suivi.',
-    accent: '#6366f1',
-    accentLight: 'rgba(99,102,241,0.12)',
-    ui: 'player',
-  },
-  {
-    id: 2,
-    tag: '02 — Enrichissement',
-    title: 'Des données qui\nse mettent à jour.',
-    sub: 'Connecté à Transfermarkt, TheSportsDB et API-Football pour enrichir automatiquement valeurs marchandes, statistiques et actualités.',
-    accent: '#10b981',
-    accentLight: 'rgba(16,185,129,0.12)',
-    ui: 'enrich',
-  },
-  {
-    id: 3,
-    tag: '03 — Shadow Teams',
-    title: 'Construisez\nvos tactiques.',
-    sub: 'Composez vos équipes idéales avec vos joueurs suivis. Watchlists, shadow teams et championnats organisés selon votre logique.',
-    accent: '#f59e0b',
-    accentLight: 'rgba(245,158,11,0.12)',
-    ui: 'team',
-  },
-  {
-    id: 4,
-    tag: '04 — Collaboration',
-    title: 'Votre cellule\nde recrutement.',
-    sub: 'Partagez vos analyses au sein de votre organisation. Plusieurs scouts, un seul outil. Rôles, permissions et opinions croisées.',
-    accent: '#ec4899',
-    accentLight: 'rgba(236,72,153,0.12)',
-    ui: 'collab',
-  },
+// Visual/structural data only — text comes from i18n landing.scenes[]
+const BASE_SCENES = [
+  { id: 1, accent: '#6366f1', accentLight: 'rgba(99,102,241,0.12)',  ui: 'player' },
+  { id: 2, accent: '#10b981', accentLight: 'rgba(16,185,129,0.12)',  ui: 'enrich' },
+  { id: 3, accent: '#f59e0b', accentLight: 'rgba(245,158,11,0.12)',  ui: 'team'   },
+  { id: 4, accent: '#ec4899', accentLight: 'rgba(236,72,153,0.12)',  ui: 'collab' },
 ];
 
 function PlayerUIMockup({ accent }: { accent: string }) {
+  const { t } = useTranslation();
   return (
     <div className="w-full max-w-sm mx-auto select-none pointer-events-none">
       <div className="rounded-2xl border border-white/10 bg-white/5 backdrop-blur-sm overflow-hidden shadow-2xl">
@@ -68,11 +38,11 @@ function PlayerUIMockup({ accent }: { accent: string }) {
             <div className="h-3 rounded-full w-28 mb-2" style={{ backgroundColor: accent + '60' }} />
             <div className="h-2 rounded-full w-20 bg-white/20" />
           </div>
-          <div className="px-2.5 py-1 rounded-full text-[10px] font-bold" style={{ backgroundColor: accent + '30', color: accent }}>À suivre</div>
+          <div className="px-2.5 py-1 rounded-full text-[10px] font-bold" style={{ backgroundColor: accent + '30', color: accent }}>{t('landing.ui.watch')}</div>
         </div>
         {/* Stats row */}
         <div className="grid grid-cols-3 divide-x divide-white/10 p-0">
-          {[['7.5', 'Niveau'], ['8.0', 'Potentiel'], ['€2.5M', 'Valeur']].map(([val, lbl]) => (
+          {[['7.5', t('landing.ui.level')], ['8.0', t('landing.ui.potential')], ['€2.5M', t('landing.ui.value')]].map(([val, lbl]) => (
             <div key={lbl} className="py-3 text-center">
               <div className="text-lg font-black text-white">{val}</div>
               <div className="text-[9px] text-white/40 mt-0.5">{lbl}</div>
@@ -96,13 +66,14 @@ function PlayerUIMockup({ accent }: { accent: string }) {
 }
 
 function EnrichUIMockup({ accent }: { accent: string }) {
+  const { t } = useTranslation();
   const bars = [65, 82, 91, 54, 78, 88];
   return (
     <div className="w-full max-w-sm mx-auto select-none pointer-events-none">
       <div className="rounded-2xl border border-white/10 bg-white/5 backdrop-blur-sm overflow-hidden shadow-2xl p-5 space-y-4">
         <div className="flex items-center justify-between">
-          <span className="text-xs font-semibold text-white/60">Statistiques saison</span>
-          <span className="text-[10px] px-2 py-0.5 rounded-full font-bold" style={{ backgroundColor: accent + '30', color: accent }}>Live</span>
+          <span className="text-xs font-semibold text-white/60">{t('landing.ui.stats_season')}</span>
+          <span className="text-[10px] px-2 py-0.5 rounded-full font-bold" style={{ backgroundColor: accent + '30', color: accent }}>{t('landing.ui.collab_live')}</span>
         </div>
         <div className="flex items-end gap-1.5 h-20">
           {bars.map((h, i) => (
@@ -110,7 +81,7 @@ function EnrichUIMockup({ accent }: { accent: string }) {
           ))}
         </div>
         <div className="grid grid-cols-2 gap-2">
-          {[['12', 'Buts'], ['7', 'Passes D.'], ['87%', 'Passes'], ['1842', 'Minutes']].map(([v, l]) => (
+          {[['12', t('landing.ui.goals')], ['7', t('landing.ui.assists')], ['87%', t('landing.ui.pass_pct')], ['1842', t('landing.ui.minutes')]].map(([v, l]) => (
             <div key={l} className="rounded-xl bg-white/5 border border-white/10 p-2.5 text-center">
               <div className="text-base font-black text-white">{v}</div>
               <div className="text-[9px] text-white/40">{l}</div>
@@ -119,7 +90,7 @@ function EnrichUIMockup({ accent }: { accent: string }) {
         </div>
         <div className="flex items-center gap-2 text-[10px] text-white/40">
           <Zap className="w-3 h-3" style={{ color: accent }} />
-          Enrichi via Transfermarkt · TheSportsDB
+          {t('landing.ui.enriched_via')}
         </div>
       </div>
     </div>
@@ -216,6 +187,7 @@ function SceneUI({ ui, accent }: { ui: string; accent: string }) {
 }
 
 function CinematicPresentation() {
+  const { t } = useTranslation();
   const [active, setActive] = useState(0);
   const [progress, setProgress] = useState(0);
   const [paused, setPaused] = useState(false);
@@ -224,6 +196,10 @@ function CinematicPresentation() {
   const progressRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const sectionRef = useRef<HTMLDivElement>(null);
   const [visible, setVisible] = useState(false);
+
+  // Merge i18n text with static visual data
+  const sceneTexts = t('landing.scenes', { returnObjects: true }) as { tag: string; title: string; sub: string }[];
+  const SCENES = BASE_SCENES.map((base, i) => ({ ...base, ...(sceneTexts[i] ?? {}) }));
 
   // Intersection observer — only animate when visible
   useEffect(() => {
@@ -368,10 +344,17 @@ export default function Landing() {
   const { user } = useAuth();
   const navigate = useNavigate();
   const { t } = useTranslation();
+  const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
 
   useEffect(() => {
     if (user) navigate('/players');
   }, [user, navigate]);
+
+  useEffect(() => {
+    const onResize = () => { if (window.innerWidth >= 640) setMobileMenuOpen(false); };
+    window.addEventListener('resize', onResize);
+    return () => window.removeEventListener('resize', onResize);
+  }, []);
 
   const features = (t('features.items', { returnObjects: true }) as { title: string; description: string }[]);
 
@@ -384,12 +367,16 @@ export default function Landing() {
       />
       {/* Nav */}
       <header className="fixed top-0 w-full z-50 border-b border-border/40 bg-background/80 backdrop-blur-md">
-        <div className="max-w-7xl mx-auto px-6 h-16 flex items-center justify-between">
-          <div className="flex items-center gap-3">
-            <img src={logo} alt="Scouty" className="w-9 h-9 rounded-xl" />
-            <span className="text-lg font-extrabold tracking-tight">Scouty</span>
+        <div className="max-w-7xl mx-auto px-4 sm:px-6 h-16 flex items-center justify-between gap-2">
+
+          {/* Logo */}
+          <div className="flex items-center gap-2.5 shrink-0">
+            <img src={logo} alt="Scouty" className="w-8 h-8 sm:w-9 sm:h-9 rounded-xl" />
+            <span className="text-base sm:text-lg font-extrabold tracking-tight">Scouty</span>
           </div>
-          <div className="flex items-center gap-3">
+
+          {/* Desktop nav */}
+          <div className="hidden sm:flex items-center gap-2">
             <LanguageSwitcher variant="ghost" />
             <Link to="/pricing">
               <Button variant="ghost" size="sm">{t('sidebar.pricing')}</Button>
@@ -401,7 +388,34 @@ export default function Landing() {
               <Button size="sm">{t('nav.signup')}</Button>
             </Link>
           </div>
+
+          {/* Mobile: language switcher + burger */}
+          <div className="flex sm:hidden items-center gap-1">
+            <LanguageSwitcher variant="ghost" />
+            <button
+              onClick={() => setMobileMenuOpen(o => !o)}
+              className="p-2 rounded-lg hover:bg-muted/60 transition-colors"
+              aria-label="Menu"
+            >
+              {mobileMenuOpen ? <X className="w-5 h-5" /> : <Menu className="w-5 h-5" />}
+            </button>
+          </div>
         </div>
+
+        {/* Mobile dropdown menu */}
+        {mobileMenuOpen && (
+          <div className="sm:hidden border-t border-border/40 bg-background/95 backdrop-blur-md px-4 py-3 flex flex-col gap-1">
+            <Link to="/pricing" onClick={() => setMobileMenuOpen(false)}>
+              <Button variant="ghost" size="sm" className="w-full justify-start">{t('sidebar.pricing')}</Button>
+            </Link>
+            <Link to="/auth" onClick={() => setMobileMenuOpen(false)}>
+              <Button variant="ghost" size="sm" className="w-full justify-start">{t('nav.signin')}</Button>
+            </Link>
+            <Link to="/auth?signup=true" onClick={() => setMobileMenuOpen(false)}>
+              <Button size="sm" className="w-full mt-1">{t('nav.signup')}</Button>
+            </Link>
+          </div>
+        )}
       </header>
 
       {/* Hero */}

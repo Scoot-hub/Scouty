@@ -54,6 +54,8 @@ import {
   PencilLine, Plus, GripVertical, Check, AlertTriangle, StickyNote, Pencil, Loader2,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import { formatDate, formatDateTime } from '@/lib/format-utils';
+import { useUiPreferences } from '@/contexts/UiPreferencesContext';
 
 const API_BASE = (import.meta.env.API_URL || '/api').replace(/\/$/, '');
 
@@ -773,6 +775,7 @@ function ChampionshipDetail({
   onBack: () => void;
 }) {
   const { t } = useTranslation();
+  const { dateFormat, timeFormat, timezone } = useUiPreferences();
   const { data: players = [] } = usePlayers();
   const { data: linkedPlayers = [] } = useChampionshipPlayers(champ.name);
   const availableSeasons = useMemo(() => getAvailableSeasons(6), []);
@@ -1145,7 +1148,7 @@ function ChampionshipDetail({
                     <span className="flex items-center gap-1 text-[10px] text-muted-foreground/70">
                       <Database className="w-2.5 h-2.5" />
                       {t('championships.from_db')}
-                      {sofaData.fetched_at && ` · ${new Intl.DateTimeFormat('fr-FR', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }).format(new Date(sofaData.fetched_at))}`}
+                      {sofaData.fetched_at && ` · ${formatDateTime(sofaData.fetched_at, dateFormat, timeFormat, timezone)}`}
                     </span>
                   )}
                 </span>
@@ -1641,8 +1644,8 @@ function ChampionshipDetail({
             <div className="flex items-center justify-between">
               <span className="text-xs text-muted-foreground">
                 {myChampNote
-                  ? `Modifié le ${new Date(myChampNote.updated_at).toLocaleDateString('fr-FR', { day: 'numeric', month: 'short', year: 'numeric' })}`
-                  : 'Aucune note enregistrée'}
+                  ? `${t('championships.note_modified')} ${formatDate(myChampNote.updated_at, dateFormat)}`
+                  : t('championships.no_note')}
               </span>
               <button
                 disabled={!noteText.trim() || saveNote.isPending || (!noteDirty && !!myChampNote)}
@@ -1671,7 +1674,7 @@ function ChampionshipDetail({
                   )}
                   <p className="text-sm leading-relaxed whitespace-pre-line">{note.content}</p>
                   <p className="text-xs text-muted-foreground mt-2">
-                    {note.author_name?.trim() || '?'} · {new Date(note.updated_at).toLocaleDateString('fr-FR', { day: 'numeric', month: 'short', year: 'numeric' })}
+                    {note.author_name?.trim() || '?'} · {formatDate(note.updated_at, dateFormat)}
                   </p>
                 </div>
               ))}

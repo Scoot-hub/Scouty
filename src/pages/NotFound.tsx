@@ -1,21 +1,18 @@
 import { useLocation, Link } from 'react-router-dom';
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useMemo } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Home, RotateCcw, ArrowLeft } from 'lucide-react';
+import { Home, ArrowLeft } from 'lucide-react';
 import { Button } from '@/components/ui/button';
-
-const messages = [
-  { title: 'Hors des limites du terrain !', sub: "L'arbitre lève le drapeau — cette page est hors-jeu." },
-  { title: 'Tir au-dessus de la barre !', sub: "Vous avez visé trop haut. Cette URL n'existe pas." },
-  { title: 'Le ballon est sorti en touche.', sub: "Cette page a quitté le terrain. Remettez-la en jeu." },
-  { title: 'Carton rouge pour cette URL !', sub: "Expulsée du match. Cette page ne reviendra pas." },
-  { title: "VAR en cours d'examen…", sub: "Après révision, cette page n'a jamais existé." },
-];
 
 export default function NotFound() {
   const location = useLocation();
   const { t } = useTranslation();
-  const [msg] = useState(() => messages[Math.floor(Math.random() * messages.length)]);
+  const messages = useMemo(
+    () => t('not_found.messages', { returnObjects: true }) as { title: string; sub: string }[],
+    [t]
+  );
+  const [msgIdx] = useState(() => Math.floor(Math.random() * 5));
+  const msg = messages[msgIdx] ?? messages[0];
   const [ballPos, setBallPos] = useState({ x: 50, y: 50 });
 
   useEffect(() => {
@@ -108,13 +105,13 @@ export default function NotFound() {
           </Link>
           <Button variant="outline" size="lg" className="gap-2 w-full sm:w-auto" onClick={() => history.back()}>
             <ArrowLeft className="w-4 h-4" />
-            Page précédente
+            {t('not_found.previous_page')}
           </Button>
         </div>
 
         {/* Footer hint */}
         <p className="text-xs text-muted-foreground/50 fade-up-4">
-          Scouty · Si le problème persiste, <Link to="/my-tickets" className="underline hover:text-primary">signalez-le</Link>
+          Scouty · {t('not_found.hint')} <Link to="/my-tickets" className="underline hover:text-primary">{t('not_found.report')}</Link>
         </p>
       </div>
     </div>

@@ -1,5 +1,7 @@
 import { useState } from 'react';
 import { useTranslation } from 'react-i18next';
+import { formatDate as fmtDate } from '@/lib/format-utils';
+import { useUiPreferences } from '@/contexts/UiPreferencesContext';
 import { Link, useNavigate } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useIsAdmin } from '@/hooks/use-admin';
@@ -44,15 +46,14 @@ function parseKeywords(kw: string[] | string | null): string[] {
   try { return JSON.parse(kw); } catch { return []; }
 }
 
-function formatDate(d: string) {
-  try { return new Intl.DateTimeFormat('fr-FR', { day: 'numeric', month: 'short', year: 'numeric' }).format(new Date(d)); }
-  catch { return d; }
-}
+// Local alias — resolved at render time with user dateFormat preference
+// The actual formatDate call is in the component body where dateFormat is available
 
 export default function Editorial() {
   const { t } = useTranslation();
   const { user } = useAuth();
   const { data: isAdmin } = useIsAdmin();
+  const { dateFormat } = useUiPreferences();
   const navigate = useNavigate();
   const qc = useQueryClient();
 
@@ -237,7 +238,7 @@ export default function Editorial() {
                   <div className="flex items-center justify-between text-[10px] text-muted-foreground">
                     <div className="flex items-center gap-2">
                       <span className="flex items-center gap-1"><User className="w-3 h-3" />{article.author_name || article.author_email}</span>
-                      <span className="flex items-center gap-1"><Calendar className="w-3 h-3" />{formatDate(article.updated_at)}</span>
+                      <span className="flex items-center gap-1"><Calendar className="w-3 h-3" />{fmtDate(article.updated_at, dateFormat)}</span>
                       {!isUnpublished && <span className="flex items-center gap-1"><Eye className="w-3 h-3" />{article.views}</span>}
                     </div>
                     <div className="flex items-center gap-1">

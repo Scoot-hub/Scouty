@@ -1,5 +1,7 @@
 import { useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+import { formatDateTime } from '@/lib/format-utils';
+import { useUiPreferences } from '@/contexts/UiPreferencesContext';
 import { AlertTriangle, CheckCircle2, Trash2, ChevronDown, ChevronUp, Filter, ArrowLeft } from 'lucide-react';
 import { Link } from 'react-router-dom';
 import { Button } from '@/components/ui/button';
@@ -35,6 +37,7 @@ async function fetchErrors(filter: string): Promise<FrontendError[]> {
 
 export default function AdminErrors() {
   const { toast } = useToast();
+  const { dateFormat, timeFormat, timezone } = useUiPreferences();
   const qc = useQueryClient();
   const [filter, setFilter] = useState<'all' | 'unresolved' | 'resolved'>('unresolved');
   const [expandedId, setExpandedId] = useState<number | null>(null);
@@ -76,10 +79,7 @@ export default function AdminErrors() {
   });
 
   function formatDate(dateStr: string) {
-    return new Date(dateStr).toLocaleString('fr-FR', {
-      day: '2-digit', month: '2-digit', year: 'numeric',
-      hour: '2-digit', minute: '2-digit',
-    });
+    return formatDateTime(dateStr, dateFormat, timeFormat, timezone);
   }
 
   function shortUrl(url: string) {

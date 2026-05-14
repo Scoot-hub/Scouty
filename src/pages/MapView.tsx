@@ -670,70 +670,30 @@ export default function MapView() {
             {effectivePos ? t('map.nearby') : t('map.locate_me')}
           </Button>
 
-          {/* VPN / Manual position button */}
-          <div className="relative shrink-0">
+          {/* VPN / Manual position — direct map-click toggle */}
+          <div className="flex items-center gap-1 shrink-0">
             <Button
-              variant={manualPos ? 'default' : 'outline'}
+              variant={manualPos || manualLocMode ? 'default' : 'outline'}
               size="sm"
-              className={cn('rounded-xl gap-1.5', manualPos && 'bg-amber-500 border-amber-500 hover:bg-amber-600 text-white', manualLocMode && 'animate-pulse')}
-              onClick={() => setShowManualPanel(p => !p)}
-              title="Position manuelle (VPN)"
+              className={cn(
+                'rounded-xl gap-1.5',
+                manualPos && !manualLocMode && 'bg-amber-500 border-amber-500 hover:bg-amber-600 text-white',
+                manualLocMode && 'animate-pulse bg-amber-500 border-amber-500 hover:bg-amber-600 text-white',
+              )}
+              onClick={() => setManualLocMode(m => !m)}
+              title={manualLocMode ? 'Annuler le placement' : 'Cliquer sur la carte pour définir votre position (VPN)'}
             >
               <LocateFixed className="w-4 h-4" />
-              {manualPos ? `${manualPos.latitude.toFixed(2)}, ${manualPos.longitude.toFixed(2)}` : 'VPN'}
+              {manualLocMode ? 'Annuler' : 'VPN'}
             </Button>
-            {showManualPanel && (
-              <div className="absolute top-full right-0 mt-1 bg-popover border border-border rounded-xl shadow-xl p-3 z-50 w-64 space-y-2">
-                <p className="text-xs font-semibold text-foreground">Position manuelle (VPN)</p>
-                <Button
-                  variant={manualLocMode ? 'default' : 'outline'}
-                  size="sm"
-                  className="w-full h-7 text-xs gap-1.5"
-                  onClick={() => { setManualLocMode(m => !m); setShowManualPanel(false); }}
-                >
-                  <MapPin className="w-3 h-3" />
-                  {manualLocMode ? 'Annuler le placement' : 'Cliquer sur la carte'}
-                </Button>
-                <div className="flex gap-1 items-center">
-                  <input
-                    type="number"
-                    placeholder="Lat"
-                    value={manualLatInput}
-                    onChange={e => setManualLatInput(e.target.value)}
-                    className="flex-1 text-xs border border-border rounded-lg px-2 py-1 h-7 bg-background min-w-0"
-                  />
-                  <input
-                    type="number"
-                    placeholder="Lng"
-                    value={manualLngInput}
-                    onChange={e => setManualLngInput(e.target.value)}
-                    className="flex-1 text-xs border border-border rounded-lg px-2 py-1 h-7 bg-background min-w-0"
-                  />
-                  <Button
-                    size="sm"
-                    className="h-7 text-xs px-2 shrink-0"
-                    onClick={() => {
-                      const lat = parseFloat(manualLatInput.replace(',', '.'));
-                      const lng = parseFloat(manualLngInput.replace(',', '.'));
-                      if (isNaN(lat) || isNaN(lng) || lat < -90 || lat > 90 || lng < -180 || lng > 180) return;
-                      setManualPos({ latitude: lat, longitude: lng, accuracy: 0 });
-                      setShowNearby(true);
-                      setFlyTarget({ center: [lat, lng], zoom: 7 });
-                      setShowManualPanel(false);
-                    }}
-                  >
-                    OK
-                  </Button>
-                </div>
-                {manualPos && (
-                  <button
-                    className="w-full text-xs text-muted-foreground hover:text-destructive transition-colors text-left py-0.5"
-                    onClick={() => { setManualPos(null); setManualLocMode(false); setShowManualPanel(false); }}
-                  >
-                    × Effacer la position manuelle
-                  </button>
-                )}
-              </div>
+            {manualPos && !manualLocMode && (
+              <button
+                className="h-8 px-1.5 rounded-xl border border-border hover:bg-destructive/10 hover:border-destructive/40 text-muted-foreground hover:text-destructive transition-colors text-xs"
+                title="Effacer la position manuelle"
+                onClick={() => { setManualPos(null); setManualLocMode(false); }}
+              >
+                ×
+              </button>
             )}
           </div>
 

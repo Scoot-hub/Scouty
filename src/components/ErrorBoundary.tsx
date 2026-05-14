@@ -1,6 +1,16 @@
 import { Component, type ErrorInfo, type ReactNode, useState } from 'react';
 import { Home, RotateCcw, ChevronDown, ChevronUp, AlertTriangle, ShieldCheck } from 'lucide-react';
 import { Button } from '@/components/ui/button';
+import { queryClient } from '@/lib/query-client';
+
+function getIsAdminFromCache(): boolean {
+  try {
+    const hit = queryClient.getQueryCache().getAll().find(q => q.queryKey[0] === 'is-admin');
+    return hit?.state.data === true;
+  } catch {
+    return false;
+  }
+}
 
 // ── Random football-themed error messages ──────────────────────────────────
 
@@ -17,6 +27,7 @@ const errorMessages = [
 function FallbackUI({ error, reported, resetError }: { error: Error | null; reported: boolean; resetError: () => void }) {
   const [showDetails, setShowDetails] = useState(false);
   const [msg] = useState(() => errorMessages[Math.floor(Math.random() * errorMessages.length)]);
+  const isAdmin = getIsAdminFromCache();
 
   const errorName = error?.name ?? 'UnknownError';
   const errorMsg = error?.message ?? 'Une erreur inconnue est survenue.';
@@ -102,21 +113,23 @@ function FallbackUI({ error, reported, resetError }: { error: Error | null; repo
           </div>
         )}
 
-        {/* Collapsible details */}
-        <div className="eb-fade-4">
-          <button
-            onClick={() => setShowDetails(v => !v)}
-            className="inline-flex items-center gap-1.5 text-xs text-muted-foreground/60 hover:text-muted-foreground transition-colors"
-          >
-            {showDetails ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
-            {showDetails ? 'Masquer les détails' : 'Voir les détails techniques'}
-          </button>
-          {showDetails && error?.stack && (
-            <pre className="mt-3 text-left text-[10px] leading-5 text-muted-foreground bg-muted/60 border border-border rounded-xl p-4 overflow-auto max-h-48 font-mono whitespace-pre-wrap break-words">
-              {error.stack}
-            </pre>
-          )}
-        </div>
+        {/* Collapsible details — admin only */}
+        {isAdmin && (
+          <div className="eb-fade-4">
+            <button
+              onClick={() => setShowDetails(v => !v)}
+              className="inline-flex items-center gap-1.5 text-xs text-muted-foreground/60 hover:text-muted-foreground transition-colors"
+            >
+              {showDetails ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
+              {showDetails ? 'Masquer les détails' : 'Voir les détails techniques'}
+            </button>
+            {showDetails && error?.stack && (
+              <pre className="mt-3 text-left text-[10px] leading-5 text-muted-foreground bg-muted/60 border border-border rounded-xl p-4 overflow-auto max-h-48 font-mono whitespace-pre-wrap break-words">
+                {error.stack}
+              </pre>
+            )}
+          </div>
+        )}
 
         <p className="text-xs text-muted-foreground/40 eb-fade-4">
           Scouty · Si l'erreur persiste, <a href="/my-tickets" className="underline hover:text-primary">ouvrez un ticket</a>

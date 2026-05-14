@@ -145,6 +145,9 @@ export default {
     referral_code: 'Referral code',
     referral_code_placeholder: 'E.g.: SCOUTY-5B354D95',
     referral_code_invalid: 'Invalid referral code. Expected format: SCOUTY-XXXXXXXX',
+    country: 'Country',
+    country_placeholder: 'France, Spain, Morocco…',
+    country_hint: 'Pre-filled from your language selection',
   },
 
   sidebar: {
@@ -263,6 +266,8 @@ export default {
     refresh_standings: 'Refresh',
     from_db: 'Local data',
     historical: 'Historical',
+    note_modified: 'Modified on',
+    no_note: 'No note saved',
   },
 
   feedback: {
@@ -1149,6 +1154,38 @@ export default {
     title: '404',
     message: 'Page not found',
     back: 'Return to home',
+    previous_page: 'Previous page',
+    hint: 'If the problem persists,',
+    report: 'report it',
+    messages: [
+      { title: 'Out of bounds!', sub: "The referee raises the flag — this page is offside." },
+      { title: 'Shot over the bar!', sub: "You aimed too high. This URL doesn't exist." },
+      { title: 'Ball out of play.', sub: "This page left the field. Throw it back in." },
+      { title: 'Red card for this URL!', sub: "Sent off. This page is not coming back." },
+      { title: 'VAR under review…', sub: "After review, this page never existed." },
+    ],
+  },
+
+  landing: {
+    scenes: [
+      { tag: '01 — Player Profiles', title: 'Every player,\na complete profile.',      sub: 'Centralise all your information in one place: identity, statistics, photos, scouting notes and follow-up history.' },
+      { tag: '02 — Enrichment',      title: 'Data that\nupdates itself.',              sub: 'Connected to Transfermarkt, TheSportsDB and API-Football to automatically enrich market values, statistics and news.' },
+      { tag: '03 — Shadow Teams',    title: 'Build\nyour tactics.',                    sub: 'Compose your ideal teams with your tracked players. Watchlists, shadow teams and leagues organised your way.' },
+      { tag: '04 — Collaboration',   title: 'Your\nrecruitment unit.',                 sub: 'Share your analyses within your organisation. Multiple scouts, one tool. Roles, permissions and cross-opinions.' },
+    ],
+    ui: {
+      watch: 'To watch',
+      level: 'Level',
+      potential: 'Potential',
+      value: 'Value',
+      goals: 'Goals',
+      assists: 'Assists',
+      pass_pct: 'Passes',
+      minutes: 'Minutes',
+      stats_season: 'Season stats',
+      enriched_via: 'Enriched via Transfermarkt · TheSportsDB',
+      collab_live: 'Live',
+    },
   },
 
   admin: {
@@ -1262,6 +1299,8 @@ export default {
     deleted: 'Notification deleted.',
     purged: '{{count}} notification(s) deleted older than {{days}} day(s).',
     days_invalid: 'The number of days must be greater than or equal to 1.',
+    types_title: 'Notification types',
+    types_desc: 'Hover a type to see when it is triggered. The number shows how many appear in the current results.',
   },
 
   analytics: {
@@ -1608,6 +1647,7 @@ export default {
     col_duration: 'Duration',
     col_status: 'Status',
     col_result: 'Result',
+    already_running: 'This job is already running. Wait for it to finish before launching it again.',
   },
 
   credits: {
@@ -1927,14 +1967,26 @@ export default {
     field_name: 'Field name',
     field_name_placeholder: 'E.g.: Speed, Agent, Video link...',
     field_type: 'Field type',
-    type_text: 'Text',
+    type_text: 'Short text (256 chars)',
+    type_textarea: 'Long text',
     type_number: 'Number',
-    type_select: 'Dropdown',
+    type_price: 'Price',
+    type_date: 'Date',
+    type_datetime: 'Date & time',
+    type_select: 'Single choice',
+    type_multiselect: 'Multiple choice',
     type_link: 'URL Link',
     type_boolean: 'Yes / No',
+    type_phone: 'Phone',
+    type_email: 'Email',
+    type_password: 'Password',
+    type_separator: 'Separator',
     type_player: 'Link to a player',
     type_match: 'Link to a match',
     type_championship: 'Link to a championship',
+    separator_placeholder: 'Section title (optional)…',
+    field_hint: 'Tooltip',
+    field_hint_placeholder: 'E.g.: This field indicates the top speed in km/h…',
     search_player: 'Search a player...',
     search_match: 'Search a match...',
     search_championship: 'Search a championship...',

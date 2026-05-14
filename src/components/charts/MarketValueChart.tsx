@@ -1,9 +1,12 @@
 import { AreaChart, Area, XAxis, YAxis, CartesianGrid, ResponsiveContainer, Tooltip } from 'recharts';
 import type { MarketValueEntry } from '@/hooks/use-player-market-value';
+import { formatCurrency } from '@/lib/format-utils';
 
 interface MarketValueChartProps {
   history: MarketValueEntry[];
   locale?: string;
+  currency?: string;
+  rates?: Record<string, number>;
   valueLabel: string;
   clubLabel: string;
   ageLabel: string;
@@ -18,15 +21,8 @@ interface TooltipRow {
   date: string | null;
 }
 
-const formatCompact = (value: number, locale: string) => {
-  try {
-    return new Intl.NumberFormat(locale, { notation: 'compact', maximumFractionDigits: 1 }).format(value) + ' €';
-  } catch {
-    if (value >= 1_000_000) return `${(value / 1_000_000).toFixed(1)} M €`;
-    if (value >= 1_000) return `${(value / 1_000).toFixed(0)} K €`;
-    return `${value} €`;
-  }
-};
+const formatCompact = (value: number, currency: string, rates: Record<string, number>) =>
+  formatCurrency(value, currency, rates);
 
 const formatDate = (ts: number, locale: string) => {
   const d = new Date(ts);
@@ -34,7 +30,7 @@ const formatDate = (ts: number, locale: string) => {
   return d.toLocaleDateString(locale, { month: 'short', year: 'numeric' });
 };
 
-export default function MarketValueChart({ history, locale = 'fr', valueLabel, clubLabel, ageLabel }: MarketValueChartProps) {
+export default function MarketValueChart({ history, locale = 'fr', currency = 'EUR', rates = {}, valueLabel, clubLabel, ageLabel }: MarketValueChartProps) {
   const data = history.map(e => ({
     ts: e.timestamp,
     value: e.value,
@@ -67,7 +63,7 @@ export default function MarketValueChart({ history, locale = 'fr', valueLabel, c
         <YAxis
           tick={{ fontSize: 11 }}
           stroke="hsl(var(--muted-foreground))"
-          tickFormatter={(v) => formatCompact(Number(v), locale)}
+          tickFormatter={(v) => formatCompact(Number(v), currency, rates)}
           width={70}
         />
         <Tooltip
@@ -80,7 +76,7 @@ export default function MarketValueChart({ history, locale = 'fr', valueLabel, c
                 <div className="font-semibold">{row.date || formatDate(row.ts, locale)}</div>
                 <div className="flex items-center justify-between gap-3">
                   <span className="text-muted-foreground">{valueLabel}</span>
-                  <span className="font-bold">{row.valueLabel || formatCompact(row.value, locale)}</span>
+                  <span className="font-bold">{formatCompact(row.value, currency, rates)}</span>
                 </div>
                 {row.club && (
                   <div className="flex items-center justify-between gap-3">

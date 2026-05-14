@@ -5,8 +5,9 @@ export interface CustomField {
   id: string;
   user_id: string;
   field_name: string;
-  field_type: 'text' | 'number' | 'select' | 'link' | 'boolean' | 'player' | 'match';
+  field_type: 'text' | 'textarea' | 'number' | 'price' | 'select' | 'multiselect' | 'link' | 'boolean' | 'date' | 'datetime' | 'phone' | 'email' | 'password' | 'separator' | 'player' | 'match' | 'championship';
   field_options: string[];
+  field_hint?: string | null;
   display_order: number;
   created_at: string;
 }
@@ -63,7 +64,7 @@ export function useCustomFieldValues(playerId: string | undefined) {
 export function useCreateCustomField() {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: async (field: { field_name: string; field_type: string; field_options?: string[]; display_order?: number }) => {
+    mutationFn: async (field: { field_name: string; field_type: string; field_options?: string[]; field_hint?: string; display_order?: number }) => {
       const userId = await getCurrentUserId();
       const { data, error } = await supabase
         .from('custom_fields')
@@ -72,6 +73,7 @@ export function useCreateCustomField() {
           field_name: field.field_name,
           field_type: field.field_type,
           field_options: field.field_options ?? [],
+          field_hint: field.field_hint ?? null,
           display_order: field.display_order ?? 0,
         })
         .select()
@@ -88,7 +90,7 @@ export function useCreateCustomField() {
 export function useUpdateCustomField() {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: async ({ id, ...updates }: { id: string; field_name?: string; field_type?: string; field_options?: string[]; display_order?: number }) => {
+    mutationFn: async ({ id, ...updates }: { id: string; field_name?: string; field_type?: string; field_options?: string[]; field_hint?: string | null; display_order?: number }) => {
       const { error } = await supabase
         .from('custom_fields')
         .update(updates)

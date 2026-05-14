@@ -1,6 +1,8 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useIsAdmin } from '@/hooks/use-admin';
+import { formatDateTime } from '@/lib/format-utils';
+import { useUiPreferences } from '@/contexts/UiPreferencesContext';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { Navigate, Link } from 'react-router-dom';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
@@ -272,6 +274,7 @@ function ScrapeThrottleCard() {
 export default function AdminCrons() {
   const { t } = useTranslation();
   const { data: isAdmin, isLoading: adminLoading } = useIsAdmin();
+  const { dateFormat, timeFormat, timezone } = useUiPreferences();
   const qc = useQueryClient();
   const [running, setRunning] = useState<Set<string>>(new Set());
 
@@ -294,6 +297,12 @@ export default function AdminCrons() {
         method: 'POST', ...authInit(),
         body: JSON.stringify({ job, dry_run: dryRun }),
       });
+      if (res.status === 409) {
+        const body = await res.json().catch(() => ({}));
+        toast.warning(body.message || t('crons.already_running'));
+        setRunning(s => { const n = new Set(s); n.delete(job); return n; });
+        return;
+      }
       if (!res.ok) throw new Error();
       toast.success(dryRun ? t('crons.started_dry') : t('crons.started'));
       setTimeout(() => {
@@ -389,7 +398,7 @@ export default function AdminCrons() {
                       {last.status === 'running' && <Badge variant="secondary" className="text-[10px] gap-1"><Loader2 className="w-2.5 h-2.5 animate-spin" />En cours</Badge>}
                       {last.status === 'done'    && <Badge variant="secondary" className="text-[10px] bg-green-500/10 text-green-700 dark:text-green-400 border-green-500/20"><CheckCircle2 className="w-2.5 h-2.5 mr-1" />OK</Badge>}
                       {last.status === 'failed'  && <Badge variant="destructive" className="text-[10px]"><XCircle className="w-2.5 h-2.5 mr-1" />Erreur</Badge>}
-                      <span>{new Date(last.started_at).toLocaleString('fr-FR', { day:'2-digit', month:'2-digit', hour:'2-digit', minute:'2-digit' })}</span>
+                      <span>{formatDateTime(last.started_at, dateFormat, timeFormat, timezone)}</span>
                       <span className="text-muted-foreground/60">{duration(last)}</span>
                       {last.status === 'done' && resultSummary(last) && (
                         <span className="text-primary/70">{resultSummary(last)}</span>
@@ -436,7 +445,7 @@ export default function AdminCrons() {
                     <tr key={log.id} className="border-b last:border-0 hover:bg-muted/30">
                       <td className="py-2 pr-4 font-medium">{JOB_META[log.job_name]?.label ?? log.job_name}</td>
                       <td className="py-2 pr-4 text-muted-foreground tabular-nums">
-                        {new Date(log.started_at).toLocaleString('fr-FR', { day:'2-digit', month:'2-digit', year:'2-digit', hour:'2-digit', minute:'2-digit' })}
+                        {formatDateTime(log.started_at, dateFormat, timeFormat, timezone)}
                       </td>
                       <td className="py-2 pr-4 tabular-nums text-muted-foreground">{duration(log)}</td>
                       <td className="py-2 pr-4">

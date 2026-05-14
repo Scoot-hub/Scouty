@@ -4,6 +4,7 @@ import { useIsAdmin, useMyPermissions } from '@/hooks/use-admin';
 import { type Player, type CoachCareerEntry, COACHING_LICENSES, NATIONALITIES, getFlag } from '@/types/player';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
+import DateInput from '@/components/ui/date-input';
 import { Badge } from '@/components/ui/badge';
 import { DragDropPhotoUpload } from '@/components/ui/drag-drop-photo-upload';
 import { toast } from 'sonner';
@@ -334,7 +335,7 @@ function EditProfileModal({ player, onClose, onSaved }: EditProfileModalProps) {
               </div>
               <div>
                 <label className="text-xs font-medium mb-1 block">Date de naissance</label>
-                <Input type="date" value={dateOfBirth} onChange={e => setDateOfBirth(e.target.value)} />
+                <DateInput value={dateOfBirth} onChange={setDateOfBirth} />
               </div>
             </div>
           </div>
@@ -353,11 +354,11 @@ function EditProfileModal({ player, onClose, onSaved }: EditProfileModalProps) {
               </div>
               <div>
                 <label className="text-xs font-medium mb-1 block flex items-center gap-1"><Calendar className="w-3 h-3" /> Début de contrat</label>
-                <Input type="date" value={contractStart} onChange={e => setContractStart(e.target.value)} />
+                <DateInput value={contractStart} onChange={setContractStart} />
               </div>
               <div>
                 <label className="text-xs font-medium mb-1 block flex items-center gap-1"><Calendar className="w-3 h-3" /> Fin de contrat</label>
-                <Input type="date" value={contractEnd} onChange={e => setContractEnd(e.target.value)} />
+                <DateInput value={contractEnd} onChange={setContractEnd} />
               </div>
               <div>
                 <label className="text-xs font-medium mb-1 block flex items-center gap-1"><Euro className="w-3 h-3" /> Valeur marchande</label>

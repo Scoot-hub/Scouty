@@ -3,7 +3,8 @@ import { Toaster } from "@/components/ui/toaster";
 import { Toaster as Sonner } from "@/components/ui/sonner";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import VercelAnalytics from "@/components/VercelAnalytics";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { QueryClientProvider } from "@tanstack/react-query";
+import { queryClient } from "@/lib/query-client";
 import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
 import { AuthProvider } from "@/contexts/AuthContext";
 import { UiPreferencesProvider } from "@/contexts/UiPreferencesContext";
@@ -13,9 +14,10 @@ import PageLoader from "@/components/PageLoader";
 import CookieBanner from "@/components/CookieBanner";
 import { ThemeProvider } from "@/components/ThemeProvider";
 import ErrorBoundary from "@/components/ErrorBoundary";
+// Auth is eagerly imported — it must never suspend (users need it immediately when not logged in)
+import Auth from "@/pages/Auth";
 
 const Landing = lazy(() => import("@/pages/Landing"));
-const Auth = lazy(() => import("@/pages/Auth"));
 const Players = lazy(() => import("@/pages/Players"));
 const PlayerProfile = lazy(() => import("@/pages/PlayerProfile"));
 const AddPlayer = lazy(() => import("@/pages/AddPlayer"));
@@ -80,16 +82,6 @@ const EditorialView = lazy(() => import("@/pages/EditorialView"));
 const EditorialShare = lazy(() => import("@/pages/EditorialShare"));
 const PlayerCompare = lazy(() => import("@/pages/PlayerCompare"));
 const NotFound = lazy(() => import("@/pages/NotFound"));
-const queryClient = new QueryClient({
-  defaultOptions: {
-    queries: {
-      staleTime: 2 * 60 * 1000,        // 2 min — data is fresh for 2 min after fetch
-      gcTime: 10 * 60 * 1000,           // 10 min — keep unused cache for 10 min
-      refetchOnWindowFocus: false,       // don't refetch when user alt-tabs back
-      retry: 1,                          // retry once on failure
-    },
-  },
-});
 
 const App = () => (
   <ThemeProvider>

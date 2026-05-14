@@ -463,7 +463,7 @@ const ALLOWED_TABLES = {
     "player_type", "coaching_license", "coaching_preferred_formation", "coaching_style", "coaching_career", "tm_coach_id", "contract_start",
   ],
   reports: ["id", "player_id", "report_date", "title", "opinion", "drive_link", "file_url", "user_id", "created_at"],
-  custom_fields: ["id", "user_id", "field_name", "field_type", "field_options", "display_order", "created_at"],
+  custom_fields: ["id", "user_id", "field_name", "field_type", "field_options", "field_hint", "display_order", "created_at"],
   custom_field_values: ["id", "custom_field_id", "player_id", "value", "user_id", "created_at"],
   watchlists: ["id", "user_id", "name", "description", "created_at", "updated_at"],
   watchlist_players: ["id", "user_id", "watchlist_id", "player_id", "added_at"],
@@ -2233,11 +2233,12 @@ app.get("/api/health", async (_req, res) => {
 
 app.post("/api/auth/signup", rateLimitAuth, async (req, res) => {
   const { email, password, fullName = "", club = "", role = "scout", referralCode = "",
-          _hp = "", _t = "" } = req.body || {};
+          country = "", _hp = "", _t = "" } = req.body || {};
   const normalizedEmail = String(email || "").trim().toLowerCase();
   const normalizedFullName = String(fullName || "").trim();
   const normalizedClub = String(club || "").trim();
   const normalizedRole = String(role || "scout").trim();
+  const normalizedCountry = String(country || "").trim().slice(0, 100);
   const ip = (req.headers["x-forwarded-for"] || "").split(",")[0].trim() || req.socket?.remoteAddress || null;
   const ua = req.headers['user-agent'] || '';
 
@@ -2343,9 +2344,9 @@ app.post("/api/auth/signup", rateLimitAuth, async (req, res) => {
     );
 
     await conn.query(
-      `INSERT INTO profiles (id, user_id, full_name, club, role, referred_by, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, NOW(), NOW())`,
-      [uuidv4(), userId, normalizedFullName, normalizedClub, normalizedRole, referrerId],
+      `INSERT INTO profiles (id, user_id, full_name, club, role, country, referred_by, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, NOW(), NOW())`,
+      [uuidv4(), userId, normalizedFullName, normalizedClub, normalizedRole, normalizedCountry || null, referrerId],
     );
 
     await conn.query(
@@ -3637,18 +3638,30 @@ app.post("/api/report-issue", authMiddleware, async (req, res) => {
 
 app.get("/api/admin/tickets", authMiddleware, async (req, res) => {
   try {
-    const [tickets] = await pool.query(`
-      SELECT t.*, u.email AS user_email, p.full_name AS user_name,
-        CASE WHEN t.status = 'closed' THEN 0 ELSE
-          (SELECT COUNT(*) FROM ticket_messages tm WHERE tm.ticket_id = t.id AND tm.is_admin = 0
-            AND tm.created_at > COALESCE((SELECT MAX(tm2.created_at) FROM ticket_messages tm2 WHERE tm2.ticket_id = t.id AND tm2.is_admin = 1), '1970-01-01')
-          )
-        END AS unread_count
-      FROM tickets t
-      LEFT JOIN users u ON u.id = t.user_id
-      LEFT JOIN profiles p ON p.user_id = t.user_id
-      ORDER BY t.updated_at DESC
-    `);
+    let tickets;
+    try {
+      [tickets] = await pool.query(`
+        SELECT t.*, u.email AS user_email, p.full_name AS user_name,
+          CASE WHEN t.status = 'closed' THEN 0 ELSE
+            (SELECT COUNT(*) FROM ticket_messages tm WHERE tm.ticket_id = t.id AND tm.is_admin = 0
+              AND tm.created_at > COALESCE(t.admin_read_at, '1970-01-01')
+            )
+          END AS unread_count
+        FROM tickets t
+        LEFT JOIN users u ON u.id = t.user_id
+        LEFT JOIN profiles p ON p.user_id = t.user_id
+        ORDER BY t.updated_at DESC
+      `);
+    } catch {
+      // Fallback if admin_read_at column doesn't exist yet (migration pending)
+      [tickets] = await pool.query(`
+        SELECT t.*, u.email AS user_email, p.full_name AS user_name, 0 AS unread_count
+        FROM tickets t
+        LEFT JOIN users u ON u.id = t.user_id
+        LEFT JOIN profiles p ON p.user_id = t.user_id
+        ORDER BY t.updated_at DESC
+      `);
+    }
     return res.json(tickets);
   } catch (err) {
     return res.status(500).json({ error: err.message });
@@ -3660,9 +3673,9 @@ app.get("/api/admin/tickets/unread-count", authMiddleware, async (req, res) => {
     const [rows] = await pool.query(`
       SELECT COUNT(DISTINCT t.id) AS count FROM tickets t
       WHERE t.status != 'closed'
-        AND (NOT EXISTS (SELECT 1 FROM ticket_messages tm WHERE tm.ticket_id = t.id AND tm.is_admin = 1)
+        AND (t.admin_read_at IS NULL
           OR EXISTS (SELECT 1 FROM ticket_messages tm WHERE tm.ticket_id = t.id AND tm.is_admin = 0
-            AND tm.created_at > (SELECT MAX(tm2.created_at) FROM ticket_messages tm2 WHERE tm2.ticket_id = t.id AND tm2.is_admin = 1)))
+            AND tm.created_at > t.admin_read_at))
     `);
     return res.json({ count: rows[0]?.count || 0 });
   } catch { return res.json({ count: 0 }); }
@@ -3681,6 +3694,8 @@ app.get("/api/admin/tickets/:id", authMiddleware, async (req, res) => {
       LEFT JOIN profiles p ON p.user_id = tm.sender_id
       WHERE tm.ticket_id = ? ORDER BY tm.created_at ASC
     `, [req.params.id]);
+    // Mark as read for admin — clears the unread badge
+    pool.query("UPDATE tickets SET admin_read_at = NOW() WHERE id = ?", [req.params.id]).catch(() => {});
     return res.json({ ticket: tickets[0], messages });
   } catch (err) { return res.status(500).json({ error: err.message }); }
 });
@@ -3742,11 +3757,20 @@ app.patch("/api/admin/tickets/:id/status", authMiddleware, async (req, res) => {
 // ── User-side: own tickets ──────────────────────────────────────────────────
 app.get("/api/my-tickets", authMiddleware, async (req, res) => {
   try {
-    const [tickets] = await pool.query(`SELECT t.*,
-      (SELECT COUNT(*) FROM ticket_messages tm WHERE tm.ticket_id = t.id AND tm.is_admin = 1
-        AND tm.created_at > COALESCE((SELECT MAX(tm2.created_at) FROM ticket_messages tm2 WHERE tm2.ticket_id = t.id AND tm2.is_admin = 0), t.created_at)
-      ) AS unread_count
-      FROM tickets t WHERE t.user_id = ? ORDER BY t.updated_at DESC`, [req.user.id]);
+    let tickets;
+    try {
+      [tickets] = await pool.query(`SELECT t.*,
+        (SELECT COUNT(*) FROM ticket_messages tm WHERE tm.ticket_id = t.id AND tm.is_admin = 1
+          AND tm.created_at > COALESCE(t.user_read_at, '1970-01-01')
+        ) AS unread_count
+        FROM tickets t WHERE t.user_id = ? ORDER BY t.updated_at DESC`, [req.user.id]);
+    } catch {
+      // Fallback if user_read_at column doesn't exist yet (migration pending)
+      [tickets] = await pool.query(
+        `SELECT t.*, 0 AS unread_count FROM tickets t WHERE t.user_id = ? ORDER BY t.updated_at DESC`,
+        [req.user.id]
+      );
+    }
     return res.json(tickets);
   } catch (err) { return res.status(500).json({ error: err.message }); }
 });
@@ -3756,6 +3780,8 @@ app.get("/api/my-tickets/:id", authMiddleware, async (req, res) => {
     const [tickets] = await pool.query("SELECT * FROM tickets WHERE id = ? AND user_id = ?", [req.params.id, req.user.id]);
     if (!tickets.length) return res.status(404).json({ error: "Not found" });
     const [messages] = await pool.query(`SELECT tm.*, p.full_name AS sender_name FROM ticket_messages tm LEFT JOIN profiles p ON p.user_id = tm.sender_id WHERE tm.ticket_id = ? ORDER BY tm.created_at ASC`, [req.params.id]);
+    // Mark as read — clears the unread badge
+    pool.query("UPDATE tickets SET user_read_at = NOW() WHERE id = ? AND user_id = ?", [req.params.id, req.user.id]).catch(() => {});
     return res.json({ ticket: tickets[0], messages });
   } catch (err) { return res.status(500).json({ error: err.message }); }
 });
@@ -6933,6 +6959,55 @@ app.get("/api/admin/analytics", authMiddleware, ensureAdmin, async (req, res) =>
   }
 });
 
+// GET /api/admin/analytics/ticket-words — word frequency from ticket subjects + messages
+app.get("/api/admin/analytics/ticket-words", authMiddleware, ensureAdmin, async (req, res) => {
+  try {
+    const [rows] = await pool.query(
+      `SELECT subject AS text FROM tickets
+       UNION ALL SELECT message AS text FROM tickets
+       UNION ALL SELECT body AS text FROM ticket_messages`
+    );
+    const STOPWORDS = new Set([
+      // French
+      'le','la','les','de','du','des','en','et','un','une','je','il','elle','nous','vous','ils','elles',
+      'que','qui','sur','pour','par','avec','dans','est','pas','au','aux','mon','ma','mes','son','sa','ses',
+      'ce','cet','cette','ces','ou','mais','donc','car','si','ne','y','n','a','on','se','lui','leur','leurs',
+      'plus','bien','tout','tous','toutes','toute','très','aussi','comme','quand','après','avant','sans',
+      'être','avoir','faire','aller','voir','venir','pouvoir','vouloir','devoir','savoir','bonjour','merci',
+      'svp','stp','oui','non','je','suis','ai','as','avez','sommes','êtes','sont','était','serait','peut',
+      'faut','via','ici','là','me','te','tr','br','hr',
+      // English
+      'the','is','are','was','were','be','been','being','have','has','had','do','does','did','will','would',
+      'shall','should','may','might','can','could','must','to','of','in','on','at','by','from','for','with',
+      'about','as','into','through','during','before','after','above','below','between','out','off','over',
+      'under','again','further','then','once','here','there','when','where','why','how','all','both','each',
+      'few','more','most','other','some','such','no','nor','not','only','own','same','so','than','too',
+      'very','just','because','until','while','although','though','even','also','and','but','or','an',
+      'this','that','it','its','my','your','his','her','our','their','me','him','us','them','what','which',
+      'who','whom','whose','i','you','he','she','we','they','get','got','its',
+      // Short/noise
+      'j','c','d','l','m','n','s','qu','ok','a','b','e','f','g','h','k','o','p','q','r','t','u','v','w','x','z',
+      'http','https','www','com','fr','app',
+    ]);
+    const freq = {};
+    for (const row of rows) {
+      if (!row.text) continue;
+      const words = row.text.toLowerCase().replace(/[^a-zàâçéèêëîïôûùüÿñæœ\s]/g, ' ').split(/\s+/);
+      for (const w of words) {
+        if (w.length < 3 || STOPWORDS.has(w)) continue;
+        freq[w] = (freq[w] || 0) + 1;
+      }
+    }
+    const result = Object.entries(freq)
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 80)
+      .map(([word, count]) => ({ word, count }));
+    return res.json(result);
+  } catch (err) {
+    return res.status(500).json({ error: err.message });
+  }
+});
+
 // GET /api/my-permissions — get current user's page permissions based on their role
 // ── Affiliate stats ──────────────────────────────────────────────────────
 app.get("/api/affiliate/stats", authMiddleware, async (req, res) => {
@@ -7028,8 +7103,8 @@ app.post("/api/account/apply-referral", authMiddleware, async (req, res) => {
       await ensureCreditTable();
       const meEmail = req.user.email || 'un utilisateur';
       await pool.query(
-        `INSERT INTO user_credit_events (id, user_id, type, amount, description, created_at)
-         VALUES (?, ?, 'affiliate', 100, ?, NOW())`,
+        `INSERT INTO user_credit_events (id, user_id, action_type, direction, amount, description)
+         VALUES (?, ?, 'affiliate_reward', 'earn', 100, ?)`,
         [uuidv4(), referrerId, `Parrainage de ${meEmail}`]
       );
       await createNotification(referrerId, {
@@ -8050,10 +8125,13 @@ async function canUseCredit(userId) {
   const quotas = PLAN_QUOTAS[planType] || PLAN_QUOTAS.starter;
   if (quotas.daily === -1) return { ok: true }; // unlimited (elite)
   const usage = await getUserCreditUsage(userId);
-  const effectiveMonthly = quotas.monthly + (usage.earned_total || 0);
-  if (usage.daily   >= quotas.daily)       return { ok: false, error: 'daily_limit',   quota: quotas.daily,       used: usage.daily };
-  if (usage.weekly  >= quotas.weekly)      return { ok: false, error: 'weekly_limit',  quota: quotas.weekly,      used: usage.weekly };
-  if (usage.monthly >= effectiveMonthly)   return { ok: false, error: 'monthly_limit', quota: effectiveMonthly,   used: usage.monthly };
+  const earned = usage.earned_total || 0;
+  const effectiveDaily   = quotas.daily   + earned;
+  const effectiveWeekly  = quotas.weekly  + earned;
+  const effectiveMonthly = quotas.monthly + earned;
+  if (usage.daily   >= effectiveDaily)   return { ok: false, error: 'daily_limit',   quota: effectiveDaily,   used: usage.daily };
+  if (usage.weekly  >= effectiveWeekly)  return { ok: false, error: 'weekly_limit',  quota: effectiveWeekly,  used: usage.weekly };
+  if (usage.monthly >= effectiveMonthly) return { ok: false, error: 'monthly_limit', quota: effectiveMonthly, used: usage.monthly };
   return { ok: true };
 }
 
@@ -8071,11 +8149,12 @@ app.get("/api/credits/me", authMiddleware, async (req, res) => {
     const planType = await getUserPlanType(req.user.id);
     const quotas = PLAN_QUOTAS[planType] || PLAN_QUOTAS.starter;
     const usage = await getUserCreditUsage(req.user.id);
-    // Effective monthly quota = plan quota + all-time earned bonus
+    // Effective quotas = plan quota + all-time earned bonus (applies to all periods)
+    const earned = usage.earned_total || 0;
     const effectiveQuotas = quotas.monthly === -1 ? quotas : {
-      daily: quotas.daily,
-      weekly: quotas.weekly,
-      monthly: quotas.monthly + (usage.earned_total || 0),
+      daily:   quotas.daily   + earned,
+      weekly:  quotas.weekly  + earned,
+      monthly: quotas.monthly + earned,
     };
     return res.json({ plan_type: planType, quotas: effectiveQuotas, usage });
   } catch (err) {
@@ -14780,6 +14859,9 @@ pool.query('ALTER TABLE club_overrides ADD COLUMN coach_photo_url TEXT NULL').ca
 pool.query('ALTER TABLE club_overrides ADD COLUMN coach_nationality VARCHAR(100) NULL').catch(err => { if (err.errno !== 1060) console.warn('[warn] club_overrides:', err?.message); });
 pool.query('ALTER TABLE club_overrides ADD COLUMN coach_date_born DATE NULL').catch(err => { if (err.errno !== 1060) console.warn('[warn] club_overrides:', err?.message); });
 
+pool.query('ALTER TABLE tickets ADD COLUMN user_read_at DATETIME NULL').catch(err => { if (err.errno !== 1060) console.warn('[warn] tickets user_read_at:', err?.message); });
+pool.query('ALTER TABLE tickets ADD COLUMN admin_read_at DATETIME NULL').catch(err => { if (err.errno !== 1060) console.warn('[warn] tickets admin_read_at:', err?.message); });
+
 // ── player_viewer_links: cross-user Wyscout import dedup ──────────────────────
 pool.query(`CREATE TABLE IF NOT EXISTS player_viewer_links (
   player_id CHAR(36) NOT NULL,
@@ -16623,6 +16705,16 @@ app.get("/api/admin/cron-job-logs", authMiddleware, ensureAdmin, async (req, res
   }
 });
 
+// Tracks which cron jobs are currently executing to prevent concurrent runs
+const _runningCronJobs = new Set();
+
+function runCronJobGuarded(jobKey, fn) {
+  if (_runningCronJobs.has(jobKey)) return false; // already running
+  _runningCronJobs.add(jobKey);
+  Promise.resolve().then(fn).finally(() => _runningCronJobs.delete(jobKey));
+  return true;
+}
+
 app.post("/api/admin/cron-trigger", authMiddleware, ensureAdmin, async (req, res) => {
   const { job, dry_run = true } = req.body || {};
   const jobs = {
@@ -16638,7 +16730,10 @@ app.post("/api/admin/cron-trigger", authMiddleware, ensureAdmin, async (req, res
     'sb-sync':            () => runStatsBombSyncJob(true),
   };
   if (!jobs[job]) return res.status(400).json({ error: 'Unknown job' });
-  jobs[job]();
+  const started = runCronJobGuarded(job, jobs[job]);
+  if (!started) {
+    return res.status(409).json({ error: 'already_running', message: 'Cette tâche est déjà en cours d\'exécution. Attendez qu\'elle se termine avant de la relancer.' });
+  }
   return res.json({ ok: true, job, dry_run: !!dry_run });
 });
 
@@ -16890,6 +16985,7 @@ pool.query(`CREATE TABLE IF NOT EXISTS editorial_articles (
   FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
 )`).catch(err => { if (!err?.message?.includes('already exists')) console.warn('[warn] editorial_articles table:', err?.message); });
 pool.query("ALTER TABLE editorial_articles ADD COLUMN lang VARCHAR(10) NULL").catch(err => { if (err.errno !== 1060) console.warn('[warn] editorial lang col:', err?.message); });
+pool.query("ALTER TABLE custom_fields ADD COLUMN field_hint TEXT NULL").catch(err => { if (err.errno !== 1060) console.warn('[warn] custom_fields field_hint col:', err?.message); });
 
 function hasEditorialRole(roles) {
   return roles.some(r => ['admin','rédacteur','redacteur','editeur','éditeur'].includes(r.toLowerCase()));

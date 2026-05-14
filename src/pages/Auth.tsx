@@ -11,7 +11,8 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { useToast } from '@/hooks/use-toast';
 import { useAuth } from '@/contexts/AuthContext';
 import { Eye, EyeOff, Wand2 } from 'lucide-react';
-import LanguageSwitcher from '@/components/LanguageSwitcher';
+import LanguageSwitcher, { getStoredCountry } from '@/components/LanguageSwitcher';
+import type { Country } from '@/lib/countries';
 import PasswordStrengthIndicator, { validatePassword } from '@/components/PasswordStrengthIndicator';
 import logo from '@/assets/logo.png';
 import { InputOTP, InputOTPGroup, InputOTPSlot } from '@/components/ui/input-otp';
@@ -28,6 +29,7 @@ export default function Auth() {
   const [fullName, setFullName] = useState('');
   const [club, setClub] = useState('');
   const [role, setRole] = useState('scout');
+  const [country, setCountry] = useState<string>(() => getStoredCountry()?.fr ?? '');
   const [showPassword, setShowPassword] = useState(false);
   const [loading, setLoading] = useState(false);
   const [acceptedCGV, setAcceptedCGV] = useState(false);
@@ -106,6 +108,7 @@ export default function Auth() {
               full_name: fullName.trim(),
               club: club.trim(),
               role,
+              country: country.trim(),
               referral_code: referralCode,
               _hp: '',  // honeypot — must stay empty; bots fill it
               _t: String(formLoadTime.current),  // form load timestamp
@@ -168,9 +171,12 @@ export default function Auth() {
         noIndex
       />
 
-      {/* Language switcher — fixed top-right, never overlaps content */}
+      {/* Country/language switcher — fixed top-right */}
       <div className="fixed top-4 right-4 z-50">
-        <LanguageSwitcher variant="ghost" />
+        <LanguageSwitcher
+          variant="ghost"
+          onCountryChange={(c: Country) => setCountry(c.fr)}
+        />
       </div>
 
       <div className="w-full max-w-sm">
@@ -301,6 +307,25 @@ export default function Auth() {
                         ))}
                       </SelectContent>
                     </Select>
+                  </div>
+                </div>
+
+                <div className="space-y-2">
+                  <Label htmlFor="country">{t('auth.country')}</Label>
+                  <div className="relative">
+                    <Input
+                      id="country"
+                      type="text"
+                      placeholder={t('auth.country_placeholder')}
+                      value={country}
+                      onChange={e => setCountry(e.target.value)}
+                      autoComplete="country-name"
+                    />
+                    {country && (
+                      <p className="text-[10px] text-muted-foreground/60 mt-0.5">
+                        {t('auth.country_hint')}
+                      </p>
+                    )}
                   </div>
                 </div>
 

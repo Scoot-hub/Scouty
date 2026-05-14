@@ -28,6 +28,7 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
+import DateInput from '@/components/ui/date-input';
 import { Textarea } from '@/components/ui/textarea';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Badge } from '@/components/ui/badge';
@@ -42,6 +43,9 @@ import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSepara
 import { ArrowLeft, Edit, ExternalLink, PlusCircle, Trash2, RefreshCw, Globe, TrendingUp, Calendar, Ruler, User, MapPin, Hash, Pencil, Euro, Briefcase, LayoutDashboard, ListPlus, Check, Building2, AlertCircle, FileText, Upload, X, Clock, Youtube, Newspaper, Link2, StickyNote, Plus, Activity, Info, Video, ClipboardList, BarChart3, Play, HeartPulse, ChevronDown, Plug, Loader2, Loader2 as ModuleLoader, CheckCircle2 as ModuleOk, Award, Zap } from 'lucide-react';
 import { toast } from 'sonner';
 import { parseScoutingNotes, serializeScoutingNotes, loadLayout, saveLayout, type CardId, type CardSize, type LayoutConfig, type ScoutingNotes } from '@/lib/scouting-notes';
+import { formatDate as fmtDate, formatDateShort, formatDateTime, convertMV } from '@/lib/format-utils';
+import { useUiPreferences } from '@/contexts/UiPreferencesContext';
+import { useRatesMap } from '@/hooks/use-exchange-rates';
 
 import { CoachPanel } from '@/components/coach/CoachPanel';
 
@@ -170,6 +174,8 @@ export default function PlayerProfile() {
   }, [perfKey]);
 
   const locale = i18n.language === 'es' ? 'es-ES' : i18n.language === 'en' ? 'en-GB' : 'fr-FR';
+  const { dateFormat, timeFormat, timezone, currency } = useUiPreferences();
+  const rates = useRatesMap();
 
   // ── Handlers ──
 
@@ -397,10 +403,9 @@ export default function PlayerProfile() {
   // ── Derived data ──
 
   const age = getPlayerAge(player.generation, player.date_of_birth);
-  const formatDate = (d: string) => new Date(d).toLocaleDateString(locale, { day: 'numeric', month: 'long', year: 'numeric' });
 
   const chartData = reports.slice().reverse().map(r => ({
-    date: new Date(r.report_date).toLocaleDateString(locale, { month: 'short', year: '2-digit' }),
+    date: formatDateShort(r.report_date, dateFormat),
     niveau: player.current_level,
     potentiel: player.potential,
   }));
@@ -465,7 +470,7 @@ export default function PlayerProfile() {
       if (player.date_of_birth) {
         const dob = new Date(player.date_of_birth);
         const ageVal = getPlayerAge(player.generation, player.date_of_birth);
-        items.push({ icon: <Calendar className="w-3.5 h-3.5" />, label: t('profile.birth_date'), value: `${dob.toLocaleDateString(locale, { day: 'numeric', month: 'long', year: 'numeric' })} (${ageVal} ${t('common.year')})` });
+        items.push({ icon: <Calendar className="w-3.5 h-3.5" />, label: t('profile.birth_date'), value: `${fmtDate(dob, dateFormat)} (${ageVal} ${t('common.year')})` });
       }
       if (ext.height) items.push({ icon: <Ruler className="w-3.5 h-3.5" />, label: t('profile.height'), value: ext.height });
       if (ext.nationality2) items.push({ icon: <Globe className="w-3.5 h-3.5" />, label: t('profile.nationality2'), value: translateCountry(ext.nationality2, i18n.language) });
@@ -473,20 +478,20 @@ export default function PlayerProfile() {
         const contractLabel = ext.on_loan && ext.parent_club
           ? `${t('profile.contract_end')} (${ext.parent_club})`
           : t('profile.contract_end');
-        const contractValue = player.contract_end ? `${formatDate(player.contract_end)}${contractSoon ? ' ⚠️' : ''}` : '—';
+        const contractValue = player.contract_end ? `${fmtDate(player.contract_end, dateFormat)}${contractSoon ? ' ⚠️' : ''}` : '—';
         items.push({ icon: <Calendar className="w-3.5 h-3.5" />, label: contractLabel, value: contractValue });
       }
       if (ext.on_loan && ext.parent_club) {
         items.push({ icon: <Building2 className="w-3.5 h-3.5" />, label: t('profile.loan_status'), value: `${t('profile.on_loan')} ${ext.parent_club}` });
         if (ext.loan_end_date) {
-          items.push({ icon: <Calendar className="w-3.5 h-3.5" />, label: t('profile.loan_end'), value: formatDate(ext.loan_end_date) });
+          items.push({ icon: <Calendar className="w-3.5 h-3.5" />, label: t('profile.loan_end'), value: fmtDate(ext.loan_end_date as string, dateFormat) });
         }
       }
       items.push({ icon: <User className="w-3.5 h-3.5" />, label: t('profile.agent'), value: ext.agent || '—' });
-      if (ext.market_value) items.push({ icon: <Euro className="w-3.5 h-3.5" />, label: t('profile.market_value'), value: ext.market_value });
+      if (ext.market_value) items.push({ icon: <Euro className="w-3.5 h-3.5" />, label: t('profile.market_value'), value: convertMV(ext.market_value as string, currency, rates) });
       if (ext.birth_location) items.push({ icon: <MapPin className="w-3.5 h-3.5" />, label: t('profile.birth_location'), value: ext.birth_location });
       if (ext.shirt_number) items.push({ icon: <Hash className="w-3.5 h-3.5" />, label: t('profile.shirt_number'), value: `#${ext.shirt_number}` });
-      if (ext.date_signed) items.push({ icon: <Calendar className="w-3.5 h-3.5" />, label: t('profile.date_signed'), value: new Date(ext.date_signed).toLocaleDateString(locale, { day: 'numeric', month: 'long', year: 'numeric' }) });
+      if (ext.date_signed) items.push({ icon: <Calendar className="w-3.5 h-3.5" />, label: t('profile.date_signed'), value: fmtDate(ext.date_signed as string, dateFormat) });
       if (ext.signing_fee) items.push({ icon: <TrendingUp className="w-3.5 h-3.5" />, label: t('profile.transfer_fee'), value: ext.signing_fee });
 
       const isNationalTeamLabel = (name: string) => {
@@ -528,15 +533,15 @@ export default function PlayerProfile() {
           const dayNum = day === '00' ? 1 : Number(day);
           const safe = new Date(Number(year), Number(month) - 1, dayNum);
           if (isNaN(safe.getTime())) return year;
-          return safe.toLocaleDateString(locale, { month: 'short', year: 'numeric' });
+          return formatDateShort(safe, dateFormat);
         }
         const parts = d.split(/[\/\-\.]/);
         if (parts.length === 3 && parts[0].length === 4) {
           const date = new Date(Number(parts[0]), Number(parts[1]) - 1, Number(parts[2]));
-          if (!isNaN(date.getTime())) return date.toLocaleDateString(locale, { month: 'short', year: 'numeric' });
+          if (!isNaN(date.getTime())) return formatDateShort(date, dateFormat);
         }
         const date = new Date(d + 'T00:00:00');
-        return isNaN(date.getTime()) ? null : date.toLocaleDateString(locale, { month: 'short', year: 'numeric' });
+        return isNaN(date.getTime()) ? null : formatDateShort(date, dateFormat);
       };
 
       return (
@@ -547,7 +552,7 @@ export default function PlayerProfile() {
                 <Globe className="w-4 h-4" />{t('profile.external_data_title')}
               </CardTitle>
               <p className="text-xs text-muted-foreground mt-1">
-                {t('profile.last_updated')} {new Date(player.external_data_fetched_at!).toLocaleDateString(locale, { day: 'numeric', month: 'long', year: 'numeric', hour: '2-digit', minute: '2-digit' })}
+                {t('profile.last_updated')} {formatDateTime(player.external_data_fetched_at!, dateFormat, timeFormat, timezone)}
               </p>
             </div>
             <Tooltip>
@@ -666,7 +671,7 @@ export default function PlayerProfile() {
                   <Plug className="w-3.5 h-3.5" /> Perplexity AI
                   {ext.perplexity_updated_at && (
                     <span className="font-normal text-teal-600/70 dark:text-teal-500/70 ml-auto">
-                      {new Date(ext.perplexity_updated_at as string).toLocaleDateString()}
+                      {fmtDate(ext.perplexity_updated_at as string, dateFormat)}
                     </span>
                   )}
                 </p>
@@ -834,7 +839,7 @@ export default function PlayerProfile() {
                 <div key={report.id} className="flex items-center gap-4 p-4 rounded-xl bg-muted/30 hover:bg-muted/50 transition-colors">
                   <div className={`w-3 h-3 rounded-full shrink-0 ${report.opinion === 'À suivre' ? 'bg-success' : report.opinion === 'À revoir' ? 'bg-warning' : 'bg-destructive'}`} />
                   <div className="flex-1 min-w-0">
-                    <p className="text-sm font-bold">{report.title || formatDate(report.report_date)}</p>
+                    <p className="text-sm font-bold">{report.title || fmtDate(report.report_date, dateFormat)}</p>
                     {i === 0 && <p className="text-xs text-primary font-medium">{t('profile.last_report')}</p>}
                   </div>
                   <OpinionBadge opinion={report.opinion} size="sm" />
@@ -1159,6 +1164,8 @@ export default function PlayerProfile() {
                       <LazyMarketValueChart
                         history={marketValueData.history}
                         locale={locale}
+                        currency={currency}
+                        rates={rates}
                         valueLabel={t('profile.market_value_value')}
                         clubLabel={t('profile.market_value_club')}
                         ageLabel={t('profile.market_value_age')}
@@ -1305,12 +1312,7 @@ export default function PlayerProfile() {
                         <label className="text-xs font-bold uppercase tracking-wider text-muted-foreground mb-1.5 block">
                           {t('profile.opinion_date')}
                         </label>
-                        <Input
-                          type="date"
-                          value={newOpinionDate}
-                          onChange={(e) => setNewOpinionDate(e.target.value)}
-                          className="rounded-xl h-9"
-                        />
+                        <DateInput value={newOpinionDate} onChange={setNewOpinionDate} className="rounded-xl h-9" />
                       </div>
                     </div>
 
@@ -1432,7 +1434,7 @@ export default function PlayerProfile() {
                             <div className="flex items-center gap-2 flex-wrap mt-0.5">
                               <p className="text-xs text-muted-foreground flex items-center gap-1">
                                 <Clock className="w-3 h-3" />
-                                {new Date(opinion.observed_at || opinion.created_at).toLocaleDateString(locale, { day: 'numeric', month: 'long', year: 'numeric' })}
+                                {fmtDate(opinion.observed_at || opinion.created_at, dateFormat)}
                               </p>
                               {opinion.match_observed && (
                                 <span className="text-xs px-2 py-0.5 rounded-md bg-muted font-medium">{opinion.match_observed}</span>
@@ -1706,7 +1708,7 @@ export default function PlayerProfile() {
                               <p className="text-xs text-muted-foreground mt-1 whitespace-pre-line line-clamp-2">{item.description}</p>
                             )}
                             <p className="text-[10px] text-muted-foreground/50 mt-1">
-                              {new Date(item.created_at).toLocaleDateString(undefined, { day: 'numeric', month: 'short', year: 'numeric' })}
+                              {fmtDate(item.created_at, dateFormat)}
                             </p>
                           </div>
                           <div className="flex items-center gap-1 shrink-0">
@@ -1954,7 +1956,7 @@ export default function PlayerProfile() {
                               <p className="text-xs text-muted-foreground mt-1 whitespace-pre-line line-clamp-3">{item.content}</p>
                             )}
                             <p className="text-[10px] text-muted-foreground/50 mt-1">
-                              {new Date(item.created_at).toLocaleDateString(undefined, { day: 'numeric', month: 'short', year: 'numeric' })}
+                              {fmtDate(item.created_at, dateFormat)}
                             </p>
                           </div>
                           <div className="flex items-center gap-1 shrink-0">
@@ -2102,7 +2104,7 @@ export default function PlayerProfile() {
             </div>
             <div className="space-y-2">
               <label className="text-sm font-medium">{t('player_form.report_date')}</label>
-              <Input type="date" value={newReportDate} onChange={(e) => setNewReportDate(e.target.value)} className="rounded-xl" />
+              <DateInput value={newReportDate} onChange={setNewReportDate} className="rounded-xl" />
             </div>
             <div className="space-y-2">
               <label className="text-sm font-medium">{t('player_form.report_opinion')}</label>
