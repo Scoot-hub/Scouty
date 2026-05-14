@@ -5,9 +5,10 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter, DialogD
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
+import { Switch } from '@/components/ui/switch';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import {
-  PlusCircle, Pencil, Trash2, Settings2, X, Trophy,
+  PlusCircle, Pencil, Trash2, Settings2, X, Trophy, Users,
   Type, Hash, List, Link2, ToggleLeft, User, CalendarDays,
   Clock, AlignLeft, Banknote, Phone, Mail, Lock, Minus, ListChecks,
 } from 'lucide-react';
@@ -60,6 +61,7 @@ export function CustomFieldsManager({
   const [fieldHint, setFieldHint] = useState('');
   const [options, setOptions] = useState<string[]>([]);
   const [newOption, setNewOption] = useState('');
+  const [appliesToAll, setAppliesToAll] = useState(true);
 
   useEffect(() => {
     if (open && initialField) {
@@ -68,6 +70,7 @@ export function CustomFieldsManager({
       setFieldType(initialField.field_type);
       setFieldHint(initialField.field_hint ?? '');
       setOptions(initialField.field_options ?? []);
+      setAppliesToAll(initialField.applies_to_all !== false);
     }
   }, [open, initialField]);
 
@@ -78,6 +81,7 @@ export function CustomFieldsManager({
     setFieldHint('');
     setOptions([]);
     setNewOption('');
+    setAppliesToAll(true);
   };
 
   const openEdit = (field: CustomField) => {
@@ -86,6 +90,7 @@ export function CustomFieldsManager({
     setFieldType(field.field_type);
     setFieldHint(field.field_hint ?? '');
     setOptions(field.field_options ?? []);
+    setAppliesToAll(field.applies_to_all !== false);
     setOpen(true);
   };
 
@@ -100,10 +105,10 @@ export function CustomFieldsManager({
     try {
       const name = isSeparator ? (fieldName.trim() || '') : fieldName.trim();
       if (editingField) {
-        await updateField.mutateAsync({ id: editingField.id, field_name: name, field_type: fieldType, field_options: options, field_hint: fieldHint || null });
+        await updateField.mutateAsync({ id: editingField.id, field_name: name, field_type: fieldType, field_options: options, field_hint: fieldHint || null, applies_to_all: isSeparator ? true : appliesToAll });
         toast.success(t('custom_fields.updated'));
       } else {
-        await createField.mutateAsync({ field_name: name, field_type: fieldType, field_options: options, field_hint: fieldHint || undefined, display_order: fields.length });
+        await createField.mutateAsync({ field_name: name, field_type: fieldType, field_options: options, field_hint: fieldHint || undefined, applies_to_all: isSeparator ? true : appliesToAll, display_order: fields.length });
         toast.success(t('custom_fields.created'));
       }
       resetForm();
@@ -160,6 +165,11 @@ export function CustomFieldsManager({
                   <div key={f.id} className="flex items-center gap-2 p-2 rounded-lg bg-muted/40 hover:bg-muted/60 transition-colors">
                     <FIcon className="w-3.5 h-3.5 text-muted-foreground shrink-0" />
                     <span className="flex-1 text-sm font-medium truncate">{f.field_name || <span className="text-muted-foreground italic">—</span>}</span>
+                    {f.field_type !== 'separator' && f.applies_to_all === false && (
+                      <span className="inline-flex items-center px-1.5 py-0.5 rounded-full bg-amber-500/15 text-amber-600 dark:text-amber-400 text-[10px] font-semibold shrink-0" title={t('custom_fields.applies_to_all_off_badge_title')}>
+                        {t('custom_fields.applies_to_all_off_badge')}
+                      </span>
+                    )}
                     <span className="text-xs text-muted-foreground hidden sm:block">{t(`custom_fields.type_${f.field_type}`)}</span>
                     <button onClick={() => openEdit(f)} className="p-1 hover:bg-muted rounded transition-colors"><Pencil className="w-3.5 h-3.5" /></button>
                     <button onClick={() => handleDelete(f.id)} className="p-1 hover:bg-destructive/10 rounded text-destructive transition-colors"><Trash2 className="w-3.5 h-3.5" /></button>
@@ -212,6 +222,22 @@ export function CustomFieldsManager({
                   placeholder={t('custom_fields.field_hint_placeholder')}
                   className="mt-1"
                 />
+              </div>
+            )}
+
+            {/* Applies to all players toggle */}
+            {!isSeparator && (
+              <div className="flex items-start justify-between gap-3 p-3 rounded-xl bg-muted/40">
+                <div className="flex-1 min-w-0">
+                  <Label htmlFor="cf-applies-to-all" className="flex items-center gap-1.5 cursor-pointer">
+                    <Users className="w-3.5 h-3.5 text-muted-foreground" />
+                    {t('custom_fields.applies_to_all')}
+                  </Label>
+                  <p className="text-xs text-muted-foreground mt-0.5 leading-relaxed">
+                    {appliesToAll ? t('custom_fields.applies_to_all_on_desc') : t('custom_fields.applies_to_all_off_desc')}
+                  </p>
+                </div>
+                <Switch id="cf-applies-to-all" checked={appliesToAll} onCheckedChange={setAppliesToAll} />
               </div>
             )}
 

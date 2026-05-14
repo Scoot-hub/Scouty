@@ -1,17 +1,18 @@
-import { useState, useMemo, useCallback, useRef, useEffect } from 'react';
+import { useState, useMemo, useRef, useEffect } from 'react';
 import { Link } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
-import { useCustomFields, useCustomFieldValues, useUpsertCustomFieldValue, type CustomField } from '@/hooks/use-custom-fields';
+import { useCustomFields, useCustomFieldValues, useUpsertCustomFieldValue, useDeleteCustomFieldValue, type CustomField } from '@/hooks/use-custom-fields';
 import { usePlayers } from '@/hooks/use-players';
 import { useMyMatches } from '@/hooks/use-match-assignments';
 import { useChampionships } from '@/hooks/use-championships';
 import { Input } from '@/components/ui/input';
-import { Textarea } from '@/components/ui/textarea';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Checkbox } from '@/components/ui/checkbox';
 import { Badge } from '@/components/ui/badge';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
-import { ExternalLink, Users, CalendarDays, Search, X, Trophy, Phone, Mail, Info, Check, CheckCircle2, Pencil, Eye, EyeOff } from 'lucide-react';
+import { ExternalLink, Users, CalendarDays, Search, X, Trophy, Phone, Mail, Info, Check, CheckCircle2, Pencil, Eye, EyeOff, PlusCircle } from 'lucide-react';
+import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem } from '@/components/ui/dropdown-menu';
+import { Button } from '@/components/ui/button';
 import { cn } from '@/lib/utils';
 import { LeagueLogo } from '@/components/ui/league-logo';
 import { formatDate, formatDateTime, type DateFormat, type TimeFormat, CURRENCIES } from '@/lib/format-utils';
@@ -21,6 +22,55 @@ import DateInput from '@/components/ui/date-input';
 interface Props {
   playerId: string;
   editable?: boolean;
+}
+
+/**
+ * Auto-resize textarea using the "grid mirror" CSS technique.
+ * A grid container has two children stacked at the same cell: a hidden <div>
+ * that mirrors the textarea content (which makes the grid row grow), and the
+ * actual <textarea> sized to fill that row. No JS measurement needed.
+ */
+function AutoResizeTextarea({ value, onChange, onFocus, onBlur, onKeyDown, className, placeholder, minRows = 2 }: {
+  value: string;
+  onChange: (v: string) => void;
+  onFocus?: () => void;
+  onBlur?: () => void;
+  onKeyDown?: (e: React.KeyboardEvent<HTMLTextAreaElement>) => void;
+  className?: string;
+  placeholder?: string;
+  minRows?: number;
+}) {
+  const baseClasses = 'block w-full rounded-md border border-input bg-background px-3 py-2 text-sm leading-relaxed';
+  // Trailing space prevents the mirror from collapsing on the last newline.
+  const mirrorValue = (value || ' ') + (value.endsWith('\n') ? ' ' : '');
+
+  return (
+    <div
+      className="grid w-full"
+      style={{ gridTemplateColumns: '1fr', gridTemplateRows: '1fr' }}
+    >
+      <div
+        aria-hidden="true"
+        className={cn(baseClasses, 'invisible whitespace-pre-wrap break-words [grid-area:1/1]')}
+      >
+        {mirrorValue}
+      </div>
+      <textarea
+        value={value}
+        onChange={e => onChange(e.target.value)}
+        onFocus={onFocus}
+        onBlur={onBlur}
+        onKeyDown={onKeyDown}
+        rows={minRows}
+        placeholder={placeholder}
+        className={cn(
+          baseClasses,
+          'resize-none overflow-hidden [grid-area:1/1] ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50',
+          className,
+        )}
+      />
+    </div>
+  );
 }
 
 function parseMultiselect(raw: string): string[] {
@@ -62,14 +112,39 @@ export function CustomFieldsDisplay({ playerId, editable = false }: Props) {
   const { data: fields = [] } = useCustomFields();
   const { data: values = [] } = useCustomFieldValues(playerId);
   const upsert = useUpsertCustomFieldValue();
+  const deleteValue = useDeleteCustomFieldValue();
   const [savedIds, setSavedIds] = useState<Set<string>>(new Set());
+  // Optional fields the user just added in this session but hasn't filled in yet.
+  // Tracked locally so we don't pollute custom_field_values with empty rows.
+  const [expandedOptional, setExpandedOptional] = useState<Set<string>>(new Set());
   const timersRef = useRef<Record<string, ReturnType<typeof setTimeout>>>({});
 
+  const hasNonEmptyValue = (fieldId: string) => {
+    const v = values.find(x => x.custom_field_id === fieldId)?.value;
+    return v != null && v !== '';
+  };
+  const visibleFields = fields.filter(f => {
+    if (f.field_type === 'separator') return true;
+    if (f.applies_to_all !== false) return true;
+    // Optional field: show only if it has a real value, or user just added it in this session
+    return hasNonEmptyValue(f.id) || (editable && expandedOptional.has(f.id));
+  });
+  const optionalAddable = fields.filter(f =>
+    f.field_type !== 'separator' && f.applies_to_all === false && !hasNonEmptyValue(f.id) && !expandedOptional.has(f.id)
+  );
+
   if (fields.length === 0) return null;
+  if (!editable && visibleFields.length === 0) return null;
 
   const getValue = (fieldId: string) => values.find(v => v.custom_field_id === fieldId)?.value ?? '';
 
   const handleChange = (fieldId: string, value: string) => {
+    // If the user is editing an optional field, keep it visible even if they
+    // clear the value mid-edit (otherwise the row would vanish from under them).
+    const field = fields.find(f => f.id === fieldId);
+    if (field && field.applies_to_all === false) {
+      setExpandedOptional(prev => { const next = new Set(prev); next.add(fieldId); return next; });
+    }
     upsert.mutate({ customFieldId: fieldId, playerId, value }, {
       onSuccess: () => {
         setSavedIds(prev => new Set(prev).add(fieldId));
@@ -81,9 +156,18 @@ export function CustomFieldsDisplay({ playerId, editable = false }: Props) {
     });
   };
 
+  const addOptional = (fieldId: string) =>
+    setExpandedOptional(prev => { const next = new Set(prev); next.add(fieldId); return next; });
+  const removeOptional = (fieldId: string) => {
+    setExpandedOptional(prev => { const next = new Set(prev); next.delete(fieldId); return next; });
+    if (values.some(v => v.custom_field_id === fieldId)) {
+      deleteValue.mutate({ customFieldId: fieldId, playerId });
+    }
+  };
+
   return (
     <div className="space-y-2">
-      {fields.map(field => {
+      {visibleFields.map(field => {
         // Separator — full-width, no value
         if (field.field_type === 'separator') {
           return (
@@ -99,19 +183,32 @@ export function CustomFieldsDisplay({ playerId, editable = false }: Props) {
         }
 
         const isSaved = savedIds.has(field.id);
+        const isOptional = editable && field.applies_to_all === false;
+        const removeBtn = isOptional ? (
+          <button
+            onClick={() => removeOptional(field.id)}
+            className="p-0.5 hover:bg-destructive/10 rounded text-muted-foreground hover:text-destructive transition-colors shrink-0"
+            title={t('custom_fields.remove_optional_from_player')}
+          >
+            <X className="w-3.5 h-3.5" />
+          </button>
+        ) : null;
 
-        // Textarea / multiselect — vertical layout
-        const isVertical = field.field_type === 'textarea' || field.field_type === 'multiselect';
+        // Vertical layout for fields whose values can be long (multi-line / long URLs / emails)
+        const isVertical = ['textarea', 'multiselect', 'text', 'link', 'email', 'password'].includes(field.field_type);
         if (isVertical) {
           return (
             <div key={field.id} className={cn(
               'p-3 rounded-xl space-y-1.5 transition-colors duration-300',
               isSaved ? 'bg-emerald-500/10' : 'bg-muted/40',
             )}>
-              <FieldLabel field={field} isSaved={isSaved} />
+              <div className="flex items-center justify-between gap-2">
+                <FieldLabel field={field} isSaved={isSaved} />
+                {removeBtn}
+              </div>
               {editable
-                ? <EditableField field={field} value={getValue(field.id)} onChange={v => handleChange(field.id, v)} dateFormat={dateFormat} timeFormat={timeFormat} timezone={timezone} currency={currency} />
-                : <ReadonlyField field={field} value={getValue(field.id)} dateFormat={dateFormat} timeFormat={timeFormat} timezone={timezone} currency={currency} />
+                ? <EditableField field={field} value={getValue(field.id)} onChange={v => handleChange(field.id, v)} fullWidth dateFormat={dateFormat} timeFormat={timeFormat} timezone={timezone} currency={currency} />
+                : <ReadonlyField field={field} value={getValue(field.id)} fullWidth dateFormat={dateFormat} timeFormat={timeFormat} timezone={timezone} currency={currency} />
               }
             </div>
           );
@@ -123,15 +220,34 @@ export function CustomFieldsDisplay({ playerId, editable = false }: Props) {
             isSaved ? 'bg-emerald-500/10' : 'bg-muted/40',
           )}>
             <FieldLabel field={field} isSaved={isSaved} />
-            <div className="text-right min-w-0 ml-3">
+            <div className="flex items-center gap-1 text-right min-w-0 ml-3">
               {editable
                 ? <EditableField field={field} value={getValue(field.id)} onChange={v => handleChange(field.id, v)} dateFormat={dateFormat} timeFormat={timeFormat} timezone={timezone} currency={currency} />
                 : <ReadonlyField field={field} value={getValue(field.id)} dateFormat={dateFormat} timeFormat={timeFormat} timezone={timezone} currency={currency} />
               }
+              {removeBtn}
             </div>
           </div>
         );
       })}
+
+      {editable && optionalAddable.length > 0 && (
+        <DropdownMenu>
+          <DropdownMenuTrigger asChild>
+            <Button variant="outline" size="sm" className="rounded-xl w-full justify-center mt-1 border-dashed">
+              <PlusCircle className="w-3.5 h-3.5 mr-2" />
+              {t('custom_fields.add_optional_field')}
+            </Button>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="center" className="max-h-64 overflow-y-auto w-56">
+            {optionalAddable.map(f => (
+              <DropdownMenuItem key={f.id} onClick={() => addOptional(f.id)}>
+                {f.field_name}
+              </DropdownMenuItem>
+            ))}
+          </DropdownMenuContent>
+        </DropdownMenu>
+      )}
     </div>
   );
 }
@@ -159,8 +275,8 @@ function PasswordReadonly({ value }: { value: string }) {
 // Read-only display
 // ---------------------------------------------------------------------------
 
-function ReadonlyField({ field, value, dateFormat, timeFormat, timezone, currency }: {
-  field: CustomField; value: string;
+function ReadonlyField({ field, value, fullWidth, dateFormat, timeFormat, timezone, currency }: {
+  field: CustomField; value: string; fullWidth?: boolean;
   dateFormat: DateFormat; timeFormat: TimeFormat; timezone?: string; currency: string;
 }) {
   if (!value) return <span className="text-sm text-muted-foreground">—</span>;
@@ -170,8 +286,10 @@ function ReadonlyField({ field, value, dateFormat, timeFormat, timezone, currenc
   switch (field.field_type) {
     case 'link':
       return (
-        <a href={value} target="_blank" rel="noopener noreferrer" className="text-sm text-primary font-medium flex items-center gap-1">
-          <ExternalLink className="w-3 h-3" /> {value.length > 40 ? value.slice(0, 40) + '...' : value}
+        <a href={value} target="_blank" rel="noopener noreferrer"
+          className={cn('text-sm text-primary font-medium flex items-start gap-1', fullWidth ? 'break-all' : '')}>
+          <ExternalLink className="w-3 h-3 mt-0.5 shrink-0" />
+          {fullWidth ? <span className="break-all">{value}</span> : <span>{value.length > 40 ? value.slice(0, 40) + '...' : value}</span>}
         </a>
       );
     case 'boolean':
@@ -187,19 +305,21 @@ function ReadonlyField({ field, value, dateFormat, timeFormat, timezone, currenc
     case 'datetime':
       return <span className="text-sm font-medium">{formatDateTime(value, dateFormat, timeFormat, timezone)}</span>;
     case 'textarea':
-      return <p className="text-sm whitespace-pre-wrap leading-relaxed">{value}</p>;
+      return <p className="text-sm whitespace-pre-wrap leading-relaxed break-words">{value}</p>;
+    case 'text':
+      return <p className="text-sm font-medium whitespace-pre-wrap break-words leading-relaxed">{value}</p>;
     case 'price':
       return <span className="text-sm font-semibold">{currencySymbol}{Number(value).toLocaleString()}</span>;
     case 'phone':
       return (
-        <a href={`tel:${value}`} className="text-sm text-primary font-medium flex items-center gap-1 justify-end">
-          <Phone className="w-3 h-3" /> {value}
+        <a href={`tel:${value}`} className={cn('text-sm text-primary font-medium flex items-center gap-1', fullWidth ? '' : 'justify-end')}>
+          <Phone className="w-3 h-3 shrink-0" /> {value}
         </a>
       );
     case 'email':
       return (
-        <a href={`mailto:${value}`} className="text-sm text-primary font-medium flex items-center gap-1 justify-end">
-          <Mail className="w-3 h-3" /> {value}
+        <a href={`mailto:${value}`} className={cn('text-sm text-primary font-medium flex items-center gap-1', fullWidth ? 'break-all' : 'justify-end')}>
+          <Mail className="w-3 h-3 shrink-0" /> <span className={cn(fullWidth ? 'break-all' : '')}>{value}</span>
         </a>
       );
     case 'password':
@@ -228,8 +348,8 @@ function ensureHttps(url: string): string {
   return 'https://' + url;
 }
 
-function EditableField({ field, value, onChange, dateFormat, timeFormat, timezone, currency }: {
-  field: CustomField; value: string; onChange: (v: string) => void;
+function EditableField({ field, value, onChange, fullWidth, dateFormat, timeFormat, timezone, currency }: {
+  field: CustomField; value: string; onChange: (v: string) => void; fullWidth?: boolean;
   dateFormat: DateFormat; timeFormat: TimeFormat; timezone?: string; currency: string;
 }) {
   const [localVal, setLocalVal] = useState(value);
@@ -314,10 +434,15 @@ function EditableField({ field, value, onChange, dateFormat, timeFormat, timezon
     case 'textarea':
       return (
         <div className="w-full">
-          <Textarea value={localVal}
-            onChange={e => setLocalVal(e.target.value)}
-            onFocus={onFocus} onBlur={commit} onKeyDown={onKeyDown}
-            rows={3} className="text-sm resize-y w-full" placeholder="—" />
+          <AutoResizeTextarea
+            value={localVal}
+            onChange={setLocalVal}
+            onFocus={onFocus}
+            onBlur={commit}
+            onKeyDown={onKeyDown}
+            placeholder="—"
+            minRows={2}
+          />
           <p className="mt-1 text-[10px] text-muted-foreground/50">Ctrl+Entrée pour enregistrer</p>
         </div>
       );
@@ -336,7 +461,7 @@ function EditableField({ field, value, onChange, dateFormat, timeFormat, timezon
     case 'phone':
       if (value && !phoneEditing) {
         return (
-          <div className="flex items-center gap-1.5 max-w-[200px]">
+          <div className={cn('flex items-center gap-1.5', fullWidth ? 'w-full' : 'max-w-[200px]')}>
             <a href={`tel:${value}`} className="text-sm text-primary font-medium flex items-center gap-1 hover:underline truncate flex-1">
               <Phone className="w-3 h-3 shrink-0" /><span className="truncate">{value}</span>
             </a>
@@ -350,17 +475,19 @@ function EditableField({ field, value, onChange, dateFormat, timeFormat, timezon
         );
       }
       return (
-        <div className="flex items-center gap-1">
+        <div className={cn('flex items-center gap-1', fullWidth ? 'w-full' : '')}>
           <Input type="tel" value={localVal} onChange={e => setLocalVal(e.target.value)}
             onFocus={onFocus} onKeyDown={onKeyDown} onBlur={commit}
-            autoFocus={phoneEditing} className="w-[170px] h-8 text-sm text-right" placeholder="+33 6 00 00 00 00" />
+            autoFocus={phoneEditing}
+            className={cn('h-8 text-sm', fullWidth ? 'flex-1 text-left' : 'w-[170px] text-right')}
+            placeholder="+33 6 00 00 00 00" />
           {SaveBtn}
         </div>
       );
     case 'email':
       if (value && !emailEditing) {
         return (
-          <div className="flex items-center gap-1.5 max-w-[220px]">
+          <div className={cn('flex items-center gap-1.5', fullWidth ? 'w-full' : 'max-w-[220px]')}>
             <a href={`mailto:${value}`} className="text-sm text-primary font-medium flex items-center gap-1 hover:underline truncate flex-1">
               <Mail className="w-3 h-3 shrink-0" /><span className="truncate">{value}</span>
             </a>
@@ -374,16 +501,18 @@ function EditableField({ field, value, onChange, dateFormat, timeFormat, timezon
         );
       }
       return (
-        <div className="flex items-center gap-1">
+        <div className={cn('flex items-center gap-1', fullWidth ? 'w-full' : '')}>
           <Input type="email" value={localVal} onChange={e => setLocalVal(e.target.value)}
             onFocus={onFocus} onKeyDown={onKeyDown} onBlur={commit}
-            autoFocus={emailEditing} className="w-[190px] h-8 text-sm text-right" placeholder="email@exemple.com" />
+            autoFocus={emailEditing}
+            className={cn('h-8 text-sm', fullWidth ? 'flex-1 text-left' : 'w-[190px] text-right')}
+            placeholder="email@exemple.com" />
           {SaveBtn}
         </div>
       );
     case 'password':
       return (
-        <div className="flex items-center gap-1 w-[200px]">
+        <div className={cn('flex items-center gap-1', fullWidth ? 'w-full' : 'w-[200px]')}>
           <Input type={showPassword ? 'text' : 'password'} value={localVal}
             onChange={e => setLocalVal(e.target.value)}
             onFocus={onFocus} onKeyDown={onKeyDown} onBlur={commit}
@@ -398,7 +527,7 @@ function EditableField({ field, value, onChange, dateFormat, timeFormat, timezon
     case 'link':
       if (value && !linkEditing) {
         return (
-          <div className="flex items-center gap-1.5 max-w-[220px]">
+          <div className={cn('flex items-center gap-1.5', fullWidth ? 'w-full' : 'max-w-[220px]')}>
             <a href={value} target="_blank" rel="noopener noreferrer"
               className="text-sm text-primary font-medium flex items-center gap-1 hover:underline truncate flex-1">
               <ExternalLink className="w-3 h-3 shrink-0" />
@@ -416,19 +545,22 @@ function EditableField({ field, value, onChange, dateFormat, timeFormat, timezon
         );
       }
       return (
-        <div className="flex items-center gap-1">
+        <div className={cn('flex items-center gap-1', fullWidth ? 'w-full' : '')}>
           <Input value={localVal} onChange={e => setLocalVal(e.target.value)}
             onFocus={onFocus} onKeyDown={onKeyDown} onBlur={commit}
-            autoFocus={linkEditing} className="w-[200px] h-8 text-sm text-right" placeholder="https://..." />
+            autoFocus={linkEditing}
+            className={cn('h-8 text-sm', fullWidth ? 'flex-1 text-left' : 'w-[200px] text-right')}
+            placeholder="https://..." />
           {SaveBtn}
         </div>
       );
     case 'text':
       return (
-        <div className="flex items-center gap-1">
+        <div className={cn('flex items-center gap-1', fullWidth ? 'w-full' : '')}>
           <Input value={localVal} maxLength={256} onChange={e => setLocalVal(e.target.value)}
             onFocus={onFocus} onKeyDown={onKeyDown} onBlur={commit}
-            className="w-[170px] h-8 text-sm text-right" placeholder="—" />
+            className={cn('h-8 text-sm', fullWidth ? 'flex-1 text-left' : 'w-[170px] text-right')}
+            placeholder="—" />
           {SaveBtn}
         </div>
       );
@@ -710,15 +842,43 @@ export function CustomFieldsForm({ values, onChange }: { values: Record<string, 
   const { dateFormat, timeFormat, timezone, currency } = useUiPreferences();
   const currencySymbol = CURRENCIES.find(c => c.code === currency)?.symbol ?? currency;
   const { data: fields = [] } = useCustomFields();
+  // Optional fields the user explicitly added in this session (so they stay visible
+  // even when their value is empty mid-edit).
+  const [expandedOptional, setExpandedOptional] = useState<Set<string>>(new Set());
 
   if (fields.length === 0) return null;
 
-  const handleChange = (fieldId: string, val: string) => onChange({ ...values, [fieldId]: val });
+  const handleChange = (fieldId: string, val: string) => {
+    const field = fields.find(f => f.id === fieldId);
+    if (field && field.applies_to_all === false) {
+      setExpandedOptional(prev => { const next = new Set(prev); next.add(fieldId); return next; });
+    }
+    onChange({ ...values, [fieldId]: val });
+  };
+  const removeOptional = (fieldId: string) => {
+    setExpandedOptional(prev => { const next = new Set(prev); next.delete(fieldId); return next; });
+    const next = { ...values };
+    delete next[fieldId];
+    onChange(next);
+  };
+
+  const hasNonEmptyValue = (fieldId: string) => {
+    const v = values[fieldId];
+    return v != null && v !== '';
+  };
+  const visibleFields = fields.filter(f => {
+    if (f.field_type === 'separator') return true;
+    if (f.applies_to_all !== false) return true;
+    return hasNonEmptyValue(f.id) || expandedOptional.has(f.id);
+  });
+  const optionalAddable = fields.filter(f =>
+    f.field_type !== 'separator' && f.applies_to_all === false && !hasNonEmptyValue(f.id) && !expandedOptional.has(f.id)
+  );
 
   return (
     <div className="space-y-4">
       <h2 className="text-xs font-bold uppercase tracking-wider text-muted-foreground">{t('custom_fields.title')}</h2>
-      {fields.map(field => {
+      {visibleFields.map(field => {
         if (field.field_type === 'separator') {
           return (
             <div key={field.id} className="flex items-center gap-2 py-1">
@@ -729,10 +889,23 @@ export function CustomFieldsForm({ values, onChange }: { values: Record<string, 
         }
 
         const val = values[field.id] ?? '';
+        const isOptional = field.applies_to_all === false;
 
         return (
           <div key={field.id}>
-            <label className="text-sm font-medium">{field.field_name}</label>
+            <div className="flex items-center justify-between gap-2">
+              <label className="text-sm font-medium">{field.field_name}</label>
+              {isOptional && (
+                <button
+                  type="button"
+                  onClick={() => removeOptional(field.id)}
+                  className="p-0.5 hover:bg-destructive/10 rounded text-muted-foreground hover:text-destructive transition-colors shrink-0"
+                  title={t('custom_fields.remove_optional_from_player')}
+                >
+                  <X className="w-3.5 h-3.5" />
+                </button>
+              )}
+            </div>
             <div className="mt-1">
               {field.field_type === 'select' ? (
                 <Select value={val} onValueChange={v => handleChange(field.id, v)}>
@@ -746,7 +919,7 @@ export function CustomFieldsForm({ values, onChange }: { values: Record<string, 
               ) : field.field_type === 'boolean' ? (
                 <Checkbox checked={val === 'true'} onCheckedChange={c => handleChange(field.id, c ? 'true' : 'false')} />
               ) : field.field_type === 'textarea' ? (
-                <Textarea value={val} onChange={e => handleChange(field.id, e.target.value)} rows={3} className="resize-y" placeholder="—" />
+                <AutoResizeTextarea value={val} onChange={v => handleChange(field.id, v)} placeholder="—" minRows={2} />
               ) : field.field_type === 'date' ? (
                 <DateInput value={val} onChange={iso => handleChange(field.id, iso)} />
               ) : field.field_type === 'datetime' ? (
@@ -784,6 +957,27 @@ export function CustomFieldsForm({ values, onChange }: { values: Record<string, 
           </div>
         );
       })}
+
+      {optionalAddable.length > 0 && (
+        <DropdownMenu>
+          <DropdownMenuTrigger asChild>
+            <Button type="button" variant="outline" size="sm" className="rounded-xl w-full justify-center border-dashed">
+              <PlusCircle className="w-3.5 h-3.5 mr-2" />
+              {t('custom_fields.add_optional_field')}
+            </Button>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="center" className="max-h-64 overflow-y-auto w-56">
+            {optionalAddable.map(f => (
+              <DropdownMenuItem
+                key={f.id}
+                onClick={() => setExpandedOptional(prev => { const next = new Set(prev); next.add(f.id); return next; })}
+              >
+                {f.field_name}
+              </DropdownMenuItem>
+            ))}
+          </DropdownMenuContent>
+        </DropdownMenu>
+      )}
     </div>
   );
 }

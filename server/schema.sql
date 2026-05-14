@@ -183,6 +183,53 @@ CREATE TABLE IF NOT EXISTS players (
   FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
 );
 
+-- Bridge between imported/variant player names (e.g. "K. Mbappé", "Mbappe Lottin")
+-- and the canonical player record. Same alias_norm may map to multiple players
+-- (homonyms); reads disambiguate by club. Written by the Wyscout import (source='import')
+-- and by Transfermarkt enrichment (source='tm'), which writes both the local and
+-- the TM-canonical names as aliases pointing at the same player_id.
+CREATE TABLE IF NOT EXISTS player_name_aliases (
+  alias_norm VARCHAR(191) NOT NULL,
+  player_id CHAR(36) NOT NULL,
+  source ENUM('import','tm','manual') NOT NULL DEFAULT 'import',
+  raw_name VARCHAR(255) NOT NULL,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (alias_norm, player_id),
+  INDEX idx_pna_player (player_id),
+  FOREIGN KEY (player_id) REFERENCES players(id) ON DELETE CASCADE
+);
+
+-- Shared TM enrichment cache, cross-user. One row per Transfermarkt player id
+-- with the full scraped payload. Default TTL 24h (set via expires_at). Within
+-- that window NO HTTP calls are made to TM — every caller (manual enrich, cron)
+-- serves from this table. After expiry, the next caller scrapes and refreshes.
+CREATE TABLE IF NOT EXISTS tm_player_cache (
+  tm_id VARCHAR(50) NOT NULL PRIMARY KEY,
+  canonical_name VARCHAR(255) NULL,
+  payload_json LONGTEXT NOT NULL,
+  fetched_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  expires_at DATETIME NOT NULL,
+  INDEX idx_tm_cache_expires (expires_at)
+);
+
+-- Shared name → TM-ID resolution map, cross-user. When ANY user successfully
+-- resolves a (name, club) to a TM id, the mapping is stored here so subsequent
+-- enrichments for the same (name, club) skip the TM search step entirely and
+-- go straight to tm_player_cache. confidence is the scoring from the search
+-- (100 = exact canonical match, 80 = alias). resolved_at is bumped on rewrite.
+-- (120, 80) widths keep the composite PK under MySQL's 1000-byte limit for
+-- utf8mb4 (120*4 + 80*4 = 800 bytes). Names beyond 120 chars get truncated
+-- in the lookup key only; the canonical name is preserved in tm_player_cache.
+CREATE TABLE IF NOT EXISTS tm_name_resolution (
+  name_norm VARCHAR(120) NOT NULL,
+  club_norm VARCHAR(80) NOT NULL DEFAULT '',
+  tm_id VARCHAR(50) NOT NULL,
+  confidence TINYINT NOT NULL DEFAULT 0,
+  resolved_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (name_norm, club_norm),
+  INDEX idx_tnr_tm (tm_id)
+);
+
 CREATE TABLE IF NOT EXISTS reports (
   id CHAR(36) PRIMARY KEY,
   user_id CHAR(36) NOT NULL,
@@ -205,6 +252,7 @@ CREATE TABLE IF NOT EXISTS custom_fields (
   field_type VARCHAR(30) NOT NULL DEFAULT 'text',
   field_options JSON NULL,
   field_hint TEXT NULL,
+  applies_to_all TINYINT(1) NOT NULL DEFAULT 1,
   display_order INT NOT NULL DEFAULT 0,
   created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   INDEX idx_custom_fields_user_order (user_id, display_order),
@@ -330,7 +378,7 @@ CREATE TABLE IF NOT EXISTS organizations (
   updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   UNIQUE KEY uniq_invite_code (invite_code),
   FOREIGN KEY (created_by) REFERENCES users(id) ON DELETE CASCADE
-);
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TABLE IF NOT EXISTS organization_members (
   id CHAR(36) PRIMARY KEY,
@@ -664,7 +712,7 @@ CREATE TABLE IF NOT EXISTS club_geocoding_cache (
   lat          DECIMAL(9,6) NOT NULL,
   lng          DECIMAL(9,6) NOT NULL,
   cached_at    TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TABLE IF NOT EXISTS thesportsdb_team_cache (
   club_name VARCHAR(255) NOT NULL PRIMARY KEY,
@@ -675,11 +723,11 @@ CREATE TABLE IF NOT EXISTS thesportsdb_team_cache (
 );
 
 CREATE TABLE IF NOT EXISTS uploaded_images (
-  id VARCHAR(255) PRIMARY KEY,
+  id VARCHAR(191) PRIMARY KEY,
   data LONGBLOB NOT NULL,
   mime_type VARCHAR(100) NOT NULL DEFAULT 'image/jpeg',
   created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
-);
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- ── Nightly enrichment logs (cron) ────────────────────────────────────────
 
@@ -1071,7 +1119,7 @@ CREATE TABLE IF NOT EXISTS championship_standings (
   fetched_at     DATETIME      NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   PRIMARY KEY (tournament_id, season_year),
   INDEX idx_cs_fetched (fetched_at)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 -- Logic: historical seasons (season_year < current football year) are never re-fetched.
 
 -- ── Organization chat ─────────────────────────────────────────────────────────
@@ -1090,7 +1138,7 @@ CREATE TABLE IF NOT EXISTS org_messages (
   FOREIGN KEY (org_id)      REFERENCES organizations(id) ON DELETE CASCADE,
   FOREIGN KEY (user_id)     REFERENCES users(id)         ON DELETE CASCADE,
   FOREIGN KEY (reply_to_id) REFERENCES org_messages(id)  ON DELETE SET NULL
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- Emoji reactions (one per emoji per user per message)
 CREATE TABLE IF NOT EXISTS org_message_reactions (
@@ -1101,7 +1149,7 @@ CREATE TABLE IF NOT EXISTS org_message_reactions (
   PRIMARY KEY (message_id, user_id, emoji),
   FOREIGN KEY (message_id) REFERENCES org_messages(id) ON DELETE CASCADE,
   FOREIGN KEY (user_id)    REFERENCES users(id)         ON DELETE CASCADE
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- Last-read cursor per user per org (for unread badge)
 CREATE TABLE IF NOT EXISTS org_message_reads (
@@ -1111,7 +1159,7 @@ CREATE TABLE IF NOT EXISTS org_message_reads (
   PRIMARY KEY (org_id, user_id),
   FOREIGN KEY (org_id)   REFERENCES organizations(id) ON DELETE CASCADE,
   FOREIGN KEY (user_id)  REFERENCES users(id)          ON DELETE CASCADE
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 -- Current season is re-fetched if fetched_at is older than 24h, or on manual refresh.
 
 -- ── StatsBomb Open Data ─────────────────────────────────────────────────────
@@ -1127,7 +1175,7 @@ CREATE TABLE IF NOT EXISTS sb_import_log (
   finished_at   DATETIME     NULL,
   error_message TEXT         NULL,
   INDEX idx_sb_import_sha (commit_sha)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- Competition & season catalog
 CREATE TABLE IF NOT EXISTS sb_competitions (
@@ -1139,7 +1187,7 @@ CREATE TABLE IF NOT EXISTS sb_competitions (
   competition_gender VARCHAR(20) NOT NULL DEFAULT 'male',
   PRIMARY KEY (competition_id, season_id),
   INDEX idx_sb_comp_name (competition_name(50))
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- Team catalog
 CREATE TABLE IF NOT EXISTS sb_teams (
@@ -1147,7 +1195,7 @@ CREATE TABLE IF NOT EXISTS sb_teams (
   team_name VARCHAR(150) NOT NULL,
   country   VARCHAR(100) NULL,
   INDEX idx_sb_team_name (team_name(50))
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- Player catalog (deduplicated across all competitions)
 CREATE TABLE IF NOT EXISTS sb_players (
@@ -1156,7 +1204,7 @@ CREATE TABLE IF NOT EXISTS sb_players (
   player_nickname VARCHAR(150) NULL,
   country         VARCHAR(100) NULL,
   INDEX idx_sb_player_name (player_name(50))
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- Match metadata
 CREATE TABLE IF NOT EXISTS sb_matches (
@@ -1176,7 +1224,7 @@ CREATE TABLE IF NOT EXISTS sb_matches (
   INDEX idx_sb_matches_comp  (competition_id, season_id),
   INDEX idx_sb_matches_date  (match_date),
   INDEX idx_sb_matches_teams (home_team_id, away_team_id)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- Player appearances per match (from lineups)
 CREATE TABLE IF NOT EXISTS sb_lineups (
@@ -1188,7 +1236,7 @@ CREATE TABLE IF NOT EXISTS sb_lineups (
   PRIMARY KEY (match_id, player_id),
   INDEX idx_sb_lineups_player (player_id),
   INDEX idx_sb_lineups_team   (match_id, team_id)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- Aggregated stats per player per match (computed from raw events at import time)
 -- All per-match totals — roll up to per-season with SUM() GROUP BY
@@ -1235,4 +1283,4 @@ CREATE TABLE IF NOT EXISTS sb_player_match_stats (
   INDEX idx_sb_pms_player    (player_id),
   INDEX idx_sb_pms_comp_sea  (competition_id, season_id),
   INDEX idx_sb_pms_date      (match_date)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;

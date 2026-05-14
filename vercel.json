@@ -8,5 +8,19 @@
   "rewrites": [
     { "source": "/api/(.*)", "destination": "/api" },
     { "source": "/((?!api/).*)", "destination": "/index.html" }
+  ],
+  "crons": [
+    { "path": "/api/cron/nightly-enrichment", "schedule": "0 2 * * *" },
+    { "path": "/api/cron/contract-alerts",    "schedule": "0 8 * * *" },
+    { "path": "/api/cron/match-reminders",    "schedule": "0 7 * * *" },
+    { "path": "/api/cron/report-reminders",   "schedule": "30 9 * * *" },
+    { "path": "/api/cron/subscription-expiry","schedule": "0 9 * * *" },
+    { "path": "/api/cron/token-cleanup",      "schedule": "30 4 * * *" },
+    { "path": "/api/cron/inactive-cleanup",   "schedule": "0 3 1 * *" },
+    { "path": "/api/cron/buzz-scrape",        "schedule": "*/30 * * * *" },
+    { "path": "/api/cron/news-scrape",        "schedule": "0 */3 * * *" },
+    { "path": "/api/cron/image-migration",    "schedule": "0 * * * *" },
+    { "path": "/api/cron/sb-form-alerts",     "schedule": "0 9 * * 3" },
+    { "path": "/api/cron/sb-sync",            "schedule": "0 3 * * 1" }
   ]
 }

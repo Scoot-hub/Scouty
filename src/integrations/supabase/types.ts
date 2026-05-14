@@ -170,6 +170,8 @@ export type Database = {
           display_order: number
           field_name: string
           field_options: Json | null
+          field_hint: string | null
+          applies_to_all: boolean
           field_type: string
           id: string
           user_id: string
@@ -179,6 +181,8 @@ export type Database = {
           display_order?: number
           field_name: string
           field_options?: Json | null
+          field_hint?: string | null
+          applies_to_all?: boolean
           field_type?: string
           id?: string
           user_id: string
@@ -188,6 +192,8 @@ export type Database = {
           display_order?: number
           field_name?: string
           field_options?: Json | null
+          field_hint?: string | null
+          applies_to_all?: boolean
           field_type?: string
           id?: string
           user_id?: string

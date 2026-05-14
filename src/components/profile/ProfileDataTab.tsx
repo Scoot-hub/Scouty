@@ -1,5 +1,6 @@
-import { useState } from 'react';
+import { useState, useMemo, useEffect } from 'react';
 import { useTranslation } from 'react-i18next';
+import { Link } from 'react-router-dom';
 import {
   LineChart, Line, XAxis, YAxis, CartesianGrid, ResponsiveContainer, Legend,
   RadarChart, PolarGrid, PolarAngleAxis, PolarRadiusAxis, Radar,
@@ -8,11 +9,52 @@ import {
 import { Card, CardContent } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
-import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
-import { Activity, TrendingUp, RefreshCw, Maximize2, BarChart3, Database, ChevronDown, ChevronUp } from 'lucide-react';
-import { computePercentile, CHART_COLORS, RADAR_PRESETS } from '@/lib/player-stats';
-import { getPlayerAge, resolveLeagueName, ALL_OPINIONS, type Player, type Report, type Opinion } from '@/types/player';
-import { useWyscoutStats, type WyscoutStatRow } from '@/hooks/use-wyscout-stats';
+import {
+  Activity, TrendingUp, TrendingDown, RefreshCw, Database, ChevronDown, ChevronUp,
+  Sparkles, Layers, Filter, X, Users, Star, AlertTriangle, ArrowRight, BarChart3,
+  GitCompareArrows,
+} from 'lucide-react';
+import { ALL_OPINIONS, type Player, type Report } from '@/types/player';
+import { useWyscoutStats, useAllWyscoutSummaries, type WyscoutStatRow } from '@/hooks/use-wyscout-stats';
+import {
+  aggregateWyscoutRows, filterWyscoutRows, extractFilterOptions, EMPTY_FILTERS,
+  type WyscoutFilters,
+} from '@/lib/wyscout-aggregate';
+import {
+  detectRole, interpretRoles, computeInsights, findSimilarPlayers, statPercentile, statScore, isInvertedStat, ROLE_PROFILES,
+  type SimilarPlayer, type RoleTemplate,
+} from '@/lib/wyscout-analysis';
+import { suggestBenchmarkGroups, type BenchmarkGroup } from '@/lib/wyscout-benchmarks';
+import { loadCustomProfiles } from '@/lib/wyscout-custom-profiles';
+import CustomProfileEditor from './CustomProfileEditor';
+
+const MIN_SAMPLE_MINUTES = 600;
+
+// Reuse the same encoding format as PlayerCompare page
+function buildCompareHash(playerIds: string[]): string {
+  const COLORS = ['#3b82f6', '#8b5cf6', '#ec4899', '#ef4444', '#f97316'];
+  const payload = {
+    entries: playerIds.map((pid, i) => ({
+      kind: 'player' as const,
+      playerId: pid,
+      rowId: '',
+      color: COLORS[i % COLORS.length],
+      minutesMin: 0,
+    })),
+    stats: [
+      'goals_per90', 'xg_per90', 'shots_per90', 'key_passes_per90',
+      'progressive_passes_per90', 'dribbles_success_pct', 'passes_accurate_pct',
+      'interceptions_per90', 'defensive_duels_won_pct', 'aerial_duels_won_pct',
+    ],
+    chartMode: 'radar',
+    scatterX: 'xg_per90',
+    scatterY: 'xa_per90',
+    highlightWinner: true,
+    heatmap: false,
+  };
+  try { return btoa(unescape(encodeURIComponent(JSON.stringify(payload)))); }
+  catch { return ''; }
+}
 
 interface ProfileDataTabProps {
   player: Player;
@@ -26,1188 +68,1180 @@ interface ProfileDataTabProps {
   isAdmin: boolean;
 }
 
+type ViewMode = 'synthese' | 'detaille';
+type StatCat = 'attack' | 'passing' | 'defending' | 'physical' | 'gk';
+interface StatDef {
+  db: keyof WyscoutStatRow;
+  label: string;
+  cat: StatCat;
+  unit?: string;
+  gkOnly?: boolean;
+}
+
+const wyscoutNum = (row: WyscoutStatRow | undefined | null, key: keyof WyscoutStatRow): number | null => {
+  if (!row) return null;
+  const v = row[key];
+  if (v === null || v === undefined) return null;
+  const n = typeof v === 'string' ? parseFloat(v) : (v as number);
+  return isNaN(n) ? null : n;
+};
+
+const fmt = (v: number | null | undefined, unit?: string) => {
+  if (v === null || v === undefined) return '—';
+  const n = typeof v === 'string' ? parseFloat(v) : v;
+  if (isNaN(n)) return '—';
+  const str = Number.isInteger(n) ? String(n) : Math.round(n * 100) / 100;
+  return unit ? `${str}${unit === '%' ? unit : ` ${unit}`}` : String(str);
+};
+
+const pctColor = (p: number) =>
+  p >= 80 ? 'bg-emerald-500' : p >= 60 ? 'bg-lime-500' : p >= 40 ? 'bg-amber-500' : p >= 20 ? 'bg-orange-500' : 'bg-red-500';
+const pctText = (p: number) =>
+  p >= 80 ? 'text-emerald-600 dark:text-emerald-400'
+  : p >= 60 ? 'text-lime-600 dark:text-lime-400'
+  : p >= 40 ? 'text-amber-600 dark:text-amber-400'
+  : p >= 20 ? 'text-orange-600 dark:text-orange-400'
+  : 'text-red-600 dark:text-red-400';
+
 export default function ProfileDataTab({
-  player, allPlayers, reports, perfScores, updatePerfScore,
-  enriching, handleEnrich, isPremium, isAdmin,
+  player, allPlayers, reports,
+  enriching, handleEnrich, isPremium,
 }: ProfileDataTabProps) {
   const { t, i18n } = useTranslation();
   const locale = i18n.language === 'es' ? 'es-ES' : i18n.language === 'en' ? 'en-GB' : 'fr-FR';
-  interface PerfStats { stats: Record<string, number>; per90: Record<string, number>; season?: string; league?: string; team?: string; all_competitions?: { league: string; appearances: number; rating?: string; goals?: number; assists?: number }[] }
-  interface ExtData { performance_stats?: PerfStats; season_stats?: unknown[]; [key: string]: unknown }
-  const ext = (player.external_data || {}) as ExtData;
-  const getExtData = (p: Player): ExtData => (p.external_data || {}) as ExtData;
-  const getExtPerfStats = (p: Player): Record<string, number> | null => getExtData(p).performance_stats?.stats ?? null;
-  const getExtPer90 = (p: Player): Record<string, number> => getExtData(p).performance_stats?.per90 ?? {};
 
-  // Data-tab-specific state
-  const [comparePlayerIds, setComparePlayerIds] = useState<string[]>([]);
-  const [showPer90, setShowPer90] = useState(false);
-  const [statsSortKey, setStatsSortKey] = useState<string>('');
-  const [statsSortDir, setStatsSortDir] = useState<'asc' | 'desc'>('desc');
-  const [statsFilter, setStatsFilter] = useState<'all' | 'attack' | 'passing' | 'defending' | 'physical'>('all');
-  const [radarSelectedStats, setRadarSelectedStats] = useState<string[]>(['goals', 'assists', 'passes_accuracy', 'tackles', 'interceptions', 'duels_won', 'dribbles_success', 'passes_key']);
-  const [radarProfile, setRadarProfile] = useState<string>('custom');
-  const [savedRadarProfiles, setSavedRadarProfiles] = useState<Record<string, string[]>>(() => {
-    try { return JSON.parse(localStorage.getItem('radar-profiles') ?? '{}'); } catch { return {}; }
+  // ── Persisted state ───────────────────────────────────────────────────
+  const [viewMode, setViewMode] = useState<ViewMode>(() => {
+    try {
+      const v = localStorage.getItem('wyscout-data-view');
+      return v === 'detaille' ? 'detaille' : 'synthese';
+    }
+    catch { return 'synthese'; }
   });
-  const [newProfileName, setNewProfileName] = useState('');
-  const [radarFullscreen, setRadarFullscreen] = useState(false);
-  const [benchmarkLeagueFilter, setBenchmarkLeagueFilter] = useState<string>('all');
-  const [benchmarkAgeFilter, setBenchmarkAgeFilter] = useState<string>('all');
-  const [benchmarkLevelFilter, setBenchmarkLevelFilter] = useState<string>('all');
-  const [rankScope, setRankScope] = useState<'all' | 'position' | 'league' | 'age'>('all');
-  const [seasonChartStat, setSeasonChartStat] = useState<string>('goals');
-  const [wyscoutSeasonIdx, setWyscoutSeasonIdx] = useState(0);
+  useEffect(() => { try { localStorage.setItem('wyscout-data-view', viewMode); } catch { /* noop */ } }, [viewMode]);
+
+  const filterKey = `wyscout-data-filters:${player.id}`;
+  const [filters, setFilters] = useState<WyscoutFilters>(() => {
+    try { return JSON.parse(localStorage.getItem(filterKey) || JSON.stringify(EMPTY_FILTERS)); }
+    catch { return EMPTY_FILTERS; }
+  });
+  useEffect(() => { try { localStorage.setItem(filterKey, JSON.stringify(filters)); } catch { /* noop */ } }, [filterKey, filters]);
+
+  // ── Other UI state ────────────────────────────────────────────────────
+  const [statsFilter, setStatsFilter] = useState<'all' | 'attack' | 'passing' | 'defending' | 'physical' | 'gk'>('all');
+  const [seasonChartStat, setSeasonChartStat] = useState<keyof WyscoutStatRow>('goals');
   const [wyscoutExpandedCats, setWyscoutExpandedCats] = useState<Record<string, boolean>>({});
 
-  const { data: wyscoutRows = [] } = useWyscoutStats(player.id);
-  const selectedWyscout: WyscoutStatRow | undefined = wyscoutRows[wyscoutSeasonIdx];
+  // ── Data hooks ────────────────────────────────────────────────────────
+  const { data: wyscoutRows = [], isLoading: wyscoutLoading } = useWyscoutStats(player.id);
+  const { data: peerSummaries = [] } = useAllWyscoutSummaries();
 
-  const ps = ext.performance_stats;
-  const s = ps?.stats;
-  const p90 = ps?.per90 || {};
   const isGK = player.position === 'GK';
-  const hasPerfStats = !!s;
 
-  // ── Compare players logic (multi) ──
-  const comparePlayers = comparePlayerIds.map(cid => allPlayers.find(p => p.id === cid)).filter(Boolean) as typeof allPlayers;
-  const comparePlayer = comparePlayers[0] || null;
-  const compareExt = comparePlayer ? getExtData(comparePlayer) : {} as ExtData;
-  const comparePs = compareExt.performance_stats;
-  const compareS = comparePs?.stats;
+  // ── Filtering & aggregation ───────────────────────────────────────────
+  const filterOptions = useMemo(() => extractFilterOptions(wyscoutRows), [wyscoutRows]);
+  const filteredRows = useMemo(() => filterWyscoutRows(wyscoutRows, filters), [wyscoutRows, filters]);
+  const aggregated = useMemo(() => aggregateWyscoutRows(filteredRows), [filteredRows]);
+  const filterActive = filters.seasons.length + filters.clubs.length + filters.divisions.length > 0;
 
-  // ── Radar axes builder ──
-  const buildRadarValue = (st: Record<string, number> | null | undefined) => {
-    if (!st) return null;
-    return isGK ? [
-      { axis: t('profile.perf_duels'), value: st.duels_total > 0 ? Math.round((st.duels_won / st.duels_total) * 100) : 0 },
-      { axis: t('profile.perf_passes'), value: st.passes_accuracy || 0 },
-      { axis: t('profile.perf_discipline'), value: Math.max(0, 100 - (st.cards_yellow * 15 + st.cards_red * 40)) },
-      { axis: 'Saves', value: Math.min(100, (st.saves || 0) * 4) },
-    ] : [
-      { axis: t('profile.perf_shooting'), value: st.shots_total > 0 ? Math.min(100, Math.round((st.shots_on / st.shots_total) * 100)) : 0 },
-      { axis: t('profile.perf_creativity'), value: Math.min(100, (st.passes_key || 0) * 2.5) },
-      { axis: t('profile.perf_passes'), value: st.passes_accuracy || 0 },
-      { axis: t('profile.perf_defending'), value: Math.min(100, ((st.tackles || 0) + (st.interceptions || 0) + (st.blocks || 0)) * 2) },
-      { axis: t('profile.perf_duels'), value: st.duels_total > 0 ? Math.round((st.duels_won / st.duels_total) * 100) : 0 },
-      { axis: t('profile.perf_dribbling'), value: st.dribbles_attempts > 0 ? Math.round((st.dribbles_success / st.dribbles_attempts) * 100) : 0 },
-    ];
-  };
+  const hasWyscout = !!aggregated;
+  const sampleMinutes = wyscoutNum(aggregated, 'minutes_played') ?? 0;
+  const lowSample = hasWyscout && sampleMinutes < MIN_SAMPLE_MINUTES;
 
-  const radarPerfData = buildRadarValue(s);
-  const radarCompareData = comparePlayers.map(cp => ({
-    player: cp,
-    data: buildRadarValue(getExtPerfStats(cp)),
-  }));
-  const mergedRadar = radarPerfData?.map((d, i) => {
-    const entry: Record<string, string | number> = { axis: d.axis, [player.name]: d.value };
-    radarCompareData.forEach(rc => { if (rc.data) entry[rc.player.name] = rc.data[i]?.value || 0; });
-    return entry;
+  // Trend: latest 2 rows chronologically (ignore filters for clarity)
+  const prevSeasonRow: WyscoutStatRow | null = wyscoutRows.length >= 2 ? wyscoutRows[1] : null;
+
+  // ── Stat catalog ──────────────────────────────────────────────────────
+  const STAT_CATALOG: StatDef[] = useMemo(() => [
+    { db: 'goals', label: t('wyscout.goals'), cat: 'attack' },
+    { db: 'assists', label: t('wyscout.assists'), cat: 'attack' },
+    { db: 'shots', label: t('wyscout.shots'), cat: 'attack' },
+    { db: 'xg', label: 'xG', cat: 'attack' },
+    { db: 'xa', label: 'xA', cat: 'attack' },
+    { db: 'np_goals', label: t('wyscout.np_goals'), cat: 'attack' },
+    { db: 'head_goals', label: t('wyscout.head_goals'), cat: 'attack' },
+    { db: 'goals_per90', label: t('wyscout.goals_per90'), cat: 'attack' },
+    { db: 'np_goals_per90', label: t('wyscout.np_goals_per90'), cat: 'attack' },
+    { db: 'xg_per90', label: 'xG /90', cat: 'attack' },
+    { db: 'assists_per90', label: t('wyscout.assists_per90'), cat: 'attack' },
+    { db: 'xa_per90', label: 'xA /90', cat: 'attack' },
+    { db: 'shots_per90', label: t('wyscout.shots_per90'), cat: 'attack' },
+    { db: 'shots_on_target_pct', label: t('wyscout.shots_on_target_pct'), cat: 'attack', unit: '%' },
+    { db: 'goal_conversion_pct', label: t('wyscout.goal_conversion_pct'), cat: 'attack', unit: '%' },
+    { db: 'attacking_actions_per90', label: t('wyscout.attacking_actions_per90'), cat: 'attack' },
+    { db: 'dribbles_per90', label: t('wyscout.dribbles_per90'), cat: 'attack' },
+    { db: 'dribbles_success_pct', label: t('wyscout.dribbles_success_pct'), cat: 'attack', unit: '%' },
+    { db: 'touches_in_box_per90', label: t('wyscout.touches_in_box_per90'), cat: 'attack' },
+    { db: 'progressive_runs_per90', label: t('wyscout.progressive_runs_per90'), cat: 'attack' },
+    { db: 'crosses_per90', label: t('wyscout.crosses_per90'), cat: 'attack' },
+    { db: 'crosses_accurate_pct', label: t('wyscout.crosses_accurate_pct'), cat: 'attack', unit: '%' },
+    { db: 'passes_per90', label: t('wyscout.passes_per90'), cat: 'passing' },
+    { db: 'passes_accurate_pct', label: t('wyscout.passes_accurate_pct'), cat: 'passing', unit: '%' },
+    { db: 'key_passes_per90', label: t('wyscout.key_passes_per90'), cat: 'passing' },
+    { db: 'smart_passes_per90', label: t('wyscout.smart_passes_per90'), cat: 'passing' },
+    { db: 'forward_passes_per90', label: t('wyscout.forward_passes_per90'), cat: 'passing' },
+    { db: 'long_passes_per90', label: t('wyscout.long_passes_per90'), cat: 'passing' },
+    { db: 'long_passes_accurate_pct', label: t('wyscout.long_passes_accurate_pct'), cat: 'passing', unit: '%' },
+    { db: 'progressive_passes_per90', label: t('wyscout.progressive_passes_per90'), cat: 'passing' },
+    { db: 'passes_final_third_per90', label: t('wyscout.passes_final_third_per90'), cat: 'passing' },
+    { db: 'through_passes_per90', label: t('wyscout.through_passes_per90'), cat: 'passing' },
+    { db: 'deep_completions_per90', label: t('wyscout.deep_completions_per90'), cat: 'passing' },
+    { db: 'defensive_actions_per90', label: t('wyscout.defensive_actions_per90'), cat: 'defending' },
+    { db: 'defensive_duels_per90', label: t('wyscout.defensive_duels_per90'), cat: 'defending' },
+    { db: 'defensive_duels_won_pct', label: t('wyscout.defensive_duels_won_pct'), cat: 'defending', unit: '%' },
+    { db: 'interceptions_per90', label: t('wyscout.interceptions_per90'), cat: 'defending' },
+    { db: 'padj_interceptions', label: 'PAdj Interc.', cat: 'defending' },
+    { db: 'sliding_tackles_per90', label: t('wyscout.sliding_tackles_per90'), cat: 'defending' },
+    { db: 'padj_sliding_tackles', label: 'PAdj Tackles', cat: 'defending' },
+    { db: 'shots_blocked_per90', label: t('wyscout.shots_blocked_per90'), cat: 'defending' },
+    { db: 'aerial_duels_per90', label: t('wyscout.aerial_duels_per90'), cat: 'defending' },
+    { db: 'aerial_duels_won_pct', label: t('wyscout.aerial_duels_won_pct'), cat: 'defending', unit: '%' },
+    { db: 'duels_per90', label: t('wyscout.duels_per90'), cat: 'defending' },
+    { db: 'duels_won_pct', label: t('wyscout.duels_won_pct'), cat: 'defending', unit: '%' },
+    { db: 'total_distance_per90', label: t('wyscout.total_distance_per90'), cat: 'physical', unit: 'm' },
+    { db: 'sprint_distance_per90', label: t('wyscout.sprint_distance_per90'), cat: 'physical', unit: 'm' },
+    { db: 'hi_distance_per90', label: t('wyscout.hi_distance_per90'), cat: 'physical', unit: 'm' },
+    { db: 'max_speed', label: t('wyscout.max_speed'), cat: 'physical', unit: 'km/h' },
+    { db: 'meters_per_min', label: t('wyscout.meters_per_min'), cat: 'physical', unit: 'm/min' },
+    { db: 'high_accel_per90', label: t('wyscout.high_accel_per90'), cat: 'physical' },
+    { db: 'sprint_count_per90', label: t('wyscout.sprint_count_per90'), cat: 'physical' },
+    { db: 'fouls_per90', label: t('wyscout.fouls_per90'), cat: 'physical' },
+    { db: 'fouls_suffered_per90', label: t('wyscout.fouls_suffered_per90'), cat: 'physical' },
+    { db: 'clean_sheets', label: t('wyscout.clean_sheets'), cat: 'gk', gkOnly: true },
+    { db: 'conceded_goals_per90', label: t('wyscout.conceded_goals_per90'), cat: 'gk', gkOnly: true },
+    { db: 'save_rate_pct', label: t('wyscout.save_rate_pct'), cat: 'gk', unit: '%', gkOnly: true },
+    { db: 'prevented_goals', label: t('wyscout.prevented_goals'), cat: 'gk', gkOnly: true },
+    { db: 'prevented_goals_per90', label: t('wyscout.prevented_goals_per90'), cat: 'gk', gkOnly: true },
+    { db: 'gk_exits_per90', label: t('wyscout.gk_exits_per90'), cat: 'gk', gkOnly: true },
+    { db: 'gk_aerial_duels_per90', label: t('wyscout.gk_aerial_duels_per90'), cat: 'gk', gkOnly: true },
+  ], [t]);
+
+  type StatRow = StatDef & { raw: number | null };
+  const allStatRows: StatRow[] = useMemo(() => {
+    if (!aggregated) return [];
+    return STAT_CATALOG
+      .filter(d => (isGK ? d.cat === 'gk' || !d.gkOnly : !d.gkOnly))
+      .map(d => ({ ...d, raw: wyscoutNum(aggregated, d.db) }))
+      .filter(r => r.raw !== null);
+  }, [STAT_CATALOG, aggregated, isGK]);
+
+  // ── Peers (for percentile calculations + similar players) ─────────────
+  const peerByPlayer = useMemo(() => new Map(peerSummaries.map(r => [r.player_id, r])), [peerSummaries]);
+  const positionPeersRaw = allPlayers.filter(p => p.id !== player.id && p.position === player.position && peerByPlayer.has(p.id));
+
+  // Filter peers by similar current_level (±2) when we have enough — keeps comparison apples-to-apples.
+  // Falls back to all same-position peers if level filter is too aggressive.
+  // Unrated players (level 0/NA) skip the filter entirely.
+  const filteredPositionPeers = useMemo(() => {
+    if (positionPeersRaw.length < 8) return positionPeersRaw;
+    const myLevel = player.current_level;
+    if (!myLevel || myLevel <= 0) return positionPeersRaw;
+    const close = positionPeersRaw.filter(p => {
+      const pl = p.current_level;
+      if (!pl || pl <= 0) return false;
+      return Math.abs(pl - myLevel) <= 2;
+    });
+    return close.length >= 5 ? close : positionPeersRaw;
+  }, [positionPeersRaw, player.current_level]);
+
+  const positionPeerRows = useMemo(
+    () => filteredPositionPeers.map(p => peerByPlayer.get(p.id)!).filter(Boolean),
+    [filteredPositionPeers, peerByPlayer],
+  );
+
+  // ── Custom profiles (user-defined, persist to localStorage) ────────────
+  const [customProfiles, setCustomProfiles] = useState<RoleTemplate[]>(() => loadCustomProfiles());
+  const [editorOpen, setEditorOpen] = useState(false);
+  const allTemplates: RoleTemplate[] = useMemo(() => [...ROLE_PROFILES, ...customProfiles], [customProfiles]);
+
+  // ── Benchmark group (data-driven comparison base) ─────────────────────
+  // Suggestions adapt automatically as more WyScout data is imported.
+  const benchmarkGroups: BenchmarkGroup[] = useMemo(
+    () => suggestBenchmarkGroups(player, allPlayers, peerSummaries),
+    [player, allPlayers, peerSummaries],
+  );
+  const [benchmarkGroupKey, setBenchmarkGroupKey] = useState<string>(() => {
+    try { return localStorage.getItem('wyscout-benchmark-group') || ''; } catch { return ''; }
   });
+  useEffect(() => {
+    try {
+      if (benchmarkGroupKey) localStorage.setItem('wyscout-benchmark-group', benchmarkGroupKey);
+    } catch { /* noop */ }
+  }, [benchmarkGroupKey]);
 
-  // ── Stats table rows ──
-  type StatRow = { key: string; label: string; cat: 'attack' | 'passing' | 'defending' | 'physical'; raw: number | null; per90v: number | null; compareRaw?: number | null; comparePer90?: number | null };
-  const statRows: StatRow[] = [];
-  if (s) {
-    const cp90 = comparePs?.per90 || {};
-    const addRow = (key: string, label: string, cat: StatRow['cat'], raw: number | null, per90v: number | null) => {
-      statRows.push({ key, label, cat, raw, per90v, compareRaw: compareS?.[key] ?? null, comparePer90: cp90[key] ?? null });
-    };
-    if (!isGK) {
-      addRow('goals', t('profile.perf_goals'), 'attack', s.goals, p90.goals);
-      addRow('assists', t('profile.perf_assists'), 'attack', s.assists, p90.assists);
-      addRow('shots_total', t('profile.perf_shots'), 'attack', s.shots_total, p90.shots);
-      addRow('shots_on', t('profile.perf_shooting'), 'attack', s.shots_on, null);
-      if (s.expected_goals) addRow('expected_goals', 'xG', 'attack', parseFloat(s.expected_goals), p90.expected_goals);
-      if (s.expected_assists) addRow('expected_assists', 'xA', 'attack', parseFloat(s.expected_assists), null);
-      addRow('big_chances_created', t('profile.perf_creativity'), 'attack', s.big_chances_created, null);
+  const selectedGroup: BenchmarkGroup | null = useMemo(() => {
+    if (benchmarkGroupKey && benchmarkGroups.some(g => g.key === benchmarkGroupKey)) {
+      return benchmarkGroups.find(g => g.key === benchmarkGroupKey) || null;
     }
-    addRow('passes_accuracy', t('profile.perf_passes_accuracy'), 'passing', s.passes_accuracy, null);
-    addRow('passes_key', t('profile.perf_key_passes'), 'passing', s.passes_key, p90.key_passes);
-    addRow('passes_total', t('profile.perf_passes'), 'passing', s.passes_total, null);
-    addRow('tackles', t('profile.perf_tackles'), 'defending', s.tackles, p90.tackles);
-    addRow('interceptions', t('profile.perf_interceptions'), 'defending', s.interceptions, p90.interceptions);
-    addRow('blocks', 'Blocks', 'defending', s.blocks, null);
-    addRow('duels_won', t('profile.perf_duels_won'), 'physical', s.duels_won, p90.duels_won);
-    addRow('duels_total', t('profile.perf_duels'), 'physical', s.duels_total, null);
-    addRow('aerial_duels_won', t('profile.perf_aerial'), 'physical', s.aerial_duels_won, null);
-    if (!isGK) addRow('dribbles_success', t('profile.perf_dribbles'), 'physical', s.dribbles_success, p90.dribbles);
-    addRow('fouls_drawn', t('profile.perf_fouls_drawn'), 'physical', s.fouls_drawn, null);
-    addRow('fouls_committed', t('profile.perf_fouls_committed'), 'physical', s.fouls_committed, null);
-  }
-  const filteredRows = statsFilter === 'all' ? statRows : statRows.filter(r => r.cat === statsFilter);
-  const sortedRows = statsSortKey ? [...filteredRows].sort((a, b) => {
-    const aVal = showPer90 ? (a.per90v ?? a.raw ?? 0) : (a.raw ?? 0);
-    const bVal = showPer90 ? (b.per90v ?? b.raw ?? 0) : (b.raw ?? 0);
-    return statsSortDir === 'asc' ? aVal - bVal : bVal - aVal;
-  }) : filteredRows;
+    // Default: broadest reliable group (first in list = same position)
+    return benchmarkGroups[0] || null;
+  }, [benchmarkGroupKey, benchmarkGroups]);
 
-  // ── Positional benchmark ──
-  const positionPeersRaw = allPlayers.filter(p => p.id !== player.id && p.position === player.position && getExtPerfStats(p));
-  const positionPeers = positionPeersRaw.filter(p => {
-    if (benchmarkLeagueFilter !== 'all' && resolveLeagueName(p.club, p.league) !== benchmarkLeagueFilter) return false;
-    if (benchmarkAgeFilter !== 'all') {
-      const pAge = getPlayerAge(p.generation, p.date_of_birth);
-      const myAge = getPlayerAge(player.generation, player.date_of_birth);
-      if (benchmarkAgeFilter === '2' && Math.abs(pAge - myAge) > 2) return false;
-      if (benchmarkAgeFilter === '5' && Math.abs(pAge - myAge) > 5) return false;
-      if (benchmarkAgeFilter === 'gen' && p.generation !== player.generation) return false;
-    }
-    if (benchmarkLevelFilter !== 'all' && Math.abs(p.current_level - player.current_level) > 1) return false;
-    return true;
-  });
-  const benchmarkPeerLeagues = [...new Set(positionPeersRaw.map(p => resolveLeagueName(p.club, p.league)).filter(Boolean))].sort();
-  const allStatKeys = statRows.map(r => r.key);
-  const benchmarks: Record<string, { avg: number; playerVal: number; rank: number; total: number }> = {};
-  if (s && positionPeers.length > 0) {
-    for (const bk of allStatKeys) {
-      const peerVals = positionPeers.map(p => { const v = getExtPerfStats(p)?.[bk]; return v != null ? parseFloat(String(v)) : 0; }).filter(v => !isNaN(v) && v > 0);
-      const playerVal = (() => { const v = (s as Record<string, number>)[bk]; return v != null ? parseFloat(String(v)) : 0; })();
-      if (peerVals.length > 0 && !isNaN(playerVal)) {
-        const avg = peerVals.reduce((a, b) => a + b, 0) / peerVals.length;
-        const allVals = [...peerVals, playerVal].sort((a, b) => b - a);
-        const rank = allVals.indexOf(playerVal) + 1;
-        benchmarks[bk] = { avg: Math.round(avg * 10) / 10, playerVal, rank, total: allVals.length };
-      }
-    }
-  }
+  // ── DNA / Insights / Similar players ──────────────────────────────────
+  const detection = useMemo(() => {
+    if (!aggregated) return null;
+    const results = detectRole(aggregated, player.position, allTemplates);
+    return interpretRoles(results);
+  }, [aggregated, player.position, allTemplates]);
 
-  // ── Global rankings ──
-  const allEnrichedPlayers = allPlayers.filter(p => getExtPerfStats(p));
-  const rankFilteredPlayers = allEnrichedPlayers.filter(p => {
-    if (rankScope === 'position' && p.position !== player.position) return false;
-    if (rankScope === 'league' && resolveLeagueName(p.club, p.league) !== resolveLeagueName(player.club, player.league)) return false;
-    if (rankScope === 'age') {
-      const pAge = getPlayerAge(p.generation, p.date_of_birth);
-      const myAge = getPlayerAge(player.generation, player.date_of_birth);
-      if (Math.abs(pAge - myAge) > 2) return false;
-    }
-    return true;
-  });
-  const rankScopeLabel = rankScope === 'all'
-    ? t('profile.rank_scope_all_desc', { count: rankFilteredPlayers.length })
-    : rankScope === 'position'
-    ? t('profile.rank_scope_position_desc', { position: player.position, count: rankFilteredPlayers.length })
-    : rankScope === 'league'
-    ? t('profile.rank_scope_league_desc', { league: resolveLeagueName(player.club, player.league) || '?', count: rankFilteredPlayers.length })
-    : t('profile.rank_scope_age_desc', { count: rankFilteredPlayers.length });
-  const globalRankings: Record<string, { rank: number; total: number; percentile: number }> = {};
-  if (s && rankFilteredPlayers.length > 1) {
-    for (const bk of allStatKeys) {
-      const allVals = rankFilteredPlayers.map(p => {
-        const v = getExtPerfStats(p)?.[bk];
-        return { id: p.id, val: v != null ? parseFloat(String(v)) : 0 };
-      }).filter(e => !isNaN(e.val) && e.val > 0);
-      if (allVals.length > 1) {
-        allVals.sort((a, b) => b.val - a.val);
-        const idx = allVals.findIndex(e => e.id === player.id);
-        if (idx !== -1) {
-          const rank = idx + 1;
-          globalRankings[bk] = { rank, total: allVals.length, percentile: computePercentile(rank, allVals.length) };
-        }
-      }
-    }
-  }
+  const insights = useMemo(() => {
+    if (!aggregated) return [];
+    return computeInsights(aggregated, player.position, prevSeasonRow, selectedGroup?.rows);
+  }, [aggregated, player.position, prevSeasonRow, selectedGroup]);
 
-  // ── Candidates for compare ──
-  const compareCandidates = allPlayers.filter(p => p.id !== player.id && getExtPerfStats(p));
+  const similarPlayers: SimilarPlayer[] = useMemo(() => {
+    if (!aggregated) return [];
+    const peers = positionPeersRaw
+      .map(p => ({ playerId: p.id, row: peerByPlayer.get(p.id)! }))
+      .filter(p => p.row);
+    return findSimilarPlayers(aggregated, peers, isGK, 5);
+  }, [aggregated, positionPeersRaw, peerByPlayer, isGK]);
 
-  // ── Scout evaluation data ──
-  const { physical: physScore, technical: techScore, tactical: tacticScore, mental: mentalScore } = perfScores;
-  const scoutRadarData = [
-    { attr: t('profile.perf_physical'), value: physScore, full: 10 },
-    { attr: t('profile.perf_technical'), value: techScore, full: 10 },
-    { attr: t('profile.perf_tactical'), value: tacticScore, full: 10 },
-    { attr: t('profile.perf_mental'), value: mentalScore, full: 10 },
-    { attr: t('profile.perf_potential'), value: player.potential, full: 10 },
-    { attr: t('profile.perf_level'), value: player.current_level, full: 10 },
-  ];
-  const overallScore = Math.round((physScore + techScore + tacticScore + mentalScore + player.current_level + player.potential) / 6 * 10) / 10;
+
+  // ── Reports timeline data (for evolution chart + opinion distribution) ──
   const historyData = reports.slice().reverse().map((r, i) => ({
     date: new Date(r.report_date).toLocaleDateString(locale, { month: 'short', year: '2-digit' }),
     level: player.current_level, potential: player.potential,
     opinion: r.opinion === 'À suivre' ? 8 : r.opinion === 'À revoir' ? 5 : 3,
     index: i + 1,
   }));
-  const attrSliders: { key: keyof typeof perfScores; label: string; color: string }[] = [
-    { key: 'physical', label: t('profile.perf_physical'), color: 'hsl(var(--chart-1))' },
-    { key: 'technical', label: t('profile.perf_technical'), color: 'hsl(var(--chart-2))' },
-    { key: 'tactical', label: t('profile.perf_tactical'), color: 'hsl(var(--chart-3))' },
-    { key: 'mental', label: t('profile.perf_mental'), color: 'hsl(var(--chart-4))' },
+
+  // ── Season evolution data ─────────────────────────────────────────────
+  const seasonChartData = wyscoutRows.slice().reverse().map(row => ({
+    season: row.season + (row.team ? ` · ${row.team}` : ''),
+    value: wyscoutNum(row, seasonChartStat) ?? 0,
+  }));
+  const seasonChartOptions: { value: keyof WyscoutStatRow; label: string }[] = [
+    { value: 'goals', label: t('wyscout.goals') },
+    { value: 'assists', label: t('wyscout.assists') },
+    { value: 'matches_played', label: t('wyscout.matches_played') },
+    { value: 'minutes_played', label: t('wyscout.minutes_played') },
+    { value: 'goals_per90', label: t('wyscout.goals_per90') },
+    { value: 'xg_per90', label: 'xG /90' },
+    { value: 'assists_per90', label: t('wyscout.assists_per90') },
+    { value: 'passes_accurate_pct', label: t('wyscout.passes_accurate_pct') },
   ];
 
-  return (
-    <div className="space-y-4">
-      {/* ═══════════════ SECTION 1: PERFORMANCE STATS (SofaScore) ═══════════════ */}
-      {hasPerfStats ? (
-        <>
-          {/* Header + rating + compare selector */}
-          <Card className="card-warm">
-            <CardContent className="p-5">
-              <div className="flex items-center justify-between flex-wrap gap-3 mb-4">
-                <div>
-                  <h3 className="text-base font-bold flex items-center gap-2">
-                    <Activity className="w-4 h-4" />{t('profile.perf_title')}
-                    {ps.season && <span className="text-xs bg-blue-500/10 text-blue-600 dark:text-blue-400 px-1.5 py-0.5 rounded font-bold">{ps.season}</span>}
-                  </h3>
-                  {ps.league && <p className="text-xs text-muted-foreground mt-0.5">{ps.league} {ps.team ? `— ${ps.team}` : ''}</p>}
-                </div>
-                <div className="flex items-center gap-3">
-                  {s.rating && (
-                    <div className={`text-3xl font-black px-4 py-2 rounded-xl ${parseFloat(s.rating) >= 7.5 ? 'bg-emerald-500/15 text-emerald-600 dark:text-emerald-400' : parseFloat(s.rating) >= 7.0 ? 'bg-blue-500/15 text-blue-600 dark:text-blue-400' : parseFloat(s.rating) >= 6.5 ? 'bg-amber-500/15 text-amber-600 dark:text-amber-400' : 'bg-muted text-muted-foreground'}`}>
-                      {s.rating}
-                    </div>
-                  )}
-                </div>
-              </div>
+  // ── KPI values ────────────────────────────────────────────────────────
+  const kpis = aggregated ? [
+    { label: t('wyscout.matches_played'), value: aggregated.matches_played ?? '—' },
+    { label: t('wyscout.minutes_played'), value: aggregated.minutes_played != null ? aggregated.minutes_played.toLocaleString() : '—' },
+    ...(isGK ? [
+      { label: t('wyscout.clean_sheets'), value: aggregated.clean_sheets ?? '—' },
+      { label: t('wyscout.save_rate_pct'), value: aggregated.save_rate_pct != null ? `${aggregated.save_rate_pct}%` : '—' },
+    ] : [
+      { label: t('wyscout.goals'), value: aggregated.goals ?? '—', sub: aggregated.xg != null ? `xG: ${aggregated.xg}` : null },
+      { label: t('wyscout.assists'), value: aggregated.assists ?? '—', sub: aggregated.xa != null ? `xA: ${aggregated.xa}` : null },
+    ]),
+    { label: t('wyscout.passes_accurate_pct'), value: aggregated.passes_accurate_pct != null ? `${aggregated.passes_accurate_pct}%` : '—' },
+    { label: t('wyscout.duels_won_pct'), value: aggregated.duels_won_pct != null ? `${aggregated.duels_won_pct}%` : '—' },
+  ] : [];
 
-              {/* KPI strip */}
-              <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-6 gap-2 mb-4">
-                <div className="p-2.5 rounded-lg bg-muted/40 text-center">
-                  <p className="text-2xl font-black">{s.appearances}</p>
-                  <p className="text-[10px] uppercase tracking-wider text-muted-foreground font-semibold">{t('profile.perf_appearances')}</p>
-                </div>
-                <div className="p-2.5 rounded-lg bg-muted/40 text-center">
-                  <p className="text-2xl font-black">{s.minutes?.toLocaleString()}</p>
-                  <p className="text-[10px] uppercase tracking-wider text-muted-foreground font-semibold">{t('profile.perf_minutes')}</p>
-                </div>
-                {!isGK && <>
-                  <div className="p-2.5 rounded-lg bg-muted/40 text-center">
-                    <p className="text-2xl font-black">{s.goals}</p>
-                    <p className="text-[10px] uppercase tracking-wider text-muted-foreground font-semibold">{t('profile.perf_goals')}{s.expected_goals ? <span className="text-muted-foreground/60 ml-1">(xG: {s.expected_goals})</span> : ''}</p>
-                  </div>
-                  <div className="p-2.5 rounded-lg bg-muted/40 text-center">
-                    <p className="text-2xl font-black">{s.assists}</p>
-                    <p className="text-[10px] uppercase tracking-wider text-muted-foreground font-semibold">{t('profile.perf_assists')}{s.expected_assists ? <span className="text-muted-foreground/60 ml-1">(xA: {s.expected_assists})</span> : ''}</p>
-                  </div>
-                </>}
-                <div className="p-2.5 rounded-lg bg-muted/40 text-center">
-                  <p className="text-2xl font-black">{s.passes_accuracy != null ? `${Math.round(s.passes_accuracy * 100) / 100}%` : '—'}</p>
-                  <p className="text-[10px] uppercase tracking-wider text-muted-foreground font-semibold">{t('profile.perf_passes')}</p>
-                </div>
-                <div className="p-2.5 rounded-lg bg-muted/40 text-center">
-                  <p className="text-2xl font-black">{s.duels_total > 0 ? `${Math.round((s.duels_won / s.duels_total) * 100)}%` : '—'}</p>
-                  <p className="text-[10px] uppercase tracking-wider text-muted-foreground font-semibold">{t('profile.perf_duels')}</p>
-                </div>
-              </div>
-              <p className="text-[10px] text-muted-foreground/40 text-right">Source: SofaScore</p>
-            </CardContent>
-          </Card>
+  // ──────────────────────────────────────────────────────────────────────
+  // RENDER
+  // ──────────────────────────────────────────────────────────────────────
+  if (!hasWyscout && !wyscoutLoading) {
+    return (
+      <Card className="card-warm">
+        <CardContent className="p-5 text-center">
+          <Activity className="w-8 h-8 text-muted-foreground/20 mx-auto mb-2" />
+          <p className="text-sm text-muted-foreground">{t('profile.perf_no_data')}</p>
+          <p className="text-xs text-muted-foreground/60 mt-1">{t('profile.perf_no_data_desc')}</p>
+          {!player.external_data_fetched_at && isPremium && (
+            <Button size="sm" variant="outline" className="rounded-xl mt-3" onClick={() => handleEnrich()} disabled={enriching}>
+              <RefreshCw className={`w-3.5 h-3.5 mr-1.5 ${enriching ? 'animate-spin' : ''}`} />{t('profile.enrich')}
+            </Button>
+          )}
+        </CardContent>
+      </Card>
+    );
+  }
 
-          {/* ── Radar + Benchmark (single card) ── */}
-          <Card className="card-warm">
-            <CardContent className="p-5">
-              {/* Header row: title + compare selector */}
-              <div className="flex items-center justify-between flex-wrap gap-2 mb-3">
-                <div>
-                  <h3 className="text-xs font-bold uppercase tracking-wider text-muted-foreground">{t('profile.perf_radar_title')}</h3>
-                  <p className="text-[11px] text-muted-foreground mt-0.5">{t('profile.data_benchmark_desc', { position: player.position, count: positionPeers.length })}</p>
-                </div>
-                <div className="flex items-center gap-1.5 flex-wrap">
-                  {comparePlayers.map((cp, i) => (
-                    <span key={cp.id} className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-semibold text-white" style={{ backgroundColor: CHART_COLORS[(i + 1) % CHART_COLORS.length] }}>
-                      {cp.name.split(' ').pop()}
-                      <button onClick={() => setComparePlayerIds(prev => prev.filter(id => id !== cp.id))} className="hover:opacity-70">×</button>
-                    </span>
-                  ))}
-                  {comparePlayers.length < 3 && (
-                    <select value="" onChange={e => { if (e.target.value) setComparePlayerIds(prev => [...prev, e.target.value]); e.target.value = ''; }}
-                      className="h-7 px-2 rounded-lg border border-border bg-background text-xs focus:outline-none focus:ring-1 focus:ring-primary">
-                      <option value="">{comparePlayers.length === 0 ? t('profile.data_compare_placeholder') : '+'}</option>
-                      {compareCandidates.filter(cp => !comparePlayerIds.includes(cp.id)).map(cp => (
-                        <option key={cp.id} value={cp.id}>{cp.name} ({cp.position})</option>
-                      ))}
-                    </select>
-                  )}
-                </div>
-              </div>
-
-              {/* Radar profile selector */}
-              <div className="flex items-center gap-2 mb-2">
-                <select value={radarProfile} onChange={e => {
-                  const key = e.target.value;
-                  setRadarProfile(key);
-                  if (key === 'custom') return;
-                  const preset = RADAR_PRESETS[key]?.stats ?? savedRadarProfiles[key];
-                  if (preset) setRadarSelectedStats(preset);
-                }}
-                  className="px-2.5 py-1 rounded-lg border border-border bg-background text-xs font-medium focus:outline-none focus:ring-1 focus:ring-primary">
-                  <option value="custom">{t('profile.radar_custom')}</option>
-                  <option value="profile-9">{t('profile.radar_preset_profile9')}</option>
-                  <option value="box-to-box">{t('profile.radar_preset_b2b')}</option>
-                  <option value="playmaker">{t('profile.radar_preset_playmaker')}</option>
-                  {Object.keys(savedRadarProfiles).map(k => (
-                    <option key={k} value={k}>{k}</option>
-                  ))}
-                </select>
-                <div className="flex items-center gap-1">
-                  <input type="text" placeholder={t('profile.radar_save_name')} value={newProfileName} onChange={e => setNewProfileName(e.target.value)}
-                    className="px-2 py-1 rounded-lg border border-border bg-background text-xs w-24 focus:outline-none focus:ring-1 focus:ring-primary" />
-                  <button onClick={() => {
-                    if (!newProfileName.trim()) return;
-                    const updated = { ...savedRadarProfiles, [newProfileName.trim()]: [...radarSelectedStats] };
-                    setSavedRadarProfiles(updated);
-                    localStorage.setItem('radar-profiles', JSON.stringify(updated));
-                    setRadarProfile(newProfileName.trim());
-                    setNewProfileName('');
-                  }}
-                    className="px-2 py-1 rounded-lg bg-primary text-primary-foreground text-[10px] font-semibold hover:bg-primary/90 transition-colors">
-                    {t('profile.radar_save')}
+  // ── Filter bar ────────────────────────────────────────────────────────
+  // ── Benchmark comparison base selector ────────────────────────────────
+  const BenchmarkSelector = () => {
+    if (benchmarkGroups.length === 0) {
+      return (
+        <Card className="card-warm">
+          <CardContent className="p-3">
+            <div className="flex items-center gap-2 text-[11px] text-muted-foreground">
+              <Users className="w-3.5 h-3.5 shrink-0" />
+              <span>
+                <span className="font-semibold">{t('wyscout.benchmark_no_groups')}</span>
+                {' — '}{t('wyscout.benchmark_fallback')}
+              </span>
+            </div>
+          </CardContent>
+        </Card>
+      );
+    }
+    return (
+      <Card className="card-warm">
+        <CardContent className="p-3">
+          <div className="flex items-center gap-2 flex-wrap">
+            <div className="flex items-center gap-1.5 shrink-0">
+              <Users className="w-3.5 h-3.5 text-muted-foreground" />
+              <span className="text-[10px] uppercase tracking-wider text-muted-foreground font-semibold">{t('wyscout.benchmark_label')}</span>
+            </div>
+            <div className="flex items-center gap-1.5 flex-wrap">
+              {benchmarkGroups.map(g => {
+                const active = selectedGroup?.key === g.key;
+                return (
+                  <button key={g.key} onClick={() => setBenchmarkGroupKey(g.key)}
+                    className={`px-2.5 py-1 rounded-full text-[10px] font-semibold border transition-colors ${
+                      active ? 'bg-primary text-primary-foreground border-primary' : 'border-border text-muted-foreground hover:bg-muted'
+                    }`}
+                    title={g.description}>
+                    {g.label} <span className="opacity-60 ml-0.5">· {g.count}</span>
                   </button>
+                );
+              })}
+            </div>
+            {selectedGroup && (
+              <span className="text-[10px] text-muted-foreground/60 ml-auto">{selectedGroup.description}</span>
+            )}
+          </div>
+        </CardContent>
+      </Card>
+    );
+  };
+
+  const FilterBar = () => {
+    const toggleFilter = (kind: keyof WyscoutFilters, value: string) => {
+      setFilters(prev => {
+        const arr = prev[kind];
+        const next = arr.includes(value) ? arr.filter(v => v !== value) : [...arr, value];
+        return { ...prev, [kind]: next };
+      });
+    };
+    const clearAll = () => setFilters(EMPTY_FILTERS);
+
+    const renderChips = (kind: keyof WyscoutFilters, options: string[], emptyLabel: string) => (
+      <div className="flex items-center gap-1.5 flex-wrap">
+        <span className="text-[10px] uppercase tracking-wider text-muted-foreground font-semibold">{emptyLabel}</span>
+        {options.length === 0 ? (
+          <span className="text-[10px] text-muted-foreground/40">—</span>
+        ) : options.map(o => {
+          const active = filters[kind].includes(o);
+          return (
+            <button key={o} onClick={() => toggleFilter(kind, o)}
+              className={`px-2 py-0.5 rounded-full text-[10px] font-medium border transition-colors ${
+                active ? 'bg-primary text-primary-foreground border-primary' : 'border-border text-muted-foreground hover:bg-muted'
+              }`}>
+              {o}
+            </button>
+          );
+        })}
+      </div>
+    );
+
+    return (
+      <Card className="card-warm">
+        <CardContent className="p-3">
+          <div className="flex items-start justify-between gap-3 flex-wrap">
+            <div className="flex items-center gap-2 flex-1 flex-wrap">
+              <Filter className="w-3.5 h-3.5 text-muted-foreground shrink-0" />
+              <div className="flex flex-col gap-1.5 flex-1 min-w-[280px]">
+                {renderChips('seasons', filterOptions.seasons, t('wyscout.filter_seasons'))}
+                {renderChips('clubs', filterOptions.clubs, t('wyscout.filter_clubs'))}
+                {renderChips('divisions', filterOptions.divisions, t('wyscout.filter_divisions'))}
+              </div>
+            </div>
+            <div className="flex items-center gap-2 shrink-0">
+              {aggregated && (
+                <Badge variant="secondary" className="text-[10px]">
+                  {aggregated._rowCount > 1
+                    ? t('wyscout.aggregated_rows', { count: aggregated._rowCount })
+                    : (aggregated.season || '—')}
+                </Badge>
+              )}
+              {filterActive && (
+                <button onClick={clearAll} className="text-[10px] text-muted-foreground hover:text-foreground flex items-center gap-1">
+                  <X className="w-3 h-3" /> {t('wyscout.filter_clear')}
+                </button>
+              )}
+            </div>
+          </div>
+          {lowSample && (
+            <div className="mt-2 flex items-center gap-1.5 text-[10px] text-amber-600 dark:text-amber-400">
+              <AlertTriangle className="w-3 h-3" />
+              {t('wyscout.low_sample_warning', { minutes: sampleMinutes, threshold: MIN_SAMPLE_MINUTES })}
+            </div>
+          )}
+        </CardContent>
+      </Card>
+    );
+  };
+
+  // ── View toggle ───────────────────────────────────────────────────────
+  const ViewToggle = () => {
+    const views: { key: ViewMode; label: string; icon: typeof Sparkles }[] = [
+      { key: 'synthese', label: t('wyscout.view_synthese'), icon: Sparkles },
+      { key: 'detaille', label: t('wyscout.view_detaille'), icon: Layers },
+    ];
+    return (
+      <div className="flex rounded-lg border border-border overflow-hidden text-xs w-full sm:w-auto">
+        {views.map(v => {
+          const Icon = v.icon;
+          const active = viewMode === v.key;
+          return (
+            <button key={v.key} onClick={() => setViewMode(v.key)}
+              className={`flex-1 sm:flex-none px-3 py-2 font-semibold transition-colors flex items-center justify-center gap-1.5 ${
+                active ? 'bg-primary text-primary-foreground' : 'hover:bg-muted'
+              }`}>
+              <Icon className="w-3.5 h-3.5" />
+              <span>{v.label}</span>
+            </button>
+          );
+        })}
+      </div>
+    );
+  };
+
+  // ── Header / KPI strip (shared across views) ──────────────────────────
+  const HeaderCard = () => aggregated && (
+    <Card className="card-warm">
+      <CardContent className="p-5">
+        <div className="flex items-center justify-between flex-wrap gap-3 mb-4">
+          <div>
+            <h3 className="text-base font-bold flex items-center gap-2">
+              <Activity className="w-4 h-4" />{t('profile.perf_title')}
+              {aggregated.season && (
+                <span className="text-xs bg-blue-500/10 text-blue-600 dark:text-blue-400 px-1.5 py-0.5 rounded font-bold">
+                  {aggregated.season}
+                </span>
+              )}
+            </h3>
+            {(aggregated.team || aggregated.division) && (
+              <p className="text-xs text-muted-foreground mt-0.5">
+                {aggregated.division || ''}{aggregated.team ? ` — ${aggregated.team}` : ''}
+              </p>
+            )}
+          </div>
+        </div>
+        <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-6 gap-2">
+          {kpis.map((k, i) => (
+            <div key={i} className="p-2.5 rounded-lg bg-muted/40 text-center">
+              <p className="text-2xl font-black">{k.value}</p>
+              <p className="text-[10px] uppercase tracking-wider text-muted-foreground font-semibold">
+                {k.label}
+                {('sub' in k && k.sub) ? <span className="text-muted-foreground/60 ml-1">({k.sub})</span> : null}
+              </p>
+            </div>
+          ))}
+        </div>
+        <p className="text-[10px] text-muted-foreground/40 text-right mt-2">Source: Wyscout</p>
+      </CardContent>
+    </Card>
+  );
+
+  // ── DNA panel (Synthèse only) ─────────────────────────────────────────
+  const DnaPanel = () => {
+    if (!aggregated || !detection) return null;
+    const { primary, secondary, isIndeterminate, isHybrid } = detection;
+    const strengths = insights.filter(i => i.kind === 'strength');
+    const weaknesses = insights.filter(i => i.kind === 'weakness');
+    const trends = insights.filter(i => i.kind === 'trend-up' || i.kind === 'trend-down');
+
+    let mainLabel: string;
+    let labelHelp: string | null = null;
+    let scoreToShow: number | null = null;
+    if (!primary) {
+      mainLabel = t('wyscout.dna_no_templates');
+      labelHelp = t('wyscout.dna_no_templates_desc');
+    } else if (isIndeterminate) {
+      mainLabel = t('wyscout.dna_indeterminate');
+      labelHelp = t('wyscout.dna_indeterminate_desc');
+      scoreToShow = primary.score;
+    } else if (isHybrid && secondary) {
+      mainLabel = `${primary.label} / ${secondary.label}`;
+      labelHelp = t('wyscout.dna_hybrid_desc', { score1: primary.score, score2: secondary.score });
+      scoreToShow = primary.score;
+    } else {
+      mainLabel = primary.label;
+      scoreToShow = primary.score;
+      labelHelp = secondary && secondary.score >= 50
+        ? t('wyscout.dna_secondary_inline', { label: secondary.label, score: secondary.score })
+        : null;
+    }
+
+    const confidenceLabel = (c: 'strong' | 'good' | 'fair' | 'weak') => {
+      if (c === 'strong') return t('wyscout.dna_conf_strong');
+      if (c === 'good') return t('wyscout.dna_conf_good');
+      if (c === 'fair') return t('wyscout.dna_conf_fair');
+      return t('wyscout.dna_conf_weak');
+    };
+
+    return (
+      <Card className="card-warm bg-gradient-to-br from-primary/5 via-transparent to-blue-500/5 border-primary/20">
+        <CardContent className="p-5">
+          <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+            {/* Role */}
+            <div>
+              <div className="flex items-center justify-between gap-1.5 mb-2">
+                <div className="flex items-center gap-1.5 text-[10px] uppercase tracking-wider text-muted-foreground font-semibold">
+                  <Sparkles className="w-3 h-3" />{t('wyscout.dna_role_title')}
                 </div>
-                {radarProfile !== 'custom' && !RADAR_PRESETS[radarProfile] && savedRadarProfiles[radarProfile] && (
-                  <button onClick={() => {
-                    const updated = { ...savedRadarProfiles };
-                    delete updated[radarProfile];
-                    setSavedRadarProfiles(updated);
-                    localStorage.setItem('radar-profiles', JSON.stringify(updated));
-                    setRadarProfile('custom');
-                  }}
-                    className="text-destructive text-[10px] font-semibold hover:underline">
-                    {t('profile.radar_delete_profile')}
-                  </button>
+                {primary && !isIndeterminate && (
+                  <Badge variant="outline" className="text-[9px] font-semibold uppercase">
+                    {confidenceLabel(primary.confidence)}
+                  </Badge>
                 )}
               </div>
-
-              {/* Stat selector chips */}
-              <div className="flex flex-wrap gap-1.5 mb-4">
-                {statRows.map(row => {
-                  const isSelected = radarSelectedStats.includes(row.key);
-                  return (
-                    <button key={row.key} onClick={() => {
-                      setRadarSelectedStats(prev =>
-                        isSelected ? prev.filter(k => k !== row.key) : prev.length < 10 ? [...prev, row.key] : prev
+              <p className={`text-2xl font-black leading-tight ${(isIndeterminate || !primary) ? 'text-muted-foreground' : ''}`}>{mainLabel}</p>
+              {scoreToShow !== null && (
+                <div className="flex items-center gap-2 mt-1">
+                  <div className="flex-1 h-1.5 rounded-full bg-muted overflow-hidden">
+                    <div className={`h-full ${pctColor(scoreToShow)}`} style={{ width: `${scoreToShow}%` }} />
+                  </div>
+                  <span className={`text-[10px] font-bold ${pctText(scoreToShow)}`}>{scoreToShow}%</span>
+                </div>
+              )}
+              {labelHelp && (
+                <p className="text-[11px] text-muted-foreground mt-2">{labelHelp}</p>
+              )}
+              {primary && primary.signature.length > 0 && !isIndeterminate && (
+                <details className="mt-2">
+                  <summary className="text-[10px] text-muted-foreground/70 cursor-pointer hover:text-muted-foreground">
+                    {t('wyscout.dna_stats_used', { valid: primary.validStats, total: primary.totalStats })}
+                    {primary.isCustom && <span className="ml-1 text-primary font-semibold">· {t('wyscout.dna_custom_badge')}</span>}
+                  </summary>
+                  <div className="mt-1.5 space-y-1">
+                    {primary.signature.slice(0, 6).map(s => {
+                      const def = STAT_CATALOG.find(d => d.db === s.db);
+                      const label = def?.label || String(s.db);
+                      const unit = def?.unit;
+                      const matchPct = Math.round(s.match * 100);
+                      const matchColor = matchPct >= 75 ? 'text-emerald-600 dark:text-emerald-400' : matchPct >= 50 ? 'text-amber-600 dark:text-amber-400' : 'text-red-600 dark:text-red-400';
+                      const fmtNum = (n: number) => Number.isInteger(n) ? n : Math.round(n * 100) / 100;
+                      const lessIsBetter = s.goodValue < s.poorValue;
+                      return (
+                        <div key={s.db as string} className="text-[10px] flex items-center justify-between gap-2">
+                          <span className="text-muted-foreground truncate flex items-center gap-1" title={label}>
+                            {s.weight >= 2 && <Star className="w-2.5 h-2.5 text-amber-500 shrink-0" />}
+                            <span className="truncate">{label}</span>
+                          </span>
+                          <span className="tabular-nums shrink-0 font-mono text-[9px]">
+                            <span className="text-foreground font-semibold">{fmtNum(s.value)}{unit === '%' ? '%' : ''}</span>
+                            <span className="text-muted-foreground/40 mx-1">{lessIsBetter ? '↓' : '↑'}</span>
+                            <span className="text-muted-foreground/70">{fmtNum(s.goodValue)}{unit === '%' ? '%' : ''}</span>
+                            <span className={`ml-1 font-bold ${matchColor}`}>{matchPct}%</span>
+                          </span>
+                        </div>
                       );
-                    }}
-                      className={`px-2.5 py-1 rounded-full text-[10px] font-semibold border transition-colors ${isSelected
-                        ? 'bg-primary text-primary-foreground border-primary'
-                        : 'border-border text-muted-foreground hover:bg-muted'}`}>
-                      {row.label}
-                    </button>
+                    })}
+                  </div>
+                </details>
+              )}
+              <p className="text-[10px] text-muted-foreground/60 mt-2">
+                {player.position} · {sampleMinutes.toLocaleString()} {t('wyscout.minutes')} · {aggregated.matches_played ?? 0} {t('wyscout.matches')}
+              </p>
+            </div>
+
+            {/* Strengths */}
+            <div>
+              <div className="flex items-center justify-between mb-2">
+                <div className="flex items-center gap-1.5 text-[10px] uppercase tracking-wider text-emerald-600 dark:text-emerald-400 font-semibold">
+                  <Star className="w-3 h-3" />{t('wyscout.dna_strengths')}
+                </div>
+                <span className="text-[9px] text-muted-foreground/70 truncate ml-2" title={selectedGroup?.description}>
+                  {strengths[0]?.mode === 'relative' && selectedGroup
+                    ? t('wyscout.vs_group_label', { count: selectedGroup.count })
+                    : t('wyscout.vs_standards')}
+                </span>
+              </div>
+              {strengths.length === 0 ? (
+                <p className="text-xs text-muted-foreground/60">{t('wyscout.dna_no_strengths')}</p>
+              ) : (
+                <div className="space-y-1.5">
+                  {strengths.map((s, i) => (
+                    <div key={i} className="text-xs">
+                      <div className="flex items-center justify-between gap-1">
+                        <span className="font-medium capitalize truncate flex-1 min-w-0" title={s.label}>{s.label}</span>
+                        <span className="tabular-nums shrink-0 font-mono text-[10px] text-foreground font-semibold">
+                          {fmt(s.value, s.unit)}
+                        </span>
+                        <span className={`text-[9px] font-bold uppercase tracking-wider shrink-0 ${pctText(s.score ?? 0)}`}>
+                          {s.mode === 'relative'
+                            ? t('wyscout.top_pct', { pct: 100 - (s.score ?? 0) })
+                            : t(`wyscout.tier_${s.tier ?? 'good'}`)}
+                        </span>
+                      </div>
+                      <div className="h-1 rounded-full bg-muted overflow-hidden mt-0.5">
+                        <div className={`h-full ${pctColor(s.score ?? 0)}`} style={{ width: `${s.score ?? 0}%` }} />
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            {/* Weaknesses */}
+            <div>
+              <div className="flex items-center justify-between mb-2">
+                <div className="flex items-center gap-1.5 text-[10px] uppercase tracking-wider text-amber-600 dark:text-amber-400 font-semibold">
+                  <AlertTriangle className="w-3 h-3" />{t('wyscout.dna_weaknesses')}
+                </div>
+                <span className="text-[9px] text-muted-foreground/70 truncate ml-2" title={selectedGroup?.description}>
+                  {weaknesses[0]?.mode === 'relative' && selectedGroup
+                    ? t('wyscout.vs_group_label', { count: selectedGroup.count })
+                    : t('wyscout.vs_standards')}
+                </span>
+              </div>
+              {weaknesses.length === 0 ? (
+                <p className="text-xs text-muted-foreground/60">{t('wyscout.dna_no_weaknesses')}</p>
+              ) : (
+                <div className="space-y-1.5">
+                  {weaknesses.map((w, i) => (
+                    <div key={i} className="text-xs">
+                      <div className="flex items-center justify-between gap-1">
+                        <span className="font-medium capitalize truncate flex-1 min-w-0" title={w.label}>{w.label}</span>
+                        <span className="tabular-nums shrink-0 font-mono text-[10px] text-foreground font-semibold">
+                          {fmt(w.value, w.unit)}
+                        </span>
+                        <span className={`text-[9px] font-bold uppercase tracking-wider shrink-0 ${pctText(w.score ?? 0)}`}>
+                          {w.mode === 'relative'
+                            ? t('wyscout.bottom_pct', { pct: w.score ?? 0 })
+                            : t(`wyscout.tier_${w.tier ?? 'weak'}`)}
+                        </span>
+                      </div>
+                      <div className="h-1 rounded-full bg-muted overflow-hidden mt-0.5">
+                        <div className={`h-full ${pctColor(w.score ?? 0)}`} style={{ width: `${w.score ?? 0}%` }} />
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          </div>
+
+          {trends.length > 0 && (
+            <div className="mt-4 pt-4 border-t border-border/50">
+              <div className="flex items-center gap-1.5 text-[10px] uppercase tracking-wider text-muted-foreground font-semibold mb-2">
+                <TrendingUp className="w-3 h-3" />{t('wyscout.dna_trends')}
+              </div>
+              <div className="flex flex-wrap gap-2">
+                {trends.map((tr, i) => {
+                  const up = tr.kind === 'trend-up';
+                  const Icon = up ? TrendingUp : TrendingDown;
+                  const color = up ? 'text-emerald-600 dark:text-emerald-400 bg-emerald-500/10' : 'text-red-600 dark:text-red-400 bg-red-500/10';
+                  return (
+                    <span key={i} className={`inline-flex items-center gap-1 px-2 py-1 rounded-full text-[11px] font-semibold ${color}`}>
+                      <Icon className="w-3 h-3" />
+                      {tr.label}: {up ? '+' : ''}{tr.delta}%
+                    </span>
                   );
                 })}
               </div>
-
-              {(() => {
-                const selectedWithData = radarSelectedStats
-                  .map(key => {
-                    const row = statRows.find(r => r.key === key);
-                    const bm = benchmarks[key];
-                    if (!row) return null;
-                    const playerVal = row.raw ?? 0;
-                    const avgVal = bm?.avg ?? 0;
-                    const cmpVals = comparePlayers.map(cp => { const cpS = getExtPerfStats(cp); return cpS ? (cpS[key] ?? 0) : 0; });
-                    const maxVal = Math.max(playerVal, avgVal * 1.5, ...cmpVals.map(v => v * 1.2), 1);
-                    return { key, label: row.label, playerVal, avgVal, cmpVals, playerNorm: Math.round((playerVal / maxVal) * 100), avgNorm: Math.round((avgVal / maxVal) * 100), cmpNorms: cmpVals.map(v => Math.round((v / maxVal) * 100)), rank: bm?.rank, total: bm?.total };
-                  })
-                  .filter(Boolean) as { key: string; label: string; playerVal: number; avgVal: number; cmpVals: number[]; playerNorm: number; avgNorm: number; cmpNorms: number[]; rank?: number; total?: number }[];
-
-                if (selectedWithData.length < 3) {
-                  return <div className="text-center py-8"><p className="text-sm text-muted-foreground">{t('profile.data_radar_select_min')}</p></div>;
-                }
-
-                const fmt = (v: number) => Number.isInteger(v) ? v : Math.round(v * 100) / 100;
-                const shortLabel = (l: string) => l.length > 14 ? l.slice(0, 13) + '\u2026' : l;
-
-                const radarCustomData = selectedWithData.map(d => {
-                  const entry: Record<string, string | number> = {
-                    axis: `${shortLabel(d.label)} (${fmt(d.playerVal)})`,
-                    [player.name]: d.playerNorm,
-                    ...(positionPeers.length > 0 ? { [t('profile.data_avg')]: d.avgNorm } : {}),
-                  };
-                  comparePlayers.forEach((cp, i) => { entry[cp.name] = d.cmpNorms[i] ?? 0; });
-                  return entry;
-                });
-
-                return (
-                  <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-                    {/* Radar (left) */}
-                    <div className="cursor-pointer group relative" onClick={() => setRadarFullscreen(true)} title={t('profile.radar_expand')}>
-                      <div className="absolute top-1 right-1 z-10 opacity-0 group-hover:opacity-100 transition-opacity">
-                        <Maximize2 className="w-4 h-4 text-muted-foreground" />
-                      </div>
-                      <ResponsiveContainer width="100%" height={350}>
-                        <RadarChart data={radarCustomData} cx="50%" cy="48%" outerRadius="55%">
-                          <PolarGrid stroke="hsl(var(--border))" />
-                          <PolarAngleAxis dataKey="axis" tick={{ fontSize: 8, fill: 'hsl(var(--muted-foreground))' }} />
-                          <PolarRadiusAxis domain={[0, 100]} tick={false} axisLine={false} />
-                          <Radar name={player.name} dataKey={player.name} stroke="hsl(var(--primary))" fill="hsl(var(--primary))" fillOpacity={0.2} strokeWidth={2} dot={{ r: 3, fill: 'hsl(var(--primary))' }} />
-                          {positionPeers.length > 0 && (
-                            <Radar name={t('profile.data_avg')} dataKey={t('profile.data_avg')} stroke="hsl(var(--muted-foreground))" fill="hsl(var(--muted-foreground))" fillOpacity={0.05} strokeWidth={1.5} strokeDasharray="4 4" dot={{ r: 2 }} />
-                          )}
-                          {comparePlayers.map((cp, i) => (
-                            <Radar key={cp.id} name={cp.name} dataKey={cp.name} stroke={CHART_COLORS[(i + 1) % CHART_COLORS.length]} fill={CHART_COLORS[(i + 1) % CHART_COLORS.length]} fillOpacity={0.1} strokeWidth={2} strokeDasharray="4 4" dot={{ r: 2 }} />
-                          ))}
-                          <Legend wrapperStyle={{ fontSize: 10 }} />
-                        </RadarChart>
-                      </ResponsiveContainer>
-                    </div>
-
-                    {/* Radar fullscreen dialog */}
-                    <Dialog open={radarFullscreen} onOpenChange={setRadarFullscreen}>
-                      <DialogContent className="max-w-xl overflow-hidden">
-                        <DialogHeader>
-                          <DialogTitle>{t('profile.perf_radar_title')} — {player.name}</DialogTitle>
-                        </DialogHeader>
-                        {(() => {
-                          const fullLabelData = selectedWithData.map(d => {
-                            const entry: Record<string, string | number> = {
-                              axis: `${d.label} (${fmt(d.playerVal)})`,
-                              [player.name]: d.playerNorm,
-                              ...(positionPeers.length > 0 ? { [t('profile.data_avg')]: d.avgNorm } : {}),
-                            };
-                            comparePlayers.forEach((cp, i) => { entry[cp.name] = d.cmpNorms[i] ?? 0; });
-                            return entry;
-                          });
-                          return (
-                            <div>
-                              <div className="flex flex-wrap justify-center gap-4 mb-2">
-                                <span className="flex items-center gap-1.5 text-xs"><span className="w-3 h-0.5 rounded bg-primary inline-block" />{player.name}</span>
-                                {positionPeers.length > 0 && <span className="flex items-center gap-1.5 text-xs text-muted-foreground"><span className="w-3 h-0.5 rounded bg-muted-foreground inline-block border-dashed" />{t('profile.data_avg')}</span>}
-                                {comparePlayers.map((cp, i) => (
-                                  <span key={cp.id} className="flex items-center gap-1.5 text-xs"><span className="w-3 h-0.5 rounded inline-block" style={{ backgroundColor: CHART_COLORS[(i + 1) % CHART_COLORS.length] }} />{cp.name}</span>
-                                ))}
-                              </div>
-                              <ResponsiveContainer width="100%" height={520}>
-                                <RadarChart data={fullLabelData} cx="50%" cy="50%" outerRadius="60%">
-                                  <PolarGrid stroke="hsl(var(--border))" />
-                                  <PolarAngleAxis dataKey="axis" tick={{ fontSize: 11, fill: 'hsl(var(--muted-foreground))' }} />
-                                  <PolarRadiusAxis domain={[0, 100]} tick={false} axisLine={false} />
-                                  <Radar name={player.name} dataKey={player.name} stroke="hsl(var(--primary))" fill="hsl(var(--primary))" fillOpacity={0.2} strokeWidth={2.5} dot={{ r: 4, fill: 'hsl(var(--primary))' }} />
-                                  {positionPeers.length > 0 && (
-                                    <Radar name={t('profile.data_avg')} dataKey={t('profile.data_avg')} stroke="hsl(var(--muted-foreground))" fill="hsl(var(--muted-foreground))" fillOpacity={0.05} strokeWidth={1.5} strokeDasharray="4 4" dot={{ r: 3 }} />
-                                  )}
-                                  {comparePlayers.map((cp, i) => (
-                                    <Radar key={cp.id} name={cp.name} dataKey={cp.name} stroke={CHART_COLORS[(i + 1) % CHART_COLORS.length]} fill={CHART_COLORS[(i + 1) % CHART_COLORS.length]} fillOpacity={0.1} strokeWidth={2.5} strokeDasharray="4 4" dot={{ r: 3 }} />
-                                  ))}
-                                </RadarChart>
-                              </ResponsiveContainer>
-                            </div>
-                          );
-                        })()}
-                      </DialogContent>
-                    </Dialog>
-
-                    {/* Benchmark bars (right) */}
-                    <div>
-                      <h4 className="text-xs font-bold uppercase tracking-wider text-muted-foreground mb-2">{t('profile.data_benchmark_title')}</h4>
-                      <div className="flex flex-wrap gap-1.5 mb-3">
-                        <select value={benchmarkLeagueFilter} onChange={e => setBenchmarkLeagueFilter(e.target.value)}
-                          className="px-2 py-1 rounded-md border border-border bg-background text-[10px] font-medium focus:outline-none focus:ring-1 focus:ring-primary">
-                          <option value="all">{t('profile.benchmark_all_leagues')}</option>
-                          {benchmarkPeerLeagues.map(l => <option key={l} value={l}>{l}</option>)}
-                        </select>
-                        <select value={benchmarkAgeFilter} onChange={e => setBenchmarkAgeFilter(e.target.value)}
-                          className="px-2 py-1 rounded-md border border-border bg-background text-[10px] font-medium focus:outline-none focus:ring-1 focus:ring-primary">
-                          <option value="all">{t('profile.benchmark_all_ages')}</option>
-                          <option value="2">+/- 2 {t('common.year')}</option>
-                          <option value="5">+/- 5 {t('common.year')}</option>
-                          <option value="gen">{t('profile.benchmark_same_gen')}</option>
-                        </select>
-                        <select value={benchmarkLevelFilter} onChange={e => setBenchmarkLevelFilter(e.target.value)}
-                          className="px-2 py-1 rounded-md border border-border bg-background text-[10px] font-medium focus:outline-none focus:ring-1 focus:ring-primary">
-                          <option value="all">{t('profile.benchmark_all_levels')}</option>
-                          <option value="similar">{t('profile.benchmark_similar_level')}</option>
-                        </select>
-                        <span className="text-[10px] text-muted-foreground self-center ml-1">({positionPeers.length} {t('profile.benchmark_peers')})</span>
-                      </div>
-                      {selectedWithData.filter(d => d.avgVal > 0).length > 0 ? (
-                        <div className="space-y-2.5">
-                          {selectedWithData.map(d => {
-                            if (d.avgVal <= 0) return null;
-                            const pct = Math.min(100, Math.round((d.playerVal / (d.avgVal * 2)) * 100));
-                            const isAbove = d.playerVal >= d.avgVal;
-                            return (
-                              <div key={d.key}>
-                                <div className="flex items-center justify-between text-xs mb-0.5">
-                                  <span className="font-medium truncate">{d.label}</span>
-                                  <span className="tabular-nums shrink-0 ml-2">
-                                    <span className={`font-bold ${isAbove ? 'text-emerald-600 dark:text-emerald-400' : 'text-amber-600 dark:text-amber-400'}`}>{fmt(d.playerVal)}</span>
-                                    <span className="text-muted-foreground ml-1">/ {fmt(d.avgVal)}</span>
-                                    {d.rank && <span className="text-muted-foreground/60 ml-1">#{d.rank}/{d.total}</span>}
-                                  </span>
-                                </div>
-                                <div className="h-2 rounded-full bg-muted overflow-hidden relative">
-                                  <div className={`h-full rounded-full transition-all ${isAbove ? 'bg-emerald-500' : 'bg-amber-500'}`} style={{ width: `${pct}%` }} />
-                                  <div className="absolute top-0 left-1/2 w-0.5 h-full bg-muted-foreground/30" />
-                                </div>
-                              </div>
-                            );
-                          })}
-                        </div>
-                      ) : (
-                        <p className="text-xs text-muted-foreground text-center py-4">{t('profile.benchmark_no_peers')}</p>
-                      )}
-                    </div>
-                  </div>
-                );
-              })()}
-            </CardContent>
-          </Card>
-
-          {/* ── Sortable / filterable stats table ── */}
-          <Card className="card-warm">
-            <CardContent className="p-5">
-              <div className="flex items-center justify-between flex-wrap gap-2 mb-3">
-                <h3 className="text-xs font-bold uppercase tracking-wider text-muted-foreground">{t('profile.data_detailed_stats')}</h3>
-                <div className="flex items-center gap-2">
-                  <div className="flex rounded-lg border border-border overflow-hidden text-[10px]">
-                    {(['all', 'attack', 'passing', 'defending', 'physical'] as const).map(cat => (
-                      <button key={cat} onClick={() => setStatsFilter(cat)}
-                        className={`px-2.5 py-1 font-semibold transition-colors ${statsFilter === cat ? 'bg-primary text-primary-foreground' : 'hover:bg-muted'}`}>
-                        {t(`profile.data_cat_${cat}`)}
-                      </button>
-                    ))}
-                  </div>
-                  <button onClick={() => setShowPer90(!showPer90)}
-                    className={`px-2.5 py-1 rounded-lg border text-[10px] font-semibold transition-colors ${showPer90 ? 'bg-primary text-primary-foreground border-primary' : 'border-border hover:bg-muted'}`}>
-                    /90
-                  </button>
-                </div>
-              </div>
-              <div className="overflow-x-auto rounded-lg border border-border/50">
-                <table className="w-full text-xs">
-                  <thead>
-                    <tr className="bg-muted/50 text-muted-foreground">
-                      <th className="text-left px-3 py-2 font-semibold">{t('profile.data_stat')}</th>
-                      <th className="text-center px-3 py-2 font-semibold cursor-pointer hover:text-foreground select-none"
-                        onClick={() => { setStatsSortKey('value'); setStatsSortDir(statsSortDir === 'asc' ? 'desc' : 'asc'); }}>
-                        {player.name.split(' ').pop()} {statsSortKey === 'value' ? (statsSortDir === 'desc' ? '\u2193' : '\u2191') : ''}
-                      </th>
-                      {allEnrichedPlayers.length > 1 && (
-                        <th className="text-center px-2 py-2 font-semibold">
-                          <div className="flex flex-col items-center gap-0.5">
-                            <select value={rankScope} onChange={e => setRankScope(e.target.value as 'all' | 'position' | 'league' | 'age')}
-                              className="h-5 px-1 rounded border border-border bg-background text-[10px] font-semibold focus:outline-none focus:ring-1 focus:ring-primary cursor-pointer">
-                              <option value="all">{t('profile.rank_scope_all')}</option>
-                              <option value="position">{t('profile.rank_scope_position')}</option>
-                              <option value="league">{t('profile.rank_scope_league')}</option>
-                              <option value="age">{t('profile.rank_scope_age')}</option>
-                            </select>
-                            <span className="text-[8px] font-normal text-muted-foreground/70 whitespace-nowrap">{rankScopeLabel}</span>
-                          </div>
-                        </th>
-                      )}
-                      {comparePlayers.map((cp, i) => (
-                        <th key={cp.id} className="text-center px-3 py-2 font-semibold" style={{ color: CHART_COLORS[(i + 1) % CHART_COLORS.length] }}>{cp.name.split(' ').pop()}</th>
-                      ))}
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {(() => {
-                      const fmt = (v: number | null | undefined) => v == null ? '\u2014' : (Number.isInteger(v) ? v : Math.round(v * 100) / 100);
-                      return sortedRows.map(row => {
-                        const val = showPer90 && row.per90v != null ? row.per90v : row.raw;
-                        const cmpVals = comparePlayers.map(cp => {
-                          const cpS = getExtPerfStats(cp);
-                          const cpP90 = getExtPer90(cp);
-                          return cpS ? (showPer90 && cpP90?.[row.key] != null ? parseFloat(cpP90[row.key]) : parseFloat(String(cpS[row.key] ?? 0))) : null;
-                        });
-                        const allVals = [val, ...cmpVals].filter(v => v != null) as number[];
-                        const bestVal = allVals.length > 1 ? Math.max(...allVals) : null;
-                        const isBetter = bestVal != null && val != null && val === bestVal && allVals.length > 1;
-                        const isWorse = bestVal != null && val != null && val < bestVal;
-                        return (
-                          <tr key={row.key} className="border-t border-border/30 hover:bg-muted/30 transition-colors">
-                            <td className="px-3 py-2 font-medium">
-                              <span className={`inline-block w-1.5 h-1.5 rounded-full mr-2 ${row.cat === 'attack' ? 'bg-red-400' : row.cat === 'passing' ? 'bg-blue-400' : row.cat === 'defending' ? 'bg-amber-400' : 'bg-green-400'}`} />
-                              {row.label}{showPer90 && row.per90v != null ? ' /90' : ''}
-                            </td>
-                            <td className={`text-center px-3 py-2 font-bold tabular-nums ${isBetter ? 'text-emerald-600 dark:text-emerald-400' : isWorse ? 'text-amber-600 dark:text-amber-400' : ''}`}>
-                              {fmt(val)}{showPer90 && row.per90v != null && row.raw != null ? <span className="text-muted-foreground font-normal ml-1">({fmt(row.raw)})</span> : ''}
-                            </td>
-                            {allEnrichedPlayers.length > 1 && (
-                              <td className="text-center px-2 py-2 tabular-nums">
-                                {globalRankings[row.key] ? (() => {
-                                  const gr = globalRankings[row.key];
-                                  const pctColor = gr.percentile >= 75 ? 'bg-emerald-500' : gr.percentile >= 50 ? 'bg-blue-500' : gr.percentile >= 25 ? 'bg-amber-500' : 'bg-gray-400';
-                                  const textColor = gr.percentile >= 75 ? 'text-emerald-600 dark:text-emerald-400' : gr.percentile >= 50 ? 'text-blue-600 dark:text-blue-400' : gr.percentile >= 25 ? 'text-amber-600 dark:text-amber-400' : 'text-muted-foreground';
-                                  return (
-                                    <div className="flex flex-col items-center gap-0.5">
-                                      <div className="w-14 h-1.5 rounded-full bg-muted overflow-hidden">
-                                        <div className={`h-full rounded-full ${pctColor}`} style={{ width: `${gr.percentile}%` }} />
-                                      </div>
-                                      <span className={`text-[9px] font-bold ${textColor}`}>Top {100 - gr.percentile}%</span>
-                                    </div>
-                                  );
-                                })() : <span className="text-muted-foreground/40">\u2014</span>}
-                              </td>
-                            )}
-                            {cmpVals.map((cv, ci) => (
-                              <td key={ci} className={`text-center px-3 py-2 tabular-nums font-bold ${cv != null && cv === bestVal && allVals.length > 1 ? 'text-emerald-600 dark:text-emerald-400' : 'text-muted-foreground'}`}>{fmt(cv)}</td>
-                            ))}
-                          </tr>
-                        );
-                      });
-                    })()}
-                  </tbody>
-                </table>
-              </div>
-            </CardContent>
-          </Card>
-
-          {/* Combined stats / ratios */}
-          {s && (
-            <Card className="card-warm">
-              <CardContent className="p-5">
-                <h3 className="text-xs font-bold uppercase tracking-wider text-muted-foreground mb-3">{t('profile.combined_stats_title')}</h3>
-                <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-2">
-                  {[
-                    { label: 'G+A', value: (s.goals || 0) + (s.assists || 0) },
-                    { label: 'G+A /90', value: s.minutes > 0 ? (((s.goals || 0) + (s.assists || 0)) / (s.minutes / 90)).toFixed(2) : '\u2014' },
-                    { label: t('profile.shot_accuracy'), value: s.shots_total > 0 ? `${Math.round((s.shots_on / s.shots_total) * 100)}%` : '\u2014' },
-                    { label: t('profile.offensive_contrib'), value: s.minutes > 0 ? (((s.goals || 0) + (s.assists || 0) + (s.passes_key || 0)) / (s.minutes / 90)).toFixed(2) : '\u2014', suffix: '/90' },
-                    { label: t('profile.defensive_contrib'), value: s.minutes > 0 ? (((s.tackles || 0) + (s.interceptions || 0) + (s.blocks || 0)) / (s.minutes / 90)).toFixed(2) : '\u2014', suffix: '/90' },
-                    { label: t('profile.duel_success_rate'), value: s.duels_total > 0 ? `${Math.round((s.duels_won / s.duels_total) * 100)}%` : '\u2014' },
-                  ].map((stat, i) => (
-                    <div key={i} className="rounded-xl bg-muted/50 p-3 text-center">
-                      <p className="text-[10px] text-muted-foreground mb-1">{stat.label}</p>
-                      <p className="text-lg font-bold tabular-nums">{stat.value}{stat.suffix ? <span className="text-[10px] text-muted-foreground font-normal ml-0.5">{stat.suffix}</span> : ''}</p>
-                    </div>
-                  ))}
-                </div>
-              </CardContent>
-            </Card>
+            </div>
           )}
+        </CardContent>
+      </Card>
+    );
+  };
 
-          {/* All competitions */}
-          {ps.all_competitions?.length > 1 && (
-            <Card className="card-warm">
-              <CardContent className="p-5">
-                <h3 className="text-xs font-bold uppercase tracking-wider text-muted-foreground mb-3">{t('profile.data_all_comps')}</h3>
-                <div className="overflow-x-auto rounded-lg border border-border/50">
-                  <table className="w-full text-xs">
-                    <thead><tr className="bg-muted/50 text-muted-foreground">
-                      <th className="text-left px-3 py-2 font-semibold">{t('profile.stats_competition')}</th>
-                      <th className="text-center px-2 py-2 font-semibold">{t('profile.stats_appearances')}</th>
-                      <th className="text-center px-2 py-2 font-semibold">{t('profile.perf_rating')}</th>
-                      <th className="text-center px-2 py-2 font-semibold">{t('profile.stats_goals')}</th>
-                      <th className="text-center px-2 py-2 font-semibold">{t('profile.stats_assists')}</th>
-                    </tr></thead>
-                    <tbody>
-                      {ps.all_competitions.map((c: { league: string; appearances: number; rating?: string; goals?: number; assists?: number }, ci: number) => (
-                        <tr key={ci} className="border-t border-border/30"><td className="px-3 py-2 font-medium">{c.league}</td>
-                          <td className="text-center px-2 py-2">{c.appearances}</td>
-                          <td className="text-center px-2 py-2 font-bold">{c.rating || '\u2014'}</td>
-                          <td className="text-center px-2 py-2">{c.goals || '\u2014'}</td>
-                          <td className="text-center px-2 py-2">{c.assists || '\u2014'}</td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-              </CardContent>
-            </Card>
-          )}
-        </>
-      ) : (
+  // ── Simplified auto-radar (Synthèse) ──────────────────────────────────
+  const AutoRadar = () => {
+    if (!aggregated || !detection?.primary) return null;
+    const profile = allTemplates.find(p => p.key === detection.primary!.key);
+    if (!profile) return null;
+
+    // Use the role template's positive-target stats; score each absolutely
+    // against the template's own thresholds — no peers required.
+    const data = profile.template
+      .filter(t => t.goodValue >= t.poorValue)
+      .map(target => {
+        const v = wyscoutNum(aggregated, target.db);
+        if (v === null) return null;
+        const score = Math.round(statScore(v, target) * 100);
+        const def = STAT_CATALOG.find(s => s.db === target.db);
+        return {
+          axis: def?.label || String(target.db),
+          value: score,
+          raw: v,
+          unit: def?.unit,
+          goodValue: target.goodValue,
+        };
+      })
+      .filter(Boolean) as { axis: string; value: number; raw: number; unit?: string; goodValue: number }[];
+
+    if (data.length < 3) return null;
+
+    return (
+      <Card className="card-warm">
+        <CardContent className="p-5">
+          <div className="flex items-center justify-between mb-3">
+            <div>
+              <h3 className="text-xs font-bold uppercase tracking-wider text-muted-foreground">{t('wyscout.auto_radar_title')}</h3>
+              <p className="text-[11px] text-muted-foreground mt-0.5">{t('wyscout.auto_radar_desc_v2', { role: detection.primary.label })}</p>
+            </div>
+            <Badge variant="outline" className="text-[10px]">{t('wyscout.absolute_score')}</Badge>
+          </div>
+          <ResponsiveContainer width="100%" height={300}>
+            <RadarChart data={data} cx="50%" cy="50%" outerRadius="70%">
+              <PolarGrid stroke="hsl(var(--border))" />
+              <PolarAngleAxis dataKey="axis" tick={{ fontSize: 10, fill: 'hsl(var(--muted-foreground))' }} />
+              <PolarRadiusAxis domain={[0, 100]} tick={false} axisLine={false} />
+              <Radar name={player.name} dataKey="value" stroke="hsl(var(--primary))" fill="hsl(var(--primary))" fillOpacity={0.25} strokeWidth={2.5} dot={{ r: 4, fill: 'hsl(var(--primary))' }} />
+              <RechartsTooltip
+                contentStyle={{ fontSize: 12, borderRadius: 8, border: '1px solid hsl(var(--border))' }}
+                formatter={(_v, _n, p) => {
+                  const item = p?.payload as { raw?: number; unit?: string; value?: number; goodValue?: number };
+                  const tgt = item?.goodValue != null ? ` · ${t('wyscout.target')}: ${fmt(item.goodValue, item.unit)}` : '';
+                  return [`${fmt(item?.raw, item?.unit)}${tgt}`, `${t('wyscout.score')}: ${item?.value}/100`];
+                }}
+              />
+            </RadarChart>
+          </ResponsiveContainer>
+          <p className="text-[10px] text-muted-foreground/60 mt-2 text-center">
+            {t('wyscout.absolute_score_help')}
+          </p>
+        </CardContent>
+      </Card>
+    );
+  };
+
+  // ── Similar players panel ─────────────────────────────────────────────
+  const SimilarPlayersPanel = () => {
+    if (similarPlayers.length === 0) return null;
+    return (
+      <Card className="card-warm">
+        <CardContent className="p-5">
+          <div className="flex items-center gap-2 mb-3">
+            <Users className="w-4 h-4 text-muted-foreground" />
+            <h3 className="text-xs font-bold uppercase tracking-wider text-muted-foreground">{t('wyscout.similar_title')}</h3>
+            <span className="text-[10px] text-muted-foreground/60">{t('wyscout.similar_desc')}</span>
+          </div>
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-2">
+            {similarPlayers.map(sp => {
+              const peerPlayer = allPlayers.find(p => p.id === sp.playerId);
+              if (!peerPlayer) return null;
+              return (
+                <Link key={sp.playerId} to={`/compare#v=${buildCompareHash([player.id, sp.playerId])}`}
+                  className="text-left p-2.5 rounded-lg border border-border hover:bg-muted/40 transition-colors group block">
+                  <div className="flex items-center justify-between gap-2">
+                    <div className="min-w-0">
+                      <p className="text-xs font-bold truncate">{peerPlayer.name}</p>
+                      <p className="text-[10px] text-muted-foreground truncate">{peerPlayer.position} · {peerPlayer.club || '—'}</p>
+                    </div>
+                    <ArrowRight className="w-3 h-3 text-muted-foreground opacity-0 group-hover:opacity-100 transition-opacity shrink-0" />
+                  </div>
+                  <div className="mt-2 flex items-center gap-1.5">
+                    <div className="flex-1 h-1 rounded-full bg-muted overflow-hidden">
+                      <div className={`h-full ${pctColor(sp.similarity)}`} style={{ width: `${sp.similarity}%` }} />
+                    </div>
+                    <span className="text-[10px] font-bold tabular-nums">{sp.similarity}%</span>
+                  </div>
+                </Link>
+              );
+            })}
+          </div>
+        </CardContent>
+      </Card>
+    );
+  };
+
+  // ── Percentile table (Synthèse view) ──────────────────────────────────
+  const PercentileTable = () => {
+    if (!aggregated) return null;
+    // Use the user-selected benchmark group; fall back to same-position peers.
+    const groupRows = selectedGroup?.rows || positionPeerRows;
+    const groupCount = selectedGroup?.count ?? positionPeerRows.length;
+    const groupDescription = selectedGroup?.description || t('wyscout.percentile_compare_base', { position: player.position, count: groupCount });
+
+    const rowsWithPct = allStatRows
+      .map(row => {
+        const pct = statPercentile(aggregated, row.db, groupRows);
+        if (pct === null) return null;
+        // Flip percentile for "less is better" stats so the bar always reads "good→right"
+        const adjustedPct = isInvertedStat(row.db) ? 100 - pct : pct;
+        return { ...row, pct: adjustedPct };
+      })
+      .filter((r): r is StatRow & { pct: number } => r !== null);
+
+    if (groupCount < 3 || rowsWithPct.length === 0) {
+      return (
         <Card className="card-warm">
           <CardContent className="p-5 text-center">
-            <Activity className="w-8 h-8 text-muted-foreground/20 mx-auto mb-2" />
-            <p className="text-sm text-muted-foreground">{t('profile.perf_no_data')}</p>
-            <p className="text-xs text-muted-foreground/60 mt-1">{t('profile.perf_no_data_desc')}</p>
-            {!player.external_data_fetched_at && isPremium && (
-              <Button size="sm" variant="outline" className="rounded-xl mt-3" onClick={() => handleEnrich()} disabled={enriching}>
-                <RefreshCw className={`w-3.5 h-3.5 mr-1.5 ${enriching ? 'animate-spin' : ''}`} />{t('profile.enrich')}
-              </Button>
-            )}
+            <p className="text-xs text-muted-foreground">{t('wyscout.no_peers_for_percentile')}</p>
+            <p className="text-[10px] text-muted-foreground/60 mt-1">{t('wyscout.no_peers_for_percentile_desc', { position: player.position, count: groupCount })}</p>
           </CardContent>
         </Card>
-      )}
+      );
+    }
+    const filtered = statsFilter === 'all' ? rowsWithPct : rowsWithPct.filter(r => r.cat === statsFilter);
+    return (
+      <Card className="card-warm">
+        <CardContent className="p-5">
+          <div className="flex items-start justify-between flex-wrap gap-2 mb-3">
+            <div>
+              <h3 className="text-xs font-bold uppercase tracking-wider text-muted-foreground">{t('wyscout.percentile_overview')}</h3>
+              <p className="text-[11px] text-muted-foreground mt-0.5">
+                {t('wyscout.percentile_vs_group', { group: groupDescription, count: groupCount })}
+              </p>
+            </div>
+            <div className="flex rounded-lg border border-border overflow-hidden text-[10px]">
+              {(['all', 'attack', 'passing', 'defending', 'physical', ...(isGK ? ['gk' as const] : [])] as const).map(cat => (
+                <button key={cat} onClick={() => setStatsFilter(cat)}
+                  className={`px-2.5 py-1 font-semibold transition-colors ${statsFilter === cat ? 'bg-primary text-primary-foreground' : 'hover:bg-muted'}`}>
+                  {cat === 'gk' ? t('wyscout.cat_goalkeeper') : t(`profile.data_cat_${cat}`)}
+                </button>
+              ))}
+            </div>
+          </div>
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-6 gap-y-2">
+            {filtered.map(row => {
+              const inverted = isInvertedStat(row.db);
+              const tooltipText = inverted
+                ? t('wyscout.percentile_tooltip_inverted', { rank: 100 - row.pct, count: groupCount })
+                : t('wyscout.percentile_tooltip', { rank: 100 - row.pct, count: groupCount });
+              return (
+                <div key={row.db as string} className="flex items-center gap-2">
+                  <span className="text-xs font-medium truncate flex-1 min-w-0" title={inverted ? t('wyscout.less_is_better_hint') : undefined}>
+                    {row.label}{inverted && <span className="text-muted-foreground/50 ml-1">↓</span>}
+                  </span>
+                  <span className="text-[10px] text-muted-foreground tabular-nums shrink-0 w-12 text-right">{fmt(row.raw, row.unit)}</span>
+                  <div className="w-24 h-1.5 rounded-full bg-muted overflow-hidden shrink-0" title={tooltipText}>
+                    <div className={`h-full ${pctColor(row.pct)}`} style={{ width: `${row.pct}%` }} />
+                  </div>
+                  <span className={`text-[10px] font-bold tabular-nums shrink-0 w-8 text-right ${pctText(row.pct)}`}>{row.pct}</span>
+                </div>
+              );
+            })}
+          </div>
+          <p className="text-[10px] text-muted-foreground/60 mt-3">
+            {t('wyscout.percentile_legend_v2')}
+          </p>
+        </CardContent>
+      </Card>
+    );
+  };
 
-      {/* ═══════════════ SECTION 1b: SEASON STATS (Transfermarkt) ═══════════════ */}
-      {Array.isArray(ext.season_stats) && ext.season_stats.length > 0 && (
-        <Card className="card-warm">
+  // ── Report-driven insights (evolution chart + opinion distribution) ───
+  const ReportInsights = () => (
+    <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+      {historyData.length >= 2 && (
+        <Card className="card-warm lg:col-span-2">
           <CardContent className="p-5">
-            <h3 className="text-xs font-bold uppercase tracking-wider text-muted-foreground mb-3 flex items-center gap-1.5">
-              <BarChart3 className="w-3.5 h-3.5" />{t('profile.season_stats')}
-            </h3>
-            {(ext.season_stats as { season: string; rows: { competition: string; club?: string; appearances: number; goals: number; assists: number; yellow_cards: number; second_yellow: number; red_cards: number; minutes: number; starts?: number; sub_in?: number }[]; totals: { appearances: number; goals: number; assists: number; yellow_cards: number; second_yellow: number; red_cards: number; minutes: number; starts?: number; sub_in?: number } }[]).map((seasonData, si) => (
-              <div key={si} className={si > 0 ? 'mt-3' : ''}>
-                <div className="flex items-center gap-2 mb-1.5">
-                  <span className="text-xs bg-primary/10 text-primary px-1.5 py-0.5 rounded font-bold">{seasonData.season}</span>
-                  <span className="text-xs text-muted-foreground">{seasonData.totals.appearances} {t('profile.stats_appearances').toLowerCase()}, {seasonData.totals.goals}G {seasonData.totals.assists}A</span>
-                </div>
-                <div className="overflow-x-auto rounded-lg border border-border/50">
-                  <table className="w-full text-xs">
-                    <thead>
-                      <tr className="bg-muted/50 text-muted-foreground">
-                        <th className="text-left px-3 py-2 font-semibold">{t('profile.stats_competition')}</th>
-                        <th className="text-left px-2 py-2 font-semibold">{t('profile.stats_club')}</th>
-                        <th className="text-center px-2 py-2 font-semibold">{t('profile.stats_appearances')}</th>
-                        <th className="text-center px-2 py-2 font-semibold">{t('profile.stats_goals')}</th>
-                        <th className="text-center px-2 py-2 font-semibold">{t('profile.stats_assists')}</th>
-                        <th className="text-center px-2 py-2 font-semibold">{t('profile.stats_yellow')}</th>
-                        <th className="text-center px-2 py-2 font-semibold">{t('profile.stats_second_yellow')}</th>
-                        <th className="text-center px-2 py-2 font-semibold">{t('profile.stats_red')}</th>
-                        <th className="text-center px-2 py-2 font-semibold">{t('profile.stats_minutes')}</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {seasonData.rows.map((row, i) => (
-                        <tr key={i} className="border-t border-border/30 hover:bg-muted/30 transition-colors">
-                          <td className="px-3 py-2 font-medium truncate max-w-[160px]">{row.competition}</td>
-                          <td className="px-2 py-2 truncate max-w-[120px] text-muted-foreground">{row.club || '-'}</td>
-                          <td className="text-center px-2 py-2 font-bold">{row.appearances || '-'}</td>
-                          <td className="text-center px-2 py-2 font-bold">{row.goals || '-'}</td>
-                          <td className="text-center px-2 py-2 font-bold">{row.assists || '-'}</td>
-                          <td className="text-center px-2 py-2">{row.yellow_cards || '-'}</td>
-                          <td className="text-center px-2 py-2">{row.second_yellow || '-'}</td>
-                          <td className="text-center px-2 py-2">{row.red_cards || '-'}</td>
-                          <td className="text-center px-2 py-2">{row.minutes ? row.minutes.toLocaleString() : '-'}</td>
-                        </tr>
-                      ))}
-                    </tbody>
-                    <tfoot>
-                      <tr className="border-t-2 border-border bg-muted/40 font-bold">
-                        <td className="px-3 py-2" colSpan={2}>{t('profile.stats_total')}</td>
-                        <td className="text-center px-2 py-2">{seasonData.totals.appearances}</td>
-                        <td className="text-center px-2 py-2">{seasonData.totals.goals || '-'}</td>
-                        <td className="text-center px-2 py-2">{seasonData.totals.assists || '-'}</td>
-                        <td className="text-center px-2 py-2">{seasonData.totals.yellow_cards || '-'}</td>
-                        <td className="text-center px-2 py-2">{seasonData.totals.second_yellow || '-'}</td>
-                        <td className="text-center px-2 py-2">{seasonData.totals.red_cards || '-'}</td>
-                        <td className="text-center px-2 py-2">{seasonData.totals.minutes ? seasonData.totals.minutes.toLocaleString() : '-'}</td>
-                      </tr>
-                    </tfoot>
-                  </table>
-                </div>
-              </div>
-            ))}
-            <p className="text-[10px] text-muted-foreground/40 mt-2 text-right">Source: Transfermarkt</p>
+            <h3 className="text-xs font-bold uppercase tracking-wider text-muted-foreground mb-4">{t('profile.perf_evolution_title')}</h3>
+            <ResponsiveContainer width="100%" height={280}>
+              <AreaChart data={historyData}>
+                <defs>
+                  <linearGradient id="gradLevel" x1="0" y1="0" x2="0" y2="1"><stop offset="5%" stopColor="hsl(var(--success))" stopOpacity={0.3} /><stop offset="95%" stopColor="hsl(var(--success))" stopOpacity={0} /></linearGradient>
+                  <linearGradient id="gradPotential" x1="0" y1="0" x2="0" y2="1"><stop offset="5%" stopColor="hsl(var(--primary))" stopOpacity={0.3} /><stop offset="95%" stopColor="hsl(var(--primary))" stopOpacity={0} /></linearGradient>
+                </defs>
+                <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" />
+                <XAxis dataKey="date" tick={{ fontSize: 11 }} stroke="hsl(var(--muted-foreground))" />
+                <YAxis domain={[0, 10]} tick={{ fontSize: 11 }} stroke="hsl(var(--muted-foreground))" />
+                <RechartsTooltip contentStyle={{ background: 'hsl(var(--card))', border: '1px solid hsl(var(--border))', borderRadius: '0.75rem', fontSize: '12px' }} />
+                <Legend />
+                <Area type="monotone" dataKey="level" stroke="hsl(var(--success))" fill="url(#gradLevel)" strokeWidth={2.5} name={t('profile.level')} dot={{ r: 4, fill: 'hsl(var(--success))' }} />
+                <Area type="monotone" dataKey="potential" stroke="hsl(var(--primary))" fill="url(#gradPotential)" strokeWidth={2.5} name={t('profile.potential')} dot={{ r: 4, fill: 'hsl(var(--primary))' }} />
+                <Line type="monotone" dataKey="opinion" stroke="hsl(var(--warning, 45 93% 47%))" strokeWidth={2} strokeDasharray="5 5" name={t('profile.perf_opinion_score')} dot={{ r: 3 }} />
+              </AreaChart>
+            </ResponsiveContainer>
           </CardContent>
         </Card>
       )}
 
-      {/* ═══════════════ SECTION 1c: SEASON EVOLUTION CHART ═══════════════ */}
-      {Array.isArray(ext.season_stats) && ext.season_stats.length > 1 && (() => {
-        const seasonStats = ext.season_stats as { season: string; totals: Record<string, number> }[];
-        const statOptions = [
-          { value: 'goals', label: t('profile.stats_goals') },
-          { value: 'assists', label: t('profile.stats_assists') },
-          { value: 'appearances', label: t('profile.stats_appearances') },
-          { value: 'minutes', label: t('profile.stats_minutes') },
-          { value: 'yellow_cards', label: t('profile.stats_yellow') },
-        ];
-        const chartData = seasonStats.slice().reverse().map(ss => ({
-          season: ss.season,
-          value: ss.totals?.[seasonChartStat] ?? 0,
-        }));
-        return (
+      <Card className="card-warm lg:col-span-2">
+        <CardContent className="p-5">
+          <h3 className="text-xs font-bold uppercase tracking-wider text-muted-foreground mb-4">{t('profile.perf_opinion_dist')}</h3>
+          {reports.length === 0 ? (
+            <div className="text-center py-8">
+              <Activity className="w-8 h-8 text-muted-foreground/20 mx-auto mb-2" />
+              <p className="text-sm text-muted-foreground">{t('profile.perf_no_reports')}</p>
+              <p className="text-xs text-muted-foreground/60 mt-1">{t('profile.perf_no_reports_desc')}</p>
+            </div>
+          ) : (
+            <div className="grid grid-cols-3 gap-4">
+              {ALL_OPINIONS.map(opinion => {
+                const count = reports.filter(r => r.opinion === opinion).length;
+                const pct = Math.round((count / reports.length) * 100);
+                const colors: Record<string, string> = { 'À suivre': 'bg-green-500', 'À revoir': 'bg-amber-500', 'Pas pour nous': 'bg-red-500' };
+                return (
+                  <div key={opinion} className="text-center">
+                    <div className="text-2xl font-black">{count}</div>
+                    <div className="text-xs text-muted-foreground mb-1">{t(`opinions.${opinion}`)}</div>
+                    <div className="h-1.5 rounded-full bg-muted overflow-hidden">
+                      <div className={`h-full rounded-full ${colors[opinion] || 'bg-muted-foreground'}`} style={{ width: `${pct}%` }} />
+                    </div>
+                    <div className="text-[10px] text-muted-foreground mt-0.5">{pct}%</div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </CardContent>
+      </Card>
+    </div>
+  );
+
+  // ── Détaillé view (full categorized cards + chart) ────────────────────
+  const DetailleView = () => {
+    if (!aggregated) return null;
+    type CatDef = { key: string; label: string; color: string; fields: { db: keyof WyscoutStatRow; label: string; unit?: string }[] };
+    const CATS: CatDef[] = [
+      { key: 'base', label: t('wyscout.cat_base'), color: 'text-primary bg-primary/10', fields: [
+        { db: 'matches_played', label: t('wyscout.matches_played') },
+        { db: 'minutes_played', label: t('wyscout.minutes_played') },
+        { db: 'goals', label: t('wyscout.goals') }, { db: 'xg', label: 'xG' },
+        { db: 'assists', label: t('wyscout.assists') }, { db: 'xa', label: 'xA' },
+        { db: 'shots', label: t('wyscout.shots') },
+        { db: 'np_goals', label: t('wyscout.np_goals') },
+        { db: 'head_goals', label: t('wyscout.head_goals') },
+        { db: 'yellow_cards', label: t('wyscout.yellow_cards') },
+        { db: 'red_cards', label: t('wyscout.red_cards') },
+        { db: 'penalties_taken', label: t('wyscout.penalties_taken') },
+        { db: 'conceded_goals', label: t('wyscout.conceded_goals') },
+        { db: 'shots_against', label: t('wyscout.shots_against') },
+        { db: 'clean_sheets', label: t('wyscout.clean_sheets') },
+      ]},
+      { key: 'attack', label: t('wyscout.cat_attack'), color: 'text-orange-600 bg-orange-500/10', fields: [
+        { db: 'attacking_actions_per90', label: t('wyscout.attacking_actions_per90') },
+        { db: 'goals_per90', label: t('wyscout.goals_per90') },
+        { db: 'np_goals_per90', label: t('wyscout.np_goals_per90') },
+        { db: 'xg_per90', label: 'xG /90' },
+        { db: 'head_goals_per90', label: t('wyscout.head_goals_per90') },
+        { db: 'shots_per90', label: t('wyscout.shots_per90') },
+        { db: 'shots_on_target_pct', label: t('wyscout.shots_on_target_pct'), unit: '%' },
+        { db: 'goal_conversion_pct', label: t('wyscout.goal_conversion_pct'), unit: '%' },
+        { db: 'assists_per90', label: t('wyscout.assists_per90') },
+        { db: 'xa_per90', label: 'xA /90' },
+        { db: 'crosses_per90', label: t('wyscout.crosses_per90') },
+        { db: 'crosses_accurate_pct', label: t('wyscout.crosses_accurate_pct'), unit: '%' },
+        { db: 'dribbles_per90', label: t('wyscout.dribbles_per90') },
+        { db: 'dribbles_success_pct', label: t('wyscout.dribbles_success_pct'), unit: '%' },
+        { db: 'offensive_duels_per90', label: t('wyscout.offensive_duels_per90') },
+        { db: 'offensive_duels_won_pct', label: t('wyscout.offensive_duels_won_pct'), unit: '%' },
+        { db: 'touches_in_box_per90', label: t('wyscout.touches_in_box_per90') },
+        { db: 'progressive_runs_per90', label: t('wyscout.progressive_runs_per90') },
+        { db: 'accelerations_per90', label: t('wyscout.accelerations_per90') },
+        { db: 'fouls_suffered_per90', label: t('wyscout.fouls_suffered_per90') },
+      ]},
+      { key: 'defense', label: t('wyscout.cat_defense'), color: 'text-blue-600 bg-blue-500/10', fields: [
+        { db: 'defensive_actions_per90', label: t('wyscout.defensive_actions_per90') },
+        { db: 'defensive_duels_per90', label: t('wyscout.defensive_duels_per90') },
+        { db: 'defensive_duels_won_pct', label: t('wyscout.defensive_duels_won_pct'), unit: '%' },
+        { db: 'aerial_duels_per90', label: t('wyscout.aerial_duels_per90') },
+        { db: 'aerial_duels_won_pct', label: t('wyscout.aerial_duels_won_pct'), unit: '%' },
+        { db: 'duels_per90', label: t('wyscout.duels_per90') },
+        { db: 'duels_won_pct', label: t('wyscout.duels_won_pct'), unit: '%' },
+        { db: 'interceptions_per90', label: t('wyscout.interceptions_per90') },
+        { db: 'padj_interceptions', label: 'PAdj Interc.' },
+        { db: 'sliding_tackles_per90', label: t('wyscout.sliding_tackles_per90') },
+        { db: 'padj_sliding_tackles', label: 'PAdj Tackles' },
+        { db: 'shots_blocked_per90', label: t('wyscout.shots_blocked_per90') },
+        { db: 'fouls_per90', label: t('wyscout.fouls_per90') },
+        { db: 'yellow_cards_per90', label: t('wyscout.yellow_cards_per90') },
+        { db: 'red_cards_per90', label: t('wyscout.red_cards_per90') },
+      ]},
+      { key: 'passing', label: t('wyscout.cat_passing'), color: 'text-teal-600 bg-teal-500/10', fields: [
+        { db: 'passes_per90', label: t('wyscout.passes_per90') },
+        { db: 'passes_accurate_pct', label: t('wyscout.passes_accurate_pct'), unit: '%' },
+        { db: 'forward_passes_per90', label: t('wyscout.forward_passes_per90') },
+        { db: 'forward_passes_accurate_pct', label: t('wyscout.forward_passes_accurate_pct'), unit: '%' },
+        { db: 'back_passes_per90', label: t('wyscout.back_passes_per90') },
+        { db: 'lateral_passes_per90', label: t('wyscout.lateral_passes_per90') },
+        { db: 'long_passes_per90', label: t('wyscout.long_passes_per90') },
+        { db: 'long_passes_accurate_pct', label: t('wyscout.long_passes_accurate_pct'), unit: '%' },
+        { db: 'avg_pass_length', label: t('wyscout.avg_pass_length'), unit: 'm' },
+        { db: 'key_passes_per90', label: t('wyscout.key_passes_per90') },
+        { db: 'shot_assists_per90', label: t('wyscout.shot_assists_per90') },
+        { db: 'smart_passes_per90', label: t('wyscout.smart_passes_per90') },
+        { db: 'smart_passes_accurate_pct', label: t('wyscout.smart_passes_accurate_pct'), unit: '%' },
+        { db: 'passes_final_third_per90', label: t('wyscout.passes_final_third_per90') },
+        { db: 'passes_penalty_area_per90', label: t('wyscout.passes_penalty_area_per90') },
+        { db: 'through_passes_per90', label: t('wyscout.through_passes_per90') },
+        { db: 'progressive_passes_per90', label: t('wyscout.progressive_passes_per90') },
+        { db: 'progressive_passes_accurate_pct', label: t('wyscout.progressive_passes_accurate_pct'), unit: '%' },
+        { db: 'deep_completions_per90', label: t('wyscout.deep_completions_per90') },
+        { db: 'received_passes_per90', label: t('wyscout.received_passes_per90') },
+        { db: 'received_long_passes_per90', label: t('wyscout.received_long_passes_per90') },
+      ]},
+      { key: 'setpieces', label: t('wyscout.cat_setpieces'), color: 'text-violet-600 bg-violet-500/10', fields: [
+        { db: 'free_kicks_per90', label: t('wyscout.free_kicks_per90') },
+        { db: 'direct_free_kicks_per90', label: t('wyscout.direct_free_kicks_per90') },
+        { db: 'direct_free_kicks_on_target_pct', label: t('wyscout.direct_free_kicks_on_target_pct'), unit: '%' },
+        { db: 'corners_per90', label: t('wyscout.corners_per90') },
+        { db: 'penalty_conversion_pct', label: t('wyscout.penalty_conversion_pct'), unit: '%' },
+      ]},
+      { key: 'goalkeeper', label: t('wyscout.cat_goalkeeper'), color: 'text-yellow-600 bg-yellow-500/10', fields: [
+        { db: 'conceded_goals_per90', label: t('wyscout.conceded_goals_per90') },
+        { db: 'shots_against_per90', label: t('wyscout.shots_against_per90') },
+        { db: 'save_rate_pct', label: t('wyscout.save_rate_pct'), unit: '%' },
+        { db: 'xg_against', label: 'xG against' },
+        { db: 'xg_against_per90', label: 'xG against /90' },
+        { db: 'prevented_goals', label: t('wyscout.prevented_goals') },
+        { db: 'prevented_goals_per90', label: t('wyscout.prevented_goals_per90') },
+        { db: 'gk_back_passes_per90', label: t('wyscout.gk_back_passes_per90') },
+        { db: 'gk_exits_per90', label: t('wyscout.gk_exits_per90') },
+        { db: 'gk_aerial_duels_per90', label: t('wyscout.gk_aerial_duels_per90') },
+      ]},
+      { key: 'physical', label: t('wyscout.cat_physical'), color: 'text-red-600 bg-red-500/10', fields: [
+        { db: 'total_distance_per90', label: t('wyscout.total_distance_per90'), unit: 'm' },
+        { db: 'running_distance_per90', label: t('wyscout.running_distance_per90'), unit: 'm' },
+        { db: 'hsr_distance_per90', label: t('wyscout.hsr_distance_per90'), unit: 'm' },
+        { db: 'sprint_distance_per90', label: t('wyscout.sprint_distance_per90'), unit: 'm' },
+        { db: 'hi_distance_per90', label: t('wyscout.hi_distance_per90'), unit: 'm' },
+        { db: 'meters_per_min', label: t('wyscout.meters_per_min'), unit: 'm/min' },
+        { db: 'max_speed', label: t('wyscout.max_speed'), unit: 'km/h' },
+        { db: 'medium_accel_per90', label: t('wyscout.medium_accel_per90') },
+        { db: 'high_accel_per90', label: t('wyscout.high_accel_per90') },
+        { db: 'medium_decel_per90', label: t('wyscout.medium_decel_per90') },
+        { db: 'high_decel_per90', label: t('wyscout.high_decel_per90') },
+        { db: 'hsr_count_per90', label: t('wyscout.hsr_count_per90') },
+        { db: 'sprint_count_per90', label: t('wyscout.sprint_count_per90') },
+        { db: 'hi_count_per90', label: t('wyscout.hi_count_per90') },
+      ]},
+    ];
+    const toggleCat = (key: string) => setWyscoutExpandedCats(prev => ({ ...prev, [key]: !prev[key] }));
+    const fmtVal = (v: number | null, unit?: string) => {
+      if (v === null || v === undefined) return null;
+      const n = typeof v === 'string' ? parseFloat(v) : v;
+      if (isNaN(n)) return null;
+      const str = Number.isInteger(n) ? String(n) : n.toFixed(2).replace(/\.?0+$/, '');
+      return unit ? `${str} ${unit}` : str;
+    };
+
+    return (
+      <>
+        {wyscoutRows.length > 1 && (
           <Card className="card-warm">
             <CardContent className="p-5">
               <div className="flex items-center justify-between flex-wrap gap-2 mb-3">
                 <h3 className="text-xs font-bold uppercase tracking-wider text-muted-foreground flex items-center gap-1.5">
                   <TrendingUp className="w-3.5 h-3.5" />{t('profile.season_evolution')}
                 </h3>
-                <select value={seasonChartStat} onChange={e => setSeasonChartStat(e.target.value)}
-                  className="px-2.5 py-1 rounded-lg border border-border bg-background text-xs font-medium focus:outline-none focus:ring-1 focus:ring-primary">
-                  {statOptions.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
+                <select value={seasonChartStat as string} onChange={e => setSeasonChartStat(e.target.value as keyof WyscoutStatRow)} className="px-2.5 py-1 rounded-lg border border-border bg-background text-xs font-medium">
+                  {seasonChartOptions.map(o => <option key={o.value as string} value={o.value as string}>{o.label}</option>)}
                 </select>
               </div>
               <ResponsiveContainer width="100%" height={220}>
-                <LineChart data={chartData} margin={{ top: 5, right: 10, left: 0, bottom: 5 }}>
+                <LineChart data={seasonChartData} margin={{ top: 5, right: 10, left: 0, bottom: 5 }}>
                   <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" />
                   <XAxis dataKey="season" tick={{ fontSize: 11 }} />
-                  <YAxis tick={{ fontSize: 11 }} allowDecimals={false} />
+                  <YAxis tick={{ fontSize: 11 }} />
                   <RechartsTooltip contentStyle={{ fontSize: 12, borderRadius: 8, border: '1px solid hsl(var(--border))' }} />
-                  <Line type="monotone" dataKey="value" name={statOptions.find(o => o.value === seasonChartStat)?.label}
-                    stroke="hsl(var(--primary))" strokeWidth={2.5} dot={{ r: 4, fill: 'hsl(var(--primary))' }} activeDot={{ r: 6 }} />
+                  <Line type="monotone" dataKey="value" name={seasonChartOptions.find(o => o.value === seasonChartStat)?.label} stroke="hsl(var(--primary))" strokeWidth={2.5} dot={{ r: 4, fill: 'hsl(var(--primary))' }} activeDot={{ r: 6 }} />
                 </LineChart>
-              </ResponsiveContainer>
-            </CardContent>
-          </Card>
-        );
-      })()}
-
-      {/* ═══════════════ SECTION 2: SCOUT EVALUATION ═══════════════ */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-        {/* Overview */}
-        <Card className="card-warm lg:col-span-2">
-          <CardContent className="p-5">
-            <div className="flex items-center justify-between flex-wrap gap-4">
-              <div>
-                <h3 className="text-xs font-bold uppercase tracking-wider text-muted-foreground">{t('profile.perf_overview')}</h3>
-                <p className="text-sm text-muted-foreground mt-1">{t('profile.perf_overview_desc')}</p>
-              </div>
-              <div className="flex items-center gap-6">
-                <div className="text-center">
-                  <div className="text-4xl font-black text-primary">{overallScore}</div>
-                  <p className="text-[10px] text-muted-foreground font-medium uppercase tracking-wider">{t('profile.perf_overall')}</p>
-                </div>
-                <div className="text-center">
-                  <div className="text-4xl font-black text-green-500">{player.current_level}</div>
-                  <p className="text-[10px] text-muted-foreground font-medium uppercase tracking-wider">{t('profile.level')}</p>
-                </div>
-                <div className="text-center">
-                  <div className="text-4xl font-black text-blue-500">{player.potential}</div>
-                  <p className="text-[10px] text-muted-foreground font-medium uppercase tracking-wider">{t('profile.potential')}</p>
-                </div>
-              </div>
-            </div>
-          </CardContent>
-        </Card>
-
-        {/* Scout radar */}
-        <Card className="card-warm">
-          <CardContent className="p-5">
-            <h3 className="text-xs font-bold uppercase tracking-wider text-muted-foreground mb-4">{t('profile.perf_radar_title')}</h3>
-            <ResponsiveContainer width="100%" height={300}>
-              <RadarChart data={scoutRadarData} cx="50%" cy="50%" outerRadius="75%">
-                <PolarGrid stroke="hsl(var(--border))" />
-                <PolarAngleAxis dataKey="attr" tick={{ fontSize: 11, fill: 'hsl(var(--muted-foreground))' }} />
-                <PolarRadiusAxis angle={90} domain={[0, 10]} tick={{ fontSize: 9, fill: 'hsl(var(--muted-foreground))' }} axisLine={false} />
-                <Radar name={player.name} dataKey="value" stroke="hsl(var(--primary))" fill="hsl(var(--primary))" fillOpacity={0.2} strokeWidth={2} dot={{ r: 4, fill: 'hsl(var(--primary))' }} />
-              </RadarChart>
-            </ResponsiveContainer>
-          </CardContent>
-        </Card>
-
-        {/* Editable attribute sliders */}
-        <Card className="card-warm">
-          <CardContent className="p-5">
-            <h3 className="text-xs font-bold uppercase tracking-wider text-muted-foreground mb-1">{t('profile.perf_attributes_title')}</h3>
-            <p className="text-[11px] text-muted-foreground mb-4">{t('profile.perf_adjust_hint')}</p>
-            <div className="space-y-5">
-              {attrSliders.map(attr => (
-                <div key={attr.key} className="space-y-1.5">
-                  <div className="flex items-center justify-between">
-                    <span className="text-sm font-medium">{attr.label}</span>
-                    <span className="text-sm font-bold tabular-nums min-w-[40px] text-right" style={{ color: attr.color }}>{perfScores[attr.key]}/10</span>
-                  </div>
-                  <input type="range" min={0} max={10} step={1} value={perfScores[attr.key]}
-                    onChange={e => updatePerfScore(attr.key, Number(e.target.value))}
-                    className="w-full h-2 rounded-full appearance-none cursor-pointer bg-muted accent-primary [&::-webkit-slider-thumb]:w-4 [&::-webkit-slider-thumb]:h-4 [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:bg-primary [&::-webkit-slider-thumb]:shadow-md"
-                    style={{ accentColor: attr.color }} />
-                  <div className="h-2.5 rounded-full bg-muted overflow-hidden">
-                    <div className="h-full rounded-full transition-all duration-300 ease-out" style={{ width: `${perfScores[attr.key] * 10}%`, background: attr.color }} />
-                  </div>
-                </div>
-              ))}
-              <div className="pt-3 border-t border-border space-y-1.5">
-                <div className="flex items-center justify-between">
-                  <span className="text-sm font-medium">{t('profile.perf_gap')}</span>
-                  <span className="text-sm font-bold text-amber-500">{Math.max(0, player.potential - player.current_level)}</span>
-                </div>
-                <div className="h-2.5 rounded-full bg-muted overflow-hidden relative">
-                  <div className="h-full rounded-full bg-green-500 absolute left-0 top-0" style={{ width: `${player.current_level * 10}%` }} />
-                  <div className="h-full rounded-full bg-amber-500/30 absolute top-0" style={{ left: `${player.current_level * 10}%`, width: `${Math.max(0, player.potential - player.current_level) * 10}%` }} />
-                </div>
-                <p className="text-[10px] text-muted-foreground">{t('profile.perf_gap_desc')}</p>
-              </div>
-            </div>
-          </CardContent>
-        </Card>
-
-        {/* Evolution chart */}
-        {historyData.length >= 2 && (
-          <Card className="card-warm lg:col-span-2">
-            <CardContent className="p-5">
-              <h3 className="text-xs font-bold uppercase tracking-wider text-muted-foreground mb-4">{t('profile.perf_evolution_title')}</h3>
-              <ResponsiveContainer width="100%" height={280}>
-                <AreaChart data={historyData}>
-                  <defs>
-                    <linearGradient id="gradLevel" x1="0" y1="0" x2="0" y2="1"><stop offset="5%" stopColor="hsl(var(--success))" stopOpacity={0.3} /><stop offset="95%" stopColor="hsl(var(--success))" stopOpacity={0} /></linearGradient>
-                    <linearGradient id="gradPotential" x1="0" y1="0" x2="0" y2="1"><stop offset="5%" stopColor="hsl(var(--primary))" stopOpacity={0.3} /><stop offset="95%" stopColor="hsl(var(--primary))" stopOpacity={0} /></linearGradient>
-                  </defs>
-                  <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" />
-                  <XAxis dataKey="date" tick={{ fontSize: 11 }} stroke="hsl(var(--muted-foreground))" />
-                  <YAxis domain={[0, 10]} tick={{ fontSize: 11 }} stroke="hsl(var(--muted-foreground))" />
-                  <RechartsTooltip contentStyle={{ background: 'hsl(var(--card))', border: '1px solid hsl(var(--border))', borderRadius: '0.75rem', fontSize: '12px' }} />
-                  <Legend />
-                  <Area type="monotone" dataKey="level" stroke="hsl(var(--success))" fill="url(#gradLevel)" strokeWidth={2.5} name={t('profile.level')} dot={{ r: 4, fill: 'hsl(var(--success))' }} />
-                  <Area type="monotone" dataKey="potential" stroke="hsl(var(--primary))" fill="url(#gradPotential)" strokeWidth={2.5} name={t('profile.potential')} dot={{ r: 4, fill: 'hsl(var(--primary))' }} />
-                  <Line type="monotone" dataKey="opinion" stroke="hsl(var(--warning, 45 93% 47%))" strokeWidth={2} strokeDasharray="5 5" name={t('profile.perf_opinion_score')} dot={{ r: 3 }} />
-                </AreaChart>
               </ResponsiveContainer>
             </CardContent>
           </Card>
         )}
 
-        {/* Opinion distribution */}
-        <Card className="card-warm lg:col-span-2">
-          <CardContent className="p-5">
-            <h3 className="text-xs font-bold uppercase tracking-wider text-muted-foreground mb-4">{t('profile.perf_opinion_dist')}</h3>
-            {reports.length === 0 ? (
-              <div className="text-center py-8">
-                <Activity className="w-8 h-8 text-muted-foreground/20 mx-auto mb-2" />
-                <p className="text-sm text-muted-foreground">{t('profile.perf_no_reports')}</p>
-                <p className="text-xs text-muted-foreground/60 mt-1">{t('profile.perf_no_reports_desc')}</p>
+        <div className="mt-2">
+          <div className="flex items-center justify-between mb-4">
+            <div className="flex items-center gap-2">
+              <div className="w-8 h-8 rounded-lg bg-primary/10 flex items-center justify-center"><Database className="w-4 h-4 text-primary" /></div>
+              <div>
+                <h2 className="text-sm font-bold">{t('wyscout.section_title')}</h2>
+                <p className="text-xs text-muted-foreground">{t('wyscout.section_desc')}</p>
               </div>
-            ) : (
-              <div className="grid grid-cols-3 gap-4">
-                {ALL_OPINIONS.map(opinion => {
-                  const count = reports.filter(r => r.opinion === opinion).length;
-                  const pct = Math.round((count / reports.length) * 100);
-                  const colors: Record<string, string> = {
-                    'À suivre': 'bg-green-500',
-                    'À revoir': 'bg-amber-500',
-                    'Pas pour nous': 'bg-red-500',
-                  };
-                  return (
-                    <div key={opinion} className="text-center">
-                      <div className="text-2xl font-black">{count}</div>
-                      <div className="text-xs text-muted-foreground mb-1">{t(`opinions.${opinion}`)}</div>
-                      <div className="h-1.5 rounded-full bg-muted overflow-hidden">
-                        <div className={`h-full rounded-full ${colors[opinion] || 'bg-muted-foreground'}`} style={{ width: `${pct}%` }} />
-                      </div>
-                      <div className="text-[10px] text-muted-foreground mt-0.5">{pct}%</div>
+            </div>
+          </div>
+          {aggregated && (
+            <div className="flex items-center gap-2 mb-4 flex-wrap">
+              {aggregated.team && <Badge variant="secondary" className="text-xs">{aggregated.team}</Badge>}
+              {aggregated.season && <Badge variant="outline" className="text-xs">{aggregated.season}</Badge>}
+              {aggregated.division && <Badge variant="outline" className="text-xs">{aggregated.division}</Badge>}
+              {aggregated.country && <Badge variant="outline" className="text-xs">{aggregated.country}</Badge>}
+            </div>
+          )}
+          <div className="space-y-3">
+            {CATS.map(cat => {
+              const visibleFields = cat.fields.filter(f => fmtVal(wyscoutNum(aggregated, f.db)) !== null);
+              if (visibleFields.length === 0) return null;
+              const isExpanded = wyscoutExpandedCats[cat.key] !== false;
+              return (
+                <Card key={cat.key} className="card-warm overflow-hidden">
+                  <button onClick={() => toggleCat(cat.key)} className="w-full flex items-center justify-between px-4 py-3 hover:bg-muted/30 transition-colors">
+                    <div className="flex items-center gap-2">
+                      <span className={`text-xs font-bold px-2 py-0.5 rounded-full ${cat.color}`}>{cat.label}</span>
+                      <span className="text-xs text-muted-foreground">{visibleFields.length} stats</span>
                     </div>
-                  );
-                })}
-              </div>
+                    {isExpanded ? <ChevronUp className="w-3.5 h-3.5 text-muted-foreground" /> : <ChevronDown className="w-3.5 h-3.5 text-muted-foreground" />}
+                  </button>
+                  {isExpanded && (
+                    <CardContent className="p-0 pb-2">
+                      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-px bg-border/40">
+                        {visibleFields.map(f => (
+                          <div key={f.db as string} className="bg-card px-3 py-2.5">
+                            <div className="text-[10px] text-muted-foreground leading-tight mb-0.5">{f.label}</div>
+                            <div className="text-sm font-bold tabular-nums">{fmtVal(wyscoutNum(aggregated, f.db), f.unit)}</div>
+                          </div>
+                        ))}
+                      </div>
+                    </CardContent>
+                  )}
+                </Card>
+              );
+            })}
+          </div>
+        </div>
+      </>
+    );
+  };
+
+  // ── Top-level layout ──────────────────────────────────────────────────
+  return (
+    <div className="space-y-4">
+      <div className="flex items-center justify-between flex-wrap gap-2">
+        <div className="flex items-center gap-2">
+          <BarChart3 className="w-4 h-4 text-muted-foreground" />
+          <span className="text-xs font-semibold text-muted-foreground">{t('wyscout.tab_header')}</span>
+        </div>
+        <div className="flex items-center gap-2 flex-wrap">
+          <Button size="sm" variant="outline" className="h-8 text-xs" onClick={() => setEditorOpen(true)}>
+            <Sparkles className="w-3.5 h-3.5 mr-1.5" />
+            {t('wyscout.custom_button')}
+            {customProfiles.length > 0 && (
+              <span className="ml-1.5 px-1 rounded bg-primary/10 text-primary text-[9px] font-bold">{customProfiles.length}</span>
             )}
-          </CardContent>
-        </Card>
+          </Button>
+          <Button asChild size="sm" variant="outline" className="h-8 text-xs">
+            <Link to={`/compare#v=${buildCompareHash([player.id])}`}>
+              <GitCompareArrows className="w-3.5 h-3.5 mr-1.5" />
+              {t('wyscout.open_compare')}
+            </Link>
+          </Button>
+          <ViewToggle />
+        </div>
       </div>
 
-      {/* ── Wyscout stats section ── */}
-      {wyscoutRows.length > 0 && (() => {
-        type CatDef = { key: string; label: string; color: string; fields: { db: keyof WyscoutStatRow; label: string; unit?: string }[] };
-        const CATS: CatDef[] = [
-          {
-            key: 'base', label: t('wyscout.cat_base'), color: 'text-primary bg-primary/10',
-            fields: [
-              { db: 'matches_played', label: t('wyscout.matches_played') },
-              { db: 'minutes_played', label: t('wyscout.minutes_played') },
-              { db: 'goals', label: t('wyscout.goals') },
-              { db: 'xg', label: 'xG' },
-              { db: 'assists', label: t('wyscout.assists') },
-              { db: 'xa', label: 'xA' },
-              { db: 'shots', label: t('wyscout.shots') },
-              { db: 'np_goals', label: t('wyscout.np_goals') },
-              { db: 'head_goals', label: t('wyscout.head_goals') },
-              { db: 'yellow_cards', label: t('wyscout.yellow_cards') },
-              { db: 'red_cards', label: t('wyscout.red_cards') },
-              { db: 'penalties_taken', label: t('wyscout.penalties_taken') },
-              { db: 'conceded_goals', label: t('wyscout.conceded_goals') },
-              { db: 'shots_against', label: t('wyscout.shots_against') },
-              { db: 'clean_sheets', label: t('wyscout.clean_sheets') },
-            ],
-          },
-          {
-            key: 'attack', label: t('wyscout.cat_attack'), color: 'text-orange-600 bg-orange-500/10',
-            fields: [
-              { db: 'attacking_actions_per90', label: t('wyscout.attacking_actions_per90') },
-              { db: 'goals_per90', label: t('wyscout.goals_per90') },
-              { db: 'np_goals_per90', label: t('wyscout.np_goals_per90') },
-              { db: 'xg_per90', label: 'xG /90' },
-              { db: 'head_goals_per90', label: t('wyscout.head_goals_per90') },
-              { db: 'shots_per90', label: t('wyscout.shots_per90') },
-              { db: 'shots_on_target_pct', label: t('wyscout.shots_on_target_pct'), unit: '%' },
-              { db: 'goal_conversion_pct', label: t('wyscout.goal_conversion_pct'), unit: '%' },
-              { db: 'assists_per90', label: t('wyscout.assists_per90') },
-              { db: 'xa_per90', label: 'xA /90' },
-              { db: 'crosses_per90', label: t('wyscout.crosses_per90') },
-              { db: 'crosses_accurate_pct', label: t('wyscout.crosses_accurate_pct'), unit: '%' },
-              { db: 'dribbles_per90', label: t('wyscout.dribbles_per90') },
-              { db: 'dribbles_success_pct', label: t('wyscout.dribbles_success_pct'), unit: '%' },
-              { db: 'offensive_duels_per90', label: t('wyscout.offensive_duels_per90') },
-              { db: 'offensive_duels_won_pct', label: t('wyscout.offensive_duels_won_pct'), unit: '%' },
-              { db: 'touches_in_box_per90', label: t('wyscout.touches_in_box_per90') },
-              { db: 'progressive_runs_per90', label: t('wyscout.progressive_runs_per90') },
-              { db: 'accelerations_per90', label: t('wyscout.accelerations_per90') },
-              { db: 'fouls_suffered_per90', label: t('wyscout.fouls_suffered_per90') },
-            ],
-          },
-          {
-            key: 'defense', label: t('wyscout.cat_defense'), color: 'text-blue-600 bg-blue-500/10',
-            fields: [
-              { db: 'defensive_actions_per90', label: t('wyscout.defensive_actions_per90') },
-              { db: 'defensive_duels_per90', label: t('wyscout.defensive_duels_per90') },
-              { db: 'defensive_duels_won_pct', label: t('wyscout.defensive_duels_won_pct'), unit: '%' },
-              { db: 'aerial_duels_per90', label: t('wyscout.aerial_duels_per90') },
-              { db: 'aerial_duels_won_pct', label: t('wyscout.aerial_duels_won_pct'), unit: '%' },
-              { db: 'duels_per90', label: t('wyscout.duels_per90') },
-              { db: 'duels_won_pct', label: t('wyscout.duels_won_pct'), unit: '%' },
-              { db: 'interceptions_per90', label: t('wyscout.interceptions_per90') },
-              { db: 'padj_interceptions', label: 'PAdj Interc.' },
-              { db: 'sliding_tackles_per90', label: t('wyscout.sliding_tackles_per90') },
-              { db: 'padj_sliding_tackles', label: 'PAdj Tackles' },
-              { db: 'shots_blocked_per90', label: t('wyscout.shots_blocked_per90') },
-              { db: 'fouls_per90', label: t('wyscout.fouls_per90') },
-              { db: 'yellow_cards_per90', label: t('wyscout.yellow_cards_per90') },
-              { db: 'red_cards_per90', label: t('wyscout.red_cards_per90') },
-            ],
-          },
-          {
-            key: 'passing', label: t('wyscout.cat_passing'), color: 'text-teal-600 bg-teal-500/10',
-            fields: [
-              { db: 'passes_per90', label: t('wyscout.passes_per90') },
-              { db: 'passes_accurate_pct', label: t('wyscout.passes_accurate_pct'), unit: '%' },
-              { db: 'forward_passes_per90', label: t('wyscout.forward_passes_per90') },
-              { db: 'forward_passes_accurate_pct', label: t('wyscout.forward_passes_accurate_pct'), unit: '%' },
-              { db: 'back_passes_per90', label: t('wyscout.back_passes_per90') },
-              { db: 'lateral_passes_per90', label: t('wyscout.lateral_passes_per90') },
-              { db: 'long_passes_per90', label: t('wyscout.long_passes_per90') },
-              { db: 'long_passes_accurate_pct', label: t('wyscout.long_passes_accurate_pct'), unit: '%' },
-              { db: 'avg_pass_length', label: t('wyscout.avg_pass_length'), unit: 'm' },
-              { db: 'key_passes_per90', label: t('wyscout.key_passes_per90') },
-              { db: 'shot_assists_per90', label: t('wyscout.shot_assists_per90') },
-              { db: 'smart_passes_per90', label: t('wyscout.smart_passes_per90') },
-              { db: 'smart_passes_accurate_pct', label: t('wyscout.smart_passes_accurate_pct'), unit: '%' },
-              { db: 'passes_final_third_per90', label: t('wyscout.passes_final_third_per90') },
-              { db: 'passes_penalty_area_per90', label: t('wyscout.passes_penalty_area_per90') },
-              { db: 'through_passes_per90', label: t('wyscout.through_passes_per90') },
-              { db: 'progressive_passes_per90', label: t('wyscout.progressive_passes_per90') },
-              { db: 'progressive_passes_accurate_pct', label: t('wyscout.progressive_passes_accurate_pct'), unit: '%' },
-              { db: 'deep_completions_per90', label: t('wyscout.deep_completions_per90') },
-              { db: 'received_passes_per90', label: t('wyscout.received_passes_per90') },
-              { db: 'received_long_passes_per90', label: t('wyscout.received_long_passes_per90') },
-            ],
-          },
-          {
-            key: 'setpieces', label: t('wyscout.cat_setpieces'), color: 'text-violet-600 bg-violet-500/10',
-            fields: [
-              { db: 'free_kicks_per90', label: t('wyscout.free_kicks_per90') },
-              { db: 'direct_free_kicks_per90', label: t('wyscout.direct_free_kicks_per90') },
-              { db: 'direct_free_kicks_on_target_pct', label: t('wyscout.direct_free_kicks_on_target_pct'), unit: '%' },
-              { db: 'corners_per90', label: t('wyscout.corners_per90') },
-              { db: 'penalty_conversion_pct', label: t('wyscout.penalty_conversion_pct'), unit: '%' },
-            ],
-          },
-          {
-            key: 'goalkeeper', label: t('wyscout.cat_goalkeeper'), color: 'text-yellow-600 bg-yellow-500/10',
-            fields: [
-              { db: 'conceded_goals_per90', label: t('wyscout.conceded_goals_per90') },
-              { db: 'shots_against_per90', label: t('wyscout.shots_against_per90') },
-              { db: 'save_rate_pct', label: t('wyscout.save_rate_pct'), unit: '%' },
-              { db: 'xg_against', label: 'xG against' },
-              { db: 'xg_against_per90', label: 'xG against /90' },
-              { db: 'prevented_goals', label: t('wyscout.prevented_goals') },
-              { db: 'prevented_goals_per90', label: t('wyscout.prevented_goals_per90') },
-              { db: 'gk_back_passes_per90', label: t('wyscout.gk_back_passes_per90') },
-              { db: 'gk_exits_per90', label: t('wyscout.gk_exits_per90') },
-              { db: 'gk_aerial_duels_per90', label: t('wyscout.gk_aerial_duels_per90') },
-            ],
-          },
-          {
-            key: 'physical', label: t('wyscout.cat_physical'), color: 'text-red-600 bg-red-500/10',
-            fields: [
-              { db: 'total_distance_per90', label: t('wyscout.total_distance_per90'), unit: 'm' },
-              { db: 'running_distance_per90', label: t('wyscout.running_distance_per90'), unit: 'm' },
-              { db: 'hsr_distance_per90', label: t('wyscout.hsr_distance_per90'), unit: 'm' },
-              { db: 'sprint_distance_per90', label: t('wyscout.sprint_distance_per90'), unit: 'm' },
-              { db: 'hi_distance_per90', label: t('wyscout.hi_distance_per90'), unit: 'm' },
-              { db: 'meters_per_min', label: t('wyscout.meters_per_min'), unit: 'm/min' },
-              { db: 'max_speed', label: t('wyscout.max_speed'), unit: 'km/h' },
-              { db: 'medium_accel_per90', label: t('wyscout.medium_accel_per90') },
-              { db: 'high_accel_per90', label: t('wyscout.high_accel_per90') },
-              { db: 'medium_decel_per90', label: t('wyscout.medium_decel_per90') },
-              { db: 'high_decel_per90', label: t('wyscout.high_decel_per90') },
-              { db: 'hsr_count_per90', label: t('wyscout.hsr_count_per90') },
-              { db: 'sprint_count_per90', label: t('wyscout.sprint_count_per90') },
-              { db: 'hi_count_per90', label: t('wyscout.hi_count_per90') },
-            ],
-          },
-        ];
+      <CustomProfileEditor
+        open={editorOpen}
+        onOpenChange={setEditorOpen}
+        customProfiles={customProfiles}
+        onProfilesChange={setCustomProfiles}
+        statCatalog={STAT_CATALOG}
+        currentPlayerRow={aggregated}
+        currentPlayerName={player.name}
+        currentPlayerPosition={player.position}
+        peerSummaries={peerSummaries}
+        allPlayers={allPlayers}
+      />
 
-        const toggleCat = (key: string) =>
-          setWyscoutExpandedCats(prev => ({ ...prev, [key]: !prev[key] }));
+      <FilterBar />
+      <BenchmarkSelector />
 
-        const fmtVal = (v: number | null, unit?: string) => {
-          if (v === null || v === undefined) return null;
-          const n = typeof v === 'string' ? parseFloat(v) : v;
-          if (isNaN(n)) return null;
-          const str = Number.isInteger(n) ? String(n) : n.toFixed(2).replace(/\.?0+$/, '');
-          return unit ? `${str} ${unit}` : str;
-        };
+      {viewMode === 'synthese' && (
+        <>
+          <HeaderCard />
+          <DnaPanel />
+          <AutoRadar />
+          <PercentileTable />
+          <SimilarPlayersPanel />
+          <ReportInsights />
+        </>
+      )}
 
-        return (
-          <div className="mt-8">
-            {/* Header */}
-            <div className="flex items-center justify-between mb-4">
-              <div className="flex items-center gap-2">
-                <div className="w-8 h-8 rounded-lg bg-primary/10 flex items-center justify-center">
-                  <Database className="w-4 h-4 text-primary" />
-                </div>
-                <div>
-                  <h2 className="text-sm font-bold">{t('wyscout.section_title')}</h2>
-                  <p className="text-xs text-muted-foreground">{t('wyscout.section_desc')}</p>
-                </div>
-              </div>
-              {/* Season selector */}
-              {wyscoutRows.length > 1 && (
-                <div className="flex items-center gap-1.5 flex-wrap justify-end">
-                  {wyscoutRows.map((row, idx) => (
-                    <button
-                      key={row.id}
-                      onClick={() => setWyscoutSeasonIdx(idx)}
-                      className={`px-2.5 py-1 rounded-lg text-xs font-semibold border transition-colors ${
-                        idx === wyscoutSeasonIdx
-                          ? 'bg-primary text-primary-foreground border-primary'
-                          : 'bg-muted/40 border-border text-muted-foreground hover:bg-muted'
-                      }`}
-                    >
-                      {row.season}{row.division ? ` · ${row.division}` : ''}
-                    </button>
-                  ))}
-                </div>
-              )}
-            </div>
-
-            {/* Season info pill */}
-            {selectedWyscout && (
-              <div className="flex items-center gap-2 mb-4 flex-wrap">
-                {selectedWyscout.team && (
-                  <Badge variant="secondary" className="text-xs">{selectedWyscout.team}</Badge>
-                )}
-                {selectedWyscout.season && (
-                  <Badge variant="outline" className="text-xs">{selectedWyscout.season}</Badge>
-                )}
-                {selectedWyscout.division && (
-                  <Badge variant="outline" className="text-xs">{selectedWyscout.division}</Badge>
-                )}
-                {selectedWyscout.country && (
-                  <Badge variant="outline" className="text-xs">{selectedWyscout.country}</Badge>
-                )}
-                {selectedWyscout.source_filename && (
-                  <span className="text-[10px] text-muted-foreground ml-auto">{t('wyscout.source')}: {selectedWyscout.source_filename}</span>
-                )}
-              </div>
-            )}
-
-            {/* Stat categories */}
-            {selectedWyscout && (
-              <div className="space-y-3">
-                {CATS.map(cat => {
-                  const visibleFields = cat.fields.filter(f => fmtVal(selectedWyscout[f.db] as number | null) !== null);
-                  if (visibleFields.length === 0) return null;
-                  const isExpanded = wyscoutExpandedCats[cat.key] !== false; // default open
-                  return (
-                    <Card key={cat.key} className="card-warm overflow-hidden">
-                      <button
-                        onClick={() => toggleCat(cat.key)}
-                        className="w-full flex items-center justify-between px-4 py-3 hover:bg-muted/30 transition-colors"
-                      >
-                        <div className="flex items-center gap-2">
-                          <span className={`text-xs font-bold px-2 py-0.5 rounded-full ${cat.color}`}>
-                            {cat.label}
-                          </span>
-                          <span className="text-xs text-muted-foreground">{visibleFields.length} stats</span>
-                        </div>
-                        {isExpanded ? <ChevronUp className="w-3.5 h-3.5 text-muted-foreground" /> : <ChevronDown className="w-3.5 h-3.5 text-muted-foreground" />}
-                      </button>
-                      {isExpanded && (
-                        <CardContent className="p-0 pb-2">
-                          <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-px bg-border/40">
-                            {visibleFields.map(f => (
-                              <div key={f.db} className="bg-card px-3 py-2.5">
-                                <div className="text-[10px] text-muted-foreground leading-tight mb-0.5">{f.label}</div>
-                                <div className="text-sm font-bold tabular-nums">{fmtVal(selectedWyscout[f.db] as number | null, f.unit)}</div>
-                              </div>
-                            ))}
-                          </div>
-                        </CardContent>
-                      )}
-                    </Card>
-                  );
-                })}
-              </div>
-            )}
-          </div>
-        );
-      })()}
+      {viewMode === 'detaille' && (
+        <>
+          <HeaderCard />
+          <DetailleView />
+        </>
+      )}
     </div>
   );
 }

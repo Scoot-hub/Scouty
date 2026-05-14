@@ -71,6 +71,7 @@ export type PlayersFilters = {
   assistsMin?: string;
   minutesMin?: string;
   updatedSince?: string;
+  enrichment?: '' | 'enriched' | 'not_enriched';
   sort?: string;
 };
 
@@ -107,6 +108,7 @@ async function fetchPlayerPage(filters: PlayersFilters, offset: number): Promise
   if (filters.assistsMin) params.set('assistsMin', filters.assistsMin);
   if (filters.minutesMin) params.set('minutesMin', filters.minutesMin);
   if (filters.updatedSince) params.set('updatedSince', filters.updatedSince);
+  if (filters.enrichment) params.set('enrichment', filters.enrichment);
   if (filters.sort) params.set('sort', filters.sort);
 
   const resp = await fetch(`/api/players?${params.toString()}`, {
@@ -168,6 +170,7 @@ export async function fetchAllPlayerIds(filters: PlayersFilters): Promise<string
   if (filters.assistsMin) params.set('assistsMin', filters.assistsMin);
   if (filters.minutesMin) params.set('minutesMin', filters.minutesMin);
   if (filters.updatedSince) params.set('updatedSince', filters.updatedSince);
+  if (filters.enrichment) params.set('enrichment', filters.enrichment);
   if (filters.sort) params.set('sort', filters.sort);
 
   const resp = await fetch(`/api/players?${params.toString()}`, { credentials: 'include' });

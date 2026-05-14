@@ -463,7 +463,7 @@ const ALLOWED_TABLES = {
     "player_type", "coaching_license", "coaching_preferred_formation", "coaching_style", "coaching_career", "tm_coach_id", "contract_start",
   ],
   reports: ["id", "player_id", "report_date", "title", "opinion", "drive_link", "file_url", "user_id", "created_at"],
-  custom_fields: ["id", "user_id", "field_name", "field_type", "field_options", "field_hint", "display_order", "created_at"],
+  custom_fields: ["id", "user_id", "field_name", "field_type", "field_options", "field_hint", "applies_to_all", "display_order", "created_at"],
   custom_field_values: ["id", "custom_field_id", "player_id", "value", "user_id", "created_at"],
   watchlists: ["id", "user_id", "name", "description", "created_at", "updated_at"],
   watchlist_players: ["id", "user_id", "watchlist_id", "player_id", "added_at"],
@@ -755,7 +755,7 @@ function sanitizeValueByColumn(col, value) {
     if (value == null) return null;
     return typeof value === "string" ? value : JSON.stringify(value);
   }
-  if (col === "ts_report_published" || col === "is_premium" || col === "is_favorite" || col === "is_archived") {
+  if (col === "ts_report_published" || col === "is_premium" || col === "is_favorite" || col === "is_archived" || col === "applies_to_all") {
     return value ? 1 : 0;
   }
   return value;
@@ -776,8 +776,75 @@ function parseRowJsonColumns(row) {
   if (parsed.ts_report_published !== undefined) parsed.ts_report_published = !!parsed.ts_report_published;
   if (parsed.is_premium !== undefined) parsed.is_premium = !!parsed.is_premium;
   if (parsed.is_favorite !== undefined) parsed.is_favorite = !!parsed.is_favorite;
+  if (parsed.applies_to_all !== undefined) parsed.applies_to_all = !!parsed.applies_to_all;
 
   return parsed;
+}
+
+// ── Per-user rating overlay helpers ─────────────────────────────────────────
+// Rating fields (current_level / potential / general_opinion) are stored
+// per-(player, user) in player_user_rating. Reads merge over players rows;
+// writes are split off from players writes.
+const PLAYER_RATING_COLS = new Set(["current_level", "potential", "general_opinion"]);
+
+async function fetchUserRatings(userId, playerIds) {
+  if (!userId || !playerIds.length) return new Map();
+  const ids = [...new Set(playerIds.filter(Boolean))];
+  if (!ids.length) return new Map();
+  try {
+    const placeholders = ids.map(() => "?").join(",");
+    const [rows] = await pool.query(
+      `SELECT player_id, current_level, potential, general_opinion
+       FROM player_user_rating
+       WHERE user_id = ? AND player_id IN (${placeholders})`,
+      [userId, ...ids]
+    );
+    return new Map(rows.map(r => [r.player_id, r]));
+  } catch {
+    return new Map();
+  }
+}
+
+function applyUserRating(row, ratingMap) {
+  if (!row || !row.id) return row;
+  const r = ratingMap.get(row.id);
+  if (r) {
+    row.current_level = Number(r.current_level);
+    row.potential = Number(r.potential);
+    row.general_opinion = r.general_opinion;
+  } else {
+    row.current_level = 0;
+    row.potential = 0;
+    row.general_opinion = "À revoir";
+  }
+  return row;
+}
+
+async function upsertUserRating(playerId, userId, rating) {
+  if (!playerId || !userId) return;
+  const sets = [];
+  const vals = [];
+  if (rating.current_level !== undefined) {
+    sets.push("current_level");
+    vals.push(Number(rating.current_level) || 0);
+  }
+  if (rating.potential !== undefined) {
+    sets.push("potential");
+    vals.push(Number(rating.potential) || 0);
+  }
+  if (rating.general_opinion !== undefined) {
+    sets.push("general_opinion");
+    vals.push(rating.general_opinion || "À revoir");
+  }
+  if (!sets.length) return;
+  const colList = ["player_id", "user_id", ...sets].join(", ");
+  const placeholders = ["?", "?", ...sets.map(() => "?")].join(", ");
+  const updateClause = sets.map(c => `${c} = VALUES(${c})`).join(", ");
+  await pool.query(
+    `INSERT INTO player_user_rating (${colList}) VALUES (${placeholders})
+     ON DUPLICATE KEY UPDATE ${updateClause}`,
+    [playerId, userId, ...vals]
+  );
 }
 
 function buildWhereClause(table, filters = [], userId) {
@@ -1001,7 +1068,7 @@ async function _legacyRunMigrations() {
         updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
         UNIQUE KEY uniq_invite_code (invite_code),
         FOREIGN KEY (created_by) REFERENCES users(id) ON DELETE CASCADE
-      )
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
     `);
     await pool.query(`
       CREATE TABLE IF NOT EXISTS organization_members (
@@ -1013,7 +1080,7 @@ async function _legacyRunMigrations() {
         UNIQUE KEY uniq_org_user (organization_id, user_id),
         FOREIGN KEY (organization_id) REFERENCES organizations(id) ON DELETE CASCADE,
         FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
-      )
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
     `);
   } catch (err) {
     console.warn("[warn] Could not auto-create organization tables:", err?.message);
@@ -1162,6 +1229,60 @@ async function _legacyRunMigrations() {
     "contract_start DATE NULL",
   ]) {
     try { await pool.query(`ALTER TABLE players ADD COLUMN ${col}`); } catch { /* already exists */ }
+  }
+
+  // One-time backfill: Wyscout-imported players left at the default 5/5
+  // are unrated — reset to 0 so the UI can show "NA" instead of misleading 5/5.
+  try {
+    await pool.query(`
+      UPDATE players
+      SET current_level = 0, potential = 0
+      WHERE wyscout_division IS NOT NULL
+        AND current_level = 5.0
+        AND potential = 5.0
+        AND general_opinion = 'À revoir'
+    `);
+  } catch (err) {
+    if (!err?.message?.includes("Unknown column")) {
+      console.warn("[warn] wyscout unrated backfill:", err?.message);
+    }
+  }
+
+  // Per-user rating overlay: each (player, user) pair carries its own
+  // current_level / potential / general_opinion. Reads always JOIN this
+  // table — players.current_level etc. are kept only as legacy storage.
+  try {
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS player_user_rating (
+        player_id CHAR(36) NOT NULL,
+        user_id CHAR(36) NOT NULL,
+        current_level DECIMAL(3,1) NOT NULL DEFAULT 0,
+        potential DECIMAL(3,1) NOT NULL DEFAULT 0,
+        general_opinion VARCHAR(30) NOT NULL DEFAULT 'À revoir',
+        updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        PRIMARY KEY (player_id, user_id),
+        INDEX idx_pur_user (user_id),
+        INDEX idx_pur_player (player_id)
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+    `);
+  } catch (err) {
+    if (!err?.message?.includes("already exists")) {
+      console.warn("[warn] player_user_rating table:", err?.message);
+    }
+  }
+
+  // Copy existing owner ratings into the overlay so we don't lose them.
+  // Skip rows that look like an untouched default (5/5/À revoir).
+  try {
+    await pool.query(`
+      INSERT IGNORE INTO player_user_rating (player_id, user_id, current_level, potential, general_opinion, updated_at)
+      SELECT id, user_id, current_level, potential, general_opinion, COALESCE(updated_at, NOW())
+      FROM players
+      WHERE NOT (current_level = 5.0 AND potential = 5.0 AND general_opinion = 'À revoir')
+        AND (current_level > 0 OR potential > 0 OR (general_opinion IS NOT NULL AND general_opinion != 'À revoir' AND general_opinion != ''))
+    `);
+  } catch (err) {
+    console.warn("[warn] player_user_rating backfill:", err?.message);
   }
 
   // Dedicated Wyscout stats table — one row per player × season × division
@@ -1769,14 +1890,15 @@ async function _legacyRunMigrations() {
   }
 
   // Ensure uploaded_images table exists (persistent image storage for Vercel)
+  // id is VARCHAR(191) to stay under TiDB's 1000-byte key limit with utf8mb4 (191*4=764)
   try {
     await pool.query(`
       CREATE TABLE IF NOT EXISTS uploaded_images (
-        id VARCHAR(255) PRIMARY KEY,
+        id VARCHAR(191) PRIMARY KEY,
         data LONGBLOB NOT NULL,
         mime_type VARCHAR(100) NOT NULL DEFAULT 'image/jpeg',
         created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
-      )
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
     `);
   } catch (err) {
     if (!err?.message?.includes("already exists")) console.warn("[warn] uploaded_images table migration:", err?.message);
@@ -1816,6 +1938,15 @@ async function _legacyRunMigrations() {
   } catch (err) { if (err?.errno !== 1060) console.warn("[warn] notification_prefs migration:", err?.message); }
 
   // ── Org chat tables ────────────────────────────────────────────────────────
+  // Ensure referenced tables are InnoDB — the server's default engine is MyISAM,
+  // which does not support foreign keys. Without this, org_messages' FKs fail with
+  // "Failed to open the referenced table 'organizations'". Idempotent: ALTER is a
+  // no-op (apart from a quick table rebuild) when the engine is already InnoDB.
+  try { await pool.query(`ALTER TABLE organizations ENGINE=InnoDB`); }
+  catch (err) { console.warn('[warn] organizations → InnoDB:', err?.message); }
+  try { await pool.query(`ALTER TABLE users ENGINE=InnoDB`); }
+  catch (err) { console.warn('[warn] users → InnoDB:', err?.message); }
+
   try {
     await pool.query(`
       CREATE TABLE IF NOT EXISTS org_messages (
@@ -1831,7 +1962,7 @@ async function _legacyRunMigrations() {
         FOREIGN KEY (org_id)       REFERENCES organizations(id) ON DELETE CASCADE,
         FOREIGN KEY (user_id)      REFERENCES users(id)         ON DELETE CASCADE,
         FOREIGN KEY (reply_to_id)  REFERENCES org_messages(id)  ON DELETE SET NULL
-      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
     `);
   } catch (err) { if (!err?.message?.includes('already exists')) console.warn('[warn] org_messages:', err?.message); }
 
@@ -1852,7 +1983,7 @@ async function _legacyRunMigrations() {
         PRIMARY KEY (message_id, user_id, emoji),
         FOREIGN KEY (message_id) REFERENCES org_messages(id) ON DELETE CASCADE,
         FOREIGN KEY (user_id)    REFERENCES users(id)         ON DELETE CASCADE
-      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
     `);
   } catch (err) { if (!err?.message?.includes('already exists')) console.warn('[warn] org_message_reactions:', err?.message); }
 
@@ -1865,7 +1996,7 @@ async function _legacyRunMigrations() {
         PRIMARY KEY (org_id, user_id),
         FOREIGN KEY (org_id)  REFERENCES organizations(id) ON DELETE CASCADE,
         FOREIGN KEY (user_id) REFERENCES users(id)          ON DELETE CASCADE
-      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
     `);
   } catch (err) { if (!err?.message?.includes('already exists')) console.warn('[warn] org_message_reads:', err?.message); }
 
@@ -2182,11 +2313,15 @@ app.get("/api/community-players/search", authMiddleware, async (req, res) => {
 
     const [rows] = await pool.query(`
       SELECT p.id, p.name, p.club, p.league, p.nationality, p.position, p.zone,
-             p.generation, p.photo_url, p.market_value, p.current_level, p.potential,
-             p.general_opinion, p.transfermarkt_id, p.user_id,
+             p.generation, p.photo_url, p.market_value,
+             COALESCE(pur.current_level, 0) AS current_level,
+             COALESCE(pur.potential, 0) AS potential,
+             COALESCE(pur.general_opinion, 'À revoir') AS general_opinion,
+             p.transfermarkt_id, p.user_id,
              pr.full_name AS scout_name, pr.photo_url AS scout_photo, pr.club AS scout_club
       FROM players p
       LEFT JOIN profiles pr ON pr.user_id = p.user_id
+      LEFT JOIN player_user_rating pur ON pur.player_id = p.id AND pur.user_id = p.user_id
       WHERE ${where} AND p.name != ''
       ORDER BY p.updated_at DESC
       LIMIT ?
@@ -3441,6 +3576,30 @@ app.get("/api/player-wyscout-stats/:playerId", authMiddleware, async (req, res) 
   }
 });
 
+// ── All players Wyscout summaries (latest season per player) ──────────────
+app.get("/api/players-wyscout-summary", authMiddleware, async (req, res) => {
+  try {
+    const [rows] = await pool.query(
+      `SELECT * FROM player_wyscout_stats
+       WHERE user_id = ?
+          OR EXISTS (SELECT 1 FROM player_viewer_links pvl WHERE pvl.player_id = player_wyscout_stats.player_id AND pvl.viewer_user_id = ?)
+       ORDER BY player_id, year_end DESC, year_start DESC, season DESC`,
+      [req.user.id, req.user.id]
+    );
+    const seen = new Set();
+    const latest = [];
+    for (const row of rows) {
+      if (seen.has(row.player_id)) continue;
+      seen.add(row.player_id);
+      latest.push(row);
+    }
+    return res.json(latest);
+  } catch (err) {
+    console.error("[players-wyscout-summary] GET error:", err);
+    return res.status(500).json({ error: "Erreur serveur" });
+  }
+});
+
 // ── Player Videos CRUD ───────────────────────────────────────────────────
 app.get("/api/player-videos/:playerId", authMiddleware, async (req, res) => {
   try {
@@ -4185,30 +4344,39 @@ app.get("/api/players", authMiddleware, async (req, res) => {
     const assistsMin = req.query.assistsMin ? parseInt(req.query.assistsMin) : null;
     const minutesMin = req.query.minutesMin ? parseInt(req.query.minutesMin) : null;
     const updatedSince = req.query.updatedSince ? parseInt(req.query.updatedSince) : null;
+    const enrichment = req.query.enrichment || ""; // '', 'enriched', 'not_enriched'
     const sort = req.query.sort || "name";
 
     const hasTaskCol = await playersHasColumn("task");
     const hasNewsCol = await playersHasColumn("has_news");
 
-    const clauses = ["(`user_id` = ? OR `id` IN (SELECT `player_id` FROM `player_viewer_links` WHERE `viewer_user_id` = ?))"];
+    // Per-user rating overlay: every query LEFT JOINs player_user_rating
+    // and references `LVL`, `POT`, `OPN` for the user's level/potential/opinion.
+    const LVL = "COALESCE(pur.current_level, 0)";
+    const POT = "COALESCE(pur.potential, 0)";
+    const OPN = "COALESCE(pur.general_opinion, 'À revoir')";
+    const joinSql = "LEFT JOIN `player_user_rating` pur ON pur.player_id = p.id AND pur.user_id = ?";
+    const joinParams = [userId];
+
+    const clauses = ["(p.`user_id` = ? OR p.`id` IN (SELECT `player_id` FROM `player_viewer_links` WHERE `viewer_user_id` = ?))"];
     const params = [userId, userId];
 
     // Archived (column may not exist on older DBs)
     if (hasArchivedCol) {
-      clauses.push("`is_archived` = ?");
+      clauses.push("p.`is_archived` = ?");
       params.push(archived ? 1 : 0);
     }
 
     // Text search (name, club, league)
     if (search) {
-      clauses.push("(LOWER(`name`) LIKE ? OR LOWER(`club`) LIKE ? OR LOWER(`league`) LIKE ?)");
+      clauses.push("(LOWER(p.`name`) LIKE ? OR LOWER(p.`club`) LIKE ? OR LOWER(p.`league`) LIKE ?)");
       const like = `%${search.toLowerCase()}%`;
       params.push(like, like, like);
     }
 
     // Enum filters
     if (opinions.length) {
-      clauses.push(`\`general_opinion\` IN (${opinions.map(() => "?").join(",")})`);
+      clauses.push(`${OPN} IN (${opinions.map(() => "?").join(",")})`);
       params.push(...opinions);
     }
     if (positions.length) {
@@ -4233,10 +4401,10 @@ app.get("/api/players", authMiddleware, async (req, res) => {
     }
 
     // Numeric range filters
-    if (levelMin !== null) { clauses.push("`current_level` >= ?"); params.push(levelMin); }
-    if (levelMax !== null) { clauses.push("`current_level` <= ?"); params.push(levelMax); }
-    if (potMin !== null) { clauses.push("`potential` >= ?"); params.push(potMin); }
-    if (potMax !== null) { clauses.push("`potential` <= ?"); params.push(potMax); }
+    if (levelMin !== null) { clauses.push(`${LVL} >= ?`); params.push(levelMin); }
+    if (levelMax !== null) { clauses.push(`${LVL} <= ?`); params.push(levelMax); }
+    if (potMin !== null) { clauses.push(`${POT} >= ?`); params.push(potMin); }
+    if (potMax !== null) { clauses.push(`${POT} <= ?`); params.push(potMax); }
 
     // Age filter — derived from generation (YEAR(NOW()) - generation)
     if (ageMin !== null) {
@@ -4288,8 +4456,15 @@ app.get("/api/players", authMiddleware, async (req, res) => {
       params.push(minutesMin);
     }
     if (updatedSince !== null && updatedSince > 0) {
-      clauses.push("`updated_at` >= DATE_SUB(NOW(), INTERVAL ? DAY)");
+      clauses.push("p.`updated_at` >= DATE_SUB(NOW(), INTERVAL ? DAY)");
       params.push(updatedSince);
+    }
+
+    // Enrichment status filter — based on external_data presence
+    if (enrichment === "enriched") {
+      clauses.push("p.`external_data` IS NOT NULL AND p.`external_data` NOT IN ('', 'null', '{}')");
+    } else if (enrichment === "not_enriched") {
+      clauses.push("(p.`external_data` IS NULL OR p.`external_data` IN ('', 'null', '{}'))");
     }
 
     const whereSql = `WHERE ${clauses.join(" AND ")}`;
@@ -4301,64 +4476,79 @@ app.get("/api/players", authMiddleware, async (req, res) => {
     //   Fields with NOT NULL DEFAULT only score when set to a non-default value
     // Priority 3: user-chosen sort (tiebreaker within each richness tier)
     const DATA_RICHNESS_SCORE = `(
-      CASE WHEN \`external_data\` IS NOT NULL AND \`external_data\` NOT IN ('', 'null', '{}') THEN 4 ELSE 0 END +
-      CASE WHEN \`photo_url\`         IS NOT NULL AND \`photo_url\` != ''         THEN 2 ELSE 0 END +
-      CASE WHEN \`transfermarkt_id\`  IS NOT NULL AND \`transfermarkt_id\` != ''  THEN 2 ELSE 0 END +
-      CASE WHEN \`club\`              IS NOT NULL AND \`club\` != ''              THEN 1 ELSE 0 END +
-      CASE WHEN \`league\`            IS NOT NULL AND \`league\` != ''            THEN 1 ELSE 0 END +
-      CASE WHEN \`contract_end\`      IS NOT NULL                                 THEN 1 ELSE 0 END +
-      CASE WHEN \`market_value\`      IS NOT NULL AND \`market_value\` != ''      THEN 1 ELSE 0 END +
-      CASE WHEN \`date_of_birth\`     IS NOT NULL                                 THEN 1 ELSE 0 END +
-      CASE WHEN \`notes\`             IS NOT NULL AND \`notes\` != ''             THEN 1 ELSE 0 END +
-      CASE WHEN \`height\`            IS NOT NULL AND \`height\` > 0              THEN 1 ELSE 0 END +
-      CASE WHEN \`weight\`            IS NOT NULL AND \`weight\` > 0              THEN 1 ELSE 0 END +
-      CASE WHEN \`position_secondaire\` IS NOT NULL AND \`position_secondaire\` != '' THEN 1 ELSE 0 END +
-      CASE WHEN \`role\`              IS NOT NULL AND \`role\` != ''              THEN 1 ELSE 0 END +
-      CASE WHEN \`passport_country\`  IS NOT NULL AND \`passport_country\` != '' THEN 1 ELSE 0 END +
-      CASE WHEN \`general_opinion\`   NOT IN ('À revoir', 'A revoir', '')         THEN 1 ELSE 0 END +
-      CASE WHEN \`current_level\`     IS NOT NULL AND \`current_level\` != 5.0   THEN 1 ELSE 0 END
+      CASE WHEN p.\`external_data\` IS NOT NULL AND p.\`external_data\` NOT IN ('', 'null', '{}') THEN 4 ELSE 0 END +
+      CASE WHEN p.\`photo_url\`         IS NOT NULL AND p.\`photo_url\` != ''         THEN 2 ELSE 0 END +
+      CASE WHEN p.\`transfermarkt_id\`  IS NOT NULL AND p.\`transfermarkt_id\` != ''  THEN 2 ELSE 0 END +
+      CASE WHEN p.\`club\`              IS NOT NULL AND p.\`club\` != ''              THEN 1 ELSE 0 END +
+      CASE WHEN p.\`league\`            IS NOT NULL AND p.\`league\` != ''            THEN 1 ELSE 0 END +
+      CASE WHEN p.\`contract_end\`      IS NOT NULL                                 THEN 1 ELSE 0 END +
+      CASE WHEN p.\`market_value\`      IS NOT NULL AND p.\`market_value\` != ''      THEN 1 ELSE 0 END +
+      CASE WHEN p.\`date_of_birth\`     IS NOT NULL                                 THEN 1 ELSE 0 END +
+      CASE WHEN p.\`notes\`             IS NOT NULL AND p.\`notes\` != ''             THEN 1 ELSE 0 END +
+      CASE WHEN p.\`height\`            IS NOT NULL AND p.\`height\` > 0              THEN 1 ELSE 0 END +
+      CASE WHEN p.\`weight\`            IS NOT NULL AND p.\`weight\` > 0              THEN 1 ELSE 0 END +
+      CASE WHEN p.\`position_secondaire\` IS NOT NULL AND p.\`position_secondaire\` != '' THEN 1 ELSE 0 END +
+      CASE WHEN p.\`role\`              IS NOT NULL AND p.\`role\` != ''              THEN 1 ELSE 0 END +
+      CASE WHEN p.\`passport_country\`  IS NOT NULL AND p.\`passport_country\` != '' THEN 1 ELSE 0 END +
+      CASE WHEN ${OPN}                  NOT IN ('À revoir', 'A revoir', '')         THEN 1 ELSE 0 END +
+      CASE WHEN ${LVL}                  > 0 AND ${LVL} != 5.0                      THEN 1 ELSE 0 END
     ) DESC`;
 
     const orderParts = [];
     if (hasNewsCol) {
-      orderParts.push("CASE WHEN `has_news` IS NOT NULL AND `has_news` != '' THEN 0 ELSE 1 END ASC");
+      orderParts.push("CASE WHEN p.`has_news` IS NOT NULL AND p.`has_news` != '' THEN 0 ELSE 1 END ASC");
     }
     orderParts.push(DATA_RICHNESS_SCORE);
     switch (sort) {
-      case "name": orderParts.push("`name` ASC"); break;
-      case "age-asc": orderParts.push("`generation` DESC"); break;
-      case "age-desc": orderParts.push("`generation` ASC"); break;
-      case "level": orderParts.push("`current_level` DESC"); break;
-      case "potential": orderParts.push("`potential` DESC"); break;
-      case "recent": orderParts.push("`updated_at` DESC"); break;
-      case "contract": orderParts.push("CASE WHEN `contract_end` IS NULL THEN 1 ELSE 0 END ASC, `contract_end` ASC"); break;
-      case "rating": orderParts.push("CAST(JSON_EXTRACT(`external_data`, '$.performance_stats.stats.rating') AS DECIMAL(5,2)) DESC"); break;
-      case "goals": orderParts.push("CAST(JSON_EXTRACT(`external_data`, '$.performance_stats.stats.goals') AS UNSIGNED) DESC"); break;
-      case "assists": orderParts.push("CAST(JSON_EXTRACT(`external_data`, '$.performance_stats.stats.assists') AS UNSIGNED) DESC"); break;
-      case "minutes": orderParts.push("CAST(JSON_EXTRACT(`external_data`, '$.performance_stats.stats.minutes') AS UNSIGNED) DESC"); break;
-      case "xg": orderParts.push("CAST(JSON_EXTRACT(`external_data`, '$.performance_stats.stats.expected_goals') AS DECIMAL(5,2)) DESC"); break;
-      case "pass-accuracy": orderParts.push("CAST(JSON_EXTRACT(`external_data`, '$.performance_stats.stats.passes_accuracy') AS DECIMAL(5,2)) DESC"); break;
-      default: orderParts.push("`name` ASC");
+      case "name": orderParts.push("p.`name` ASC"); break;
+      case "age-asc": orderParts.push("p.`generation` DESC"); break;
+      case "age-desc": orderParts.push("p.`generation` ASC"); break;
+      case "level": orderParts.push(`${LVL} DESC`); break;
+      case "potential": orderParts.push(`${POT} DESC`); break;
+      case "recent": orderParts.push("p.`updated_at` DESC"); break;
+      case "contract": orderParts.push("CASE WHEN p.`contract_end` IS NULL THEN 1 ELSE 0 END ASC, p.`contract_end` ASC"); break;
+      case "rating": orderParts.push("CAST(JSON_EXTRACT(p.`external_data`, '$.performance_stats.stats.rating') AS DECIMAL(5,2)) DESC"); break;
+      case "goals": orderParts.push("CAST(JSON_EXTRACT(p.`external_data`, '$.performance_stats.stats.goals') AS UNSIGNED) DESC"); break;
+      case "assists": orderParts.push("CAST(JSON_EXTRACT(p.`external_data`, '$.performance_stats.stats.assists') AS UNSIGNED) DESC"); break;
+      case "minutes": orderParts.push("CAST(JSON_EXTRACT(p.`external_data`, '$.performance_stats.stats.minutes') AS UNSIGNED) DESC"); break;
+      case "xg": orderParts.push("CAST(JSON_EXTRACT(p.`external_data`, '$.performance_stats.stats.expected_goals') AS DECIMAL(5,2)) DESC"); break;
+      case "pass-accuracy": orderParts.push("CAST(JSON_EXTRACT(p.`external_data`, '$.performance_stats.stats.passes_accuracy') AS DECIMAL(5,2)) DESC"); break;
+      default: orderParts.push("p.`name` ASC");
     }
     const orderSql = `ORDER BY ${orderParts.join(", ")}`;
 
     // ── IDs-only mode (for "select all" across all pages) ──
     if (req.query.idsOnly === "1") {
-      const [idRows] = await pool.query(`SELECT \`id\` FROM \`players\` ${whereSql}`, params);
+      const [idRows] = await pool.query(`SELECT p.\`id\` FROM \`players\` p ${joinSql} ${whereSql}`, [...joinParams, ...params]);
       return res.json({ ids: idRows.map(r => r.id) });
     }
 
     // ── Count total (for "X / Y displayed") ──
-    const [countRows] = await pool.query(`SELECT COUNT(*) AS total FROM \`players\` ${whereSql}`, params);
+    const [countRows] = await pool.query(`SELECT COUNT(*) AS total FROM \`players\` p ${joinSql} ${whereSql}`, [...joinParams, ...params]);
     const total = countRows[0].total;
 
     // ── Fetch page ──
+    // Override the players' stored rating fields with the per-user overlay values
+    // via aliased columns we strip out in JS before returning.
     const [rows] = await pool.query(
-      `SELECT * FROM \`players\` ${whereSql} ${orderSql} LIMIT ? OFFSET ?`,
-      [...params, limit, offset]
+      `SELECT p.*,
+              ${LVL} AS __pur_level,
+              ${POT} AS __pur_pot,
+              ${OPN} AS __pur_opinion
+       FROM \`players\` p ${joinSql} ${whereSql} ${orderSql} LIMIT ? OFFSET ?`,
+      [...joinParams, ...params, limit, offset]
     );
 
-    const data = rows.map(parseRowJsonColumns);
+    const data = rows.map(r => {
+      const parsed = parseRowJsonColumns(r);
+      parsed.current_level = Number(parsed.__pur_level);
+      parsed.potential = Number(parsed.__pur_pot);
+      parsed.general_opinion = parsed.__pur_opinion;
+      delete parsed.__pur_level;
+      delete parsed.__pur_pot;
+      delete parsed.__pur_opinion;
+      return parsed;
+    });
     return res.json({ data, total, hasMore: offset + data.length < total });
   } catch (err) {
     console.error("[GET /api/players]", err?.message, err?.sql || "");
@@ -4556,6 +4746,12 @@ app.post("/api/query", authMiddleware, async (req, res) => {
       const [rows] = await pool.query(sql, params);
       const parsedRows = rows.map(parseRowJsonColumns);
 
+      // Per-user rating overlay for the players table
+      if (table === "players" && parsedRows.length) {
+        const ratingMap = await fetchUserRatings(req.user.id, parsedRows.map(r => r.id));
+        for (const r of parsedRows) applyUserRating(r, ratingMap);
+      }
+
       if (single) {
         if (!parsedRows.length) return res.status(404).json({ error: "No rows" });
         return res.json({ data: parsedRows[0] });
@@ -4669,6 +4865,22 @@ app.post("/api/query", authMiddleware, async (req, res) => {
           `INSERT INTO \`${table}\` (${colSql}) VALUES (${placeholders}) ON DUPLICATE KEY UPDATE ${updateSql}`,
           vals,
         );
+      }
+
+      // Per-user rating overlay: mirror rating fields to player_user_rating
+      // so the calling user sees their values regardless of who owns the row.
+      if (table === "players" && row.id) {
+        const ratingPatch = {};
+        for (const k of PLAYER_RATING_COLS) {
+          if (values[k] !== undefined) ratingPatch[k] = values[k];
+        }
+        if (Object.keys(ratingPatch).length) {
+          try {
+            await upsertUserRating(row.id, req.user.id, ratingPatch);
+          } catch (err) {
+            console.warn("[player_user_rating] upsert (insert/upsert path):", err?.message);
+          }
+        }
       }
 
       // ── Post-insert notification hooks ──
@@ -4790,23 +5002,75 @@ app.post("/api/query", authMiddleware, async (req, res) => {
         return res.status(400).json({ error: "values object required" });
       }
 
-      const cols = Object.keys(values).filter((c) => ALLOWED_TABLES[table].includes(c) && c !== "id");
-      if (!cols.length) return res.status(400).json({ error: "No valid columns to update" });
+      // For the players table, intercept rating fields so they write to
+      // player_user_rating (per-user overlay) instead of the shared row.
+      const ratingPatch = {};
+      if (table === "players") {
+        for (const k of PLAYER_RATING_COLS) {
+          if (values[k] !== undefined) {
+            ratingPatch[k] = values[k];
+            delete values[k];
+          }
+        }
+      }
 
-      const setSql = cols.map((c) => `\`${c}\` = ?`).join(", ");
-      const setValues = cols.map((c) => sanitizeValueByColumn(c, values[c]));
+      const cols = Object.keys(values).filter((c) => ALLOWED_TABLES[table].includes(c) && c !== "id");
 
       const { whereSql, whereValues } = buildWhereClause(table, filters, req.user.id);
       if (!whereSql) {
         return res.status(400).json({ error: "Refusing full-table update" });
       }
 
-      await pool.query(`UPDATE \`${table}\` SET ${setSql} ${whereSql}`, [...setValues, ...whereValues]);
+      // For players, resolve target player_ids the user can write a per-user
+      // rating for: own players OR players linked via player_viewer_links.
+      // This is broader than the owner-scoped WHERE so a viewer can rate too.
+      let targetPlayerIds = [];
+      if (table === "players" && Object.keys(ratingPatch).length) {
+        const idFilter = filters.find(f => f.col === "id");
+        if (idFilter) {
+          const ids = idFilter.op === "in" && Array.isArray(idFilter.value)
+            ? idFilter.value
+            : [idFilter.value];
+          if (ids.length) {
+            const ph = ids.map(() => "?").join(",");
+            const [accessibleRows] = await pool.query(
+              `SELECT p.id FROM players p
+               WHERE p.id IN (${ph})
+                 AND (p.user_id = ? OR p.id IN (SELECT player_id FROM player_viewer_links WHERE viewer_user_id = ?))`,
+              [...ids, req.user.id, req.user.id]
+            );
+            targetPlayerIds = accessibleRows.map(r => r.id);
+          }
+        }
+      }
+
+      if (cols.length) {
+        const setSql = cols.map((c) => `\`${c}\` = ?`).join(", ");
+        const setValues = cols.map((c) => sanitizeValueByColumn(c, values[c]));
+        await pool.query(`UPDATE \`${table}\` SET ${setSql} ${whereSql}`, [...setValues, ...whereValues]);
+      } else if (!Object.keys(ratingPatch).length) {
+        return res.status(400).json({ error: "No valid columns to update" });
+      }
+
+      if (table === "players" && Object.keys(ratingPatch).length) {
+        for (const pid of targetPlayerIds) {
+          try {
+            await upsertUserRating(pid, req.user.id, ratingPatch);
+          } catch (err) {
+            console.warn("[player_user_rating] upsert (update path):", err?.message);
+          }
+        }
+      }
 
       if (!returning) return res.json({ data: null });
 
       const [rows] = await pool.query(`SELECT * FROM \`${table}\` ${whereSql} LIMIT 1`, whereValues);
-      return res.json({ data: rows[0] ? parseRowJsonColumns(rows[0]) : null });
+      let row = rows[0] ? parseRowJsonColumns(rows[0]) : null;
+      if (row && table === "players") {
+        const ratingMap = await fetchUserRatings(req.user.id, [row.id]);
+        applyUserRating(row, ratingMap);
+      }
+      return res.json({ data: row });
     }
 
     if (op === "delete") {
@@ -5695,17 +5959,30 @@ app.post("/api/import/wyscout", authMiddleware, wyscoutUploadMiddleware, async (
 
   log('step 1: loading existing players');
   // ── STEP 1 — Load current user's players + cross-user global lookup ──────────
+  // Maps use normalizeStr() keys (accent-insensitive, punctuation-stripped) so
+  // "Mbappé" / "Mbappe" / "mbappe" all collide. We also build an "initial+last"
+  // map ("k mbappe") so truncated imports like "K. Mbappé" resolve to an existing
+  // "Kylian Mbappé" record instead of creating a duplicate.
   const [existingPlayers] = await pool.query(
     'SELECT id, name, club FROM players WHERE user_id = ?',
     [userId]
   );
-  const byNameClub = new Map(); // name\0club → id  (current user)
-  const byName     = new Map(); // name → id  (current user)
+  const byNameClub     = new Map(); // normName\0normClub → id
+  const byName         = new Map(); // normName → [id, ...]
+  const byInitialLast  = new Map(); // initial-last key → [{id, normClub}, ...]
   for (const p of existingPlayers) {
-    const nm = (p.name || '').toLowerCase().trim();
-    const cl = (p.club  || '').toLowerCase().trim();
-    byNameClub.set(`${nm}\0${cl}`, p.id);
-    if (!byName.has(nm)) byName.set(nm, p.id);
+    const nm = normalizeStr(p.name || '');
+    const cl = normalizeStr(p.club || '');
+    if (nm) {
+      byNameClub.set(`${nm}\0${cl}`, p.id);
+      const arr = byName.get(nm); if (arr) arr.push(p.id); else byName.set(nm, [p.id]);
+    }
+    const il = playerInitialLastKey(p.name || '');
+    if (il) {
+      const arr = byInitialLast.get(il);
+      const entry = { id: p.id, normClub: cl };
+      if (arr) arr.push(entry); else byInitialLast.set(il, [entry]);
+    }
   }
 
   // Cross-user dedup: find players imported by OTHER users (Wyscout only)
@@ -5713,16 +5990,46 @@ app.post("/api/import/wyscout", authMiddleware, wyscoutUploadMiddleware, async (
     "SELECT id, name, club FROM players WHERE user_id != ? AND wyscout_division IS NOT NULL",
     [userId]
   );
-  const globalByNameClub = new Map(); // name\0club → id  (other users)
-  const globalByName     = new Map(); // name → id  (other users)
+  const globalByNameClub    = new Map();
+  const globalByName        = new Map();
+  const globalByInitialLast = new Map();
   for (const p of globalPlayers) {
-    const nm = (p.name || '').toLowerCase().trim();
-    const cl = (p.club  || '').toLowerCase().trim();
-    if (!globalByNameClub.has(`${nm}\0${cl}`)) globalByNameClub.set(`${nm}\0${cl}`, p.id);
-    if (!globalByName.has(nm)) globalByName.set(nm, p.id);
+    const nm = normalizeStr(p.name || '');
+    const cl = normalizeStr(p.club || '');
+    if (nm) {
+      if (!globalByNameClub.has(`${nm}\0${cl}`)) globalByNameClub.set(`${nm}\0${cl}`, p.id);
+      if (!globalByName.has(nm)) globalByName.set(nm, p.id);
+    }
+    const il = playerInitialLastKey(p.name || '');
+    if (il) {
+      const arr = globalByInitialLast.get(il);
+      const entry = { id: p.id, normClub: cl };
+      if (arr) arr.push(entry); else globalByInitialLast.set(il, [entry]);
+    }
   }
 
-  log(`step 1 done: ${existingPlayers.length} own players, ${globalPlayers.length} global (other users) loaded`);
+  // ── Alias map: alias_norm → [{player_id, ownedByUser}, ...] ─────────────────
+  // We load ALL aliases for this user's players plus aliases pointing at any
+  // global wyscout player. Reads will prefer user-owned matches over global.
+  const aliasByNorm = new Map();
+  try {
+    const [aliasRows] = await pool.query(`
+      SELECT a.alias_norm, a.player_id, p.user_id
+      FROM player_name_aliases a
+      JOIN players p ON p.id = a.player_id
+      WHERE p.user_id = ? OR p.wyscout_division IS NOT NULL
+    `, [userId]);
+    for (const a of aliasRows) {
+      const arr = aliasByNorm.get(a.alias_norm) || [];
+      arr.push({ id: a.player_id, ownedByUser: a.user_id === userId });
+      aliasByNorm.set(a.alias_norm, arr);
+    }
+  } catch (e) {
+    // Table may not exist yet on first deploy — fall through with empty map
+    log(`alias load skipped: ${e?.message}`);
+  }
+
+  log(`step 1 done: ${existingPlayers.length} own players, ${globalPlayers.length} global (other users), ${aliasByNorm.size} alias keys loaded`);
   log('step 2: building memory records');
   // ── STEP 2 — Parse all rows into memory records (no DB calls here) ────────
   const playerRecs = []; // bio fields
@@ -5759,31 +6066,108 @@ app.post("/api/import/wyscout", authMiddleware, wyscoutUploadMiddleware, async (
     const matchesPlayed  = parseInt(row['Matches played']) || null;
     const minutesPlayed  = parseInt(row['Minutes played']) || null;
 
-    // Resolve player ID: check current user first, then global (other users)
-    const nm = playerName.toLowerCase().trim();
-    const cl = club.toLowerCase().trim();
-    let playerId = byNameClub.get(`${nm}\0${cl}`) || byName.get(nm) || null;
-    let isNew = false, isLinked = false;
-    if (playerId) {
-      // Exists for this user — update in place
-    } else {
-      const globalId = globalByNameClub.get(`${nm}\0${cl}`) || globalByName.get(nm) || null;
-      if (globalId) {
-        playerId = globalId;
-        isLinked = true;
-        // Register so subsequent rows of same player resolve correctly
-        byNameClub.set(`${nm}\0${cl}`, playerId);
-        byName.set(nm, playerId);
-      } else {
-        playerId = uuidv4();
-        isNew = true;
-        byNameClub.set(`${nm}\0${cl}`, playerId);
-        byName.set(nm, playerId);
+    // ── Resolve player ID ──────────────────────────────────────────────────
+    // Match priority (current user first, then global wyscout pool):
+    //   1) exact normalized name + club
+    //   2) alias_norm (any prior import or TM enrichment)
+    //   3) exact normalized name (any club) — single candidate only
+    //   4) initial+last fallback (e.g. "K. Mbappé" → "Kylian Mbappé") with club tiebreak
+    // matchedExistingName tells us whether we found an established canonical record
+    // we should NOT overwrite the `name` field for (preserves "Kylian" against "K.").
+    const nm = normalizeStr(playerName);
+    const cl = normalizeStr(club);
+    const il = playerInitialLastKey(playerName);
+
+    let playerId = null;
+    let isNew = false, isLinked = false, matchedExistingName = false;
+
+    // 1) user-owned exact name+club
+    if (nm) playerId = byNameClub.get(`${nm}\0${cl}`) || null;
+    if (playerId) matchedExistingName = true;
+
+    // 2) alias table — prefer user-owned. Disambiguate homonyms by club below if needed
+    if (!playerId && nm) {
+      const aliasMatches = aliasByNorm.get(nm);
+      if (aliasMatches && aliasMatches.length > 0) {
+        const owned = aliasMatches.filter(a => a.ownedByUser);
+        const pool_ = owned.length ? owned : aliasMatches;
+        // If multiple alias matches and we have a club hint, try to disambiguate
+        if (pool_.length > 1 && cl) {
+          const ids = pool_.map(a => a.id);
+          // Pick the one whose current club matches
+          const candidates = existingPlayers.concat(globalPlayers).filter(p => ids.includes(p.id));
+          const clubMatch = candidates.find(c => normalizeStr(c.club || '') === cl);
+          if (clubMatch) playerId = clubMatch.id;
+        }
+        if (!playerId) playerId = pool_[0].id;
+        if (playerId) {
+          matchedExistingName = true;
+          isLinked = !pool_.find(a => a.id === playerId)?.ownedByUser;
+        }
       }
     }
 
+    // 3) user-owned exact name (any club) — only if unambiguous
+    if (!playerId && nm) {
+      const cand = byName.get(nm);
+      if (cand && cand.length === 1) { playerId = cand[0]; matchedExistingName = true; }
+    }
+
+    // 4) user-owned initial+last fallback (Kylian Mbappé ↔ K. Mbappé)
+    if (!playerId && il) {
+      const cands = byInitialLast.get(il);
+      if (cands && cands.length > 0) {
+        if (cands.length === 1) {
+          playerId = cands[0].id; matchedExistingName = true;
+        } else if (cl) {
+          const m = cands.find(c => c.normClub && (c.normClub === cl || c.normClub.includes(cl) || cl.includes(c.normClub)));
+          if (m) { playerId = m.id; matchedExistingName = true; }
+        }
+      }
+    }
+
+    // 5) global lookup (other users' wyscout players)
+    if (!playerId) {
+      let globalId = nm ? (globalByNameClub.get(`${nm}\0${cl}`) || globalByName.get(nm) || null) : null;
+      if (!globalId && il) {
+        const cands = globalByInitialLast.get(il);
+        if (cands && cands.length === 1) globalId = cands[0].id;
+        else if (cands && cl) {
+          const m = cands.find(c => c.normClub && (c.normClub === cl || c.normClub.includes(cl) || cl.includes(c.normClub)));
+          if (m) globalId = m.id;
+        }
+      }
+      if (globalId) {
+        playerId = globalId;
+        isLinked = true;
+        matchedExistingName = true;
+      }
+    }
+
+    // 6) brand new player
+    if (!playerId) {
+      playerId = uuidv4();
+      isNew = true;
+    }
+
+    // Register resolutions so subsequent rows of same player in this file resolve
+    if (nm) {
+      if (!byNameClub.has(`${nm}\0${cl}`)) byNameClub.set(`${nm}\0${cl}`, playerId);
+      const arr = byName.get(nm);
+      if (!arr) byName.set(nm, [playerId]);
+      else if (!arr.includes(playerId)) arr.push(playerId);
+    }
+    if (il) {
+      const arr = byInitialLast.get(il);
+      const entry = { id: playerId, normClub: cl };
+      if (!arr) byInitialLast.set(il, [entry]);
+      else if (!arr.find(e => e.id === playerId)) arr.push(entry);
+    }
+
     playerRecs.push({
-      id: playerId, isNew, isLinked, name: playerName, club, division: division || '',
+      id: playerId, isNew, isLinked, matchedExistingName,
+      rawImportedName: playerName,
+      name: playerName, club, division: division || '',
       position: posMap.position, zone: posMap.zone, nationality, foot, generation,
       marketValue, contractEnd, height, weight, onLoan, matchesPlayed, minutesPlayed,
       passportCountry, season, wyscoutDivision: division, teamInTF,
@@ -5838,7 +6222,7 @@ app.post("/api/import/wyscout", authMiddleware, wyscoutUploadMiddleware, async (
         r.marketValue, r.contractEnd, r.height, r.weight, r.onLoan,
         r.matchesPlayed, r.minutesPlayed, r.passportCountry,
         r.season, r.wyscoutDivision, r.teamInTF,
-        5.0, 5.0, 'À revoir', 0,
+        0, 0, 'À revoir', 0,
         now, now,
       );
     }
@@ -5875,6 +6259,38 @@ app.post("/api/import/wyscout", authMiddleware, wyscoutUploadMiddleware, async (
     ).catch(err => console.warn('[import/wyscout] viewer_links insert:', err?.message));
     linked = newViewerLinks.length;
     log(`step 3.5: ${linked} viewer links inserted`);
+  }
+
+  // ── STEP 3.6 — Batch-insert aliases for matched / linked players ──────────────
+  // Only record aliases for rows that matched an EXISTING player record (otherwise
+  // the imported name IS the canonical name — no alias needed). Skip self-aliases
+  // where the imported name normalizes to the matched player's existing name.
+  const aliasInserts = [];
+  const seenAlias = new Set();
+  const playerNameById = new Map(existingPlayers.concat(globalPlayers).map(p => [p.id, p.name]));
+  for (const r of playerRecs) {
+    if (!r.matchedExistingName) continue;
+    const aliasNorm = normalizeStr(r.rawImportedName);
+    if (!aliasNorm || aliasNorm.length > 191) continue;
+    const canonical = playerNameById.get(r.id);
+    if (canonical && normalizeStr(canonical) === aliasNorm) continue;
+    const key = `${aliasNorm}\0${r.id}`;
+    if (seenAlias.has(key)) continue;
+    seenAlias.add(key);
+    aliasInserts.push([aliasNorm, r.id, 'import', String(r.rawImportedName).slice(0, 255)]);
+  }
+  if (aliasInserts.length > 0) {
+    const ALIAS_CHUNK = 500;
+    for (let i = 0; i < aliasInserts.length; i += ALIAS_CHUNK) {
+      const chunk = aliasInserts.slice(i, i + ALIAS_CHUNK);
+      const ph = chunk.map(() => '(?, ?, ?, ?)').join(', ');
+      const vals = chunk.flat();
+      await pool.query(
+        `INSERT IGNORE INTO player_name_aliases (alias_norm, player_id, source, raw_name) VALUES ${ph}`,
+        vals
+      ).catch(err => console.warn('[import/wyscout] alias insert:', err?.message));
+    }
+    log(`step 3.6: ${aliasInserts.length} alias entries recorded`);
   }
 
   log(`step 3 done: ${created} created, ${updated} updated, ${errors.filter(e=>!e.error.startsWith('stats:')).length} bio errors`);
@@ -8705,23 +9121,62 @@ app.get("/api/club-tm-search", async (req, res) => {
     if (!resp.ok) return res.status(502).json({ error: `TM returned ${resp.status}` });
     const html = await resp.text();
 
-    // Find club links in the search results
+    // TM rows put `title` BEFORE `href` in the anchor — parse attributes
+    // order-agnostically. The previous order-sensitive regex never matched and
+    // the fallback could grab arbitrary verein links elsewhere on the page,
+    // attributing them to whatever club the user typed in.
     const clubs = [];
-    const regex = /<td[^>]*class="[^"]*hauptlink[^"]*"[^>]*>\s*<a[^>]*href="\/([\w-]+)\/startseite\/verein\/(\d+)"[^>]*title="([^"]*)"/g;
-    let m;
-    while ((m = regex.exec(html)) !== null && clubs.length < 5) {
-      clubs.push({ slug: m[1], clubId: m[2], clubName: m[3] });
-    }
-    // Fallback: any verein link
-    if (clubs.length === 0) {
-      const fb = html.match(/href="\/([\w-]+)\/startseite\/verein\/(\d+)"/);
-      if (fb) clubs.push({ slug: fb[1], clubId: fb[2], clubName: q });
+    const seen = new Set();
+    const anchorRegex = /<td[^>]*class="[^"]*hauptlink[^"]*"[^>]*>\s*<a\b([^>]+)>([^<]*)<\/a>/g;
+    const decodeAttr = s => String(s || "").replace(/&#0?39;/g, "'").replace(/&amp;/g, '&').replace(/&quot;/g, '"').trim();
+    let am;
+    while ((am = anchorRegex.exec(html)) !== null && clubs.length < 10) {
+      const attrs = am[1];
+      const hrefM = attrs.match(/href="\/([\w-]+)\/startseite\/verein\/(\d+)"/);
+      if (!hrefM) continue;
+      const clubId = hrefM[2];
+      if (seen.has(clubId)) continue;
+      seen.add(clubId);
+      const titleM = attrs.match(/title="([^"]*)"/);
+      clubs.push({
+        slug: hrefM[1],
+        clubId,
+        clubName: decodeAttr(titleM ? titleM[1] : am[2]),
+      });
     }
 
     if (clubs.length === 0) return res.json(null);
 
-    // Return first match, but also fetch its profile to populate club_directory
-    const best = clubs[0];
+    // Prefer the row whose name equals the query (accent/case insensitive);
+    // otherwise the first row. Without this, a query like "FC Lyon" could
+    // resolve to a youth/reserve team that happens to be listed first.
+    const norm = s => String(s || "").normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase().replace(/[^\w\s]/g, ' ').replace(/\s+/g, ' ').trim();
+    const qNorm = norm(q);
+    const best = clubs.find(c => norm(c.clubName) === qNorm) || clubs[0];
+
+    // The wappen URL is already in the search row (suche-vereinswappen cell)
+    // and references the numeric club ID. Match by ID so we never pick up a
+    // neighbouring row's logo by mistake.
+    const badgeRowM = html.match(new RegExp(`suche-vereinswappen[\\s\\S]*?<img[^>]*src="([^"]*\\/wappen\\/[^"]*\\/${best.clubId}\\.[a-z]+[^"]*)"`));
+    if (badgeRowM) {
+      const badge = badgeRowM[1].replace('/wappen/small/', '/wappen/head/');
+      try {
+        await pool.query(
+          "INSERT INTO club_logos (club_name, logo_url) VALUES (?, ?) ON DUPLICATE KEY UPDATE logo_url = VALUES(logo_url), updated_at = NOW()",
+          [best.clubName.slice(0, 255), badge]
+        );
+      } catch {}
+      return res.json({
+        clubId: best.clubId,
+        clubName: best.clubName,
+        badge,
+        tmUrl: `https://www.transfermarkt.fr/${best.slug}/startseite/verein/${best.clubId}`,
+        source: 'transfermarkt',
+      });
+    }
+
+    // No badge in the row — fall back to the full profile fetch (also
+    // populates club_directory + geocoords).
     const profileResp = await fetch(`${req.protocol}://${req.get("host")}/api/club-tm/${best.clubId}`);
     const profile = profileResp.ok ? await profileResp.json() : best;
 
@@ -9167,6 +9622,93 @@ function normalizeStr(str) {
     .trim();
 }
 
+// "K. Mbapp\u00e9" / "Kylian Mbapp\u00e9" / "Kylian M Mbapp\u00e9" \u2192 "k mbappe" \u2014 used to match
+// truncated/initialed import names against full DB names. Returns "" for single tokens.
+function playerInitialLastKey(s) {
+  const n = normalizeStr(s);
+  if (!n) return '';
+  const tokens = n.split(' ').filter(Boolean);
+  if (tokens.length < 2) return '';
+  const first = tokens[0];
+  const last = tokens[tokens.length - 1];
+  if (!first[0] || !last) return '';
+  return `${first[0]} ${last}`;
+}
+
+// Decide whether the canonical TM name is a fuller version of the local one so
+// we should replace players.name with it. Examples that must rewrite:
+//   "A Adorante"   \u2192 "Andrea Adorante"
+//   "K. Mbapp\u00e9"    \u2192 "Kylian Mbapp\u00e9 Lottin"
+//   "M. Salah"     \u2192 "Mohamed Salah"
+// Examples that must NOT rewrite (different person / shortening / no info gain):
+//   "John Adorante"   vs "Andrea Adorante"  (full first name not in canonical)
+//   "Andrea Adorante" vs "A. Adorante"      (canonical is shorter \u2014 never shorten)
+//   "Adorante Reyes"  vs "Andrea Adorante"  ("Reyes" not in canonical)
+//
+// Rules (all required):
+//   1. Both names have \u2265 2 tokens; canonical has \u2265 tokens than local.
+//   2. canonical normalized != local normalized (something to gain).
+//   3. Every NON-INITIAL local token (length > 1) matches some canonical token exactly.
+//   4. Every INITIAL local token (length == 1) matches the first letter of a
+//      remaining canonical token (consumed greedy after rule 3).
+function shouldUseCanonicalName(localName, canonicalName) {
+  if (!localName || !canonicalName) return false;
+  const local = String(localName).trim();
+  const canon = String(canonicalName).trim();
+  if (!local || !canon) return false;
+  if (normalizeStr(local) === normalizeStr(canon)) return false;
+
+  const localTokens = local.split(/\s+/).filter(Boolean);
+  const canonTokens = canon.split(/\s+/).filter(Boolean);
+  if (localTokens.length < 2 || canonTokens.length < 2) return false;
+  if (canonTokens.length < localTokens.length) return false;
+
+  const available = canonTokens.map(t => normalizeStr(t)).filter(Boolean);
+  if (available.length === 0) return false;
+
+  const consume = (predicate) => {
+    const idx = available.findIndex(predicate);
+    if (idx === -1) return false;
+    available.splice(idx, 1);
+    return true;
+  };
+
+  // Pass 1: full local tokens must match a canonical token exactly.
+  for (const t of localTokens) {
+    const tn = normalizeStr(t.replace(/\./g, ''));
+    if (!tn || tn.length === 1) continue;
+    if (!consume(c => c === tn)) return false;
+  }
+  // Pass 2: initials match the first letter of a remaining canonical token.
+  for (const t of localTokens) {
+    const tn = normalizeStr(t.replace(/\./g, ''));
+    if (tn.length !== 1) continue;
+    if (!consume(c => c.startsWith(tn))) return false;
+  }
+  return true;
+}
+
+// Persist a (alias \u2192 canonical player) mapping. Idempotent on (alias_norm, player_id).
+// Skips if alias_norm equals the player's own normalized name (no useful info).
+async function recordPlayerAlias(playerId, rawName, source) {
+  try {
+    const aliasNorm = normalizeStr(rawName);
+    if (!aliasNorm || !playerId) return;
+    if (aliasNorm.length > 191) return;
+    const raw = String(rawName || '').slice(0, 255);
+    await pool.query(
+      `INSERT IGNORE INTO player_name_aliases (alias_norm, player_id, source, raw_name)
+       VALUES (?, ?, ?, ?)`,
+      [aliasNorm, playerId, source || 'import', raw]
+    );
+  } catch (e) {
+    // Non-blocking: alias persistence must never break the calling flow
+    if (!String(e?.message || '').includes('already exists')) {
+      console.warn('[recordPlayerAlias]', e?.message);
+    }
+  }
+}
+
 // Format a Date (or string) as local YYYY-MM-DD — avoids the UTC shift bug of .toISOString().
 function toYMD(d) {
   if (!d) return null;
@@ -9211,6 +9753,28 @@ function clubsEquivalent(a, b) {
 // Compare two agent strings loosely (case/whitespace/accent-insensitive).
 function agentsEquivalent(a, b) {
   return normalizeStr(a || '') === normalizeStr(b || '');
+}
+
+// Build the ordered list of search query strings to try against external APIs.
+// When the first name is just an initial (e.g. "A. Albertini"), the full string
+// won't match in TSDB/Wikidata indexes — fall back to last-name-only so we get
+// candidates like "Andrea Albertini", then disambiguate via strict DOB match.
+function buildNameSearchQueries(playerName) {
+  const queries = [playerName];
+  const parts = String(playerName || '').trim().split(/\s+/).filter(Boolean);
+  if (parts.length >= 2) {
+    const firstStripped = parts[0].replace(/\./g, '');
+    const lastName = parts.slice(1).join(' ');
+    if (firstStripped.length === 1) {
+      // Initial-only first name: search by last name(s) alone
+      queries.push(lastName);
+    } else if (parts.length > 2) {
+      // Compound name: also try first+last only (drops middle names)
+      queries.push(`${parts[0]} ${parts[parts.length - 1]}`);
+      queries.push(parts[parts.length - 1]);
+    }
+  }
+  return queries;
 }
 
 function namesMatch(playerName, candidateName) {
@@ -9478,28 +10042,52 @@ app.get("/api/debug/photo-test", authMiddleware, async (req, res) => {
 async function fetchPlayerDataFromSportsDB(player) {
   try {
     const apiKey = process.env.THESPORTSDB_API_KEY || '3';
-    const url = `https://www.thesportsdb.com/api/v1/json/${apiKey}/searchplayers.php?p=${encodeURIComponent(player.name)}`;
-    const resp = await fetch(url, { headers: TSDB_HEADERS });
-    if (!resp.ok) return null;
-    const data = await resp.json();
-    if (!data.player?.length) return null;
+    const queries = buildNameSearchQueries(player.name);
+    const seenIds = new Set();
+    const candidates = [];
+
+    for (let qi = 0; qi < queries.length; qi++) {
+      if (qi > 0 && candidates.length > 0) break; // first query yielded matches — don't burn rate limit
+      const url = `https://www.thesportsdb.com/api/v1/json/${apiKey}/searchplayers.php?p=${encodeURIComponent(queries[qi])}`;
+      const resp = await fetch(url, { headers: TSDB_HEADERS });
+      if (!resp.ok) continue;
+      const data = await resp.json();
+      if (!data.player?.length) continue;
+      for (const c of data.player) {
+        const key = c.idPlayer || `${c.strPlayer}|${c.dateBorn || ''}`;
+        if (seenIds.has(key)) continue;
+        seenIds.add(key);
+        candidates.push(c);
+      }
+    }
+
+    if (candidates.length === 0) return null;
 
     const playerClub = normalizeStr(player.club || '');
     const playerNat = normalizeStr(player.nationality || '');
+    const playerDob = player.date_of_birth || null;
 
     let bestMatch = null;
     let bestScore = -1;
 
-    for (const c of data.player) {
+    for (const c of candidates) {
       if (!namesMatch(player.name, c.strPlayer || '')) continue;
       const sport = (c.strSport || '').toLowerCase();
       if (sport && sport !== 'soccer' && sport !== 'football') continue;
 
-      const born = c.dateBorn ? parseInt(c.dateBorn.slice(0, 4), 10) : null;
-      if (player.generation && born && Math.abs(born - player.generation) > 2) continue;
+      const candidateDob = c.dateBorn ? String(c.dateBorn).slice(0, 10) : null;
+      const born = candidateDob ? parseInt(candidateDob.slice(0, 4), 10) : null;
+
+      // When we know the player's full DOB, require an exact match (eliminates homonyms).
+      if (playerDob && candidateDob) {
+        if (candidateDob !== playerDob) continue;
+      } else if (player.generation && born && Math.abs(born - player.generation) > 2) {
+        continue;
+      }
 
       let score = 0;
-      if (player.generation && born && Math.abs(born - player.generation) <= 1) score += 3;
+      if (playerDob && candidateDob && candidateDob === playerDob) score += 6;
+      else if (player.generation && born && Math.abs(born - player.generation) <= 1) score += 3;
       const teamNorm = normalizeStr(c.strTeam || '');
       const natNorm = normalizeStr(c.strNationality || '');
       if (playerClub && teamNorm && (teamNorm.includes(playerClub) || playerClub.includes(teamNorm))) score += 5;
@@ -9524,44 +10112,71 @@ async function fetchPlayerDataFromSportsDB(player) {
  */
 async function fetchPlayerDataFromWikidata(player) {
   try {
-    const searchUrl = `https://www.wikidata.org/w/api.php?action=wbsearchentities&search=${encodeURIComponent(player.name)}&language=en&type=item&format=json&limit=8`;
-    const searchResp = await fetch(searchUrl, { headers: WD_HEADERS });
-    if (!searchResp.ok) return null;
-    const entities = (await searchResp.json())?.search || [];
+    const queries = buildNameSearchQueries(player.name);
+    const seenIds = new Set();
+    const entities = [];
 
-    let matchId = null;
+    for (let qi = 0; qi < queries.length; qi++) {
+      if (qi > 0 && entities.some(e => namesMatch(player.name, e.label || ''))) break;
+      const searchUrl = `https://www.wikidata.org/w/api.php?action=wbsearchentities&search=${encodeURIComponent(queries[qi])}&language=en&type=item&format=json&limit=8`;
+      const searchResp = await fetch(searchUrl, { headers: WD_HEADERS });
+      if (!searchResp.ok) continue;
+      const found = (await searchResp.json())?.search || [];
+      for (const e of found) {
+        if (e.id && seenIds.has(e.id)) continue;
+        if (e.id) seenIds.add(e.id);
+        entities.push(e);
+      }
+    }
+
+    // Collect candidates that pass name + football description; we'll fetch entities
+    // for each (capped) and pick the one whose DOB matches when known. This is what
+    // makes name+DOB lookup work — we can't reject homonyms before fetching claims.
+    const candidates = [];
     for (const entity of entities) {
       if (!namesMatch(player.name, entity.label || '')) continue;
       const desc = (entity.description || '').toLowerCase();
       if (!FOOTBALL_DESC_TERMS.some(t => desc.includes(t))) continue;
-      if (player.generation) {
+      if (!player.date_of_birth && player.generation) {
         const m = desc.match(/born[^\d]*(\d{4})/);
         if (m && Math.abs(parseInt(m[1], 10) - player.generation) > 1) continue;
       }
-      matchId = entity.id;
+      candidates.push(entity.id);
+      if (candidates.length >= 5) break; // cap entity fetches
+    }
+    if (candidates.length === 0) return null;
+
+    let matchId = null;
+    let claims = null;
+    let resultDob = null;
+    for (const candId of candidates) {
+      const entityResp = await fetch(
+        `https://www.wikidata.org/w/api.php?action=wbgetentities&ids=${candId}&props=claims&format=json`,
+        { headers: WD_HEADERS }
+      );
+      if (!entityResp.ok) continue;
+      const entityData = await entityResp.json();
+      const candClaims = entityData?.entities?.[candId]?.claims || {};
+      const dobVal = candClaims.P569?.[0]?.mainsnak?.datavalue?.value;
+      let candDob = null;
+      if (dobVal?.time) {
+        const raw = dobVal.time.replace(/^\+/, '');
+        const datePart = raw.slice(0, 10);
+        if (/^\d{4}-\d{2}-\d{2}$/.test(datePart) && !datePart.endsWith('00-00') && !datePart.endsWith('-00')) {
+          candDob = datePart;
+        }
+      }
+      // Strict DOB filter when known: only this candidate (or the first with no Wikidata DOB) passes
+      if (player.date_of_birth && candDob && candDob !== player.date_of_birth) continue;
+      matchId = candId;
+      claims = candClaims;
+      resultDob = candDob;
       break;
     }
-    if (!matchId) return null;
-
-    const entityResp = await fetch(
-      `https://www.wikidata.org/w/api.php?action=wbgetentities&ids=${matchId}&props=claims&format=json`,
-      { headers: WD_HEADERS }
-    );
-    if (!entityResp.ok) return null;
-    const entityData = await entityResp.json();
-    const claims = entityData?.entities?.[matchId]?.claims || {};
+    if (!matchId || !claims) return null;
 
     const result = { wikidataId: matchId };
-
-    // P569: date of birth
-    const dobVal = claims.P569?.[0]?.mainsnak?.datavalue?.value;
-    if (dobVal?.time) {
-      const raw = dobVal.time.replace(/^\+/, '');
-      const datePart = raw.slice(0, 10);
-      if (/^\d{4}-\d{2}-\d{2}$/.test(datePart) && !datePart.endsWith('00-00') && !datePart.endsWith('-00')) {
-        result.dateOfBirth = datePart;
-      }
-    }
+    if (resultDob) result.dateOfBirth = resultDob;
 
     // P27: country of citizenship (can be multiple)
     result.citizenshipIds = (claims.P27 || [])
@@ -9729,19 +10344,19 @@ function extractBetween(html, before, after) {
 async function fetchPlayerDataFromTransfermarkt(player, tmPath = null, options = {}) {
   const forceRefresh = !!options.forceRefresh;
 
-  // Shared cross-user cache by TM player ID (24h). Avoids re-scraping TM when
-  // another user already enriched the same player. Bypassed when forceRefresh is true.
+  // ── Shared cross-user cache (tm_player_cache table) ──────────────────────
+  // Default TTL 24h. Within that window, NO HTTP calls to TM — every caller
+  // (manual enrich, cron) serves from this table. After expiry, the next
+  // caller scrapes and repopulates. forceRefresh bypasses the freshness check
+  // (used when admin/user explicitly requests a refresh).
   async function getCachedByTmId(tmId) {
     if (forceRefresh || !tmId) return null;
     try {
       const [rows] = await pool.query(
-        "SELECT response_json FROM api_football_cache WHERE cache_key = ? AND expires_at > NOW() LIMIT 1",
-        [`tm-player:${tmId}`]
+        "SELECT payload_json FROM tm_player_cache WHERE tm_id = ? AND expires_at > NOW() LIMIT 1",
+        [String(tmId)]
       );
-      if (rows.length) {
-        const v = rows[0].response_json;
-        return typeof v === 'string' ? JSON.parse(v) : v;
-      }
+      if (rows.length) return JSON.parse(rows[0].payload_json);
     } catch {}
     return null;
   }
@@ -9749,12 +10364,58 @@ async function fetchPlayerDataFromTransfermarkt(player, tmPath = null, options =
     if (!tmId || !data) return;
     try {
       await pool.query(
-        `INSERT INTO api_football_cache (cache_key, response_json, fetched_at, expires_at)
-         VALUES (?, ?, NOW(), DATE_ADD(NOW(), INTERVAL 24 HOUR))
-         ON DUPLICATE KEY UPDATE response_json = VALUES(response_json), fetched_at = NOW(), expires_at = DATE_ADD(NOW(), INTERVAL 24 HOUR)`,
-        [`tm-player:${tmId}`, JSON.stringify(data)]
+        `INSERT INTO tm_player_cache (tm_id, canonical_name, payload_json, fetched_at, expires_at)
+         VALUES (?, ?, ?, NOW(), DATE_ADD(NOW(), INTERVAL 24 HOUR))
+         ON DUPLICATE KEY UPDATE
+           canonical_name = VALUES(canonical_name),
+           payload_json   = VALUES(payload_json),
+           fetched_at     = NOW(),
+           expires_at     = DATE_ADD(NOW(), INTERVAL 24 HOUR)`,
+        [String(tmId), data?.canonicalName || null, JSON.stringify(data)]
       );
+    } catch (e) {
+      console.warn('[tm_player_cache] set failed:', e?.message);
+    }
+  }
+
+  // ── Shared name → TM-ID resolution (tm_name_resolution table) ────────────
+  // When ANY user has previously resolved "kylian mbappe / paris saint germain"
+  // to TM id 342229, we skip the TM search entirely and go directly to the
+  // cache. This eliminates the per-user search-and-score HTTP round trip.
+  async function resolveTmIdByName(nameNorm, clubNorm) {
+    if (forceRefresh || !nameNorm) return null;
+    try {
+      const nk = String(nameNorm).slice(0, 120);
+      const ck = String(clubNorm || '').slice(0, 80);
+      // Try (name, club) first; fall back to (name, '') if exact club not found
+      const [rows] = await pool.query(
+        `SELECT tm_id, confidence, club_norm FROM tm_name_resolution
+          WHERE name_norm = ? AND (club_norm = ? OR club_norm = '')
+          ORDER BY (club_norm = ?) DESC, confidence DESC LIMIT 1`,
+        [nk, ck, ck]
+      );
+      return rows[0]?.tm_id || null;
     } catch {}
+    return null;
+  }
+  async function rememberTmIdForName(nameNorm, clubNorm, tmId, confidence) {
+    if (!nameNorm || !tmId) return;
+    try {
+      // Truncate to match column widths (see table definition above)
+      const nk = String(nameNorm).slice(0, 120);
+      const ck = String(clubNorm || '').slice(0, 80);
+      await pool.query(
+        `INSERT INTO tm_name_resolution (name_norm, club_norm, tm_id, confidence, resolved_at)
+         VALUES (?, ?, ?, ?, NOW())
+         ON DUPLICATE KEY UPDATE
+           tm_id       = IF(VALUES(confidence) >= confidence, VALUES(tm_id), tm_id),
+           confidence  = GREATEST(confidence, VALUES(confidence)),
+           resolved_at = NOW()`,
+        [nk, ck, String(tmId), Math.max(0, Math.min(127, confidence | 0))]
+      );
+    } catch (e) {
+      console.warn('[tm_name_resolution] set failed:', e?.message);
+    }
   }
 
   try {
@@ -9763,12 +10424,19 @@ async function fetchPlayerDataFromTransfermarkt(player, tmPath = null, options =
     // ── 1. Search (with fallback queries for typos / compound names) ──────────
     const rowRe = /href="(\/([^/]+)\/profil\/spieler\/(\d+))"[^>]*>([^<]+)<\/a>(?:.*?zentriert">(\d+)<\/td>)?(?:.*?rechts hauptlink">\s*([^<]*)<\/td>)?(?:.*?berater\/\d+">\s*([^<]*)<\/a>)?/gs;
     const playerClubNorm = normalizeStr(player.club || '');
+    const playerNameNorm = normalizeStr(player.name || '');
 
     let best = null, bestScore = -1;
     const allCandidates = []; // collect all matching candidates for disambiguation
 
     const playerNatNorm = normalizeStr(player.nationality || '');
     const genKnown = player.generation && player.generation !== 2000;
+    const playerDobYear = player.date_of_birth ? parseInt(String(player.date_of_birth).slice(0, 4), 10) : null;
+    const playerFirstInitial = (() => {
+      const parts = String(player.name || '').trim().split(/\s+/);
+      const first = parts[0]?.replace(/\./g, '') || '';
+      return first.length === 1 ? first.toLowerCase() : null;
+    })();
 
     if (tmPath) {
       // Direct path provided by user — skip search entirely
@@ -9782,6 +10450,26 @@ async function fetchPlayerDataFromTransfermarkt(player, tmPath = null, options =
       }
       best = { id: idM[1], path: tmPath, mktVal: null, agent: null };
     } else {
+      // Pre-check: did a previous enrichment already resolve this name → tm_id?
+      // If yes AND the cache is fresh, we skip the entire TM search + profile fetch.
+      const knownTmId = await resolveTmIdByName(playerNameNorm, playerClubNorm);
+      if (knownTmId) {
+        const cached = await getCachedByTmId(knownTmId);
+        if (cached) {
+          console.log(`[TM] ${player.name} → resolved via shared map → cache hit tm-player:${knownTmId}`);
+          return cached;
+        }
+        // Cache stale/missing but we know the tm_id → skip search, go straight to profile.
+        // Bump bestScore above the rejection threshold (the resolution was previously
+        // validated by a real search, so we trust it without rescoring).
+        console.log(`[TM] ${player.name} → resolved via shared map → tm_id ${knownTmId}, fetching profile`);
+        best = { id: knownTmId, path: `/_/profil/spieler/${knownTmId}`, mktVal: null, agent: null };
+        bestScore = 99;
+      }
+    }
+
+    // Only do the TM search when we don't already have a `best` from cache/resolution
+    if (!best && !tmPath) {
       // Build ordered search queries: full name → first+last only → last name only
       // Fallback queries help when: (a) middle names cause TM to miss results, (b) there's a typo in a prefix
       const nameParts = player.name.trim().split(/\s+/);
@@ -9804,10 +10492,18 @@ async function fetchPlayerDataFromTransfermarkt(player, tmPath = null, options =
           if (!namesMatch(player.name, name)) continue;
           let score = 0;
 
-          // ── Age matching (stricter for known generations) ──
+          // ── Age matching ──
+          // TM search list shows current age; born-year = currentYear - age (off by ≤1
+          // depending on whether birthday already passed). When caller provided full DOB,
+          // year match is the strongest pre-profile signal we have.
           const candidateAge = age ? parseInt(age) : null;
           const candidateBornYear = candidateAge ? (new Date().getFullYear() - candidateAge) : null;
-          if (genKnown && candidateBornYear) {
+          if (playerDobYear && candidateBornYear) {
+            const yDiff = Math.abs(candidateBornYear - playerDobYear);
+            if (yDiff <= 1) score += 6; // strong: name + birth-year match
+            // No penalty for year-mismatch — DB DOB may be wrong/placeholder; the +6 bonus
+            // alone is enough to favor the correct candidate when one exists.
+          } else if (genKnown && candidateBornYear) {
             const ageDiff = Math.abs(candidateBornYear - player.generation);
             if (ageDiff <= 1) score += 3;
             else if (ageDiff > 2) score -= 10; // hard penalty: clearly wrong player
@@ -9846,7 +10542,11 @@ async function fetchPlayerDataFromTransfermarkt(player, tmPath = null, options =
             const aL = aN[aN.length - 1] || '', bL = bN[bN.length - 1] || '';
             const lastsMatch = aL.length >= 3 && aL === bL;
             const firstsClose = aF.length >= 3 && bF.length >= 3 && editDist1(aF, bF);
-            if (!lastsMatch || !firstsClose) continue;
+            // Initial-only first name ("A. Albertini") — last-name match + first-letter match is enough.
+            // We don't require birth-year here because TM search HTML may omit the age column; the
+            // profile fetch can verify DOB if the caller cares. Better to scrape than to return null.
+            const initialOk = playerFirstInitial && lastsMatch && bF.length >= 1 && bF[0] === playerFirstInitial;
+            if (!initialOk && (!lastsMatch || !firstsClose)) continue;
           }
 
           const candidate = { id, path, name, age: candidateAge, mktVal: mktVal?.trim() || null, agent: agent?.trim() || null, score };
@@ -9878,6 +10578,13 @@ async function fetchPlayerDataFromTransfermarkt(player, tmPath = null, options =
 
     if (!best) return null;
 
+    // Persist the name → tm_id resolution so future calls (from ANY user) for
+    // this normalized (name, club) skip the search step entirely. Confidence
+    // = the best score we got (clamped to TINYINT range).
+    if (!tmPath && playerNameNorm) {
+      await rememberTmIdForName(playerNameNorm, playerClubNorm, best.id, bestScore);
+    }
+
     // Post-search cache hit: the name-based search resolved a TM ID another user already scraped.
     const cachedAfterSearch = await getCachedByTmId(best.id);
     if (cachedAfterSearch) {
@@ -9890,6 +10597,25 @@ async function fetchPlayerDataFromTransfermarkt(player, tmPath = null, options =
     const profileResp = await fetch(`https://www.transfermarkt.fr${best.path}`, opts);
     if (!profileResp.ok) return null;
     const html = await profileResp.text();
+
+    // Canonical full name — TM profile <h1 class="data-header__headline-wrapper">
+    // contains the official name (e.g. "Kylian Mbappé Lottin"), more authoritative
+    // than search anchor text which is often abbreviated ("K. Mbappé"). We strip
+    // inner tags like <span class="data-header__shirt-number">#10</span>.
+    let canonicalName = null;
+    const headlineM = html.match(/<h1[^>]*class="[^"]*data-header__headline-wrapper[^"]*"[^>]*>([\s\S]*?)<\/h1>/);
+    if (headlineM) {
+      const cleaned = headlineM[1].replace(/<[^>]*>/g, ' ').replace(/&nbsp;/g, ' ').replace(/\s+/g, ' ').trim();
+      // Drop leading shirt-number tokens like "#10" if any survived stripping
+      const noShirt = cleaned.replace(/^#?\d+\s+/, '').trim();
+      if (noShirt && noShirt.length <= 120) canonicalName = noShirt;
+    }
+    // Fallback: "Nom complet:" field on the profile page
+    if (!canonicalName) {
+      const fullRaw = extractBetween(html, 'Nom complet:</span>', '</span>')
+        || extractBetween(html, 'Nom complet :</span>', '</span>');
+      if (fullRaw && fullRaw.length >= 3 && fullRaw.length <= 120) canonicalName = fullRaw.trim();
+    }
 
     // Contract end: "Contrat jusqu'à:" → bold span
     const contractRaw = extractBetween(html, "Contrat jusqu\u2019\u00e0:</span>", "</span>")
@@ -10013,6 +10739,30 @@ async function fetchPlayerDataFromTransfermarkt(player, tmPath = null, options =
       nationalityRaw = extractBetween(html, 'Nationalit\u00e9:</span>', '</span>')
         || extractBetween(html, 'Nationalit\u00e9\u00a0:</span>', '</span>')
         || extractBetween(html, 'Nationalit\u00e9 :</span>', '</span>');
+    }
+
+    // ── Date of birth ──
+    // When the caller provided player.date_of_birth, we use TM's DOB to verify the
+    // candidate is the right person (critical for name+initial searches where
+    // homonyms are common). Mismatch → return null so secondary sources can fill in.
+    let dateOfBirth = null;
+    const dobRaw = extractBetween(html, 'Date de naissance:</span>', '</span>')
+      || extractBetween(html, 'Date de naissance :</span>', '</span>')
+      || extractBetween(html, 'Date de naissance :</span>', '</span>')
+      || extractBetween(html, 'Date de naissance/Âge:</span>', '</span>')
+      || extractBetween(html, 'Date de naissance/Âge :</span>', '</span>');
+    if (dobRaw) {
+      const dmyM = dobRaw.match(/(\d{1,2})\s+([^\s\d(]+)\.?\s+(\d{4})/);
+      if (dmyM) {
+        const month = matchFrMonth(dmyM[2]);
+        if (month) dateOfBirth = `${dmyM[3]}-${String(month).padStart(2, '0')}-${dmyM[1].padStart(2, '0')}`;
+      }
+    }
+    // DOB mismatch is logged but NOT rejected — TM search scoring (+6 for year match)
+    // already favors the right candidate when one exists; rejecting here just discards
+    // useful nationality data for cases where the DB DOB is a placeholder/wrong.
+    if (player.date_of_birth && dateOfBirth && dateOfBirth !== player.date_of_birth) {
+      console.log(`[TM] ${player.name} → DOB mismatch (caller=${player.date_of_birth}, tm=${dateOfBirth}) — keeping result anyway`);
     }
 
     // ── 3. Fetch career history via TM JSON API ──────────────────────────
@@ -10195,7 +10945,7 @@ async function fetchPlayerDataFromTransfermarkt(player, tmPath = null, options =
     }
 
     console.log(`[TM] ${player.name} → contract:${contract} agent:${agent} value:${marketValue} height:${heightCm}cm club:${currentClub} onLoan:${onLoan} foot:${footRaw} pos:${positionRaw} nat:${nationalityRaw} photo:${!!photoUrl} logo:${!!clubLogoUrl}`);
-    const result = { tmId: best.id, contract, heightCm, agent, marketValue, currentClub, onLoan, parentClub, loanEndDate, parentContractEnd, photoUrl, clubLogoUrl, footRaw, positionRaw, nationalityRaw, career, seasonStats };
+    const result = { tmId: best.id, canonicalName, contract, heightCm, agent, marketValue, currentClub, onLoan, parentClub, loanEndDate, parentContractEnd, photoUrl, clubLogoUrl, footRaw, positionRaw, nationalityRaw, dateOfBirth, career, seasonStats };
     // Write-through: prime the cross-user cache so the next enrich of the same TM player skips scraping.
     await setCachedByTmId(best.id, result);
     return result;
@@ -10232,7 +10982,9 @@ async function sofaFetch(path, timeoutMs = 10000) {
 async function fetchPlayerStatsFromSofaScore(playerInfo) {
   try {
     // ── Check DB cache (24h) ──
-    const cacheKey = `sofascore_player_${normalizeStr(playerInfo.name)}_${playerInfo.generation || ''}`;
+    // v2 cache: response shape now includes `nationality` (added as TM-failure fallback).
+    // Bumping the key forces a one-time refresh; pre-v2 entries are ignored until they expire.
+    const cacheKey = `sofascore_player_v2_${normalizeStr(playerInfo.name)}_${playerInfo.generation || ''}`;
     try {
       const [cached] = await pool.query(
         'SELECT response_json FROM api_football_cache WHERE cache_key = ? AND expires_at > NOW()',
@@ -10246,20 +10998,30 @@ async function fetchPlayerStatsFromSofaScore(playerInfo) {
 
     // ── 1. Search player on SofaScore ──
     const searchName = playerInfo.name.trim();
-    const searchData = await sofaFetch(`/search/all?q=${encodeURIComponent(searchName)}&page=0`);
-    if (!searchData) return null;
-
-    // Extract player results
+    const searchQueries = buildNameSearchQueries(searchName);
     const playerResults = [];
-    if (searchData.results) {
-      for (const group of searchData.results) {
-        if (group.type === 'player' && group.entity) playerResults.push(group.entity);
-        if (group.type === 'player' && group.entities) playerResults.push(...group.entities);
+    const seenSofaIds = new Set();
+
+    for (let qi = 0; qi < searchQueries.length; qi++) {
+      if (qi > 0 && playerResults.length > 0) break; // first query was enough
+      const searchData = await sofaFetch(`/search/all?q=${encodeURIComponent(searchQueries[qi])}&page=0`);
+      if (!searchData) continue;
+      const collected = [];
+      if (searchData.results) {
+        for (const group of searchData.results) {
+          if (group.type === 'player' && group.entity) collected.push(group.entity);
+          if (group.type === 'player' && group.entities) collected.push(...group.entities);
+        }
       }
-    }
-    // Some API versions return flat array
-    if (playerResults.length === 0 && Array.isArray(searchData.players)) {
-      playerResults.push(...searchData.players);
+      if (collected.length === 0 && Array.isArray(searchData.players)) {
+        collected.push(...searchData.players);
+      }
+      for (const p of collected) {
+        if (p.id && seenSofaIds.has(p.id)) continue;
+        if (p.id) seenSofaIds.add(p.id);
+        playerResults.push(p);
+      }
+      if (qi < searchQueries.length - 1) await new Promise(r => setTimeout(r, 300));
     }
 
     if (playerResults.length === 0) {
@@ -10270,6 +11032,7 @@ async function fetchPlayerStatsFromSofaScore(playerInfo) {
     // ── 2. Find best match by name + birth year + nationality ──
     const normalizedSearch = searchName.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
     const birthYear = playerInfo.generation || null;
+    const playerDob = playerInfo.date_of_birth || null;
     let best = null;
     let bestScore = -1;
 
@@ -10283,11 +11046,17 @@ async function fetchPlayerStatsFromSofaScore(playerInfo) {
       else if (pShort.length >= 3 && (normalizedSearch.includes(pShort) || pShort.includes(normalizedSearch))) score += 40;
       else continue;
 
-      // Birth year
-      if (birthYear && p.dateOfBirthTimestamp) {
-        const pYear = new Date(p.dateOfBirthTimestamp * 1000).getFullYear();
-        if (pYear === birthYear) score += 30;
-        else if (Math.abs(pYear - birthYear) <= 1) score += 15;
+      // Birth date (strict: when full DOB is known, require exact match \u2014 eliminates homonyms)
+      if (p.dateOfBirthTimestamp) {
+        const candidateDob = new Date(p.dateOfBirthTimestamp * 1000).toISOString().slice(0, 10);
+        if (playerDob) {
+          if (candidateDob !== playerDob) continue;
+          score += 60; // exact DOB match \u2014 strongest possible signal
+        } else if (birthYear) {
+          const pYear = parseInt(candidateDob.slice(0, 4), 10);
+          if (pYear === birthYear) score += 30;
+          else if (Math.abs(pYear - birthYear) <= 1) score += 15;
+        }
       }
 
       // Team name match
@@ -10325,6 +11094,7 @@ async function fetchPlayerStatsFromSofaScore(playerInfo) {
         season: null,
         league: null,
         team: pl.team?.name || null,
+        nationality: pl.country?.name || best.country?.name || null,
         stats: { rating: null, appearances: 0, lineups: 0, minutes: 0, goals: 0, assists: 0 },
         per90: {},
         all_competitions: [],
@@ -10393,6 +11163,7 @@ async function fetchPlayerStatsFromSofaScore(playerInfo) {
       season: currentSeason.year || currentSeason.name,
       league: pl.team?.tournament?.uniqueTournament?.name || null,
       team: pl.team?.name || null,
+      nationality: pl.country?.name || best.country?.name || null,
       stats: s,
       per90: {
         goals: per90Fn(s.goals),
@@ -10487,6 +11258,14 @@ async function fetchPlayerStatsFromSofaScore(playerInfo) {
 
 // ── Shared enrichment logic (single source of truth for all enrichment paths) ──
 async function enrichOnePlayer(playerInfo, row, tmPath = null, options = {}) {
+  // Augment playerInfo with date_of_birth from row so secondary sources
+  // (TheSportsDB / Wikidata) can use name+DOB to disambiguate homonyms when
+  // Transfermarkt fails to return a result (and therefore no TM nationality).
+  if (!playerInfo.date_of_birth && row.date_of_birth) {
+    const dob = row.date_of_birth.toISOString?.()?.slice(0, 10) || String(row.date_of_birth).slice(0, 10);
+    playerInfo = { ...playerInfo, date_of_birth: dob };
+  }
+
   const [tsdb, wd, tm, perfStats] = await Promise.all([
     fetchPlayerDataFromSportsDB(playerInfo),
     fetchPlayerDataFromWikidata(playerInfo),
@@ -10509,6 +11288,9 @@ async function enrichOnePlayer(playerInfo, row, tmPath = null, options = {}) {
   let contractEnd = null; // always recalculate — clears stale values
   let newClub = row.club;
   let newLeague = row.league;
+  // Fallback nationality used only when TM doesn't return one. Wikidata (citizenship Q-IDs)
+  // takes priority over TheSportsDB (free-text), both gated on name + DOB matching upstream.
+  let fallbackNationality = null;
 
   // ── TheSportsDB ──────────────────────────────────────────────────────
   if (tsdb) {
@@ -10546,6 +11328,7 @@ async function enrichOnePlayer(playerInfo, row, tmPath = null, options = {}) {
       if (staticLeague) newLeague = staticLeague;
     }
     if (tsdb.strSigning && !ext.market_value) ext.market_value = tsdb.strSigning;
+    if (tsdb.strNationality) fallbackNationality = tsdb.strNationality.split(/[,;/]|\s{2,}/)[0].trim() || fallbackNationality;
   }
 
   // ── Wikidata ─────────────────────────────────────────────────────────
@@ -10568,6 +11351,8 @@ async function enrichOnePlayer(playerInfo, row, tmPath = null, options = {}) {
       const others = countryNames.filter(n => normalizeStr(n) !== registeredNat);
       if (others.length > 0) ext.nationality2 = others.join(', ');
       if (!row.nationality && countryNames.length > 0) ext.nationality_source = countryNames[0];
+      // Wikidata is structured (citizenship Q-ID → country label) — prefer it over TSDB's free-text strNationality
+      if (countryNames.length > 0) fallbackNationality = countryNames[0];
     }
 
     if (wd.teamMembershipIds?.length > 0) {
@@ -10593,6 +11378,7 @@ async function enrichOnePlayer(playerInfo, row, tmPath = null, options = {}) {
 
   // ── Transfermarkt (highest priority: contract, agent, market value, club) ──
   if (tm) {
+    if (tm.dateOfBirth) dateOfBirth = tm.dateOfBirth; // overrides TSDB + Wikidata
     if (tm.onLoan) {
       // Player is on loan: TM "Contrat jusqu'à" = loan end date, NOT parent club contract
       // Use "En contrat là-bas jusqu'à" for the real contract end with parent club
@@ -10610,6 +11396,23 @@ async function enrichOnePlayer(playerInfo, row, tmPath = null, options = {}) {
     if (tm.marketValue) ext.market_value = tm.marketValue;
     if (tm.agent) ext.agent = tm.agent;
     if (tm.tmId) ext.transfermarkt_id = tm.tmId;
+
+    // Register name aliases: the local (possibly truncated) name AND the canonical
+    // TM name both map to this player_id, so future imports of either variant find
+    // this record instead of creating a duplicate. recordPlayerAlias is idempotent
+    // and skips self-aliases internally.
+    try {
+      const tmCanonical = tm.canonicalName;
+      const localName = row.name;
+      if (row.id && tmCanonical) {
+        await recordPlayerAlias(row.id, tmCanonical, 'tm');
+      }
+      if (row.id && localName && tmCanonical && normalizeStr(localName) !== normalizeStr(tmCanonical)) {
+        await recordPlayerAlias(row.id, localName, 'tm');
+      }
+    } catch (e) {
+      console.warn('[enrich] alias record failed:', e?.message);
+    }
     if (tm.heightCm && !ext.height) ext.height = `${tm.heightCm} cm`;
     if (tm.currentClub) newClub = tm.currentClub; // TM is most up-to-date
     // TM career overrides Wikidata career (more complete & accurate dates)
@@ -10633,6 +11436,10 @@ async function enrichOnePlayer(playerInfo, row, tmPath = null, options = {}) {
   if (perfStats) {
     ext.performance_stats = perfStats;
     if (perfStats.sofascore_id) ext.sofascore_id = perfStats.sofascore_id;
+    // SofaScore handles abbreviated names ("A. Albertini") via shortName lookup —
+    // it's often the only source that resolves when Wikidata/TheSportsDB miss.
+    // Lowest priority of the three (free-text), so only fill if nothing better found.
+    if (!fallbackNationality && perfStats.nationality) fallbackNationality = perfStats.nationality;
     console.log(`[enrich] SofaScore stats: ${perfStats.stats?.appearances || 0} apps, rating ${perfStats.stats?.rating || '—'}, season ${perfStats.season}`);
   }
 
@@ -10688,11 +11495,35 @@ async function enrichOnePlayer(playerInfo, row, tmPath = null, options = {}) {
   if (newClub) ext.enriched_club = newClub;
   if (newLeague) ext.enriched_league = newLeague;
 
+  // ── Persist canonical TM position in external_data ───────────────────
+  // The hero reads from ext.position_canonical so it always matches what the
+  // info tab shows, even when players.position couldn't be updated (mapPos null).
+  const mapTmPosition = (raw) => {
+    if (!raw) return null;
+    const s = String(raw).toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '');
+    if (s.includes('gardien')) return 'GK';
+    if (s.includes('lateral droit') || s.includes('arriere droit')) return 'LD';
+    if (s.includes('lateral gauche') || s.includes('arriere gauche')) return 'LG';
+    if (s.includes('defenseur central') || s.includes('stopper')) return 'DC';
+    if (s.includes('milieu defensif') || s.includes('sentinelle')) return 'MDef';
+    if (s.includes('milieu offensif') || s.includes('meneur')) return 'MO';
+    if (s.includes('ailier droit') || s.includes('extremite droite')) return 'AD';
+    if (s.includes('ailier gauche') || s.includes('extremite gauche')) return 'AG';
+    if (s.includes('avant-centre') || s.includes('avant centre') || s.includes('attaquant') || s.includes('buteur') || s.includes('second attaquant')) return 'ATT';
+    if (s.includes('milieu central') || s.includes('milieu de terrain') || s.includes('milieu')) return 'MC';
+    return null;
+  };
+  const tmPosCanonical = mapTmPosition(tm?.positionRaw);
+  if (tm?.positionRaw) ext.tm_position_raw = tm.positionRaw;
+  if (tmPosCanonical) ext.position_canonical = tmPosCanonical;
+
   // ── Build SET clauses ────────────────────────────────────────────────
   const setClauses = ['external_data = ?', 'external_data_fetched_at = NOW()', 'updated_at = NOW()', 'contract_end = ?'];
   const params = [JSON.stringify(ext), contractEnd];
 
-  if (newsLabel) { setClauses.push('has_news = ?'); params.push(newsLabel); }
+  // has_news always reflects the latest enrichment — pass null to clear stale badges
+  // from prior runs whose changes are no longer present after this fresh pass.
+  setClauses.push('has_news = ?'); params.push(newsLabel || null);
 
   if (dateOfBirth) {
     setClauses.push('date_of_birth = ?'); params.push(dateOfBirth);
@@ -10706,6 +11537,18 @@ async function enrichOnePlayer(playerInfo, row, tmPath = null, options = {}) {
 
   // ── TM ID: persist in dedicated column for future enrichment (skip name search) ──
   if (tm?.tmId) { setClauses.push('transfermarkt_id = ?'); params.push(tm.tmId); }
+
+  // ── Full canonical name: replace truncated/initialed names with TM canonical ──
+  // e.g. "A Adorante" → "Andrea Adorante", "K. Mbappé" → "Kylian Mbappé Lottin".
+  // shouldUseCanonicalName gates by last-name match + initial/expansion heuristic
+  // so we never overwrite a different person or shorten a manually-typed full name.
+  // The local name was already recorded as an alias above (line ~11005), so any
+  // lookups (UI search, imports) for the old form still resolve to this player.
+  if (tm?.canonicalName && row.name && shouldUseCanonicalName(row.name, tm.canonicalName)) {
+    setClauses.push('name = ?');
+    params.push(String(tm.canonicalName).slice(0, 255));
+    console.log(`[enrich] Name expanded: "${row.name}" → "${tm.canonicalName}"`);
+  }
 
   // Club: TM is authoritative — always write when TM returns one
   if (tm?.currentClub) {
@@ -10740,7 +11583,7 @@ async function enrichOnePlayer(playerInfo, row, tmPath = null, options = {}) {
     }
   }
 
-  // ── TM position: update from profile if missing ───────────────────
+  // ── TM position: sync players.position with the canonical computed above ──
   if (tm?.positionRaw) {
     const mapPos = (raw) => {
       const s = raw.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
@@ -10757,26 +11600,24 @@ async function enrichOnePlayer(playerInfo, row, tmPath = null, options = {}) {
       return null;
     };
     const posZone = { GK: 'Gardien', DC: 'Défenseur', LD: 'Défenseur', LG: 'Défenseur', MDef: 'Milieu', MC: 'Milieu', MO: 'Milieu', AD: 'Attaquant', AG: 'Attaquant', ATT: 'Attaquant' };
-    const pos = mapPos(tm.positionRaw);
+    const pos = tmPosCanonical;
     if (pos) {
       setClauses.push('position = ?'); params.push(pos);
       setClauses.push('zone = ?'); params.push(posZone[pos] || '');
     }
   }
 
-  // ── TM nationality: update if missing, unknown, or different ──────
-  if (tm?.nationalityRaw) {
-    const nat = tm.nationalityRaw.split(/\s{2,}/)[0].trim();
-    if (nat) {
-      const currentNat = normalizeStr(row.nationality || '');
-      const tmNat = normalizeStr(nat);
-      console.log(`[enrich] Nationality check: DB="${row.nationality}" (norm="${currentNat}") vs TM="${nat}" (norm="${tmNat}") → ${currentNat !== tmNat ? 'UPDATING' : 'same'}`);
-      if (!row.nationality || row.nationality === 'Inconnu' || currentNat !== tmNat) {
-        setClauses.push('nationality = ?'); params.push(nat);
-      }
+  // ── Nationality: TM is authoritative; fall back to Wikidata/TSDB/SofaScore ──
+  // Sources matched the player by name + DOB so they're trusted over potentially-stale DB values.
+  const newNat = tm?.nationalityRaw
+    ? tm.nationalityRaw.split(/\s{2,}/)[0].trim()
+    : (fallbackNationality || null);
+  if (newNat) {
+    const currentNat = normalizeStr(row.nationality || '');
+    const sourceNat = normalizeStr(newNat);
+    if (!row.nationality || row.nationality === 'Inconnu' || currentNat !== sourceNat) {
+      setClauses.push('nationality = ?'); params.push(newNat);
     }
-  } else {
-    console.log(`[enrich] No TM nationalityRaw found (tm=${!!tm}, nationalityRaw=${tm?.nationalityRaw})`);
   }
 
   // ── TM club logo: save to club_logos if not already present ────────
@@ -11284,8 +12125,10 @@ app.post("/api/functions/:name", authMiddleware, async (req, res) => {
       if (ogM) clubName = decodeHtmlEntities(ogM[1].split(' - ')[0].trim());
 
       // ── Club logo ──
+      // The badge img inside data-header__profile-container has no class on
+      // TM's current HTML, so match the container then the first img inside.
       let clubLogo = null;
-      const logoM = html.match(/data-header__profile-image[^>]*src="([^"]+)"/);
+      const logoM = html.match(/data-header__profile-container[\s\S]*?<img[^>]*src="([^"]+)"/);
       if (logoM) clubLogo = logoM[1];
 
       // ── League from breadcrumb or header ──
@@ -11714,7 +12557,7 @@ app.post("/api/functions/:name", authMiddleware, async (req, res) => {
         }
         try {
           const [rows] = await pool.query(
-            'SELECT id, name, club, league, nationality, date_of_birth, contract_end, external_data, photo_url, foot FROM players WHERE id = ?',
+            'SELECT id, name, club, league, nationality, generation, date_of_birth, contract_end, external_data, photo_url, transfermarkt_id, foot FROM players WHERE id = ?',
             [p.id]
           );
           if (!rows[0]) continue;
@@ -11725,14 +12568,36 @@ app.post("/api/functions/:name", authMiddleware, async (req, res) => {
             nationality: row.nationality,
             generation: row.generation ? parseInt(row.generation) : null,
           };
+          // Reuse stored transfermarkt_id (from any prior successful enrich) so we skip
+          // the ambiguity-prone name search — same trick the single-player endpoint uses.
+          let tmPath = null;
+          if (row.transfermarkt_id) {
+            const slug = normalizeStr(row.name).replace(/ /g, '-') || 'player';
+            tmPath = `/${slug}/profil/spieler/${row.transfermarkt_id}`;
+          }
 
-          const { setClauses, params } = await enrichOnePlayer(playerInfo, row);
-          params.push(p.id);
-          await pool.query(`UPDATE players SET ${setClauses.join(', ')} WHERE id = ?`, params);
-          done++;
-          console.log(`[enrich-all] ${done}/${total} ${row.name} ✓`);
-          // Await spendCredit so canUseCredit on next iteration sees the updated count
-          if (!_isAdmin2) await spendCredit(req.user.id, `Enrichissement: ${row.name}`);
+          let result = await enrichOnePlayer(playerInfo, row, tmPath);
+          if (result.ambiguous) {
+            // No UI to disambiguate in batch mode — pick the highest-scored TM candidate
+            // and re-run via direct path. DOB-aware scoring already favors the right one.
+            const top = result.candidates?.[0];
+            if (top?.path) {
+              console.log(`[enrich-all] ${row.name} — ${result.candidates.length} candidats, auto-pick: ${top.name}`);
+              result = await enrichOnePlayer(playerInfo, row, top.path);
+            }
+          }
+          if (result.ambiguous) {
+            errors++;
+            console.log(`[enrich-all] ${row.name} — toujours ambigu, passé`);
+          } else {
+            const { setClauses, params } = result;
+            params.push(p.id);
+            await pool.query(`UPDATE players SET ${setClauses.join(', ')} WHERE id = ?`, params);
+            done++;
+            console.log(`[enrich-all] ${done}/${total} ${row.name} ✓`);
+            // Await spendCredit so canUseCredit on next iteration sees the updated count
+            if (!_isAdmin2) await spendCredit(req.user.id, `Enrichissement: ${row.name}`);
+          }
         } catch (e) {
           errors++;
           console.error(`[enrich-all] Error for ${p.name}:`, e.message);
@@ -13183,17 +14048,24 @@ app.post("/api/functions/:name", authMiddleware, async (req, res) => {
         if (!searchResp.ok) throw new Error(`TM club search returned ${searchResp.status}`);
         const searchHtml = await searchResp.text();
 
-        // Find club in the clubs results table (hauptlink containing /startseite/verein/)
+        // Find club in the clubs results table. TM anchors put `title` before
+        // `href`, so we match the anchor block first and pull each attribute
+        // separately. The previous order-sensitive regex never matched and the
+        // fallback could pick up an unrelated verein link from elsewhere on
+        // the page.
         let clubSlug, clubId;
-        const clubLinkMatch = searchHtml.match(/<td[^>]*class="[^"]*hauptlink[^"]*"[^>]*>\s*<a[^>]*href="(\/([^"]*?)\/startseite\/verein\/(\d+))"[^>]*title="([^"]*)"/);
-        if (clubLinkMatch) {
-          clubSlug = clubLinkMatch[2]; clubId = clubLinkMatch[3]; clubName = clubLinkMatch[4];
-        } else {
-          // Fallback: first verein link anywhere
-          const fallback = searchHtml.match(/href="(\/([^"]*?)\/startseite\/verein\/(\d+))"/);
-          if (!fallback) return res.json({ players: [], clubName: '' });
-          clubSlug = fallback[2]; clubId = fallback[3]; clubName = clubQuery;
+        const clubAnchorMatch = searchHtml.match(/<td[^>]*class="[^"]*hauptlink[^"]*"[^>]*>\s*<a\b([^>]+)>([^<]*)<\/a>/);
+        if (clubAnchorMatch) {
+          const attrs = clubAnchorMatch[1];
+          const hrefM = attrs.match(/href="\/([\w-]+)\/startseite\/verein\/(\d+)"/);
+          const titleM = attrs.match(/title="([^"]*)"/);
+          if (hrefM) {
+            clubSlug = hrefM[1];
+            clubId = hrefM[2];
+            clubName = (titleM ? titleM[1] : clubAnchorMatch[2]).replace(/&#0?39;/g, "'").replace(/&amp;/g, '&').trim();
+          }
         }
+        if (!clubId) return res.json({ players: [], clubName: '' });
 
         // Step 2: fetch squad page
         await new Promise(r => setTimeout(r, 400));
@@ -14872,6 +15744,61 @@ pool.query(`CREATE TABLE IF NOT EXISTS player_viewer_links (
   FOREIGN KEY (player_id) REFERENCES players(id) ON DELETE CASCADE
 )`).catch(err => { if (!err?.message?.includes('already exists')) console.warn('[warn] player_viewer_links:', err?.message); });
 
+// Bridge between imported player names (often abbreviated/truncated, e.g. "K. Mbappé")
+// and the canonical player record (e.g. "Kylian Mbappé" — typically the Transfermarkt name).
+// alias_norm is the normalizeStr() form of the variant; same alias_norm can map to multiple
+// players (homonyms), so reads must disambiguate by club. Written from 3 sources:
+//   - 'import' : every successful Wyscout import row registers its raw name as alias
+//   - 'tm'     : TM enrichment registers the canonical name returned by Transfermarkt
+//   - 'manual' : admin override
+pool.query(`CREATE TABLE IF NOT EXISTS player_name_aliases (
+  alias_norm VARCHAR(191) NOT NULL,
+  player_id CHAR(36) NOT NULL,
+  source ENUM('import','tm','manual') NOT NULL DEFAULT 'import',
+  raw_name VARCHAR(255) NOT NULL,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (alias_norm, player_id),
+  INDEX idx_pna_player (player_id),
+  FOREIGN KEY (player_id) REFERENCES players(id) ON DELETE CASCADE
+)`).catch(err => { if (!err?.message?.includes('already exists')) console.warn('[warn] player_name_aliases:', err?.message); });
+
+// ─── Shared TM enrichment cache (cross-user) ────────────────────────────────
+// One row per TM player ID with the full scrape payload. Anyone who needs
+// the data for tm_id=X gets it from here — we only scrape when the row is
+// missing or expires_at <= NOW(). Default TTL 24h: the nightly cron refreshes
+// after expiry, and manual user-triggered enrichments within a 24h window
+// serve from cache (zero HTTP calls to TM). Replaces the older 24h entries
+// in api_football_cache that used cache_key='tm-player:${tmId}'.
+pool.query(`CREATE TABLE IF NOT EXISTS tm_player_cache (
+  tm_id VARCHAR(50) NOT NULL PRIMARY KEY,
+  canonical_name VARCHAR(255) NULL,
+  payload_json LONGTEXT NOT NULL,
+  fetched_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  expires_at DATETIME NOT NULL,
+  INDEX idx_tm_cache_expires (expires_at)
+)`).catch(err => { if (!err?.message?.includes('already exists')) console.warn('[warn] tm_player_cache:', err?.message); });
+
+// ─── Shared name → TM-ID resolution map ──────────────────────────────────────
+// When user A successfully resolves "Kylian Mbappé / PSG" to TM id 342229,
+// we record it here so user B's enrichment of the same name skips the TM
+// search entirely and reads tm_player_cache directly. confidence is the
+// scoring from the search (higher = stronger match). resolved_at is bumped
+// each time we re-confirm. Names don't change much so we don't expire
+// entries automatically; the backfill / cron overwrites stale rows.
+// Note: VARCHAR widths (120, 80) keep the composite PK under MySQL's 1000-byte
+// limit for utf8mb4 (120*4 + 80*4 = 800 bytes). Player names rarely exceed
+// 120 chars; club names rarely exceed 80. Anything longer gets truncated for
+// the resolution lookup — the rest of the row keeps the full canonical name.
+pool.query(`CREATE TABLE IF NOT EXISTS tm_name_resolution (
+  name_norm VARCHAR(120) NOT NULL,
+  club_norm VARCHAR(80) NOT NULL DEFAULT '',
+  tm_id VARCHAR(50) NOT NULL,
+  confidence TINYINT NOT NULL DEFAULT 0,
+  resolved_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (name_norm, club_norm),
+  INDEX idx_tnr_tm (tm_id)
+)`).catch(err => { if (!err?.message?.includes('already exists')) console.warn('[warn] tm_name_resolution:', err?.message); });
+
 pool.query(`CREATE TABLE IF NOT EXISTS club_profiles_cache (
   id INT AUTO_INCREMENT PRIMARY KEY,
   club_name VARCHAR(255) NOT NULL,
@@ -15935,7 +16862,18 @@ async function cronEnrichUser(userId) {
           nationality: row.nationality,
           generation: row.generation ? parseInt(row.generation) : null,
         };
-        const result = await enrichOnePlayer(playerInfo, row);
+        // Reuse stored transfermarkt_id when present — skips the ambiguity-prone name search
+        let tmPath = null;
+        if (row.transfermarkt_id) {
+          const slug = normalizeStr(row.name).replace(/ /g, '-') || 'player';
+          tmPath = `/${slug}/profil/spieler/${row.transfermarkt_id}`;
+        }
+        let result = await enrichOnePlayer(playerInfo, row, tmPath);
+        if (result.ambiguous) {
+          // No UI to disambiguate in cron — pick the highest-scored TM candidate
+          const top = result.candidates?.[0];
+          if (top?.path) result = await enrichOnePlayer(playerInfo, row, top.path);
+        }
         if (result.ambiguous) { errors++; continue; }
         const { setClauses, params } = result;
         params.push(p.id, userId);
@@ -16737,6 +17675,49 @@ app.post("/api/admin/cron-trigger", authMiddleware, ensureAdmin, async (req, res
   return res.json({ ok: true, job, dry_run: !!dry_run });
 });
 
+// ── External cron trigger ──────────────────────────────────────────────────
+// Same job catalog as /api/admin/cron-trigger but authenticated by a shared
+// secret instead of a logged-in admin session — designed for Vercel Cron Jobs
+// (which sends `Authorization: Bearer ${CRON_SECRET}` automatically) or any
+// external scheduler. node-cron in server/index.js only runs when the dev
+// server is alive, so on Vercel (serverless) it never fires; this endpoint
+// is the production replacement.
+//
+// CRON_SECRET must be set in env. If missing, the endpoint refuses every call.
+app.post("/api/cron/:job", async (req, res) => {
+  const secret = process.env.CRON_SECRET;
+  if (!secret) {
+    return res.status(503).json({ error: 'CRON_SECRET not configured on server' });
+  }
+  const auth = req.headers.authorization || '';
+  const provided = auth.startsWith('Bearer ') ? auth.slice(7) : (req.headers['x-cron-secret'] || '');
+  if (provided !== secret) {
+    return res.status(401).json({ error: 'Invalid cron secret' });
+  }
+  const jobs = {
+    'nightly-enrichment': () => runNightlyEnrichment(),
+    'contract-alerts':    () => runContractAlerts(false),
+    'match-reminders':    () => runMatchReminders(false),
+    'report-reminders':   () => runReportReminders(false),
+    'token-cleanup':      () => runTokenCleanup(),
+    'subscription-expiry':() => runSubscriptionExpiryAlerts(false),
+    'inactive-cleanup':   () => runInactiveUserCleanup(false),
+    'buzz-scrape':        () => runBuzzScrape(),
+    'news-scrape':        () => runNewsScrape(),
+    'image-migration':    () => runImageBlobMigration({ limit: 50 }),
+    'sb-form-alerts':     () => runWatchlistFormAlerts(),
+    'sb-sync':            () => runStatsBombSyncJob(false),
+  };
+  const job = req.params.job;
+  if (!jobs[job]) return res.status(400).json({ error: 'Unknown job', known: Object.keys(jobs) });
+  const started = runCronJobGuarded(job, jobs[job]);
+  if (!started) {
+    return res.status(409).json({ error: 'already_running' });
+  }
+  console.log(`[cron-external] job=${job} triggered`);
+  return res.json({ ok: true, job, startedAt: new Date().toISOString() });
+});
+
 // ── User integrations (Perplexity / Pappers / Drop Contact) ─────────────────
 
 pool.query(`CREATE TABLE IF NOT EXISTS user_integrations (
@@ -16986,6 +17967,7 @@ pool.query(`CREATE TABLE IF NOT EXISTS editorial_articles (
 )`).catch(err => { if (!err?.message?.includes('already exists')) console.warn('[warn] editorial_articles table:', err?.message); });
 pool.query("ALTER TABLE editorial_articles ADD COLUMN lang VARCHAR(10) NULL").catch(err => { if (err.errno !== 1060) console.warn('[warn] editorial lang col:', err?.message); });
 pool.query("ALTER TABLE custom_fields ADD COLUMN field_hint TEXT NULL").catch(err => { if (err.errno !== 1060) console.warn('[warn] custom_fields field_hint col:', err?.message); });
+pool.query("ALTER TABLE custom_fields ADD COLUMN applies_to_all TINYINT(1) NOT NULL DEFAULT 1").catch(err => { if (err.errno !== 1060) console.warn('[warn] custom_fields applies_to_all col:', err?.message); });
 
 function hasEditorialRole(roles) {
   return roles.some(r => ['admin','rédacteur','redacteur','editeur','éditeur'].includes(r.toLowerCase()));
