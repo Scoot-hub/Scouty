@@ -13,6 +13,10 @@ interface UiPreferences {
   currency: string;       // ISO 4217 code, e.g. 'EUR', 'USD'
   dateFormat: DateFormat; // 'DD/MM/YYYY' | 'MM/DD/YYYY' | 'YYYY-MM-DD'
   timeFormat: TimeFormat; // '24h' | '12h'
+  /** When true, the News page auto-translates foreign-language articles into
+   *  the active UI language (uses cached translations in the listing and
+   *  fires a fresh DeepL translation when an article is opened). */
+  autoTranslateNews: boolean;
 }
 
 interface UiPreferencesContextType extends UiPreferences {
@@ -26,6 +30,7 @@ interface UiPreferencesContextType extends UiPreferences {
   setCurrency: (value: string) => void;
   setDateFormat: (value: DateFormat) => void;
   setTimeFormat: (value: TimeFormat) => void;
+  setAutoTranslateNews: (value: boolean) => void;
 }
 
 const STORAGE_KEY = 'scouthub-ui-preferences';
@@ -45,6 +50,7 @@ const defaultPreferences: UiPreferences = {
   currency: 'EUR',
   dateFormat: 'DD/MM/YYYY',
   timeFormat: '24h',
+  autoTranslateNews: true,
 };
 
 const UiPreferencesContext = createContext<UiPreferencesContextType>({
@@ -59,6 +65,7 @@ const UiPreferencesContext = createContext<UiPreferencesContextType>({
   setCurrency: () => {},
   setDateFormat: () => {},
   setTimeFormat: () => {},
+  setAutoTranslateNews: () => {},
 });
 
 export function UiPreferencesProvider({ children }: { children: ReactNode }) {
@@ -96,6 +103,7 @@ export function UiPreferencesProvider({ children }: { children: ReactNode }) {
     setCurrency: (value) => setPreferences((prev) => ({ ...prev, currency: value })),
     setDateFormat: (value) => setPreferences((prev) => ({ ...prev, dateFormat: value })),
     setTimeFormat: (value) => setPreferences((prev) => ({ ...prev, timeFormat: value })),
+    setAutoTranslateNews: (value) => setPreferences((prev) => ({ ...prev, autoTranslateNews: value })),
   }), [preferences]);
 
   return <UiPreferencesContext.Provider value={value}>{children}</UiPreferencesContext.Provider>;
