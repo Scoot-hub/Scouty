@@ -579,7 +579,7 @@ CREATE TABLE IF NOT EXISTS community_posts (
   created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   INDEX idx_community_posts_user (user_id),
   INDEX idx_community_posts_category (category),
-  INDEX idx_community_posts_created (created_at DESC),
+  INDEX idx_community_posts_created (created_at),
   FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
 );
 
@@ -848,7 +848,7 @@ CREATE TABLE IF NOT EXISTS news_articles (
   source VARCHAR(50) NOT NULL DEFAULT 'sofascore',
   scraped_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   UNIQUE KEY uniq_news_url (article_url(191)),
-  INDEX idx_news_published (published_at DESC),
+  INDEX idx_news_published (published_at),
   INDEX idx_news_category (category),
   INDEX idx_news_source (source, published_at)
 );
@@ -867,8 +867,8 @@ CREATE TABLE IF NOT EXISTS football_buzz (
   scraped_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   content_hash CHAR(64) NOT NULL,
   UNIQUE KEY uniq_buzz_hash (content_hash),
-  INDEX idx_buzz_score (buzz_score DESC, published_at DESC),
-  INDEX idx_buzz_date (published_at DESC)
+  INDEX idx_buzz_score (buzz_score, published_at),
+  INDEX idx_buzz_date (published_at)
 );
 
 -- ── Championships ─────────────────────────────────────────────────────────────

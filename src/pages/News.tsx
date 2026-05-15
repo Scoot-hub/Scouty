@@ -1,19 +1,22 @@
 import { useState, useCallback, useRef, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
-import { useQuery } from '@tanstack/react-query';
+import { useInfiniteQuery } from '@tanstack/react-query';
 import { useIsAdmin } from '@/hooks/use-admin';
+import { useUiPreferences } from '@/contexts/UiPreferencesContext';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
+import { Switch } from '@/components/ui/switch';
 import { toast } from 'sonner';
 import { cn } from '@/lib/utils';
 import {
   Search, RefreshCw, Newspaper, ExternalLink, Calendar,
-  Filter, X, ChevronLeft, ChevronRight, User, Clock,
+  Filter, X, User, Clock,
   Zap, ArrowLeft, Loader2, BookOpen, AlertCircle, PenLine,
+  Languages, Globe,
 } from 'lucide-react';
 import { Link } from 'react-router-dom';
 
@@ -33,12 +36,53 @@ interface UnifiedItem {
   published_at: string;
   source: string;
   has_content: 0 | 1;
+  lang?: string | null;
+  country?: string | null;
 }
+
+interface CountryFacet { country: string; count: number }
 
 interface UnifiedResponse {
   items: UnifiedItem[];
   total: number;
   categories: { category: string; count: number }[];
+  countries: CountryFacet[];
+}
+
+// ── Country / language metadata ──────────────────────────────────────────────
+
+const COUNTRY_META: Record<string, { name: string; lang: string }> = {
+  FR: { name: 'France',     lang: 'fr' },
+  IT: { name: 'Italie',     lang: 'it' },
+  ES: { name: 'Espagne',    lang: 'es' },
+  GB: { name: 'Angleterre', lang: 'en' },
+  DE: { name: 'Allemagne',  lang: 'de' },
+  PT: { name: 'Portugal',   lang: 'pt' },
+};
+
+const LANG_LABEL: Record<string, string> = { fr: 'Français', it: 'Italiano', es: 'Español', en: 'English', de: 'Deutsch', pt: 'Português' };
+
+function countryName(country?: string | null) {
+  if (!country) return null;
+  return COUNTRY_META[country.toUpperCase()]?.name || country;
+}
+
+// Use flagcdn.com SVG flags — Windows doesn't ship colored flag-emoji fonts so
+// the unicode 🇪🇸 sequence falls back to "ES" text. The CDN is free, no key,
+// no rate limit, ~600 bytes per flag SVG, served with long cache headers.
+function Flag({ country, className = '' }: { country?: string | null; className?: string }) {
+  if (!country) return null;
+  const code = country.toLowerCase();
+  if (!/^[a-z]{2}$/.test(code)) return null;
+  return (
+    <img
+      src={`https://flagcdn.com/w40/${code}.png`}
+      srcSet={`https://flagcdn.com/w80/${code}.png 2x`}
+      alt={countryName(country) || code}
+      loading="lazy"
+      className={cn('inline-block object-cover rounded-[2px]', className)}
+    />
+  );
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -71,9 +115,23 @@ interface ReaderState {
   loading: boolean;
   error: string | null;
   fallback_url: string | null;
+  /** Currently-displayed title (original or translated) */
+  displayTitle?: string;
+  /** Currently-displayed excerpt (original or translated) */
+  displayExcerpt?: string | null;
+  /** If truthy, the content/title/excerpt shown is translated to this language. */
+  translatedTo?: string | null;
+  /** Translation in-flight indicator */
+  translating?: boolean;
 }
 
-function ArticleReader({ state, onClose }: { state: ReaderState; onClose: () => void }) {
+function ArticleReader({ state, onClose, onTranslate, onShowOriginal, targetLang }: {
+  state: ReaderState;
+  onClose: () => void;
+  onTranslate: () => void;
+  onShowOriginal: () => void;
+  targetLang: string;
+}) {
   const [imgError, setImgError] = useState(false);
   const panelRef = useRef<HTMLDivElement>(null);
 
@@ -84,9 +142,13 @@ function ArticleReader({ state, onClose }: { state: ReaderState; onClose: () => 
     return () => window.removeEventListener('keydown', handler);
   }, [onClose]);
 
-  const { item, content, loading, error, fallback_url } = state;
+  const { item, content, loading, error, fallback_url, translatedTo, translating } = state;
   const isBuzz = item.type === 'buzz';
   const isEditorial = item.type === 'editorial';
+  const displayTitle   = state.displayTitle   ?? item.title;
+  const displayExcerpt = state.displayExcerpt ?? item.excerpt;
+  // Translation only makes sense for foreign-press articles whose language differs from the user's target.
+  const canTranslate = item.type === 'article' && !!item.lang && item.lang !== targetLang;
 
   return (
     <>
@@ -106,7 +168,13 @@ function ArticleReader({ state, onClose }: { state: ReaderState; onClose: () => 
           >
             <ArrowLeft className="w-4 h-4" /> Retour
           </button>
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-2 flex-wrap justify-end">
+            {item.country && (
+              <Badge variant="outline" className="text-[10px] gap-1.5 pl-1" title={countryName(item.country) || undefined}>
+                <Flag country={item.country} className="w-4 h-3" />
+                {countryName(item.country)}
+              </Badge>
+            )}
             {item.source === 'footballbuzz' ? (
               <Badge className="bg-orange-500/15 text-orange-600 border-orange-200 gap-1 text-[10px]">
                 <Zap className="w-3 h-3" /> Football Buzz
@@ -117,6 +185,31 @@ function ArticleReader({ state, onClose }: { state: ReaderState; onClose: () => 
               </Badge>
             ) : (
               <Badge variant="outline" className="text-[10px]">{sourceLabel(item.source)}</Badge>
+            )}
+            {canTranslate && (
+              translatedTo ? (
+                <Button
+                  variant="outline" size="sm"
+                  onClick={onShowOriginal}
+                  className="h-7 gap-1.5 text-[11px]"
+                  title={`Voir en ${LANG_LABEL[item.lang || ''] || item.lang}`}
+                >
+                  <Globe className="w-3.5 h-3.5" /> Original
+                </Button>
+              ) : (
+                <Button
+                  variant="default" size="sm"
+                  onClick={onTranslate}
+                  disabled={translating}
+                  className="h-7 gap-1.5 text-[11px]"
+                  title={`Traduire en ${LANG_LABEL[targetLang] || targetLang}`}
+                >
+                  {translating
+                    ? <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                    : <Languages className="w-3.5 h-3.5" />}
+                  Traduire
+                </Button>
+              )
             )}
             <a
               href={item.url}
@@ -149,11 +242,16 @@ function ArticleReader({ state, onClose }: { state: ReaderState; onClose: () => 
             <div className="flex items-center gap-2 flex-wrap">
               {item.category && <Badge className="text-[10px]">{item.category}</Badge>}
               <span className="text-xs text-muted-foreground">{sourceLabel(item.source)}</span>
+              {translatedTo && (
+                <Badge variant="secondary" className="text-[10px] gap-1">
+                  <Languages className="w-3 h-3" /> Traduit ({LANG_LABEL[translatedTo] || translatedTo})
+                </Badge>
+              )}
             </div>
 
             {/* Title */}
             <h1 className={cn('font-black leading-tight tracking-tight', isBuzz ? 'text-lg' : 'text-2xl')}>
-              {item.title}
+              {displayTitle}
             </h1>
 
             {/* Meta */}
@@ -204,10 +302,10 @@ function ArticleReader({ state, onClose }: { state: ReaderState; onClose: () => 
                 {/* Render markdown-ish content — strip HTML tags for safety, render as paragraphs */}
                 <ArticleContentRenderer content={content} />
               </div>
-            ) : item.excerpt ? (
+            ) : displayExcerpt ? (
               /* No full content yet — show excerpt + load button */
               <div className="space-y-4">
-                <p className="text-sm text-foreground/80 leading-relaxed">{item.excerpt}</p>
+                <p className="text-sm text-foreground/80 leading-relaxed">{displayExcerpt}</p>
                 {!isBuzz && (
                   <div className="flex items-center gap-3 pt-2">
                     <a href={item.url} target="_blank" rel="noopener noreferrer">
@@ -369,6 +467,15 @@ function ItemCard({ item, onClick }: { item: UnifiedItem; onClick: () => void })
                 : null}
           </div>
         )}
+        {/* Country flag overlay (top-right) — only on press articles */}
+        {item.country && !isBuzz && (
+          <div
+            className="absolute top-2.5 right-2.5 bg-background/85 backdrop-blur-sm rounded-md p-1 leading-none shadow-sm"
+            title={countryName(item.country) || undefined}
+          >
+            <Flag country={item.country} className="w-5 h-[14px] block" />
+          </div>
+        )}
       </div>
 
       {/* Body */}
@@ -409,77 +516,196 @@ const PAGE_SIZE = 12;
 type TypeFilter = '' | 'article' | 'buzz' | 'editorial';
 
 export default function News() {
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
   const { data: isAdmin } = useIsAdmin();
   const navigate = useNavigate();
+  const { autoTranslateNews, setAutoTranslateNews } = useUiPreferences();
+
+  // Translation target = current UI language (fallback to FR). Drives the
+  // "Traduire en …" button label and the request to /api/news/translate.
+  const i18nLang = (i18n.language || 'fr').slice(0, 2).toLowerCase();
+  const targetLang = (['fr','en','es','de','it','pt'].includes(i18nLang) ? i18nLang : 'fr');
 
   const [search, setSearch]     = useState('');
   const [category, setCategory] = useState('');
   const [typeFilter, setTypeFilter] = useState<TypeFilter>('');
-  const [page, setPage]         = useState(0);
+  const [selectedCountries, setSelectedCountries] = useState<string[]>([]);
   const [refreshing, setRefreshing] = useState(false);
   const [reader, setReader]     = useState<ReaderState | null>(null);
 
-  const params = new URLSearchParams({
-    limit: String(PAGE_SIZE),
-    offset: String(page * PAGE_SIZE),
-    ...(search     ? { search }     : {}),
-    ...(category   ? { category }   : {}),
-    ...(typeFilter ? { type: typeFilter } : {}),
-  });
-
-  const { data, isLoading, refetch } = useQuery<UnifiedResponse>({
-    queryKey: ['news-unified', search, category, typeFilter, page],
-    queryFn: async () => {
+  const {
+    data,
+    isLoading,
+    refetch,
+    fetchNextPage,
+    hasNextPage,
+    isFetchingNextPage,
+  } = useInfiniteQuery<UnifiedResponse>({
+    queryKey: [
+      'news-unified',
+      search, category, typeFilter,
+      selectedCountries.join(','),
+      autoTranslateNews ? targetLang : '',
+    ],
+    queryFn: async ({ pageParam = 0 }) => {
+      const params = new URLSearchParams({
+        limit: String(PAGE_SIZE),
+        offset: String(pageParam),
+        ...(search     ? { search }     : {}),
+        ...(category   ? { category }   : {}),
+        ...(typeFilter ? { type: typeFilter } : {}),
+        ...(selectedCountries.length ? { countries: selectedCountries.join(',') } : {}),
+        // Auto-translate ON ⇒ ask the server to swap cached translations into
+        // the listing. Server does NOT call DeepL from /news/unified, so this
+        // is free — only articles previously opened-and-translated swap.
+        ...(autoTranslateNews ? { translate: targetLang } : {}),
+      });
       const res = await fetch(`${API}/news/unified?${params}`, { credentials: 'include' });
       if (!res.ok) throw new Error('Erreur chargement actualités');
       return res.json();
     },
+    getNextPageParam: (lastPage, allPages) => {
+      const loaded = allPages.reduce((acc, p) => acc + (p.items?.length || 0), 0);
+      if (!lastPage || loaded >= (lastPage.total || 0)) return undefined;
+      return loaded;
+    },
+    initialPageParam: 0,
     staleTime: 3 * 60 * 1000,
   });
+
+  // ── IntersectionObserver sentinel for infinite scroll ─────────────────────
+  // Mirrors the pattern used by /players. Ref-based state captures lets the
+  // observer fire without recreating the callback on every render.
+  const observerRef = useRef<IntersectionObserver | null>(null);
+  const hasNextPageRef = useRef(false);
+  const isFetchingRef = useRef(false);
+  useEffect(() => { hasNextPageRef.current = !!hasNextPage; }, [hasNextPage]);
+  useEffect(() => { isFetchingRef.current = !!isFetchingNextPage; }, [isFetchingNextPage]);
+
+  const sentinelCallbackRef = useCallback((node: HTMLDivElement | null) => {
+    if (observerRef.current) observerRef.current.disconnect();
+    if (!node) return;
+    const observer = new IntersectionObserver((entries) => {
+      if (entries[0].isIntersecting && hasNextPageRef.current && !isFetchingRef.current) {
+        fetchNextPage();
+      }
+    }, { rootMargin: '400px' });
+    observer.observe(node);
+    observerRef.current = observer;
+  }, [fetchNextPage]);
 
   const openReader = useCallback(async (item: UnifiedItem) => {
     // Editorial articles → full dedicated page with reactions & share
     if (item.type === 'editorial') {
-      // url field contains the article id for internal articles
       navigate(`/editorial/${item.id}`);
       return;
     }
 
     // Buzz posts: content is already in DB
     if (item.type === 'buzz') {
-      setReader({ item, content: item.excerpt, loading: false, error: null, fallback_url: item.url });
+      setReader({
+        item, content: item.excerpt, loading: false, error: null, fallback_url: item.url,
+        displayTitle: item.title, displayExcerpt: item.excerpt, translatedTo: null,
+      });
       return;
     }
 
-    // Articles: check if content is cached (has_content=1) or need Apify
-    if (item.has_content === 1) {
-      // Load from server (already cached)
-      setReader({ item, content: null, loading: true, error: null, fallback_url: null });
-      try {
-        const res = await fetch(`${API}/news/content/${item.id}`, { credentials: 'include' });
-        const d = await res.json();
-        setReader({ item, content: d.content, loading: false, error: null, fallback_url: d.fallback_url || item.url });
-      } catch {
-        setReader({ item, content: null, loading: false, error: 'Impossible de charger le contenu.', fallback_url: item.url });
+    // For foreign-language articles, auto-translate when the user has opted
+    // in. We pass `?translate=<lang>` so the server returns translated title
+    // + excerpt + content in one round-trip (this is the only path that
+    // actually consumes DeepL quota — listing only swaps cached strings).
+    const shouldAutoTranslate = autoTranslateNews && item.type === 'article'
+      && !!item.lang && item.lang !== targetLang;
+    const contentUrl = shouldAutoTranslate
+      ? `${API}/news/content/${item.id}?translate=${targetLang}`
+      : `${API}/news/content/${item.id}`;
+
+    setReader({
+      item, content: null, loading: true, error: null, fallback_url: null,
+      displayTitle: item.title, displayExcerpt: item.excerpt, translatedTo: null,
+    });
+
+    try {
+      const res = await fetch(contentUrl, { credentials: 'include' });
+      const d = await res.json();
+      const translated = !!d.translated;
+      setReader({
+        item,
+        content:        d.content || null,
+        loading:        false,
+        error:          null,
+        fallback_url:   d.content ? null : (d.fallback_url || item.url),
+        displayTitle:   translated ? (d.title  || item.title)   : item.title,
+        displayExcerpt: translated ? (d.excerpt || item.excerpt) : item.excerpt,
+        translatedTo:   translated ? targetLang : null,
+      });
+    } catch {
+      setReader({
+        item, content: null, loading: false, error: 'Impossible de charger le contenu.', fallback_url: item.url,
+        displayTitle: item.title, displayExcerpt: item.excerpt, translatedTo: null,
+      });
+    }
+  }, [navigate, autoTranslateNews, targetLang]);
+
+  // ── Translate current article in the reader to `targetLang` ────────────────
+  const handleTranslate = useCallback(async () => {
+    if (!reader) return;
+    const { item } = reader;
+    if (!item.lang || item.lang === targetLang) return;
+    setReader(r => r ? { ...r, translating: true } : r);
+    try {
+      const res = await fetch(`${API}/news/translate/${item.id}`, {
+        method: 'POST',
+        credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ target: targetLang }),
+      });
+      const d = await res.json();
+      if (!res.ok) {
+        toast.error(d.hint || d.error || 'Traduction indisponible');
+        setReader(r => r ? { ...r, translating: false } : r);
+        return;
       }
-      return;
+      setReader(r => r ? {
+        ...r,
+        translating: false,
+        translatedTo: targetLang,
+        displayTitle:  d.title || r.item.title,
+        displayExcerpt: d.description || r.item.excerpt,
+        content: d.content || r.content,
+      } : r);
+    } catch (err) {
+      toast.error('Erreur lors de la traduction');
+      setReader(r => r ? { ...r, translating: false } : r);
     }
+  }, [reader, targetLang]);
 
-    // No content stored yet — show excerpt immediately, then load via Apify in background
-    setReader({ item, content: null, loading: true, error: null, fallback_url: null });
+  const handleShowOriginal = useCallback(async () => {
+    if (!reader) return;
+    // Reload the original content
+    const { item } = reader;
+    setReader(r => r ? { ...r, translating: true } : r);
     try {
       const res = await fetch(`${API}/news/content/${item.id}`, { credentials: 'include' });
       const d = await res.json();
-      if (d.content) {
-        setReader({ item, content: d.content, loading: false, error: null, fallback_url: null });
-      } else {
-        setReader({ item, content: null, loading: false, error: null, fallback_url: d.fallback_url || item.url });
-      }
+      setReader(r => r ? {
+        ...r,
+        translating: false,
+        translatedTo: null,
+        displayTitle: item.title,
+        displayExcerpt: item.excerpt,
+        content: d.content || r.content,
+      } : r);
     } catch {
-      setReader({ item, content: null, loading: false, error: 'Erreur lors du chargement via Apify.', fallback_url: item.url });
+      setReader(r => r ? {
+        ...r,
+        translating: false,
+        translatedTo: null,
+        displayTitle: item.title,
+        displayExcerpt: item.excerpt,
+      } : r);
     }
-  }, [navigate]);
+  }, [reader]);
 
   const handleRefresh = useCallback(async () => {
     if (!isAdmin) return;
@@ -493,14 +719,26 @@ export default function News() {
     finally { setRefreshing(false); }
   }, [isAdmin, refetch]);
 
-  const items      = data?.items || [];
-  const totalPages = Math.ceil((data?.total || 0) / PAGE_SIZE);
-  const categories = data?.categories || [];
-  const featured   = items[0];
-  const rest       = items.slice(1);
-  const hasFilters = !!(search || category || typeFilter);
+  // Flatten paginated items. First page also carries the facet aggregates
+  // (categories, countries, total) — those stay constant across pages.
+  const items         = (data?.pages || []).flatMap(p => p.items || []);
+  const total         = data?.pages?.[0]?.total ?? 0;
+  const categories    = data?.pages?.[0]?.categories || [];
+  const countryFacets = data?.pages?.[0]?.countries  || [];
+  const featured      = items[0];
+  const rest          = items.slice(1);
+  const hasFilters    = !!(search || category || typeFilter || selectedCountries.length);
 
-  const clearFilters = () => { setSearch(''); setCategory(''); setTypeFilter(''); setPage(0); };
+  const toggleCountry = (code: string) => {
+    setSelectedCountries(prev =>
+      prev.includes(code) ? prev.filter(c => c !== code) : [...prev, code]
+    );
+  };
+
+  const clearFilters = () => {
+    setSearch(''); setCategory(''); setTypeFilter('');
+    setSelectedCountries([]);
+  };
 
   const articleCount = items.filter(i => i.type === 'article').length;
   const buzzCount    = items.filter(i => i.type === 'buzz').length;
@@ -516,29 +754,41 @@ export default function News() {
             Actualités Football
           </h1>
           <p className="text-sm text-muted-foreground mt-0.5">
-            Articles Sofascore · Football Buzz
-            {data?.total ? ` · ${data.total} résultat${data.total > 1 ? 's' : ''}` : ''}
+            Presse internationale · Football Buzz · Éditorial
+            {total ? ` · ${total} résultat${total > 1 ? 's' : ''}` : ''}
           </p>
         </div>
-        {isAdmin && (
-          <Button variant="outline" size="sm" onClick={handleRefresh} disabled={refreshing} className="gap-2">
-            <RefreshCw className={cn('w-4 h-4', refreshing && 'animate-spin')} />
-            {refreshing ? 'Scraping…' : 'Actualiser'}
-          </Button>
-        )}
+        <div className="flex items-center gap-3 flex-wrap justify-end">
+          {/* Auto-translate toggle — drives ?translate=<lang> on listing + reader */}
+          <label className="flex items-center gap-2 text-xs text-muted-foreground cursor-pointer select-none">
+            <Languages className="w-3.5 h-3.5" />
+            <span>Traduire en {LANG_LABEL[targetLang] || targetLang}</span>
+            <Switch
+              checked={autoTranslateNews}
+              onCheckedChange={setAutoTranslateNews}
+              aria-label="Traduction automatique"
+            />
+          </label>
+          {isAdmin && (
+            <Button variant="outline" size="sm" onClick={handleRefresh} disabled={refreshing} className="gap-2">
+              <RefreshCw className={cn('w-4 h-4', refreshing && 'animate-spin')} />
+              {refreshing ? 'Scraping…' : 'Actualiser'}
+            </Button>
+          )}
+        </div>
       </div>
 
       {/* Filters */}
       <div className="flex flex-wrap gap-3 items-center">
         <div className="relative flex-1 min-w-[180px] max-w-xs">
           <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
-          <Input value={search} onChange={e => { setSearch(e.target.value); setPage(0); }} placeholder="Rechercher…" className="pl-9" />
+          <Input value={search} onChange={e => setSearch(e.target.value)} placeholder="Rechercher…" className="pl-9" />
         </div>
 
         {/* Type toggle */}
         <div className="flex items-center gap-1 bg-muted/50 rounded-lg p-1">
-          {([['', 'Tous'], ['article', 'Sofascore'], ['buzz', 'Buzz'], ['editorial', 'Éditorial']] as [TypeFilter, string][]).map(([v, label]) => (
-            <button key={v} onClick={() => { setTypeFilter(v); setPage(0); }}
+          {([['', 'Tous'], ['article', 'Presse'], ['buzz', 'Buzz'], ['editorial', 'Éditorial']] as [TypeFilter, string][]).map(([v, label]) => (
+            <button key={v} onClick={() => setTypeFilter(v)}
               className={cn('px-3 py-1 rounded-md text-xs font-medium transition-all',
                 typeFilter === v ? 'bg-card shadow text-foreground' : 'text-muted-foreground hover:text-foreground')}>
               {v === 'buzz' && <Zap className="w-3 h-3 inline mr-1 text-orange-500" />}
@@ -549,7 +799,7 @@ export default function News() {
         </div>
 
         {categories.length > 0 && (
-          <Select value={category} onValueChange={v => { setCategory(v === '_all' ? '' : v); setPage(0); }}>
+          <Select value={category} onValueChange={v => setCategory(v === '_all' ? '' : v)}>
             <SelectTrigger className="w-44">
               <Filter className="w-3.5 h-3.5 mr-1.5 text-muted-foreground" />
               <SelectValue placeholder="Catégorie" />
@@ -580,6 +830,47 @@ export default function News() {
         )}
       </div>
 
+      {/* Country chips — one row showing every country we have content for */}
+      {countryFacets.length > 0 && (
+        <div className="flex flex-wrap items-center gap-1.5">
+          <span className="text-[11px] text-muted-foreground mr-1 flex items-center gap-1">
+            <Globe className="w-3 h-3" /> Pays:
+          </span>
+          {countryFacets.map(c => {
+            const meta = COUNTRY_META[c.country];
+            if (!meta) return null;
+            const active = selectedCountries.includes(c.country);
+            return (
+              <button
+                key={c.country}
+                type="button"
+                onClick={() => toggleCountry(c.country)}
+                className={cn(
+                  'inline-flex items-center gap-1.5 rounded-full border pl-1.5 pr-2.5 py-1 text-[11px] transition-colors',
+                  active
+                    ? 'bg-primary text-primary-foreground border-primary'
+                    : 'bg-card border-border/60 text-muted-foreground hover:text-foreground hover:border-primary/50'
+                )}
+                title={meta.name}
+              >
+                <Flag country={c.country} className="w-4 h-3" />
+                <span className="font-medium">{meta.name}</span>
+                <span className={cn('text-[10px]', active ? 'opacity-80' : 'opacity-60')}>{c.count}</span>
+              </button>
+            );
+          })}
+          {selectedCountries.length > 0 && (
+            <button
+              type="button"
+              onClick={() => setSelectedCountries([])}
+              className="ml-1 text-[11px] text-muted-foreground hover:text-foreground underline-offset-2 hover:underline"
+            >
+              tout
+            </button>
+          )}
+        </div>
+      )}
+
       {/* Content */}
       {isLoading ? (
         <>
@@ -605,29 +896,36 @@ export default function News() {
         </div>
       ) : (
         <>
-          {/* Featured */}
-          {!hasFilters && page === 0 && featured && (
+          {/* Featured — only when no filters are active */}
+          {!hasFilters && featured && (
             <FeaturedCard item={featured} onClick={() => openReader(featured)} />
           )}
 
           {/* Grid */}
           <div className="grid sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-5">
-            {(hasFilters || page > 0 ? items : rest).map(item => (
+            {(hasFilters ? items : rest).map(item => (
               <ItemCard key={item.id} item={item} onClick={() => openReader(item)} />
             ))}
           </div>
 
-          {/* Pagination */}
-          {totalPages > 1 && (
-            <div className="flex items-center justify-center gap-2 pt-4">
-              <Button variant="outline" size="sm" onClick={() => setPage(p => Math.max(0, p - 1))} disabled={page === 0}>
-                <ChevronLeft className="w-4 h-4" />
-              </Button>
-              <span className="text-sm text-muted-foreground px-3">Page {page + 1} / {totalPages}</span>
-              <Button variant="outline" size="sm" onClick={() => setPage(p => Math.min(totalPages - 1, p + 1))} disabled={page >= totalPages - 1}>
-                <ChevronRight className="w-4 h-4" />
-              </Button>
+          {/* Infinite scroll sentinel — fires fetchNextPage when in view */}
+          {hasNextPage && (
+            <div ref={sentinelCallbackRef} className="flex justify-center py-6">
+              {isFetchingNextPage ? (
+                <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                  <Loader2 className="w-4 h-4 animate-spin" />
+                  Chargement des articles suivants…
+                </div>
+              ) : (
+                <div className="h-px" />
+              )}
             </div>
+          )}
+
+          {!hasNextPage && items.length > 12 && (
+            <p className="text-center text-[11px] text-muted-foreground/60 py-4">
+              — Fin des résultats —
+            </p>
           )}
         </>
       )}
@@ -639,7 +937,15 @@ export default function News() {
       )}
 
       {/* Inline article reader */}
-      {reader && <ArticleReader state={reader} onClose={() => setReader(null)} />}
+      {reader && (
+        <ArticleReader
+          state={reader}
+          onClose={() => setReader(null)}
+          onTranslate={handleTranslate}
+          onShowOriginal={handleShowOriginal}
+          targetLang={targetLang}
+        />
+      )}
     </div>
   );
 }

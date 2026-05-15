@@ -62,13 +62,26 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       setLoading(false);
     });
 
-    supabase.auth.getSession().then(({ data: { session } }) => {
-      setSession(session);
-      setUser(session?.user ?? null);
-      setLoading(false);
-    });
+    // Safety net: never leave the auth loading spinner stuck if /auth/session hangs
+    // (slow Vercel cold start, dropped connection, etc.). After 8s, give up and
+    // treat as not-logged-in — the ProtectedRoute will redirect to /auth.
+    const loadingTimeout = setTimeout(() => setLoading(false), 8000);
 
-    return () => subscription.unsubscribe();
+    supabase.auth.getSession()
+      .then(({ data: { session } }) => {
+        setSession(session);
+        setUser(session?.user ?? null);
+      })
+      .catch(err => { console.error('[auth] getSession failed:', err); })
+      .finally(() => {
+        clearTimeout(loadingTimeout);
+        setLoading(false);
+      });
+
+    return () => {
+      clearTimeout(loadingTimeout);
+      subscription.unsubscribe();
+    };
   }, []);
 
   const startImpersonation = useCallback((targetSession: Session) => {

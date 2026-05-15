@@ -1263,7 +1263,7 @@ async function _legacyRunMigrations() {
         PRIMARY KEY (player_id, user_id),
         INDEX idx_pur_user (user_id),
         INDEX idx_pur_player (player_id)
-      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
     `);
   } catch (err) {
     if (!err?.message?.includes("already exists")) {
@@ -4312,6 +4312,21 @@ async function playersHasColumn(colName) {
 }
 async function playersHasIsArchived() { return playersHasColumn("is_archived"); }
 
+// Cached existence check for the per-user rating overlay table. Re-checks once
+// if it was missing — covers the cold-start race where the top-level CREATE
+// TABLE statement hasn't completed yet by the time the first request arrives.
+let _purExistsCache = null;
+async function playerUserRatingExists() {
+  if (_purExistsCache === true) return true;
+  try {
+    const [rows] = await pool.query("SHOW TABLES LIKE 'player_user_rating'");
+    _purExistsCache = rows.length > 0;
+  } catch {
+    _purExistsCache = false;
+  }
+  return _purExistsCache;
+}
+
 // ── Paginated players endpoint ──────────────────────────────────────────────
 // Replaces the "fetch all in 1000-row batches" pattern with server-side
 // filtering, sorting, and offset-based pagination.
@@ -4331,19 +4346,26 @@ app.get("/api/players", authMiddleware, async (req, res) => {
     const clubs = req.query.clubs ? req.query.clubs.split(",") : [];
     const roles = req.query.roles ? req.query.roles.split(",") : [];
     const tasks = req.query.tasks ? req.query.tasks.split(",") : [];
-    const levelMin = req.query.levelMin ? parseFloat(req.query.levelMin) : null;
-    const levelMax = req.query.levelMax ? parseFloat(req.query.levelMax) : null;
-    const potMin = req.query.potMin ? parseFloat(req.query.potMin) : null;
-    const potMax = req.query.potMax ? parseFloat(req.query.potMax) : null;
-    const ageMin = req.query.ageMin ? parseInt(req.query.ageMin) : null;
-    const ageMax = req.query.ageMax ? parseInt(req.query.ageMax) : null;
+    // Guard parseFloat/parseInt against garbage input — without this, "?levelMin=abc"
+    // pushes NaN as a SQL bind param and the whole query 500s on "Champ 'NaN' inconnu".
+    const numOrNull = (v, parser) => {
+      if (v == null || v === "") return null;
+      const n = parser(v);
+      return Number.isFinite(n) ? n : null;
+    };
+    const levelMin = numOrNull(req.query.levelMin, parseFloat);
+    const levelMax = numOrNull(req.query.levelMax, parseFloat);
+    const potMin = numOrNull(req.query.potMin, parseFloat);
+    const potMax = numOrNull(req.query.potMax, parseFloat);
+    const ageMin = numOrNull(req.query.ageMin, parseInt);
+    const ageMax = numOrNull(req.query.ageMax, parseInt);
     const contractRanges = req.query.contractRanges ? req.query.contractRanges.split(",") : [];
-    const ratingMin = req.query.ratingMin ? parseFloat(req.query.ratingMin) : null;
-    const ratingMax = req.query.ratingMax ? parseFloat(req.query.ratingMax) : null;
-    const goalsMin = req.query.goalsMin ? parseInt(req.query.goalsMin) : null;
-    const assistsMin = req.query.assistsMin ? parseInt(req.query.assistsMin) : null;
-    const minutesMin = req.query.minutesMin ? parseInt(req.query.minutesMin) : null;
-    const updatedSince = req.query.updatedSince ? parseInt(req.query.updatedSince) : null;
+    const ratingMin = numOrNull(req.query.ratingMin, parseFloat);
+    const ratingMax = numOrNull(req.query.ratingMax, parseFloat);
+    const goalsMin = numOrNull(req.query.goalsMin, parseInt);
+    const assistsMin = numOrNull(req.query.assistsMin, parseInt);
+    const minutesMin = numOrNull(req.query.minutesMin, parseInt);
+    const updatedSince = numOrNull(req.query.updatedSince, parseInt);
     const enrichment = req.query.enrichment || ""; // '', 'enriched', 'not_enriched'
     const sort = req.query.sort || "name";
 
@@ -4352,11 +4374,14 @@ app.get("/api/players", authMiddleware, async (req, res) => {
 
     // Per-user rating overlay: every query LEFT JOINs player_user_rating
     // and references `LVL`, `POT`, `OPN` for the user's level/potential/opinion.
-    const LVL = "COALESCE(pur.current_level, 0)";
-    const POT = "COALESCE(pur.potential, 0)";
-    const OPN = "COALESCE(pur.general_opinion, 'À revoir')";
-    const joinSql = "LEFT JOIN `player_user_rating` pur ON pur.player_id = p.id AND pur.user_id = ?";
-    const joinParams = [userId];
+    // If the table is missing (e.g. during a Vercel cold-start race), we fall
+    // back to the players-table columns directly — see retry block below.
+    const useOverlay = await playerUserRatingExists();
+    const LVL = useOverlay ? "COALESCE(pur.current_level, 0)" : "p.`current_level`";
+    const POT = useOverlay ? "COALESCE(pur.potential, 0)" : "p.`potential`";
+    const OPN = useOverlay ? "COALESCE(pur.general_opinion, 'À revoir')" : "p.`general_opinion`";
+    const joinSql = useOverlay ? "LEFT JOIN `player_user_rating` pur ON pur.player_id = p.id AND pur.user_id = ?" : "";
+    const joinParams = useOverlay ? [userId] : [];
 
     const clauses = ["(p.`user_id` = ? OR p.`id` IN (SELECT `player_id` FROM `player_viewer_links` WHERE `viewer_user_id` = ?))"];
     const params = [userId, userId];
@@ -4406,14 +4431,23 @@ app.get("/api/players", authMiddleware, async (req, res) => {
     if (potMin !== null) { clauses.push(`${POT} >= ?`); params.push(potMin); }
     if (potMax !== null) { clauses.push(`${POT} <= ?`); params.push(potMax); }
 
-    // Age filter — derived from generation (YEAR(NOW()) - generation)
+    // Age filter — derived from generation (YEAR(NOW()) - generation).
+    // We translate age bounds to generation bounds in JS rather than computing
+    // `YEAR(CURDATE()) - generation` in SQL: MySQL evaluates that subtraction in
+    // UNSIGNED arithmetic and overflows on any row with `generation` > current
+    // year (e.g. a 2029 prospect = data-entry error), giving "BIGINT UNSIGNED
+    // value is out of range" and 500-ing the whole list. CAST(SIGNED) on the
+    // operand isn't enough — the result is still computed unsigned.
+    const currentYear = new Date().getFullYear();
     if (ageMin !== null) {
-      clauses.push("(YEAR(CURDATE()) - `generation`) >= ?");
-      params.push(ageMin);
+      // age >= ageMin  ⇒  generation <= currentYear - ageMin
+      clauses.push("`generation` <= ?");
+      params.push(currentYear - ageMin);
     }
     if (ageMax !== null) {
-      clauses.push("(YEAR(CURDATE()) - `generation`) <= ?");
-      params.push(ageMax);
+      // age <= ageMax  ⇒  generation >= currentYear - ageMax
+      clauses.push("`generation` >= ?");
+      params.push(currentYear - ageMax);
     }
 
     // Contract range filter
@@ -4688,12 +4722,14 @@ app.get("/api/players/facets", authMiddleware, async (req, res) => {
           [userId]
         );
 
+    // SUM(CASE ...) returns DECIMAL → mysql2 surfaces it as a string;
+    // cast to Number so the frontend can do arithmetic / count badges correctly.
     return res.json({
       leagues: leagueRows.map(r => r.league),
       clubs: clubRows.map(r => r.club),
       roles: roleRows.map(r => r.role),
-      activeCount: countRows[0]?.activeCount || 0,
-      archivedCount: countRows[0]?.archivedCount || 0,
+      activeCount: Number(countRows[0]?.activeCount) || 0,
+      archivedCount: Number(countRows[0]?.archivedCount) || 0,
     });
   } catch (err) {
     console.error("[GET /api/players/facets]", err);
@@ -15134,26 +15170,81 @@ app.delete("/api/followed-leagues/:leagueId", authMiddleware, async (req, res) =
 // ── News / Actualités — Sofascore scraping via Apify ─────────────────────────
 // ══════════════════════════════════════════════════════════════════════════════
 
-// Auto-create news_articles table
-pool.query(`CREATE TABLE IF NOT EXISTS news_articles (
-  id CHAR(36) PRIMARY KEY,
-  external_id VARCHAR(255) NULL,
-  title VARCHAR(1000) NOT NULL,
-  description TEXT NULL,
-  content TEXT NULL,
-  image_url TEXT NULL,
-  article_url TEXT NOT NULL,
-  category VARCHAR(100) NULL,
-  tags JSON NULL,
-  author VARCHAR(255) NULL,
-  published_at DATETIME NOT NULL,
-  source VARCHAR(50) NOT NULL DEFAULT 'sofascore',
-  scraped_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  UNIQUE KEY uniq_news_url (article_url(191)),
-  INDEX idx_news_published (published_at DESC),
-  INDEX idx_news_category (category),
-  INDEX idx_news_source (source, published_at)
-)`).catch(err => { if (!err?.message?.includes('already exists')) console.warn('[warn] news_articles table:', err?.message); });
+// Auto-create news_articles table. Run all DDL for this table serialized in
+// an IIFE: parallel ALTERs on the same table can deadlock, and the
+// news_translations FK must come AFTER the news_articles collation is fixed.
+(async () => {
+  try {
+    await pool.query(`CREATE TABLE IF NOT EXISTS news_articles (
+      id CHAR(36) PRIMARY KEY,
+      external_id VARCHAR(255) NULL,
+      title VARCHAR(1000) NOT NULL,
+      description TEXT NULL,
+      content TEXT NULL,
+      image_url TEXT NULL,
+      article_url TEXT NOT NULL,
+      category VARCHAR(100) NULL,
+      tags JSON NULL,
+      author VARCHAR(255) NULL,
+      published_at DATETIME NOT NULL,
+      source VARCHAR(50) NOT NULL DEFAULT 'sofascore',
+      scraped_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      UNIQUE KEY uniq_news_url (article_url(191)),
+      INDEX idx_news_published (published_at),
+      INDEX idx_news_category (category),
+      INDEX idx_news_source (source, published_at)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`);
+  } catch (err) {
+    if (!err?.message?.includes('already exists')) console.warn('[warn] news_articles table:', err?.message);
+  }
+
+  // Repair: if the table was created previously without explicit collation it
+  // sits in utf8mb4_0900_ai_ci, which makes the news_translations FK fail with
+  // "Failed to open the referenced table". CONVERT TO is idempotent.
+  try {
+    const [rows] = await pool.query(
+      "SELECT TABLE_COLLATION FROM information_schema.TABLES WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'news_articles'"
+    );
+    if (rows[0]?.TABLE_COLLATION && rows[0].TABLE_COLLATION !== 'utf8mb4_unicode_ci') {
+      console.log('[migration] Converting news_articles collation:', rows[0].TABLE_COLLATION, '→ utf8mb4_unicode_ci');
+      await pool.query("ALTER TABLE news_articles CONVERT TO CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci");
+    }
+  } catch (err) {
+    console.warn('[warn] news_articles collation check:', err?.message);
+  }
+
+  // International press columns. Serialized to avoid DDL deadlocks.
+  try { await pool.query("ALTER TABLE news_articles ADD COLUMN lang VARCHAR(8) NULL"); }
+  catch (err) { if (err.errno !== 1060) console.warn('[warn] news_articles lang col:', err?.message); }
+  try { await pool.query("ALTER TABLE news_articles ADD COLUMN country VARCHAR(2) NULL"); }
+  catch (err) { if (err.errno !== 1060) console.warn('[warn] news_articles country col:', err?.message); }
+  try { await pool.query("ALTER TABLE news_articles ADD INDEX idx_news_country (country, published_at)"); }
+  catch (err) { if (err.errno !== 1061) console.warn('[warn] news_articles country idx:', err?.message); }
+
+  // Per-article translations cache: keyed by (article_id, target_lang).
+  // DeepL bills per character — we cache so a given (article, target) pair is
+  // never re-translated. FK requires matching collation on the referenced col,
+  // which the CONVERT TO above ensures.
+  try {
+    // No FK to news_articles — this codebase has multiple FKs that fail to
+    // create on this DB (TiDB / collation incompatibilities); we follow the
+    // same pattern and clean up orphans at the application level if needed.
+    await pool.query(`CREATE TABLE IF NOT EXISTS news_translations (
+      article_id CHAR(36) NOT NULL,
+      target_lang VARCHAR(8) NOT NULL,
+      title TEXT NOT NULL,
+      description TEXT NULL,
+      content LONGTEXT NULL,
+      provider VARCHAR(20) NOT NULL DEFAULT 'deepl',
+      translated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+      PRIMARY KEY (article_id, target_lang),
+      INDEX idx_news_tr_article (article_id)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`);
+  } catch (err) {
+    if (!err?.message?.includes('already exists')) console.warn('[warn] news_translations table:', err?.message);
+  }
+})();
 
 // ── Sofascore scraping helpers ────────────────────────────────────────────────
 
@@ -15183,12 +15274,79 @@ function normalizeSofascoreArticle(raw) {
 }
 
 // ── Lightweight RSS parser (no external dependency) ──────────────────────────
+// Why all the cleanup: real-world RSS is a mess. Different publishers do
+// different combinations of CDATA wrapping, HTML-entity encoding (sometimes
+// double-encoded — Record.pt literally puts `&lt;![CDATA[…]]&gt;` inside the
+// title tag), and inline HTML markup (Marca wraps headlines in `<b>` etc.).
+// We normalize all three so the UI only ever sees plain text.
+
+function decodeRssEntities(s) {
+  if (!s) return s;
+  return String(s)
+    .replace(/&#(\d+);/g,            (_, n) => String.fromCharCode(parseInt(n, 10)))
+    .replace(/&#x([0-9a-fA-F]+);/g,  (_, h) => String.fromCharCode(parseInt(h, 16)))
+    .replace(/&lt;/g,    '<')
+    .replace(/&gt;/g,    '>')
+    .replace(/&quot;/g,  '"')
+    .replace(/&apos;/g,  "'")
+    .replace(/&#39;/g,   "'")
+    .replace(/&nbsp;/g,  ' ')
+    .replace(/&laquo;/g, '«')
+    .replace(/&raquo;/g, '»')
+    .replace(/&ldquo;/g, '“')
+    .replace(/&rdquo;/g, '”')
+    .replace(/&lsquo;/g, '‘')
+    .replace(/&rsquo;/g, '’')
+    .replace(/&hellip;/g,'…')
+    .replace(/&mdash;/g, '—')
+    .replace(/&ndash;/g, '–')
+    .replace(/&amp;/g,   '&');  // MUST be last, otherwise we'd un-escape pre-existing entities
+}
+
+function stripCdataWrappers(s) {
+  if (!s) return s;
+  let out = String(s).trim();
+  // Some feeds wrap once, others wrap twice. Loop until stable.
+  for (let i = 0; i < 3; i++) {
+    const before = out;
+    out = out.replace(/^\s*<!\[CDATA\[\s*/, '').replace(/\s*\]\]>\s*$/, '').trim();
+    if (out === before) break;
+  }
+  return out;
+}
+
+function cleanRssText(s) {
+  if (!s) return '';
+  // Pass 1: strip the outer CDATA wrapper if any.
+  let out = stripCdataWrappers(s);
+  // Pass 2: decode HTML entities. Some feeds double-encode (the CDATA itself
+  // is HTML-encoded) — we decode, then check for another CDATA wrapper to peel.
+  out = decodeRssEntities(out);
+  out = stripCdataWrappers(out);
+  out = decodeRssEntities(out);
+  // Pass 3: strip residual inline HTML tags so titles don't render <b> as text.
+  out = out.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
+  return out;
+}
+
 function parseRSSItems(xml) {
   const items = [];
   const itemRe = /<item[^>]*>([\s\S]*?)<\/item>/g;
   const getTag = (str, tag) => {
-    const m = str.match(new RegExp(`<${tag}[^>]*>(?:<!\\[CDATA\\[)?([\\s\\S]*?)(?:\\]\\]>)?<\\/${tag}>`, 'i'));
-    return m ? m[1].trim() : '';
+    const m = str.match(new RegExp(`<${tag}[^>]*>([\\s\\S]*?)<\\/${tag}>`, 'i'));
+    return m ? cleanRssText(m[1]) : '';
+  };
+  // Kicker (and others) emit multiple <category> tags per item — collect all
+  // of them so the football filter can inspect the full classification.
+  const getAllCategories = (str) => {
+    const out = [];
+    const re = /<category[^>]*>([\s\S]*?)<\/category>/gi;
+    let cm;
+    while ((cm = re.exec(str)) !== null) {
+      const cleaned = cleanRssText(cm[1]);
+      if (cleaned) out.push(cleaned);
+    }
+    return out;
   };
   let m;
   while ((m = itemRe.exec(xml)) !== null) {
@@ -15197,6 +15355,7 @@ function parseRSSItems(xml) {
                  raw.match(/<media:thumbnail[^>]+url="([^"]+)"/) ||
                  raw.match(/<enclosure[^>]+url="([^"]+)"/) ||
                  raw.match(/<image:loc[^>]*>([^<]+)<\/image:loc>/);
+    const categories = getAllCategories(raw);
     items.push({
       title:       getTag(raw, 'title'),
       link:        getTag(raw, 'link'),
@@ -15204,50 +15363,178 @@ function parseRSSItems(xml) {
       pubDate:     getTag(raw, 'pubDate') || getTag(raw, 'dc:date'),
       author:      getTag(raw, 'author') || getTag(raw, 'dc:creator'),
       image:       imgM ? imgM[1].trim() : null,
-      category:    getTag(raw, 'category'),
+      category:    categories[0] || '',
+      categories,
     });
   }
   return items;
 }
 
+// ── Football-only filter ─────────────────────────────────────────────────────
+// Some feeds (Bild /feed/sport.xml, Kicker /news/aktuell, Record /rss) mix
+// every sport — we don't want F1, cycling or boxing articles polluting the
+// football news section. Two-layer defense:
+//   1. NON_FOOTBALL_HINT: any of these words in the categories => drop
+//   2. FOOTBALL_HINT:     for mixed feeds (`mixed: true`), require a positive
+//      football match (in categories OR title) to keep
+// Football-only feeds (Gazzetta /calcio, Guardian /football, ...) skip the
+// positive-match requirement so we don't accidentally drop articles whose
+// title doesn't happen to contain the word "football".
+
+const NON_FOOTBALL_HINT = /\b(cycling|cyclisme|ciclismo|radsport|tour\s*de\s*france|giro\s*d['']italia|vuelta|tennis|atp|wta|roland[- ]garros|wimbledon|formel\s*1|formula\s*1|formule\s*1|f1|grand\s*prix|motogp|motorrad|motorsport|basket(?:ball)?|nba|wnba|rugby|xv\s*de\s*france|six\s*nations|boxing|boxe(?:n|o)?|mma|ufc|handball|hockey|nhl|eishockey|wintersport|ski(?:ing|fahren|sprung|alpin)?|snowboard|biathlon|leichtathletik|athlétisme|athletics|atletica|swimming|natation|schwimmen|nuoto|golf|sailing|voile|esports?|formula\s*e|equestrian|pferdesport|wrestling|catch|darts|am\s*radsport|cricket|baseball|nfl|am\s*nfl|am\s*motorsport|olympia|jeux\s*olympiques)\b/i;
+
+const FOOTBALL_HINT = /\b(football|futbol|fútbol|calcio|fußball|fussball|futebol|soccer|foot(?:ball)?|ligue\s*1|ligue\s*2|premier\s*league|bundesliga|serie\s*a|serie\s*b|liga|laliga|primeira\s*liga|eredivisie|champions[- ]league|europa[- ]league|conference[- ]league|coupe\s*du\s*monde|world\s*cup|copa[- ]am[ée]rica|coppa\s*italia|coupe\s*de\s*france|fa\s*cup|dfb[- ]pokal|copa\s*del\s*rey|copa\s*libertadores|mls|j[1-3]\s*league|equipe\s*de\s*france|selección|seleção|azzurri|nationalmannschaft|psg|paris\s*sg|paris\s*saint[- ]germain|real\s*madrid|barcelone|barcelona|barça|fc\s*barcelona|atletico|atlético|atl[ée]tico|bayern|borussia|dortmund|leipzig|leverkusen|juventus|inter\s*milan|ac\s*milan|napoli|roma|lazio|liverpool|manchester|chelsea|arsenal|tottenham|newcastle|man\s*city|man\s*utd|ajax|porto|benfica|sporting|fenerbahce|galatasaray|olympique\s*marseille|om|olympique\s*lyonnais|monaco|saint[- ]étienne|stade\s*rennais|stade\s*brestois|udinese|fiorentina|atalanta|cagliari|sassuolo|valencia|sevilla|villarreal|betis|girona|getafe|coupe|pokal|copa|ligue\s*des\s*champions|euro\s*\d{4}|qualif|qualifications?|playoff|relegation|mercato|transfert|transfer\s*window)\b/i;
+
+function articleLooksLikeFootball(item) {
+  const catText = (item.categories || []).join(' ').toLowerCase();
+  // Strong negative override on categories — these are explicit sport tags.
+  if (catText && NON_FOOTBALL_HINT.test(catText)) return false;
+  const allText = `${item.title || ''} ${item.description || ''} ${catText}`.toLowerCase();
+  return FOOTBALL_HINT.test(allText);
+}
+
+// Some feeds (Atom 1.0, e.g. ones using <entry> instead of <item>) and some
+// publishers serve RSS in non-UTF-8 charsets (ISO-8859-1, Windows-1252).
+// `fetch()` defaults to UTF-8 decoding which mangles bytes — we read raw bytes,
+// sniff the charset from headers + XML prolog, then decode with the right one.
+async function fetchRssBody(url, headers) {
+  const res = await fetch(url, { headers, signal: AbortSignal.timeout(8000) });
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+
+  const buf = Buffer.from(await res.arrayBuffer());
+  const contentType = res.headers.get('content-type') || '';
+
+  // 1. Charset from Content-Type header
+  let charset = null;
+  const ctMatch = contentType.match(/charset=([^;\s]+)/i);
+  if (ctMatch) charset = ctMatch[1].toLowerCase().replace(/['"]/g, '');
+
+  // 2. Fallback: sniff XML declaration in the first 200 bytes (always ASCII)
+  if (!charset) {
+    const head = buf.slice(0, 200).toString('latin1');
+    const xmlMatch = head.match(/<\?xml[^>]+encoding=["']([^"']+)["']/i);
+    if (xmlMatch) charset = xmlMatch[1].toLowerCase();
+  }
+
+  // 3. Default to UTF-8
+  if (!charset) charset = 'utf-8';
+
+  // Node's TextDecoder accepts: utf-8, iso-8859-1, windows-1252, etc.
+  // Map common aliases that Node doesn't recognize verbatim.
+  if (charset === 'latin1' || charset === 'latin-1' || charset === 'iso-latin-1') charset = 'iso-8859-1';
+  if (charset === 'utf8') charset = 'utf-8';
+
+  try {
+    return new TextDecoder(charset).decode(buf);
+  } catch {
+    // Unknown encoding — fall back to latin1, which never throws and at least
+    // keeps the bytes as 1:1 characters (preferable to garbled UTF-8 decoding).
+    return new TextDecoder('iso-8859-1').decode(buf);
+  }
+}
+
 // ── RSS news fetcher — free, reliable primary source ─────────────────────────
+// Multi-country football press. `lang`/`country` are stored on each article so
+// the UI can filter by country and translate on demand via DeepL.
+const NEWS_RSS_FEEDS = [
+  // 🇫🇷 France — old direct RSS URLs (Foot Mercato, Maxifoot, Goal.com, the
+  // public lequipe.fr/rss/* path) were retired by their publishers. The DWH
+  // endpoint on L'Équipe still serves a full RSS for the Football section.
+  { url: 'https://dwh.lequipe.fr/api/edito/rss?path=/Football',                              source: 'lequipe',        label: "L'Équipe",            lang: 'fr', country: 'FR' },
+  { url: 'https://rmcsport.bfmtv.com/rss/football/',                                         source: 'rmc',            label: 'RMC Sport',           lang: 'fr', country: 'FR' },
+  { url: 'https://www.20minutes.fr/feeds/rss-football.xml',                                  source: '20min',          label: '20 Minutes',          lang: 'fr', country: 'FR' },
+  // 🇮🇹 Italie
+  { url: 'https://www.gazzetta.it/rss/calcio.xml',                                           source: 'gazzetta',       label: 'Gazzetta dello Sport', lang: 'it', country: 'IT' },
+  { url: 'https://www.corrieredellosport.it/rss/calcio.xml',                                 source: 'corriere-sport', label: 'Corriere dello Sport', lang: 'it', country: 'IT' },
+  { url: 'https://www.tuttosport.com/rss/calcio',                                            source: 'tuttosport',     label: 'Tuttosport',           lang: 'it', country: 'IT' },
+  // 🇪🇸 Espagne
+  { url: 'https://e00-marca.uecdn.es/rss/futbol/futbol-internacional.xml',                   source: 'marca',          label: 'Marca',                lang: 'es', country: 'ES' },
+  { url: 'https://as.com/rss/futbol/portada.xml',                                            source: 'as',             label: 'AS',                   lang: 'es', country: 'ES' },
+  { url: 'https://www.mundodeportivo.com/rss/futbol.xml',                                    source: 'mundo-dep',      label: 'Mundo Deportivo',      lang: 'es', country: 'ES' },
+  { url: 'https://www.sport.es/es/rss/futbol/rss.xml',                                       source: 'sport-es',       label: 'Sport.es',             lang: 'es', country: 'ES' },
+  // 🇬🇧 Angleterre
+  { url: 'https://feeds.bbci.co.uk/sport/football/rss.xml',                                  source: 'bbc-sport',      label: 'BBC Sport',            lang: 'en', country: 'GB' },
+  { url: 'https://www.theguardian.com/football/rss',                                         source: 'guardian',       label: 'The Guardian',         lang: 'en', country: 'GB' },
+  { url: 'https://www.skysports.com/rss/12040',                                              source: 'sky-sports',     label: 'Sky Sports',           lang: 'en', country: 'GB' },
+  // 🇩🇪 Allemagne — Bild and Kicker mix sports, so we mark them `mixed: true`
+  // to enable per-article football filtering. FAZ + Spiegel are foot-only by URL.
+  { url: 'https://www.bild.de/feed/sport.xml',                                               source: 'bild',           label: 'Bild',                 lang: 'de', country: 'DE', mixed: true },
+  { url: 'https://newsfeed.kicker.de/news/aktuell',                                          source: 'kicker',         label: 'Kicker',               lang: 'de', country: 'DE', mixed: true },
+  { url: 'https://www.faz.net/rss/aktuell/sport/fussball/',                                  source: 'faz',            label: 'FAZ Football',         lang: 'de', country: 'DE' },
+  { url: 'https://www.spiegel.de/sport/fussball/index.rss',                                  source: 'spiegel',        label: 'Spiegel Fußball',      lang: 'de', country: 'DE' },
+  // 🇵🇹 Portugal — Record /rss is all sports
+  { url: 'https://www.record.pt/rss',                                                        source: 'record',         label: 'Record',               lang: 'pt', country: 'PT', mixed: true },
+];
+
 async function fetchNewsFromRSS() {
-  const feeds = [
-    { url: 'https://www.lequipe.fr/rss/actu_rss_Football.xml',      source: 'lequipe',     label: "L'Équipe" },
-    { url: 'https://www.footmercato.net/flux-rss.xml',               source: 'footmercato', label: 'Foot Mercato' },
-    { url: 'https://rmcsport.bfmtv.com/rss/football/',               source: 'rmc',         label: 'RMC Sport' },
-    { url: 'https://www.maxifoot.fr/football/rss/',                  source: 'maxifoot',    label: 'Maxifoot' },
-    { url: 'https://www.goal.com/feeds/fr/news',                     source: 'goal',        label: 'Goal.com' },
-  ];
   const articles = [];
-  for (const feed of feeds) {
-    try {
-      const res = await fetch(feed.url, {
-        headers: { 'User-Agent': 'Scouty/1.0 RSS Reader', 'Accept': 'application/rss+xml, application/xml, text/xml' },
-        signal: AbortSignal.timeout(8000),
+  // Run feeds in parallel batches to avoid 20× 8 s sequential timeout (~160 s)
+  // while staying gentle on origin servers.
+  const BATCH = 5;
+  for (let i = 0; i < NEWS_RSS_FEEDS.length; i += BATCH) {
+    const batch = NEWS_RSS_FEEDS.slice(i, i + BATCH);
+    const results = await Promise.allSettled(batch.map(async (feed) => {
+      // Use charset-aware fetcher — some feeds (Record.pt) serve ISO-8859-1
+      // which Node's default UTF-8 decode mangles into � chars.
+      // Use a real browser UA: L'Équipe / Foot Mercato / Maxifoot / Goal block
+      // anything with "RSS Reader" / "bot" / non-Mozilla in the UA.
+      const xml = await fetchRssBody(feed.url, {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36',
+        'Accept': 'application/rss+xml, application/atom+xml, application/xml;q=0.9, text/xml;q=0.8, */*;q=0.5',
+        'Accept-Language': feed.lang ? `${feed.lang},en;q=0.7` : 'en',
       });
-      if (!res.ok) continue;
-      const xml = await res.text();
       const items = parseRSSItems(xml);
-      for (const item of items.slice(0, 20)) {
+      // For mixed-sport feeds we MUST drop articles that aren't football.
+      // For football-only feeds we still drop articles whose categories
+      // explicitly tag a non-football sport (rare cross-posts).
+      const filtered = items.filter(it => {
+        if (!it.title || !it.link) return false;
+        const catText = (it.categories || []).join(' ').toLowerCase();
+        if (catText && NON_FOOTBALL_HINT.test(catText)) return false;
+        if (feed.mixed) return articleLooksLikeFootball(it);
+        return true;
+      });
+      const out = [];
+      for (const item of filtered.slice(0, 20)) {
         if (!item.title || !item.link) continue;
-        articles.push({
+        // pubDate is wildly inconsistent across publishers — some use
+        // non-standard RFC822 variants Bild / Sky Sports do. Wrap in try/catch
+        // so one bad date doesn't kill the whole feed's batch.
+        let publishedAt = new Date().toISOString();
+        if (item.pubDate) {
+          try {
+            const d = new Date(item.pubDate);
+            if (!isNaN(d.getTime())) publishedAt = d.toISOString();
+          } catch { /* keep fallback */ }
+        }
+        const cleanedDesc = item.description ? item.description.slice(0, 500) : null;
+        out.push({
           external_id:  item.link,
           title:        item.title,
-          description:  item.description ? item.description.replace(/<[^>]+>/g, '').slice(0, 500) : null,
+          description:  cleanedDesc,
           article_url:  item.link,
           image_url:    item.image || null,
           category:     item.category || 'Football',
-          published_at: item.pubDate ? new Date(item.pubDate).toISOString() : new Date().toISOString(),
+          published_at: publishedAt,
           source:       feed.source,
           source_label: feed.label,
+          lang:         feed.lang,
+          country:      feed.country,
           author:       item.author || null,
           tags:         [],
         });
       }
-      console.log(`[news/rss] ${feed.label}: ${items.length} articles`);
-    } catch (err) {
-      console.warn(`[news/rss] ${feed.label} failed:`, err?.message);
+      return { label: feed.label, count: out.length, items: out };
+    }));
+    for (let j = 0; j < results.length; j++) {
+      const r = results[j];
+      const feed = batch[j];
+      if (r.status === 'fulfilled') {
+        articles.push(...r.value.items);
+        console.log(`[news/rss] ${feed.country} ${r.value.label}: ${r.value.count} articles`);
+      } else {
+        console.warn(`[news/rss] ${feed.country} ${feed.label} failed:`, r.reason?.message);
+      }
     }
   }
   return articles.length > 0 ? articles : null;
@@ -15359,13 +15646,14 @@ async function saveNewsArticles(articles) {
     try {
       await pool.query(
         `INSERT INTO news_articles
-          (id, external_id, title, description, content, image_url, article_url, category, tags, author, published_at, source)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          (id, external_id, title, description, content, image_url, article_url, category, tags, author, published_at, source, lang, country)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
          ON DUPLICATE KEY UPDATE
            title = VALUES(title), description = VALUES(description),
            image_url = VALUES(image_url), category = VALUES(category),
            tags = VALUES(tags), author = VALUES(author),
-           published_at = VALUES(published_at), scraped_at = NOW()`,
+           published_at = VALUES(published_at), scraped_at = NOW(),
+           lang = VALUES(lang), country = VALUES(country)`,
         [
           uuidv4(),
           a.external_id || a.article_url,
@@ -15379,6 +15667,8 @@ async function saveNewsArticles(articles) {
           a.author || null,
           a.published_at ? new Date(a.published_at) : new Date(),
           a.source || 'sofascore',
+          a.lang || null,
+          a.country || null,
         ]
       );
       saved++;
@@ -15476,6 +15766,13 @@ app.get("/api/news/unified", authMiddleware, async (req, res) => {
     // 'article' = Sofascore only | 'buzz' = buzz only | 'editorial' = internal only | '' = all
     const typeFilter = (req.query.type || '').trim();
 
+    // ISO country filter — accept "IT" or "IT,ES,GB". Whitelisted to 2-letter codes.
+    const countries = (req.query.countries || req.query.country || '')
+      .split(',').map(s => s.trim().toUpperCase()).filter(s => /^[A-Z]{2}$/.test(s));
+
+    // If user wants translated titles in the listing, pass ?translate=fr
+    const translateTo = sanitizeTargetLang(req.query.translate);
+
     const showArticle  = typeFilter === '' || typeFilter === 'article';
     const showBuzz     = typeFilter === '' || typeFilter === 'buzz';
     const showEditorial = typeFilter === '' || typeFilter === 'editorial';
@@ -15504,6 +15801,14 @@ app.get("/api/news/unified", authMiddleware, async (req, res) => {
       artParams.push(category);
     }
 
+    // Country filter only applies to scraped press articles. When set, drop
+    // editorial + buzz unless they were specifically requested via ?type=.
+    const countryFilterActive = countries.length > 0;
+    if (countryFilterActive && showArticle) {
+      artClauses.push(`na.country IN (${countries.map(() => '?').join(',')})`);
+      artParams.push(...countries);
+    }
+
     const artWhere  = artClauses.join(' AND ');
     const buzzWhere = buzzClauses.join(' AND ');
     const editWhere = editClauses.join(' AND ');
@@ -15512,27 +15817,31 @@ app.get("/api/news/unified", authMiddleware, async (req, res) => {
     const unionParts = [];
     const allParams  = [];
 
-    if (showArticle) {
+    // When a country filter is active, hide editorial/buzz unless explicitly requested.
+    const includeArt  = showArticle;
+    const includeBuzz = showBuzz && (!countryFilterActive || typeFilter === 'buzz');
+    const includeEd   = showEditorial && (!countryFilterActive || typeFilter === 'editorial');
+
+    if (includeArt) {
       unionParts.push(`
         SELECT na.id, 'article' AS type, na.title, na.description AS excerpt,
                na.image_url, na.article_url AS url, na.category, na.author,
-               na.published_at, na.source,
+               na.published_at, na.source, na.lang, na.country,
                CASE WHEN na.content IS NOT NULL AND na.content != '' THEN 1 ELSE 0 END AS has_content
         FROM news_articles na WHERE ${artWhere}
       `);
       allParams.push(...artParams);
     }
-    if (showBuzz) {
+    if (includeBuzz) {
       unionParts.push(`
         SELECT fb.id, 'buzz' AS type, fb.source_name AS title, fb.content AS excerpt,
                fb.image_url, fb.external_url AS url, NULL AS category, fb.source_handle AS author,
-               fb.published_at, 'footballbuzz' AS source, 1 AS has_content
+               fb.published_at, 'footballbuzz' AS source, NULL AS lang, NULL AS country, 1 AS has_content
         FROM football_buzz fb WHERE ${buzzWhere}
       `);
       allParams.push(...buzzParams);
     }
-    if (showEditorial) {
-      // Use SUBSTRING instead of REGEXP_REPLACE for wider DB compatibility
+    if (includeEd) {
       unionParts.push(`
         SELECT ea.id, 'editorial' AS type, ea.title,
                SUBSTRING(ea.content, 1, 300) AS excerpt,
@@ -15541,6 +15850,7 @@ app.get("/api/news/unified", authMiddleware, async (req, res) => {
                'Éditorial' AS category,
                COALESCE(p.full_name, u.email) AS author,
                ea.created_at AS published_at, 'internal' AS source,
+               ea.lang AS lang, NULL AS country,
                1 AS has_content
         FROM editorial_articles ea
         LEFT JOIN users u ON u.id = ea.user_id
@@ -15550,7 +15860,7 @@ app.get("/api/news/unified", authMiddleware, async (req, res) => {
       allParams.push(...editParams);
     }
 
-    if (!unionParts.length) return res.json({ items: [], total: 0, categories: [] });
+    if (!unionParts.length) return res.json({ items: [], total: 0, categories: [], countries: [] });
 
     const unionSql = unionParts.join(' UNION ALL ');
 
@@ -15564,10 +15874,10 @@ app.get("/api/news/unified", authMiddleware, async (req, res) => {
     );
 
     // Strip HTML tags from editorial excerpts (content is stored as rich HTML)
-    const items = rows.map(row => {
+    let items = rows.map(row => {
       if (row.type === 'editorial' && row.excerpt) {
         const plain = String(row.excerpt)
-          .replace(/<[^>]+>/g, ' ')   // remove tags
+          .replace(/<[^>]+>/g, ' ')
           .replace(/&nbsp;/g, ' ')
           .replace(/&amp;/g, '&')
           .replace(/&lt;/g, '<')
@@ -15582,11 +15892,37 @@ app.get("/api/news/unified", authMiddleware, async (req, res) => {
       return row;
     });
 
+    // Listing-level translation: swap title/excerpt with cached translations
+    // when ?translate=<lang> is set. We do NOT translate on the fly here (would
+    // hit DeepL on every list refresh and balloon quota) — only pre-cached
+    // translations from the article reader are applied.
+    if (translateTo && items.length) {
+      const ids = items.filter(it => it.type === 'article' && it.lang && it.lang !== translateTo).map(it => it.id);
+      if (ids.length) {
+        const [trRows] = await pool.query(
+          `SELECT article_id, title, description FROM news_translations
+           WHERE target_lang = ? AND article_id IN (${ids.map(() => '?').join(',')})`,
+          [translateTo, ...ids]
+        );
+        const byId = new Map(trRows.map(r => [r.article_id, r]));
+        items = items.map(it => {
+          const tr = byId.get(it.id);
+          if (tr) return { ...it, title: tr.title || it.title, excerpt: tr.description || it.excerpt, translated_listing: true };
+          return it;
+        });
+      }
+    }
+
     const [cats] = await pool.query(
       "SELECT DISTINCT category, COUNT(*) as count FROM news_articles WHERE category IS NOT NULL GROUP BY category ORDER BY count DESC LIMIT 20"
     );
 
-    return res.json({ items, total, categories: cats });
+    // Country facets so the UI can render filter chips with counts.
+    const [countryFacets] = await pool.query(
+      "SELECT country, COUNT(*) as count FROM news_articles WHERE country IS NOT NULL AND country != '' GROUP BY country ORDER BY count DESC"
+    );
+
+    return res.json({ items, total, categories: cats, countries: countryFacets });
   } catch (err) {
     console.error('[GET /api/news/unified]', err?.message);
     return res.status(500).json({ error: err?.message });
@@ -15597,27 +15933,187 @@ app.get("/api/news/unified", authMiddleware, async (req, res) => {
 app.get("/api/news/content/:id", authMiddleware, async (req, res) => {
   try {
     const { id } = req.params;
+    const target = sanitizeTargetLang(req.query.translate);
     const [[row]] = await pool.query(
-      'SELECT id, title, description, content, article_url, image_url, author, published_at, source, category FROM news_articles WHERE id = ?',
+      'SELECT id, title, description, content, article_url, image_url, author, published_at, source, category, lang, country FROM news_articles WHERE id = ?',
       [id]
     );
     if (!row) return res.status(404).json({ error: 'Article introuvable' });
 
-    // Content already cached
-    if (row.content) return res.json({ content: row.content, cached: true });
-
-    // Fetch via Apify
-    const apifyResult = await fetchArticleContentWithApify(row.article_url);
-    if (!apifyResult) return res.json({ content: null, cached: false, fallback_url: row.article_url });
-
-    // Prefer markdown over raw HTML for clean display
-    const content = apifyResult.markdown || apifyResult.html || null;
-    if (content) {
-      await pool.query('UPDATE news_articles SET content = ? WHERE id = ?', [content.slice(0, 65000), id]);
+    // Make sure we have the original content first (fetch via Apify if missing)
+    if (!row.content) {
+      const apifyResult = await fetchArticleContentWithApify(row.article_url);
+      if (apifyResult) {
+        const fetched = apifyResult.markdown || apifyResult.html || null;
+        if (fetched) {
+          const clipped = fetched.slice(0, 65000);
+          await pool.query('UPDATE news_articles SET content = ? WHERE id = ?', [clipped, id]);
+          row.content = clipped;
+        }
+      }
+      if (!row.content) {
+        return res.json({ content: null, cached: false, fallback_url: row.article_url, lang: row.lang, country: row.country });
+      }
     }
-    return res.json({ content, cached: false });
+
+    // If a translation is requested AND the source language differs, return cached/fresh translation
+    if (target && row.lang && row.lang !== target) {
+      const translated = await ensureTranslation(row, target);
+      if (translated) {
+        return res.json({
+          content:     translated.content || row.content,
+          title:       translated.title,
+          excerpt:     translated.description,
+          translated:  true,
+          source_lang: row.lang,
+          target_lang: target,
+          cached:      true,
+          lang:        row.lang,
+          country:     row.country,
+        });
+      }
+    }
+
+    return res.json({ content: row.content, cached: true, lang: row.lang, country: row.country });
   } catch (err) {
     console.error('[GET /api/news/content/:id]', err?.message);
+    return res.status(500).json({ error: err?.message });
+  }
+});
+
+// ── DeepL translation helper ─────────────────────────────────────────────────
+// Every translation is cached in news_translations so a given (article_id,
+// target_lang) pair is only translated once. DeepL bills per character, so
+// caching matters. Set DEEPL_API_KEY_FREE for the free tier endpoint
+// (500k chars/month) or DEEPL_API_KEY for the paid endpoint.
+const SUPPORTED_TARGET_LANGS = new Set(['fr', 'en', 'es', 'de', 'it', 'pt']);
+
+function sanitizeTargetLang(v) {
+  if (!v) return null;
+  const s = String(v).toLowerCase().slice(0, 5);
+  return SUPPORTED_TARGET_LANGS.has(s) ? s : null;
+}
+
+async function deepLTranslate(texts, sourceLang, targetLang) {
+  const freeKey = process.env.DEEPL_API_KEY_FREE;
+  const proKey  = process.env.DEEPL_API_KEY;
+  const key = freeKey || proKey;
+  if (!key) return null;
+  const baseUrl = freeKey ? 'https://api-free.deepl.com/v2/translate' : 'https://api.deepl.com/v2/translate';
+  const upper = (s) => s ? s.toUpperCase() : null;
+  // DeepL requires a regional flavor for EN (EN-US/EN-GB) and PT (PT-PT/PT-BR).
+  const tgtRaw = upper(targetLang);
+  const targetParam = tgtRaw === 'EN' ? 'EN-US' : tgtRaw === 'PT' ? 'PT-PT' : tgtRaw;
+
+  const body = new URLSearchParams();
+  for (const t of texts) body.append('text', t || '');
+  body.set('target_lang', targetParam);
+  if (sourceLang) body.set('source_lang', upper(sourceLang));
+  body.set('preserve_formatting', '1');
+
+  try {
+    const res = await fetch(baseUrl, {
+      method: 'POST',
+      headers: {
+        'Authorization': `DeepL-Auth-Key ${key}`,
+        'Content-Type': 'application/x-www-form-urlencoded',
+      },
+      body,
+      signal: AbortSignal.timeout(20000),
+    });
+    if (!res.ok) {
+      const txt = await res.text().catch(() => '');
+      console.warn('[deepl] HTTP', res.status, txt.slice(0, 200));
+      return null;
+    }
+    const data = await res.json();
+    if (!Array.isArray(data.translations)) return null;
+    return data.translations.map(t => t.text);
+  } catch (err) {
+    console.warn('[deepl] fetch error:', err?.message);
+    return null;
+  }
+}
+
+async function ensureTranslation(row, targetLang) {
+  const [[hit]] = await pool.query(
+    'SELECT title, description, content FROM news_translations WHERE article_id = ? AND target_lang = ?',
+    [row.id, targetLang]
+  );
+  if (hit && hit.title) return hit;
+
+  if (!row.lang || row.lang === targetLang) return null;
+
+  const inputs = [
+    row.title || '',
+    row.description || '',
+    row.content || '',
+  ];
+  const out = await deepLTranslate(inputs, row.lang, targetLang);
+  if (!out || out.length < 1) return null;
+
+  const translated = {
+    title:       out[0] || row.title,
+    description: out[1] || row.description,
+    content:     out[2] || row.content,
+  };
+
+  try {
+    await pool.query(
+      `INSERT INTO news_translations (article_id, target_lang, title, description, content, provider)
+       VALUES (?, ?, ?, ?, ?, 'deepl')
+       ON DUPLICATE KEY UPDATE title = VALUES(title), description = VALUES(description), content = VALUES(content), updated_at = NOW()`,
+      [
+        row.id,
+        targetLang,
+        String(translated.title || '').slice(0, 65000),
+        translated.description ? String(translated.description).slice(0, 65000) : null,
+        translated.content ? String(translated.content).slice(0, 65000) : null,
+      ]
+    );
+  } catch (err) {
+    console.warn('[news/translate] cache write failed:', err?.message);
+  }
+  return translated;
+}
+
+// ── POST /api/news/translate/:id — translate an article to target language ──
+app.post("/api/news/translate/:id", authMiddleware, async (req, res) => {
+  try {
+    const target = sanitizeTargetLang(req.body?.target || req.query?.target);
+    if (!target) return res.status(400).json({ error: 'Langue cible invalide' });
+
+    const [[row]] = await pool.query(
+      'SELECT id, title, description, content, lang, country FROM news_articles WHERE id = ?',
+      [req.params.id]
+    );
+    if (!row) return res.status(404).json({ error: 'Article introuvable' });
+    if (!row.lang) return res.status(400).json({ error: 'Langue source inconnue pour cet article' });
+    if (row.lang === target) {
+      return res.json({
+        translated: false,
+        title: row.title, description: row.description, content: row.content,
+        source_lang: row.lang, target_lang: target,
+      });
+    }
+
+    const translated = await ensureTranslation(row, target);
+    if (!translated) {
+      return res.status(503).json({
+        error: 'Traduction indisponible',
+        hint:  'DEEPL_API_KEY (ou DEEPL_API_KEY_FREE) non configurée côté serveur.',
+      });
+    }
+    return res.json({
+      translated:  true,
+      title:       translated.title,
+      description: translated.description,
+      content:     translated.content,
+      source_lang: row.lang,
+      target_lang: target,
+    });
+  } catch (err) {
+    console.error('[POST /api/news/translate/:id]', err?.message);
     return res.status(500).json({ error: err?.message });
   }
 });
@@ -15743,6 +16239,54 @@ pool.query(`CREATE TABLE IF NOT EXISTS player_viewer_links (
   INDEX idx_pvl_viewer (viewer_user_id),
   FOREIGN KEY (player_id) REFERENCES players(id) ON DELETE CASCADE
 )`).catch(err => { if (!err?.message?.includes('already exists')) console.warn('[warn] player_viewer_links:', err?.message); });
+
+// ── player_user_rating: per-user rating overlay (LEFT JOINed by /api/players) ──
+// MUST exist on every environment (incl. Vercel cold starts) — the GET /api/players
+// query LEFT JOINs this table, and a missing table errors the whole endpoint,
+// which makes the players list appear empty on the frontend.
+//
+// COLLATION: explicit utf8mb4_unicode_ci because `players` was created with this
+// collation; without an explicit clause, MySQL 8+ picks utf8mb4_0900_ai_ci by
+// default, which mismatches and breaks `pur.player_id = p.id` JOINs with
+// "Illegal mix of collations" → /api/players returns 500 → list appears empty.
+pool.query(`CREATE TABLE IF NOT EXISTS player_user_rating (
+  player_id CHAR(36) NOT NULL,
+  user_id CHAR(36) NOT NULL,
+  current_level DECIMAL(3,1) NOT NULL DEFAULT 0,
+  potential DECIMAL(3,1) NOT NULL DEFAULT 0,
+  general_opinion VARCHAR(30) NOT NULL DEFAULT 'À revoir',
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (player_id, user_id),
+  INDEX idx_pur_user (user_id),
+  INDEX idx_pur_player (player_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`)
+  .then(async () => {
+    // Repair: if the table was previously created without an explicit collation
+    // (utf8mb4_0900_ai_ci), convert it to match players' utf8mb4_unicode_ci.
+    // Idempotent: CONVERT TO is a no-op when the table is already in the target collation.
+    try {
+      const [rows] = await pool.query(
+        "SELECT TABLE_COLLATION FROM information_schema.TABLES WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'player_user_rating'"
+      );
+      if (rows[0] && rows[0].TABLE_COLLATION && rows[0].TABLE_COLLATION !== 'utf8mb4_unicode_ci') {
+        console.log('[migration] Converting player_user_rating collation:', rows[0].TABLE_COLLATION, '→ utf8mb4_unicode_ci');
+        await pool.query("ALTER TABLE player_user_rating CONVERT TO CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci");
+      }
+    } catch (err) {
+      console.warn('[warn] player_user_rating collation check:', err?.message);
+    }
+
+    // One-shot backfill: copy each player's stored rating into the overlay for
+    // its owner. INSERT IGNORE preserves any existing overlay row. Idempotent.
+    return pool.query(`
+      INSERT IGNORE INTO player_user_rating (player_id, user_id, current_level, potential, general_opinion, updated_at)
+      SELECT id, user_id, current_level, potential, general_opinion, COALESCE(updated_at, NOW())
+      FROM players
+      WHERE NOT (current_level = 5.0 AND potential = 5.0 AND general_opinion = 'À revoir')
+        AND (current_level > 0 OR potential > 0 OR (general_opinion IS NOT NULL AND general_opinion != 'À revoir' AND general_opinion != ''))
+    `).catch(err => console.warn('[warn] player_user_rating backfill:', err?.message));
+  })
+  .catch(err => { if (!err?.message?.includes('already exists')) console.warn('[warn] player_user_rating:', err?.message); });
 
 // Bridge between imported player names (often abbreviated/truncated, e.g. "K. Mbappé")
 // and the canonical player record (e.g. "Kylian Mbappé" — typically the Transfermarkt name).
@@ -15972,8 +16516,8 @@ pool.query(`CREATE TABLE IF NOT EXISTS football_buzz (
   scraped_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   content_hash CHAR(64) NOT NULL,
   UNIQUE KEY uniq_buzz_hash (content_hash),
-  INDEX idx_buzz_score (buzz_score DESC, published_at DESC),
-  INDEX idx_buzz_date (published_at DESC)
+  INDEX idx_buzz_score (buzz_score, published_at),
+  INDEX idx_buzz_date (published_at)
 )`).catch(err => { if (!err?.message?.includes('already exists')) console.warn('[warn] football_buzz table:', err?.message); });
 
 const BUZZ_SOURCES = [
@@ -18578,6 +19122,15 @@ if (!isVercel) {
     pool.query("DELETE FROM api_football_cache WHERE cache_key LIKE 'match-detail:%' OR cache_key LIKE 'lineup:%'")
       .then(() => console.log("[startup] Cleared match-detail & lineup caches"))
       .catch(() => {});
+    // Opt-in: one-shot news scrape on startup. Useful after fixing the parser
+    // to immediately overwrite previously-mangled rows (ON DUPLICATE KEY UPDATE
+    // on article_url replaces titles/descriptions for existing rows).
+    if (process.env.NEWS_SCRAPE_ON_START === '1') {
+      setTimeout(() => {
+        console.log('[startup] NEWS_SCRAPE_ON_START=1 — triggering news scrape');
+        runNewsScrape().catch(err => console.warn('[startup news scrape]', err?.message));
+      }, 5000);
+    }
   });
 }
 
