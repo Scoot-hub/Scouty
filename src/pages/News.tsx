@@ -101,8 +101,22 @@ function timeAgo(dateStr: string) {
 
 function sourceLabel(source: string) {
   const map: Record<string, string> = {
+    // Internes / legacy
     sofascore: 'Sofascore', footballbuzz: 'Football Buzz', internal: 'Éditorial Scouty',
     'l-equipe': "L'Équipe", 'france-football': 'France Football',
+    // Presse française
+    lequipe: "L'Équipe", rmc: 'RMC Sport', '20min': '20 Minutes',
+    // Presse italienne
+    gazzetta: 'Gazzetta dello Sport', 'corriere-sport': 'Corriere dello Sport',
+    tuttosport: 'Tuttosport', ansa: 'ANSA Calcio',
+    // Presse espagnole
+    marca: 'Marca', as: 'AS', 'mundo-dep': 'Mundo Deportivo', 'sport-es': 'Sport.es',
+    // Presse anglaise
+    'bbc-sport': 'BBC Sport', guardian: 'The Guardian', 'sky-sports': 'Sky Sports',
+    // Presse allemande
+    bild: 'Bild', kicker: 'Kicker', faz: 'FAZ', spiegel: 'Spiegel',
+    // Presse portugaise
+    record: 'Record',
   };
   return map[source] || source;
 }
@@ -158,7 +172,7 @@ function ArticleReader({ state, onClose, onTranslate, onShowOriginal, targetLang
       {/* Panel */}
       <div
         ref={panelRef}
-        className="fixed inset-y-0 right-0 z-50 flex flex-col w-full max-w-2xl bg-background border-l border-border shadow-2xl overflow-hidden"
+        className="fixed inset-y-0 right-0 z-50 flex flex-col w-full max-w-4xl bg-background border-l border-border shadow-2xl overflow-hidden"
       >
         {/* Header */}
         <div className="flex items-center justify-between gap-3 px-5 py-4 border-b shrink-0">
@@ -237,7 +251,9 @@ function ArticleReader({ state, onClose, onTranslate, onShowOriginal, targetLang
             </div>
           )}
 
-          <div className="px-6 py-6 space-y-5">
+          {/* Constrain text column to ~70ch for readability, even when the
+              panel is wide. Hero image keeps the full panel width above. */}
+          <div className="mx-auto w-full max-w-[68ch] px-6 py-7 space-y-5">
             {/* Category + source */}
             <div className="flex items-center gap-2 flex-wrap">
               {item.category && <Badge className="text-[10px]">{item.category}</Badge>}
@@ -250,7 +266,7 @@ function ArticleReader({ state, onClose, onTranslate, onShowOriginal, targetLang
             </div>
 
             {/* Title */}
-            <h1 className={cn('font-black leading-tight tracking-tight', isBuzz ? 'text-lg' : 'text-2xl')}>
+            <h1 className={cn('font-black leading-tight tracking-tight', isBuzz ? 'text-xl' : 'text-3xl')}>
               {displayTitle}
             </h1>
 
@@ -273,12 +289,9 @@ function ArticleReader({ state, onClose, onTranslate, onShowOriginal, targetLang
 
             {/* Content area */}
             {loading ? (
-              <div className="flex flex-col items-center justify-center py-12 gap-4">
+              <div className="flex flex-col items-center justify-center py-12 gap-3">
                 <Loader2 className="w-8 h-8 animate-spin text-primary" />
-                <div className="text-center">
-                  <p className="text-sm font-medium">Chargement du contenu complet…</p>
-                  <p className="text-xs text-muted-foreground mt-1">Récupération via Apify en cours</p>
-                </div>
+                <p className="text-sm font-medium">Chargement de l'article…</p>
               </div>
             ) : error ? (
               <div className="flex flex-col items-center justify-center py-10 gap-3 text-center">
@@ -293,19 +306,11 @@ function ArticleReader({ state, onClose, onTranslate, onShowOriginal, targetLang
                 )}
               </div>
             ) : content ? (
-              <div className={cn(
-                'prose prose-sm dark:prose-invert max-w-none leading-relaxed',
-                'prose-headings:font-bold prose-headings:tracking-tight',
-                'prose-p:text-foreground/90 prose-a:text-primary prose-a:no-underline hover:prose-a:underline',
-                'prose-img:rounded-lg prose-img:shadow',
-              )}>
-                {/* Render markdown-ish content — strip HTML tags for safety, render as paragraphs */}
-                <ArticleContentRenderer content={content} />
-              </div>
+              <ArticleContentRenderer content={content} />
             ) : displayExcerpt ? (
               /* No full content yet — show excerpt + load button */
               <div className="space-y-4">
-                <p className="text-sm text-foreground/80 leading-relaxed">{displayExcerpt}</p>
+                <p className="text-base text-foreground/85 leading-relaxed">{displayExcerpt}</p>
                 {!isBuzz && (
                   <div className="flex items-center gap-3 pt-2">
                     <a href={item.url} target="_blank" rel="noopener noreferrer">
@@ -353,26 +358,183 @@ function ArticleReader({ state, onClose, onTranslate, onShowOriginal, targetLang
   );
 }
 
-// Simple markdown→HTML renderer (no external lib needed)
-function ArticleContentRenderer({ content }: { content: string }) {
-  // Convert markdown-ish content to readable paragraphs
-  const paragraphs = content
-    .replace(/#{1,6}\s+(.+)/g, '\n**$1**\n')   // headings → bold
-    .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
-    .replace(/\[([^\]]+)\]\([^)]+\)/g, '$1')    // strip links but keep text
-    .replace(/!\[([^\]]*)\]\([^)]+\)/g, '')      // strip images
-    .replace(/^[-*]\s+/gm, '• ')                // bullets
-    .split(/\n{2,}/)
-    .map(p => p.trim())
-    .filter(p => p.length > 0);
+// ── Markdown renderer ────────────────────────────────────────────────────────
+// Apify's website-content-crawler returns clean markdown (we pass saveMarkdown:
+// true on the server). We parse it ourselves into React nodes — no
+// `dangerouslySetInnerHTML`, no external dependency — and render block by block
+// with proper hierarchy (headings, lists, blockquotes, links, emphasis).
 
-  return (
-    <div className="space-y-3">
-      {paragraphs.map((p, i) => (
-        <p key={i} className="text-sm leading-relaxed" dangerouslySetInnerHTML={{ __html: p }} />
-      ))}
-    </div>
-  );
+interface InlineCtx { key: number }
+function renderInline(text: string, ctx: InlineCtx): React.ReactNode[] {
+  // Single regex covers: image, link, bold (**…** or __…__), italic (*…* or _…_), inline code.
+  // Order is important — the alternation is greedy left-to-right so longer
+  // markers win (e.g. ** before *).
+  const RE = /!\[([^\]]*)\]\(([^)\s]+)(?:\s+"[^"]*")?\)|\[([^\]]+)\]\(([^)\s]+)(?:\s+"[^"]*")?\)|\*\*([^*\n]+)\*\*|__([^_\n]+)__|\*([^*\n]+)\*|(?<!\w)_([^_\n]+)_(?!\w)|`([^`\n]+)`/g;
+  const out: React.ReactNode[] = [];
+  let last = 0;
+  let m: RegExpExecArray | null;
+  while ((m = RE.exec(text)) !== null) {
+    if (m.index > last) out.push(text.slice(last, m.index));
+    if (m[1] !== undefined) {
+      out.push(
+        <img key={`md-${ctx.key++}`} src={m[2]} alt={m[1] || ''} loading="lazy"
+          className="rounded-lg my-3 max-w-full h-auto" />
+      );
+    } else if (m[3] !== undefined) {
+      out.push(
+        <a key={`md-${ctx.key++}`} href={m[4]} target="_blank" rel="noopener noreferrer"
+          className="text-primary hover:underline underline-offset-2">{m[3]}</a>
+      );
+    } else if (m[5] !== undefined || m[6] !== undefined) {
+      out.push(<strong key={`md-${ctx.key++}`}>{m[5] || m[6]}</strong>);
+    } else if (m[7] !== undefined || m[8] !== undefined) {
+      out.push(<em key={`md-${ctx.key++}`}>{m[7] || m[8]}</em>);
+    } else if (m[9] !== undefined) {
+      out.push(
+        <code key={`md-${ctx.key++}`}
+          className="px-1.5 py-0.5 bg-muted rounded text-[0.9em] font-mono">{m[9]}</code>
+      );
+    }
+    last = m.index + m[0].length;
+  }
+  if (last < text.length) out.push(text.slice(last));
+  return out;
+}
+
+function ArticleContentRenderer({ content }: { content: string }) {
+  // Normalize line endings. If the content was HTML, fall back to a permissive
+  // strip — Apify gives markdown by default so this is just a safety net.
+  const looksHtml = /<\/?(p|div|h\d|br|article|section)\b/i.test(content);
+  const text = looksHtml
+    ? content.replace(/<\/(p|div|h\d|li|blockquote)>/gi, '\n\n')
+             .replace(/<br\s*\/?>/gi, '\n')
+             .replace(/<[^>]+>/g, '')
+             .replace(/&nbsp;/g, ' ')
+             .replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>')
+    : content;
+
+  const lines = text.replace(/\r\n/g, '\n').split('\n');
+  const blocks: React.ReactNode[] = [];
+  const ctx: InlineCtx = { key: 0 };
+  let para: string[] = [];
+  let listItems: string[] = [];
+  let listKind: 'ul' | 'ol' | null = null;
+  let inCode = false;
+  let codeBuf: string[] = [];
+  let bkey = 0;
+
+  const flushPara = () => {
+    if (!para.length) return;
+    const joined = para.join(' ').trim();
+    if (joined) blocks.push(
+      <p key={`b-${bkey++}`} className="text-foreground/90 leading-relaxed">{renderInline(joined, ctx)}</p>
+    );
+    para = [];
+  };
+  const flushList = () => {
+    if (!listItems.length) return;
+    const items = listItems.map((t, i) => <li key={i}>{renderInline(t, ctx)}</li>);
+    blocks.push(
+      listKind === 'ol'
+        ? <ol key={`b-${bkey++}`} className="pl-6 space-y-1.5 list-decimal marker:text-muted-foreground">{items}</ol>
+        : <ul key={`b-${bkey++}`} className="pl-6 space-y-1.5 list-disc marker:text-muted-foreground">{items}</ul>
+    );
+    listItems = [];
+    listKind = null;
+  };
+
+  for (const rawLine of lines) {
+    const line = rawLine;
+    const trimmed = line.trim();
+
+    // Fenced code block
+    if (/^```/.test(trimmed)) {
+      if (inCode) {
+        blocks.push(
+          <pre key={`b-${bkey++}`} className="bg-muted p-3 rounded-lg overflow-x-auto text-xs font-mono">
+            <code>{codeBuf.join('\n')}</code>
+          </pre>
+        );
+        codeBuf = []; inCode = false;
+      } else {
+        flushPara(); flushList(); inCode = true;
+      }
+      continue;
+    }
+    if (inCode) { codeBuf.push(line); continue; }
+
+    if (!trimmed) { flushPara(); flushList(); continue; }
+
+    // Headings — keep visual hierarchy without going wild on sizes
+    const h = trimmed.match(/^(#{1,4})\s+(.+?)\s*#*\s*$/);
+    if (h) {
+      flushPara(); flushList();
+      const level = h[1].length;
+      const cls =
+        level === 1 ? 'text-2xl font-bold mt-6 mb-2 tracking-tight' :
+        level === 2 ? 'text-xl font-bold mt-5 mb-2 tracking-tight' :
+        level === 3 ? 'text-lg font-semibold mt-4 mb-1.5' :
+                      'text-base font-semibold mt-3 mb-1';
+      const inner = renderInline(h[2], ctx);
+      blocks.push(
+        level === 1 ? <h2 key={`b-${bkey++}`} className={cls}>{inner}</h2> :
+        level === 2 ? <h3 key={`b-${bkey++}`} className={cls}>{inner}</h3> :
+        level === 3 ? <h4 key={`b-${bkey++}`} className={cls}>{inner}</h4> :
+                      <h5 key={`b-${bkey++}`} className={cls}>{inner}</h5>
+      );
+      continue;
+    }
+
+    // Horizontal rule
+    if (/^(-{3,}|\*{3,}|_{3,})$/.test(trimmed)) {
+      flushPara(); flushList();
+      blocks.push(<hr key={`b-${bkey++}`} className="my-5 border-border" />);
+      continue;
+    }
+
+    // Blockquote
+    if (trimmed.startsWith('>')) {
+      flushPara(); flushList();
+      blocks.push(
+        <blockquote key={`b-${bkey++}`}
+          className="border-l-2 border-primary/40 pl-4 italic text-muted-foreground my-3">
+          {renderInline(trimmed.replace(/^>\s?/, ''), ctx)}
+        </blockquote>
+      );
+      continue;
+    }
+
+    // Ordered list item
+    const ol = trimmed.match(/^\d+\.\s+(.+)$/);
+    if (ol) {
+      flushPara();
+      if (listKind !== 'ol') { flushList(); listKind = 'ol'; }
+      listItems.push(ol[1]);
+      continue;
+    }
+    // Bullet list item
+    const ul = trimmed.match(/^[-*+]\s+(.+)$/);
+    if (ul) {
+      flushPara();
+      if (listKind !== 'ul') { flushList(); listKind = 'ul'; }
+      listItems.push(ul[1]);
+      continue;
+    }
+
+    // Default: paragraph line — collect until blank line
+    flushList();
+    para.push(trimmed);
+  }
+  if (inCode && codeBuf.length) {
+    blocks.push(
+      <pre key={`b-${bkey++}`} className="bg-muted p-3 rounded-lg overflow-x-auto text-xs font-mono">
+        <code>{codeBuf.join('\n')}</code>
+      </pre>
+    );
+  }
+  flushPara(); flushList();
+
+  return <div className="space-y-3.5 text-[15px] leading-relaxed">{blocks}</div>;
 }
 
 // ── Card components ───────────────────────────────────────────────────────────
@@ -425,7 +587,11 @@ function FeaturedCard({ item, onClick }: { item: UnifiedItem; onClick: () => voi
   return <div onClick={onClick}>{content}</div>;
 }
 
-function ItemCard({ item, onClick }: { item: UnifiedItem; onClick: () => void }) {
+function ItemCard({ item, onClick, onCountryClick }: {
+  item: UnifiedItem;
+  onClick: () => void;
+  onCountryClick?: (code: string) => void;
+}) {
   const [imgError, setImgError] = useState(false);
   const isBuzz = item.type === 'buzz';
   const isEditorial = item.type === 'editorial';
@@ -467,14 +633,17 @@ function ItemCard({ item, onClick }: { item: UnifiedItem; onClick: () => void })
                 : null}
           </div>
         )}
-        {/* Country flag overlay (top-right) — only on press articles */}
-        {item.country && !isBuzz && (
-          <div
-            className="absolute top-2.5 right-2.5 bg-background/85 backdrop-blur-sm rounded-md p-1 leading-none shadow-sm"
-            title={countryName(item.country) || undefined}
+        {/* Country flag overlay (top-right) — only on press articles. Clicking
+            filters the listing by that country instead of opening the reader. */}
+        {item.country && !isBuzz && onCountryClick && (
+          <button
+            type="button"
+            onClick={(e) => { e.stopPropagation(); e.preventDefault(); onCountryClick(item.country!); }}
+            className="absolute top-2.5 right-2.5 bg-background/85 backdrop-blur-sm rounded-md p-1 leading-none shadow-sm hover:bg-background hover:ring-2 hover:ring-primary/40 transition"
+            title={`Filtrer par ${countryName(item.country) || item.country}`}
           >
             <Flag country={item.country} className="w-5 h-[14px] block" />
-          </div>
+          </button>
         )}
       </div>
 
@@ -556,8 +725,9 @@ export default function News() {
         ...(typeFilter ? { type: typeFilter } : {}),
         ...(selectedCountries.length ? { countries: selectedCountries.join(',') } : {}),
         // Auto-translate ON ⇒ ask the server to swap cached translations into
-        // the listing. Server does NOT call DeepL from /news/unified, so this
-        // is free — only articles previously opened-and-translated swap.
+        // the listing. Server does NOT call the translation endpoint from
+        // /news/unified, so this is free — only articles previously
+        // opened-and-translated swap.
         ...(autoTranslateNews ? { translate: targetLang } : {}),
       });
       const res = await fetch(`${API}/news/unified?${params}`, { credentials: 'include' });
@@ -613,7 +783,8 @@ export default function News() {
     // For foreign-language articles, auto-translate when the user has opted
     // in. We pass `?translate=<lang>` so the server returns translated title
     // + excerpt + content in one round-trip (this is the only path that
-    // actually consumes DeepL quota — listing only swaps cached strings).
+    // actually calls the translation endpoint — listing only swaps cached
+    // strings).
     const shouldAutoTranslate = autoTranslateNews && item.type === 'article'
       && !!item.lang && item.lang !== targetLang;
     const contentUrl = shouldAutoTranslate
@@ -904,7 +1075,12 @@ export default function News() {
           {/* Grid */}
           <div className="grid sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-5">
             {(hasFilters ? items : rest).map(item => (
-              <ItemCard key={item.id} item={item} onClick={() => openReader(item)} />
+              <ItemCard
+                key={item.id}
+                item={item}
+                onClick={() => openReader(item)}
+                onCountryClick={(code) => setSelectedCountries([code])}
+              />
             ))}
           </div>
 

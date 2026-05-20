@@ -179,6 +179,10 @@ export default function AdminSettings() {
   const [sendingEmail, setSendingEmail] = useState(false);
   const [emailResult, setEmailResult] = useState<{ ok: boolean; message: string } | null>(null);
 
+  // ── Fix player leagues ──
+  const [fixingLeagues, setFixingLeagues] = useState(false);
+  const [fixLeaguesResult, setFixLeaguesResult] = useState<{ ok: boolean; message: string } | null>(null);
+
   // ── Purge ──
   const [purgeConfirm, setPurgeConfirm] = useState<string | null>(null);
   const [purging, setPurging] = useState(false);
@@ -269,6 +273,33 @@ export default function AdminSettings() {
     }
   };
 
+  const handleFixLeagues = async () => {
+    setFixingLeagues(true);
+    setFixLeaguesResult(null);
+    try {
+      const res = await fetch(`${API}/admin/fix-player-leagues`, {
+        method: 'POST', ...authFetchInit(),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Failed');
+      const msg = t('admin_settings.fix_leagues_done', {
+        players: data.playersFixed,
+        directory: data.directoryFixed,
+        clubs: data.clubsScanned,
+        defaultValue: `${data.playersFixed} joueurs et ${data.directoryFixed} clubs corrigés (${data.clubsScanned} clubs analysés).`,
+      });
+      setFixLeaguesResult({ ok: true, message: msg });
+      toast.success(msg);
+      queryClient.invalidateQueries({ queryKey: ['players'] });
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : t('common.error');
+      setFixLeaguesResult({ ok: false, message: msg });
+      toast.error(msg);
+    } finally {
+      setFixingLeagues(false);
+    }
+  };
+
   const handlePurge = async (type: string) => {
     setPurging(true);
     try {
@@ -337,6 +368,32 @@ export default function AdminSettings() {
           {emailResult && (
             <p className={`text-sm px-3 py-2 rounded-lg ${emailResult.ok ? 'bg-green-50 text-green-700 dark:bg-green-950/30 dark:text-green-400' : 'bg-red-50 text-red-700 dark:bg-red-950/30 dark:text-red-400'}`}>
               {emailResult.message}
+            </p>
+          )}
+        </CardContent>
+      </Card>
+
+      {/* ── 1bis. Fix player leagues ── */}
+      <Card>
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2 text-base">
+            <Trophy className="w-4 h-4 text-primary" />
+            {t('admin_settings.fix_leagues_title', { defaultValue: 'Corriger les championnats des joueurs' })}
+          </CardTitle>
+          <CardDescription>
+            {t('admin_settings.fix_leagues_desc', {
+              defaultValue: 'Recalcule le championnat de chaque joueur à partir de son club (via la table de correspondance club → championnat, alias compris). Utile après un import Wyscout qui a laissé « D1 / D2 » dans le champ championnat.',
+            })}
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-3">
+          <Button onClick={handleFixLeagues} disabled={fixingLeagues} className="shrink-0">
+            {fixingLeagues ? <Loader2 className="w-4 h-4 animate-spin mr-2" /> : <RefreshCw className="w-4 h-4 mr-2" />}
+            {t('admin_settings.fix_leagues_btn', { defaultValue: 'Lancer la correction' })}
+          </Button>
+          {fixLeaguesResult && (
+            <p className={`text-sm px-3 py-2 rounded-lg ${fixLeaguesResult.ok ? 'bg-green-50 text-green-700 dark:bg-green-950/30 dark:text-green-400' : 'bg-red-50 text-red-700 dark:bg-red-950/30 dark:text-red-400'}`}>
+              {fixLeaguesResult.message}
             </p>
           )}
         </CardContent>

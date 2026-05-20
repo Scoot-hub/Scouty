@@ -90,6 +90,15 @@ function ChampTag({ name }: { name: string }) {
   );
 }
 
+function MatchTag({ label }: { label: string }) {
+  return (
+    <Link to="/roadmap"
+      className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-green-500/10 text-green-700 dark:text-green-400 border border-green-500/20 text-[12px] font-semibold hover:bg-green-500/20 transition-colors no-underline align-baseline">
+      <Trophy className="w-3 h-3 shrink-0" />{label}
+    </Link>
+  );
+}
+
 function MentionLink({ name, userId }: { name: string; userId: string }) {
   const navigate = useNavigate();
   const [profile, setProfile] = useState<{ photo_url?: string | null; full_name?: string | null; first_name?: string | null; last_name?: string | null; role?: string | null } | null>(null);
@@ -143,6 +152,7 @@ function renderContent(text: string): React.ReactNode[] {
       if (label.startsWith('player:')) result.push(<PlayerTag key={key++} name={label.slice(7)} playerId={url} />);
       else if (label.startsWith('club:')) result.push(<ClubTag key={key++} name={label.slice(5)} />);
       else if (label.startsWith('champ:')) result.push(<ChampTag key={key++} name={label.slice(6)} />);
+      else if (label.startsWith('match:')) result.push(<MatchTag key={key++} label={label.slice(6)} />);
       else result.push(
         <a key={key++} href={url} target="_blank" rel="noopener noreferrer"
           className="text-primary underline underline-offset-2 hover:opacity-80 transition-opacity inline-flex items-center gap-0.5">

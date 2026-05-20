@@ -1,6 +1,8 @@
 import { useState, useRef, useCallback, useMemo } from 'react';
 import { useTranslation } from 'react-i18next';
-import * as XLSX from 'xlsx';
+// xlsx (424 KB) is dynamically imported in handleFile — keeps it out of the
+// Players-page chunk on first navigation.
+type XLSXModule = typeof import('xlsx');
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog';
 import { Button } from '@/components/ui/button';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
@@ -348,8 +350,11 @@ function parseRow(row: Record<string, string | number | undefined>, customValues
   };
 }
 
-export function ImportPlayersDialog() {
-  const [open, setOpen] = useState(false);
+export function ImportPlayersDialog({ externalOpen, onExternalOpenChange }: { externalOpen?: boolean; onExternalOpenChange?: (v: boolean) => void } = {}) {
+  const controlled = externalOpen !== undefined;
+  const [internalOpen, setInternalOpen] = useState(false);
+  const open = controlled ? externalOpen : internalOpen;
+  const setOpen = controlled ? (v: boolean) => onExternalOpenChange?.(v) : setInternalOpen;
   const [step, setStep] = useState<'upload' | 'mapping' | 'preview' | 'importing' | 'done'>('upload');
   const [rawData, setRawData] = useState<{ headers: string[]; rows: RawRow[]; hyperlinks: Record<number, Record<string, { url: string; text: string }>> }>({ headers: [], rows: [], hyperlinks: {} });
   const [columnMapping, setColumnMapping] = useState<Record<string, string>>({});
@@ -359,7 +364,9 @@ export function ImportPlayersDialog() {
   const { toast } = useToast();
   const { t } = useTranslation();
   const importPlayers = useImportPlayers();
-  const { data: existingPlayers = [] } = usePlayers();
+  // Only load the full roster while the dialog is open — when mounted closed on
+  // Players.tsx this used to fire on every page navigation and dominate load time.
+  const { data: existingPlayers = [] } = usePlayers({ enabled: open });
   const { addOperation, updateOperation, completeOperation } = useOperationBanner();
   const queryClient = useQueryClient();
   const { data: customFields = [], refetch: refetchCustomFields } = useCustomFields();
@@ -470,8 +477,9 @@ export function ImportPlayersDialog() {
   const handleFile = useCallback((file: File) => {
     setFileName(file.name);
     const reader = new FileReader();
-    reader.onload = (e) => {
+    reader.onload = async (e) => {
       try {
+        const XLSX: XLSXModule = await import('xlsx');
         const data = new Uint8Array(e.target?.result as ArrayBuffer);
         const workbook = XLSX.read(data, { type: 'array' });
         const sheet = workbook.Sheets[workbook.SheetNames[0]];
@@ -853,11 +861,13 @@ export function ImportPlayersDialog() {
   // Sample values for each raw header (first 3 non-empty)
   return (
     <Dialog open={open} onOpenChange={(o) => { setOpen(o); if (!o) reset(); }}>
-      <DialogTrigger asChild>
-        <Button variant="outline" size="sm" className="rounded-xl">
-          <FileSpreadsheet className="w-4 h-4 mr-2" />{t('players.import_excel')}
-        </Button>
-      </DialogTrigger>
+      {!controlled && (
+        <DialogTrigger asChild>
+          <Button variant="outline" size="sm" className="rounded-xl">
+            <FileSpreadsheet className="w-4 h-4 mr-2" />{t('players.import_excel')}
+          </Button>
+        </DialogTrigger>
+      )}
       <DialogContent className={`${step === 'preview' ? 'max-w-[95vw]' : 'max-w-4xl'} max-h-[90vh] flex flex-col overflow-hidden`}>
         <DialogHeader>
           <DialogTitle>

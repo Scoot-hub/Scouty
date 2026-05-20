@@ -11,10 +11,14 @@ async function getCurrentUserId(): Promise<string> {
 }
 
 // Fetch all players
-export function usePlayers() {
+// Pass { enabled: false } to defer the fetch until refetch() is called — used by
+// Players.tsx so the heavy "load every player" only runs when Export / Find
+// duplicates is clicked, not on every page mount.
+export function usePlayers(options?: { enabled?: boolean }) {
   return useQuery({
     queryKey: ['players'],
     staleTime: 60 * 1000, // 1 min — avoid refetching on every mount
+    enabled: options?.enabled ?? true,
     queryFn: async (): Promise<Player[]> => {
       // Fetch all players (bypass Supabase default 1000 limit)
       let allData: Tables<'players'>[] = [];
