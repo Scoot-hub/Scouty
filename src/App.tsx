@@ -1,4 +1,4 @@
-import { lazy, Suspense } from "react";
+import { lazy, Suspense, useEffect } from "react";
 import { Toaster } from "@/components/ui/toaster";
 import { Toaster as Sonner } from "@/components/ui/sonner";
 import { TooltipProvider } from "@/components/ui/tooltip";
@@ -81,9 +81,20 @@ const EditorialEditor = lazy(() => import("@/pages/EditorialEditor"));
 const EditorialView = lazy(() => import("@/pages/EditorialView"));
 const EditorialShare = lazy(() => import("@/pages/EditorialShare"));
 const PlayerCompare = lazy(() => import("@/pages/PlayerCompare"));
+const WyscoutPlayerData = lazy(() => import("@/pages/WyscoutPlayerData"));
 const NotFound = lazy(() => import("@/pages/NotFound"));
 
-const App = () => (
+const App = () => {
+  // The static-loader (index.html) is a fixed z-9999 overlay shown until the
+  // app boots. It must be removed unconditionally once React has rendered —
+  // PageLoader only removes it when Suspense fires, which doesn't happen on
+  // eagerly-imported routes (e.g. /auth) or when ProtectedRoute renders its
+  // own inline loader, leaving the static-loader stuck on top forever.
+  useEffect(() => {
+    document.getElementById("static-loader")?.remove();
+  }, []);
+
+  return (
   <ThemeProvider>
   <ErrorBoundary>
   <UiPreferencesProvider>
@@ -162,7 +173,9 @@ const App = () => (
                 <Route path="/club" element={<ClubProfile />} />
                 <Route path="/my-clubs" element={<MyClubs />} />
                 <Route path="/championships" element={<Championships />} />
-                <Route path="/compare" element={<PlayerCompare />} />
+                <Route path="/data" element={<PlayerCompare />} />
+                <Route path="/data/player/:id" element={<WyscoutPlayerData />} />
+                <Route path="/compare" element={<Navigate to="/data" replace />} />
                 <Route path="/map" element={<MapView />} />
                 <Route path="/checkout" element={<Checkout />} />
                 <Route path="/affiliate" element={<Affiliate />} />
@@ -186,6 +199,7 @@ const App = () => (
   </UiPreferencesProvider>
   </ErrorBoundary>
   </ThemeProvider>
-);
+  );
+};
 
 export default App;

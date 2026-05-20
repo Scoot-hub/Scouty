@@ -15,7 +15,7 @@ interface UiPreferences {
   timeFormat: TimeFormat; // '24h' | '12h'
   /** When true, the News page auto-translates foreign-language articles into
    *  the active UI language (uses cached translations in the listing and
-   *  fires a fresh DeepL translation when an article is opened). */
+   *  fires a fresh translation when an article is opened). */
   autoTranslateNews: boolean;
 }
 

@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { Link, useLocation, useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import {
-  Users, Menu, X, LogOut, Settings, Shield, UserCircle, Eye, Sparkles, Building2, CalendarDays, CalendarCheck, Shirt, ClipboardList, ChevronLeft, ChevronRight, ChevronDown, Route, MapPinned, Gift, Search, Globe, Heart, MessageSquare, Info, Trophy, FileSpreadsheet, Newspaper, PenLine, Plus, Zap, Twitter, Star, Lock, GitCompareArrows,
+  Users, Menu, X, LogOut, Settings, Shield, UserCircle, Eye, Sparkles, Building2, CalendarDays, CalendarCheck, Shirt, ClipboardList, ChevronLeft, ChevronRight, ChevronDown, Route, MapPinned, Gift, Search, Globe, Heart, MessageSquare, Info, Trophy, FileSpreadsheet, Newspaper, PenLine, Plus, Zap, Twitter, Star, Lock, GitCompareArrows, Home,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { useAuth } from '@/contexts/AuthContext';
@@ -147,42 +147,68 @@ const subLinkSmClass = (active: boolean) =>
       : 'text-sidebar-foreground/50 hover:text-sidebar-foreground hover:bg-sidebar-accent/50'
   );
 
-// Per-org submenu — separate component so useOrgUnread can be called once per org (no hook-in-loop)
-function OrgSubMenu({ orgBase, orgId, onNav, isActive }: {
-  orgBase: string; orgId: string; onNav: () => void; isActive: (p: string) => boolean;
+// Promoted org nav — top-level items for the active org in the "Organisation" tab
+function OrgPromotedNav({
+  orgBase,
+  orgId,
+  collapsed,
+  isActive,
+  linkClass,
+  onNav,
+}: {
+  orgBase: string;
+  orgId: string;
+  collapsed: boolean;
+  isActive: (path: string) => boolean;
+  linkClass: (path: string, childPaths?: string[]) => string;
+  onNav: () => void;
 }) {
   const { t } = useTranslation();
   const { data: unreadData } = useOrgUnread(orgId);
   const unread = unreadData?.count ?? 0;
 
   return (
-    <div className="pl-6 space-y-0.5 mt-0.5">
-      <Link to={`${orgBase}/squad`} className={subLinkSmClass(isActive(`${orgBase}/squad`))} onClick={onNav}>
-        <ClipboardList className="w-3 h-3" />
-        {t('sidebar.squad')}
-      </Link>
-      <Link to={`${orgBase}/players`} className={subLinkSmClass(isActive(`${orgBase}/players`))} onClick={onNav}>
-        <Users className="w-3 h-3" />
-        {t('sidebar.org_players')}
-      </Link>
-      <Link to={`${orgBase}/roadmap`} className={subLinkSmClass(isActive(`${orgBase}/roadmap`))} onClick={onNav}>
-        <Route className="w-3 h-3" />
-        {t('sidebar.roadmap')}
-      </Link>
-      <Link to={`${orgBase}/chat`} className={subLinkSmClass(isActive(`${orgBase}/chat`))} onClick={onNav}>
-        <MessageSquare className="w-3 h-3" />
-        {t('sidebar.org_chat')}
-        {unread > 0 && (
-          <span className="ml-auto min-w-[16px] h-[16px] px-1 rounded-full bg-red-500 text-white text-[9px] font-bold flex items-center justify-center">
-            {unread > 99 ? '99+' : unread}
-          </span>
-        )}
-      </Link>
-      <Link to={`${orgBase}/settings`} className={subLinkSmClass(isActive(`${orgBase}/settings`))} onClick={onNav}>
-        <Settings className="w-3 h-3" />
-        {t('sidebar.org_settings')}
-      </Link>
-    </div>
+    <>
+      <SidebarTooltip label={t('sidebar.squad')} collapsed={collapsed}>
+        <Link to={`${orgBase}/squad`} className={linkClass(`${orgBase}/squad`)} onClick={onNav}>
+          <ClipboardList className="w-4 h-4 shrink-0" />
+          {!collapsed && t('sidebar.squad')}
+        </Link>
+      </SidebarTooltip>
+      <SidebarTooltip label={t('sidebar.org_players')} collapsed={collapsed}>
+        <Link to={`${orgBase}/players`} className={linkClass(`${orgBase}/players`)} onClick={onNav}>
+          <Users className="w-4 h-4 shrink-0" />
+          {!collapsed && t('sidebar.org_players')}
+        </Link>
+      </SidebarTooltip>
+      <SidebarTooltip label={t('sidebar.roadmap')} collapsed={collapsed}>
+        <Link to={`${orgBase}/roadmap`} className={linkClass(`${orgBase}/roadmap`)} onClick={onNav}>
+          <Route className="w-4 h-4 shrink-0" />
+          {!collapsed && t('sidebar.roadmap')}
+        </Link>
+      </SidebarTooltip>
+      <SidebarTooltip label={t('sidebar.org_chat')} collapsed={collapsed}>
+        <Link to={`${orgBase}/chat`} className={linkClass(`${orgBase}/chat`)} onClick={onNav}>
+          <MessageSquare className="w-4 h-4 shrink-0" />
+          {!collapsed && (
+            <span className="flex items-center gap-2 flex-1">
+              {t('sidebar.org_chat')}
+              {unread > 0 && (
+                <span className="ml-auto min-w-[18px] h-[18px] px-1 rounded-full bg-red-500 text-white text-[9px] font-bold flex items-center justify-center">
+                  {unread > 99 ? '99+' : unread}
+                </span>
+              )}
+            </span>
+          )}
+        </Link>
+      </SidebarTooltip>
+      <SidebarTooltip label={t('sidebar.org_settings')} collapsed={collapsed}>
+        <Link to={`${orgBase}/settings`} className={linkClass(`${orgBase}/settings`)} onClick={onNav}>
+          <Settings className="w-4 h-4 shrink-0" />
+          {!collapsed && t('sidebar.org_settings')}
+        </Link>
+      </SidebarTooltip>
+    </>
   );
 }
 
@@ -200,6 +226,11 @@ export default function AppSidebar({ collapsed, onToggle }: AppSidebarProps) {
   const { t } = useTranslation();
   const { hideRestrictedElements } = useUiPreferences();
   const { data: pageAccessInfo } = usePageAccessInfo();
+
+  // Tab switcher: derive active tab from URL — org-related routes activate the "Organisation" tab
+  const isOrgTab = location.pathname.startsWith('/organization');
+  const activeOrgSlug = location.pathname.match(/^\/organization\/([^/?]+)/)?.[1];
+  const activeOrg = myOrgs?.find(o => slugify(o.name) === activeOrgSlug);
 
   const WHITELIST_ONLY = new Set(['admin', 'data_import']);
   const canView = (pageKey: string): boolean => {
@@ -223,38 +254,52 @@ export default function AppSidebar({ collapsed, onToggle }: AppSidebarProps) {
 
   const [mobileOpen, setMobileOpen] = useState(false);
   const [legalOpen, setLegalOpen] = useState(false);
+  const [footerMenuOpen, setFooterMenuOpen] = useState<boolean>(() => {
+    if (typeof window === 'undefined') return true;
+    const stored = window.localStorage.getItem('scouty_footer_menu_open');
+    return stored === null ? true : stored === 'true';
+  });
+  const toggleFooterMenu = () => {
+    setFooterMenuOpen(prev => {
+      const next = !prev;
+      try { window.localStorage.setItem('scouty_footer_menu_open', String(next)); } catch { /* ignore */ }
+      return next;
+    });
+  };
 
   // null = auto (based on active child route), true/false = user override
   const [playersOpenOverride, setPlayersOpenOverride] = useState<boolean | null>(null);
   const [fixturesOpenOverride, setFixturesOpenOverride] = useState<boolean | null>(null);
-  const [orgOpenOverride, setOrgOpenOverride] = useState<boolean | null>(null);
 
   const hasActiveChild = (paths: string[]) =>
     paths.some(p => location.pathname === p || location.pathname.startsWith(p + '/') || location.pathname.startsWith(p + '?'));
 
   const playersChildPaths = ['/discover', '/watchlist', '/shadow-team'];
   const fixturesChildPaths = ['/my-matches', '/map'];
-  const champChildPaths = ['/my-championships'];
-  const clubChildPaths = ['/my-clubs', '/club', '/club-search'];
-  const orgChildPaths = myOrgs?.map(o => `/organization/${slugify(o.name)}`) ?? [];
+  const champChildPaths = ['/my-championships', '/my-clubs', '/club', '/club-search'];
 
-  const [clubOpenOverride, setClubOpenOverride] = useState<boolean | null>(null);
   const [champOpenOverride, setChampOpenOverride] = useState<boolean | null>(null);
-  const [newsOpenOverride, setNewsOpenOverride] = useState<boolean | null>(null);
-
-  const editorialChildPaths = ['/editorial/new'];
-  const newsChildPaths = ['/buzz', '/x', '/instagram', '/editorial', '/editorial/new'];
 
   const playersOpen = playersOpenOverride ?? hasActiveChild(playersChildPaths);
   const fixturesOpen = fixturesOpenOverride ?? hasActiveChild(fixturesChildPaths);
-  const orgOpen = orgOpenOverride ?? hasActiveChild(orgChildPaths);
-  const clubOpen = clubOpenOverride ?? hasActiveChild(clubChildPaths);
   const champOpen = champOpenOverride ?? hasActiveChild(champChildPaths);
-  const newsOpen = newsOpenOverride ?? hasActiveChild(newsChildPaths);
 
   const handleSignOut = async () => {
     await signOut();
     navigate('/auth');
+  };
+
+  const handleTabSwitch = (tab: 'base' | 'org') => {
+    setMobileOpen(false);
+    if (tab === 'base' && isOrgTab) {
+      navigate('/players');
+    } else if (tab === 'org' && !isOrgTab) {
+      if (myOrgs && myOrgs.length > 0) {
+        navigate(`/organization/${slugify(myOrgs[0].name)}/squad`);
+      } else {
+        navigate('/organization');
+      }
+    }
   };
 
   const isActive = (path: string) => {
@@ -347,6 +392,74 @@ export default function AppSidebar({ collapsed, onToggle }: AppSidebarProps) {
       {/* Nav */}
       <nav className={cn('flex-1 space-y-0.5', collapsed ? 'px-2 overflow-hidden' : 'px-3 overflow-y-auto sidebar-scroll')}>
 
+        {/* ── Tab switcher (Ma base / Organisation) ── */}
+        {shouldShow('organization') && (collapsed ? (
+          <div className="pb-2 flex flex-col gap-1">
+            <SidebarTooltip label={t('sidebar.tab_base')} collapsed={true}>
+              <button
+                onClick={() => handleTabSwitch('base')}
+                className={cn(
+                  'flex items-center justify-center w-full p-2 rounded-lg transition-all',
+                  !isOrgTab
+                    ? 'bg-sidebar-accent text-sidebar-accent-foreground shadow-sm'
+                    : 'text-sidebar-foreground/60 hover:text-sidebar-foreground hover:bg-sidebar-accent/50'
+                )}
+                aria-label={t('sidebar.tab_base')}
+              >
+                <Home className="w-4 h-4" />
+              </button>
+            </SidebarTooltip>
+            <SidebarTooltip label={t('sidebar.organization')} collapsed={true}>
+              <button
+                onClick={() => canView('organization') && handleTabSwitch('org')}
+                disabled={!canView('organization')}
+                className={cn(
+                  'flex items-center justify-center w-full p-2 rounded-lg transition-all',
+                  isOrgTab
+                    ? 'bg-sidebar-accent text-sidebar-accent-foreground shadow-sm'
+                    : 'text-sidebar-foreground/60 hover:text-sidebar-foreground hover:bg-sidebar-accent/50',
+                  !canView('organization') && 'opacity-40 cursor-not-allowed'
+                )}
+                aria-label={t('sidebar.organization')}
+              >
+                <Building2 className="w-4 h-4" />
+              </button>
+            </SidebarTooltip>
+          </div>
+        ) : (
+          <div className="pt-1 pb-2">
+            <div className="flex bg-sidebar-accent/30 rounded-xl p-1 gap-1">
+              <button
+                onClick={() => handleTabSwitch('base')}
+                className={cn(
+                  'flex-1 px-2 py-1.5 rounded-lg text-xs font-semibold transition-all',
+                  !isOrgTab
+                    ? 'bg-sidebar text-sidebar-foreground shadow-sm'
+                    : 'text-sidebar-foreground/60 hover:text-sidebar-foreground'
+                )}
+              >
+                {t('sidebar.tab_base')}
+              </button>
+              <button
+                onClick={() => canView('organization') && handleTabSwitch('org')}
+                disabled={!canView('organization')}
+                className={cn(
+                  'flex-1 px-2 py-1.5 rounded-lg text-xs font-semibold transition-all',
+                  isOrgTab
+                    ? 'bg-sidebar text-sidebar-foreground shadow-sm'
+                    : 'text-sidebar-foreground/60 hover:text-sidebar-foreground',
+                  !canView('organization') && 'opacity-40 cursor-not-allowed'
+                )}
+              >
+                {t('sidebar.organization')}
+              </button>
+            </div>
+          </div>
+        ))}
+
+        {/* ── Base tab content ── */}
+        {!isOrgTab && (<>
+
         {/* ── Joueurs ── */}
         {shouldShow('players') && (
           <RestrictedWrapper pageKey="players" canView={canView('players')} requiredRoles={pageAccessInfo?.['players'] ?? []}>
@@ -398,60 +511,10 @@ export default function AppSidebar({ collapsed, onToggle }: AppSidebarProps) {
                 </FeatureGate>
               </RestrictedWrapper>
             )}
-            <Link to="/compare" className={subLinkClass(isActive('/compare'))} onClick={() => setMobileOpen(false)}>
+            <Link to="/data" className={subLinkClass(isActive('/data'))} onClick={() => setMobileOpen(false)}>
               <GitCompareArrows className="w-3.5 h-3.5 text-violet-500" />
               {t('sidebar.compare')}
             </Link>
-          </div>
-        )}
-
-        {/* ── Organisation ── */}
-        {shouldShow('organization') && (
-          <RestrictedWrapper pageKey="organization" canView={canView('organization')} requiredRoles={pageAccessInfo?.['organization'] ?? []}>
-            <CollapsibleParent open={orgOpen} onToggleOpen={() => setOrgOpenOverride(v => v === null ? !hasActiveChild(orgChildPaths) : !v)}>
-              <SidebarTooltip label={t('sidebar.organization')} collapsed={collapsed}>
-                <Link to="/organization" className={linkClass('/organization', orgChildPaths)} onClick={() => { setMobileOpen(false); setOrgOpenOverride(true); }}>
-                  <Building2 className="w-4 h-4 shrink-0" />
-                  {!collapsed && t('sidebar.organization')}
-                </Link>
-              </SidebarTooltip>
-            </CollapsibleParent>
-          </RestrictedWrapper>
-        )}
-
-        {!collapsed && shouldShow('organization') && canView('organization') && orgOpen && myOrgs && myOrgs.length > 0 && (
-          <div className="pl-7 space-y-0.5">
-            {myOrgs.map((org) => {
-              const slug = slugify(org.name);
-              const orgBase = `/organization/${slug}`;
-              const isOrgActive = location.pathname === orgBase || location.pathname.startsWith(orgBase + '/');
-              return (
-                <div key={org.id}>
-                  <Link
-                    to={orgBase}
-                    className={subLinkClass(isOrgActive)}
-                    onClick={() => setMobileOpen(false)}
-                  >
-                    <div className="w-3.5 h-3.5 rounded overflow-hidden flex items-center justify-center shrink-0">
-                      {org.logo_url ? (
-                        <img src={org.logo_url} alt={org.name} className="w-full h-full object-cover" />
-                      ) : (
-                        <Building2 className="w-3.5 h-3.5" />
-                      )}
-                    </div>
-                    <span className="truncate">{org.name}</span>
-                  </Link>
-                  {isOrgActive && (
-                    <OrgSubMenu
-                      orgBase={orgBase}
-                      orgId={org.id as string}
-                      onNav={() => setMobileOpen(false)}
-                      isActive={isActive}
-                    />
-                  )}
-                </div>
-              );
-            })}
           </div>
         )}
 
@@ -524,27 +587,16 @@ export default function AppSidebar({ collapsed, onToggle }: AppSidebarProps) {
                 </FeatureGate>
               </RestrictedWrapper>
             )}
-          </div>
-        )}
-
-        {/* ── Club ── */}
-        {shouldShow('club_profile') && (
-          <RestrictedWrapper pageKey="club_profile" canView={canView('club_profile')} requiredRoles={pageAccessInfo?.['club_profile'] ?? []}>
-            <FeatureGate featureKey="feature_club_profile" inline>
-              <CollapsibleParent open={clubOpen} onToggleOpen={() => setClubOpenOverride(v => v === null ? !hasActiveChild(clubChildPaths) : !v)}>
-                <SidebarTooltip label={t('sidebar.club')} collapsed={collapsed}>
-                  <Link to="/club-search" className={linkClass('/club-search', clubChildPaths)} onClick={() => { setMobileOpen(false); setClubOpenOverride(true); }}>
-                    <Building2 className="w-4 h-4 shrink-0" />
-                    {!collapsed && t('sidebar.club')}
+            {shouldShow('club_profile') && (
+              <RestrictedWrapper pageKey="club_profile" canView={canView('club_profile')} requiredRoles={pageAccessInfo?.['club_profile'] ?? []}>
+                <FeatureGate featureKey="feature_club_profile" inline>
+                  <Link to="/club-search" className={subLinkClass(isActive('/club-search') || isActive('/club'))} onClick={() => setMobileOpen(false)}>
+                    <Building2 className="w-3.5 h-3.5" />
+                    {t('sidebar.club')}
                   </Link>
-                </SidebarTooltip>
-              </CollapsibleParent>
-            </FeatureGate>
-          </RestrictedWrapper>
-        )}
-
-        {!collapsed && shouldShow('club_profile') && canView('club_profile') && clubOpen && (
-          <div className="pl-7 space-y-0.5">
+                </FeatureGate>
+              </RestrictedWrapper>
+            )}
             {shouldShow('my_clubs') && (
               <RestrictedWrapper pageKey="my_clubs" canView={canView('my_clubs')} requiredRoles={pageAccessInfo?.['my_clubs'] ?? []}>
                 <FeatureGate featureKey="feature_my_clubs" inline>
@@ -558,77 +610,18 @@ export default function AppSidebar({ collapsed, onToggle }: AppSidebarProps) {
           </div>
         )}
 
-        {/* ── Actualités (collapsible) ── */}
+        {/* ── Actualités ── */}
         {shouldShow('news') && (
           <RestrictedWrapper pageKey="news" canView={canView('news')} requiredRoles={pageAccessInfo?.['news'] ?? []}>
             <FeatureGate featureKey="feature_news" inline>
-              <CollapsibleParent open={newsOpen} onToggleOpen={() => setNewsOpenOverride(v => v === null ? !hasActiveChild(newsChildPaths) : !v)}>
-                <SidebarTooltip label={t('sidebar.news')} collapsed={collapsed}>
-                  <Link to="/news" className={linkClass('/news', newsChildPaths)} onClick={() => { setMobileOpen(false); setNewsOpenOverride(true); }}>
-                    <Newspaper className="w-4 h-4 shrink-0" />
-                    {!collapsed && t('sidebar.news')}
-                  </Link>
-                </SidebarTooltip>
-              </CollapsibleParent>
+              <SidebarTooltip label={t('sidebar.news')} collapsed={collapsed}>
+                <Link to="/news" className={linkClass('/news')} onClick={() => setMobileOpen(false)}>
+                  <Newspaper className="w-4 h-4 shrink-0" />
+                  {!collapsed && t('sidebar.news')}
+                </Link>
+              </SidebarTooltip>
             </FeatureGate>
           </RestrictedWrapper>
-        )}
-
-        {!collapsed && shouldShow('news') && canView('news') && newsOpen && (
-          <div className="pl-7 space-y-0.5">
-            {/* Football Buzz */}
-            {shouldShow('buzz') && (
-              <RestrictedWrapper pageKey="buzz" canView={canView('buzz')} requiredRoles={pageAccessInfo?.['buzz'] ?? []}>
-                <FeatureGate featureKey="feature_buzz" inline>
-                  <Link to="/buzz" className={subLinkClass(isActive('/buzz'))} onClick={() => setMobileOpen(false)}>
-                    <Zap className="w-3.5 h-3.5 text-orange-500" />
-                    {t('sidebar.buzz')}
-                  </Link>
-                </FeatureGate>
-              </RestrictedWrapper>
-            )}
-            {/* Instagram */}
-            {shouldShow('instagram') && (
-              <RestrictedWrapper pageKey="instagram" canView={canView('instagram')} requiredRoles={pageAccessInfo?.['instagram'] ?? []}>
-                <FeatureGate featureKey="feature_instagram" inline>
-                  <Link to="/instagram" className={subLinkClass(isActive('/instagram'))} onClick={() => setMobileOpen(false)}>
-                    <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="url(#ig-grad)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                      <defs>
-                        <linearGradient id="ig-grad" x1="0%" y1="0%" x2="100%" y2="100%">
-                          <stop offset="0%" stopColor="#f09433" />
-                          <stop offset="50%" stopColor="#dc2743" />
-                          <stop offset="100%" stopColor="#bc1888" />
-                        </linearGradient>
-                      </defs>
-                      <rect x="2" y="2" width="20" height="20" rx="5" ry="5" />
-                      <path d="M16 11.37A4 4 0 1 1 12.63 8 4 4 0 0 1 16 11.37z" />
-                      <line x1="17.5" y1="6.5" x2="17.51" y2="6.5" />
-                    </svg>
-                    {t('sidebar.instagram')}
-                  </Link>
-                </FeatureGate>
-              </RestrictedWrapper>
-            )}
-            {/* Articles + sous-item Créer */}
-            {shouldShow('editorial') && (
-              <RestrictedWrapper pageKey="editorial" canView={canView('editorial')} requiredRoles={pageAccessInfo?.['editorial'] ?? []}>
-                <FeatureGate featureKey="feature_editorial" inline>
-                <Link to="/editorial" className={subLinkClass(isActive('/editorial') && !isActive('/editorial/new'))} onClick={() => setMobileOpen(false)}>
-                  <PenLine className="w-3.5 h-3.5" />
-                  {t('sidebar.editorial')}
-                </Link>
-                </FeatureGate>
-                {canAction('editorial', 'create') && (
-                  <div className="pl-4 mt-0.5">
-                    <Link to="/editorial/new" className={subLinkSmClass(isActive('/editorial/new'))} onClick={() => setMobileOpen(false)}>
-                      <Plus className="w-3 h-3" />
-                      {t('sidebar.editorial_new')}
-                    </Link>
-                  </div>
-                )}
-              </RestrictedWrapper>
-            )}
-          </div>
         )}
 
         {/* ── Communauté ── */}
@@ -650,20 +643,6 @@ export default function AppSidebar({ collapsed, onToggle }: AppSidebarProps) {
           </RestrictedWrapper>
         )}
 
-        {/* ── Booking ── */}
-        {shouldShow('booking') && (
-          <RestrictedWrapper pageKey="booking" canView={canView('booking')} requiredRoles={pageAccessInfo?.['booking'] ?? []}>
-            <FeatureGate featureKey="feature_booking" inline>
-              <SidebarTooltip label={t('sidebar.booking')} collapsed={collapsed}>
-                <Link to="/booking" className={linkClass('/booking')} onClick={() => setMobileOpen(false)}>
-                  <CalendarCheck className="w-4 h-4 shrink-0" />
-                  {!collapsed && t('sidebar.booking')}
-                </Link>
-              </SidebarTooltip>
-            </FeatureGate>
-          </RestrictedWrapper>
-        )}
-
         {/* ── Import de données ── */}
         {shouldShow('data_import') && (
           <RestrictedWrapper pageKey="data_import" canView={canView('data_import')} requiredRoles={pageAccessInfo?.['data_import'] ?? []}>
@@ -678,18 +657,91 @@ export default function AppSidebar({ collapsed, onToggle }: AppSidebarProps) {
           </RestrictedWrapper>
         )}
 
-        {/* ── Affiliation ── */}
-        {shouldShow('affiliate') && (
-          <RestrictedWrapper pageKey="affiliate" canView={canView('affiliate')} requiredRoles={pageAccessInfo?.['affiliate'] ?? []}>
-            <FeatureGate featureKey="feature_affiliate" inline>
-              <SidebarTooltip label={t('sidebar.affiliate')} collapsed={collapsed}>
-                <Link to="/affiliate" className={linkClass('/affiliate')} onClick={() => setMobileOpen(false)}>
-                  <Gift className="w-4 h-4 shrink-0" />
-                  {!collapsed && t('sidebar.affiliate')}
-                </Link>
-              </SidebarTooltip>
-            </FeatureGate>
-          </RestrictedWrapper>
+        </>)}
+
+        {/* ── Organisation tab content ── */}
+        {isOrgTab && (
+          <>
+            {(!myOrgs || myOrgs.length === 0) ? (
+              <div className={cn('text-center', collapsed ? 'px-1 py-4' : 'px-4 py-8')}>
+                <Building2 className={cn('mx-auto mb-3 text-sidebar-foreground/30', collapsed ? 'w-5 h-5' : 'w-10 h-10')} />
+                {!collapsed && (
+                  <>
+                    <p className="text-xs text-sidebar-foreground/60 mb-4 leading-relaxed">
+                      {t('sidebar.org_empty')}
+                    </p>
+                    <Link
+                      to="/organization"
+                      className="inline-block w-full px-3 py-2 rounded-lg bg-sidebar-primary text-sidebar-primary-foreground text-xs font-bold hover:opacity-90 transition-opacity"
+                      onClick={() => setMobileOpen(false)}
+                    >
+                      {t('sidebar.org_create_or_join')}
+                    </Link>
+                  </>
+                )}
+              </div>
+            ) : (
+              <>
+                {!collapsed && (
+                  <div className="px-4 pt-1 pb-1.5">
+                    <p className="text-[10px] uppercase tracking-wider font-bold text-sidebar-foreground/40">
+                      {t('sidebar.my_orgs')}
+                    </p>
+                  </div>
+                )}
+                {myOrgs.map((org) => {
+                  const slug = slugify(org.name);
+                  const orgBase = `/organization/${slug}`;
+                  const isThisOrgActive = slug === activeOrgSlug;
+                  return (
+                    <SidebarTooltip key={org.id} label={org.name} collapsed={collapsed}>
+                      <Link
+                        to={`${orgBase}/squad`}
+                        className={cn(
+                          'flex items-center gap-3 rounded-xl text-sm font-medium transition-all duration-200',
+                          collapsed ? 'justify-center px-2 py-2' : 'px-4 py-2',
+                          isThisOrgActive
+                            ? 'bg-sidebar-accent text-sidebar-accent-foreground shadow-sm'
+                            : 'text-sidebar-foreground/70 hover:text-sidebar-foreground hover:bg-sidebar-accent/50'
+                        )}
+                        onClick={() => setMobileOpen(false)}
+                      >
+                        <div className={cn('rounded overflow-hidden flex items-center justify-center shrink-0', collapsed ? 'w-5 h-5' : 'w-4 h-4')}>
+                          {org.logo_url ? (
+                            <img src={org.logo_url} alt={org.name} className="w-full h-full object-cover" />
+                          ) : (
+                            <Building2 className="w-full h-full" />
+                          )}
+                        </div>
+                        {!collapsed && <span className="truncate">{org.name}</span>}
+                      </Link>
+                    </SidebarTooltip>
+                  );
+                })}
+
+                {activeOrg && (
+                  <>
+                    <div className={cn('my-2 border-t border-sidebar-border/50', collapsed ? 'mx-2' : 'mx-4')} />
+                    {!collapsed && (
+                      <div className="px-4 pb-1.5">
+                        <p className="text-[10px] uppercase tracking-wider font-bold text-sidebar-foreground/40 truncate">
+                          {activeOrg.name}
+                        </p>
+                      </div>
+                    )}
+                    <OrgPromotedNav
+                      orgBase={`/organization/${activeOrgSlug}`}
+                      orgId={activeOrg.id as string}
+                      collapsed={collapsed}
+                      isActive={isActive}
+                      linkClass={linkClass}
+                      onNav={() => setMobileOpen(false)}
+                    />
+                  </>
+                )}
+              </>
+            )}
+          </>
         )}
       </nav>
 
@@ -714,72 +766,115 @@ export default function AppSidebar({ collapsed, onToggle }: AppSidebarProps) {
 
       {/* Footer */}
       <div className={cn('py-3 border-t border-sidebar-border shrink-0', collapsed ? 'px-2' : 'px-3')}>
-        <div className="space-y-0.5">
-          {isAdmin && (
-            <SidebarTooltip label={t('sidebar.administration')} collapsed={collapsed} description={t('sidebar.tooltip_admin')}>
-              <Link to="/admin" className={footerLinkClass('/admin')} onClick={() => setMobileOpen(false)}>
-                <Shield className="w-3.5 h-3.5 shrink-0" />
-                {!collapsed && t('sidebar.administration')}
-              </Link>
-            </SidebarTooltip>
+        {/* Toggle for the collapsible footer menu */}
+        <button
+          onClick={toggleFooterMenu}
+          className={cn(
+            'flex items-center gap-1.5 text-[10px] text-sidebar-muted hover:text-sidebar-foreground transition-colors w-full mb-1.5',
+            collapsed ? 'justify-center' : ''
           )}
-          {isAdmin && (
-            <SidebarTooltip label={t('sidebar.tickets')} collapsed={collapsed} description={t('sidebar.tooltip_admin_tickets')}>
-              <Link to="/admin/tickets" className={footerLinkClass('/admin/tickets')} onClick={() => setMobileOpen(false)}>
-                <MessageSquare className="w-3.5 h-3.5 shrink-0" />
-                {!collapsed && t('sidebar.tickets')}
-                {ticketUnread > 0 && (
-                  <span className="ml-auto bg-red-500 text-white text-[9px] rounded-full min-w-[18px] h-[18px] flex items-center justify-center font-bold px-1">
-                    {ticketUnread}
-                  </span>
-                )}
-              </Link>
-            </SidebarTooltip>
-          )}
+          aria-label={t('sidebar.more')}
+          aria-expanded={footerMenuOpen}
+        >
+          {!collapsed && <span className="uppercase tracking-wider font-bold">{t('sidebar.more')}</span>}
+          <ChevronDown className={cn('w-3 h-3 transition-transform duration-200', !collapsed && 'ml-auto', footerMenuOpen && 'rotate-180')} />
+        </button>
 
-          <SidebarTooltip label={t('sidebar.my_account')} collapsed={collapsed} description={t('sidebar.tooltip_account')}>
-            <Link to="/account" className={footerLinkClass('/account')} onClick={() => setMobileOpen(false)}>
-              <UserCircle className="w-3.5 h-3.5 shrink-0" />
-              {!collapsed && t('sidebar.my_account')}
-            </Link>
-          </SidebarTooltip>
-
-          {shouldShow('settings') && (
-            <RestrictedWrapper pageKey="settings" canView={canView('settings')} requiredRoles={pageAccessInfo?.['settings'] ?? []}>
-              <SidebarTooltip label={t('sidebar.settings')} collapsed={collapsed} description={t('sidebar.tooltip_settings')}>
-                <Link to="/settings" className={footerLinkClass('/settings')} onClick={() => setMobileOpen(false)}>
-                  <Settings className="w-3.5 h-3.5 shrink-0" />
-                  {!collapsed && t('sidebar.settings')}
+        {/* Collapsible footer menu */}
+        {footerMenuOpen && (
+          <div className="space-y-0.5">
+            {isAdmin && (
+              <SidebarTooltip label={t('sidebar.administration')} collapsed={collapsed} description={t('sidebar.tooltip_admin')}>
+                <Link to="/admin" className={footerLinkClass('/admin')} onClick={() => setMobileOpen(false)}>
+                  <Shield className="w-3.5 h-3.5 shrink-0" />
+                  {!collapsed && t('sidebar.administration')}
                 </Link>
               </SidebarTooltip>
-            </RestrictedWrapper>
-          )}
+            )}
+            {isAdmin && (
+              <SidebarTooltip label={t('sidebar.tickets')} collapsed={collapsed} description={t('sidebar.tooltip_admin_tickets')}>
+                <Link to="/admin/tickets" className={footerLinkClass('/admin/tickets')} onClick={() => setMobileOpen(false)}>
+                  <MessageSquare className="w-3.5 h-3.5 shrink-0" />
+                  {!collapsed && t('sidebar.tickets')}
+                  {ticketUnread > 0 && (
+                    <span className="ml-auto bg-red-500 text-white text-[9px] rounded-full min-w-[18px] h-[18px] flex items-center justify-center font-bold px-1">
+                      {ticketUnread}
+                    </span>
+                  )}
+                </Link>
+              </SidebarTooltip>
+            )}
 
-          {shouldShow('my_tickets') && (
-            <RestrictedWrapper pageKey="my_tickets" canView={canView('my_tickets')} requiredRoles={pageAccessInfo?.['my_tickets'] ?? []}>
-              <FeatureGate featureKey="feature_my_tickets" inline>
-                <SidebarTooltip label={t('sidebar.my_tickets')} collapsed={collapsed} description={t('sidebar.tooltip_my_tickets')}>
-                  <Link to="/my-tickets" className={footerLinkClass('/my-tickets')} onClick={() => setMobileOpen(false)}>
-                    <MessageSquare className="w-3.5 h-3.5 shrink-0" />
-                    {!collapsed && t('sidebar.my_tickets')}
-                    {myTicketUnread > 0 && (
-                      <span className="ml-auto bg-primary text-primary-foreground text-[9px] rounded-full min-w-[18px] h-[18px] flex items-center justify-center font-bold px-1">
-                        {myTicketUnread}
-                      </span>
-                    )}
+            <SidebarTooltip label={t('sidebar.my_account')} collapsed={collapsed} description={t('sidebar.tooltip_account')}>
+              <Link to="/account" className={footerLinkClass('/account')} onClick={() => setMobileOpen(false)}>
+                <UserCircle className="w-3.5 h-3.5 shrink-0" />
+                {!collapsed && t('sidebar.my_account')}
+              </Link>
+            </SidebarTooltip>
+
+            {shouldShow('settings') && (
+              <RestrictedWrapper pageKey="settings" canView={canView('settings')} requiredRoles={pageAccessInfo?.['settings'] ?? []}>
+                <SidebarTooltip label={t('sidebar.settings')} collapsed={collapsed} description={t('sidebar.tooltip_settings')}>
+                  <Link to="/settings" className={footerLinkClass('/settings')} onClick={() => setMobileOpen(false)}>
+                    <Settings className="w-3.5 h-3.5 shrink-0" />
+                    {!collapsed && t('sidebar.settings')}
                   </Link>
                 </SidebarTooltip>
-              </FeatureGate>
-            </RestrictedWrapper>
-          )}
+              </RestrictedWrapper>
+            )}
 
-          <SidebarTooltip label={t('sidebar.signout')} collapsed={collapsed} description={t('sidebar.tooltip_signout')}>
-            <button onClick={handleSignOut} className={footerBtnClass}>
-              <LogOut className="w-3.5 h-3.5 shrink-0" />
-              {!collapsed && t('sidebar.signout')}
-            </button>
-          </SidebarTooltip>
-        </div>
+            {shouldShow('booking') && (
+              <RestrictedWrapper pageKey="booking" canView={canView('booking')} requiredRoles={pageAccessInfo?.['booking'] ?? []}>
+                <FeatureGate featureKey="feature_booking" inline>
+                  <SidebarTooltip label={t('sidebar.booking')} collapsed={collapsed}>
+                    <Link to="/booking" className={footerLinkClass('/booking')} onClick={() => setMobileOpen(false)}>
+                      <CalendarCheck className="w-3.5 h-3.5 shrink-0" />
+                      {!collapsed && t('sidebar.booking')}
+                    </Link>
+                  </SidebarTooltip>
+                </FeatureGate>
+              </RestrictedWrapper>
+            )}
+
+            {shouldShow('affiliate') && (
+              <RestrictedWrapper pageKey="affiliate" canView={canView('affiliate')} requiredRoles={pageAccessInfo?.['affiliate'] ?? []}>
+                <FeatureGate featureKey="feature_affiliate" inline>
+                  <SidebarTooltip label={t('sidebar.affiliate')} collapsed={collapsed}>
+                    <Link to="/affiliate" className={footerLinkClass('/affiliate')} onClick={() => setMobileOpen(false)}>
+                      <Gift className="w-3.5 h-3.5 shrink-0" />
+                      {!collapsed && t('sidebar.affiliate')}
+                    </Link>
+                  </SidebarTooltip>
+                </FeatureGate>
+              </RestrictedWrapper>
+            )}
+
+            {shouldShow('my_tickets') && (
+              <RestrictedWrapper pageKey="my_tickets" canView={canView('my_tickets')} requiredRoles={pageAccessInfo?.['my_tickets'] ?? []}>
+                <FeatureGate featureKey="feature_my_tickets" inline>
+                  <SidebarTooltip label={t('sidebar.my_tickets')} collapsed={collapsed} description={t('sidebar.tooltip_my_tickets')}>
+                    <Link to="/my-tickets" className={footerLinkClass('/my-tickets')} onClick={() => setMobileOpen(false)}>
+                      <MessageSquare className="w-3.5 h-3.5 shrink-0" />
+                      {!collapsed && t('sidebar.my_tickets')}
+                      {myTicketUnread > 0 && (
+                        <span className="ml-auto bg-primary text-primary-foreground text-[9px] rounded-full min-w-[18px] h-[18px] flex items-center justify-center font-bold px-1">
+                          {myTicketUnread}
+                        </span>
+                      )}
+                    </Link>
+                  </SidebarTooltip>
+                </FeatureGate>
+              </RestrictedWrapper>
+            )}
+
+            <SidebarTooltip label={t('sidebar.signout')} collapsed={collapsed} description={t('sidebar.tooltip_signout')}>
+              <button onClick={handleSignOut} className={footerBtnClass}>
+                <LogOut className="w-3.5 h-3.5 shrink-0" />
+                {!collapsed && t('sidebar.signout')}
+              </button>
+            </SidebarTooltip>
+          </div>
+        )}
 
         {!collapsed && (
           <div className="mt-3 px-3">

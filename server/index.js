@@ -1435,6 +1435,312 @@ async function _legacyRunMigrations() {
     `);
   } catch (err) { if (!err?.message?.includes('already exists')) console.warn('[warn] player_wyscout_stats migration:', err?.message); }
 
+  // ── Global WyScout reference catalogue ──────────────────────────────────────
+  // wyscout_players: one row per real-world player, shared across all accounts.
+  // Populated only by admin/importateur via /api/import/wyscout. Independent
+  // from the per-user `players` table — each user keeps their own roster,
+  // and the WyScout catalogue is consulted via the /data page (PlayerCompare).
+  // dedup_key = normalizeStr(name)+"|"+generation, used as UNIQUE so re-imports
+  // UPSERT instead of duplicating.
+  try {
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS wyscout_players (
+        id CHAR(36) PRIMARY KEY,
+        dedup_key VARCHAR(191) NOT NULL,
+        name VARCHAR(255) NOT NULL,
+        club VARCHAR(255) NULL,
+        team_in_timeframe VARCHAR(255) NULL,
+        league VARCHAR(255) NULL,
+        position VARCHAR(20) NULL,
+        zone VARCHAR(50) NULL,
+        foot VARCHAR(30) NULL,
+        nationality VARCHAR(120) NULL,
+        passport_country VARCHAR(255) NULL,
+        generation INT NULL,
+        height INT NULL,
+        weight INT NULL,
+        on_loan TINYINT(1) NOT NULL DEFAULT 0,
+        matches_played INT NULL,
+        minutes_played INT NULL,
+        market_value VARCHAR(100) NULL,
+        contract_end DATE NULL,
+        photo_url TEXT NULL,
+        wyscout_season VARCHAR(20) NULL,
+        wyscout_division VARCHAR(20) NULL,
+        imported_by CHAR(36) NULL,
+        created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        UNIQUE KEY uniq_wyscout_dedup (dedup_key),
+        INDEX idx_wyscout_name (name(191)),
+        INDEX idx_wyscout_club (club(191)),
+        INDEX idx_wyscout_position (position)
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+    `);
+  } catch (err) { if (!err?.message?.includes('already exists')) console.warn('[warn] wyscout_players migration:', err?.message); }
+
+  // wyscout_player_stats: mirror of player_wyscout_stats minus user_id, keyed
+  // on wyscout_player_id. Same column set so the import code can reuse
+  // WYSCOUT_STATS_MAP without changes.
+  try {
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS wyscout_player_stats (
+        id CHAR(36) PRIMARY KEY,
+        wyscout_player_id CHAR(36) NOT NULL,
+        season VARCHAR(20) NOT NULL,
+        division VARCHAR(20) NULL,
+        team VARCHAR(255) NULL,
+        continent VARCHAR(100) NULL,
+        country VARCHAR(100) NULL,
+        country_raw VARCHAR(100) NULL,
+        year_start SMALLINT NULL,
+        year_end SMALLINT NULL,
+        source_filename TEXT NULL,
+        source_file_path TEXT NULL,
+        matches_played INT NULL,
+        minutes_played INT NULL,
+        goals INT NULL,
+        xg DECIMAL(6,2) NULL,
+        assists INT NULL,
+        xa DECIMAL(6,2) NULL,
+        yellow_cards INT NULL,
+        red_cards INT NULL,
+        shots INT NULL,
+        np_goals INT NULL,
+        head_goals INT NULL,
+        conceded_goals INT NULL,
+        shots_against INT NULL,
+        clean_sheets INT NULL,
+        penalties_taken INT NULL,
+        defensive_actions_per90 DECIMAL(6,2) NULL,
+        defensive_duels_per90 DECIMAL(6,2) NULL,
+        defensive_duels_won_pct DECIMAL(5,2) NULL,
+        aerial_duels_per90 DECIMAL(6,2) NULL,
+        aerial_duels_won_pct DECIMAL(5,2) NULL,
+        sliding_tackles_per90 DECIMAL(6,2) NULL,
+        padj_sliding_tackles DECIMAL(6,2) NULL,
+        shots_blocked_per90 DECIMAL(6,2) NULL,
+        interceptions_per90 DECIMAL(6,2) NULL,
+        padj_interceptions DECIMAL(6,2) NULL,
+        fouls_per90 DECIMAL(6,2) NULL,
+        yellow_cards_per90 DECIMAL(6,2) NULL,
+        red_cards_per90 DECIMAL(6,2) NULL,
+        duels_per90 DECIMAL(6,2) NULL,
+        duels_won_pct DECIMAL(5,2) NULL,
+        attacking_actions_per90 DECIMAL(6,2) NULL,
+        goals_per90 DECIMAL(6,2) NULL,
+        np_goals_per90 DECIMAL(6,2) NULL,
+        xg_per90 DECIMAL(6,2) NULL,
+        head_goals_per90 DECIMAL(6,2) NULL,
+        shots_per90 DECIMAL(6,2) NULL,
+        shots_on_target_pct DECIMAL(5,2) NULL,
+        goal_conversion_pct DECIMAL(5,2) NULL,
+        assists_per90 DECIMAL(6,2) NULL,
+        xa_per90 DECIMAL(6,2) NULL,
+        crosses_per90 DECIMAL(6,2) NULL,
+        crosses_accurate_pct DECIMAL(5,2) NULL,
+        crosses_left_per90 DECIMAL(6,2) NULL,
+        crosses_left_accurate_pct DECIMAL(5,2) NULL,
+        crosses_right_per90 DECIMAL(6,2) NULL,
+        crosses_right_accurate_pct DECIMAL(5,2) NULL,
+        crosses_to_box_per90 DECIMAL(6,2) NULL,
+        dribbles_per90 DECIMAL(6,2) NULL,
+        dribbles_success_pct DECIMAL(5,2) NULL,
+        offensive_duels_per90 DECIMAL(6,2) NULL,
+        offensive_duels_won_pct DECIMAL(5,2) NULL,
+        touches_in_box_per90 DECIMAL(6,2) NULL,
+        progressive_runs_per90 DECIMAL(6,2) NULL,
+        accelerations_per90 DECIMAL(6,2) NULL,
+        received_passes_per90 DECIMAL(6,2) NULL,
+        received_long_passes_per90 DECIMAL(6,2) NULL,
+        fouls_suffered_per90 DECIMAL(6,2) NULL,
+        passes_per90 DECIMAL(6,2) NULL,
+        passes_accurate_pct DECIMAL(5,2) NULL,
+        forward_passes_per90 DECIMAL(6,2) NULL,
+        forward_passes_accurate_pct DECIMAL(5,2) NULL,
+        back_passes_per90 DECIMAL(6,2) NULL,
+        back_passes_accurate_pct DECIMAL(5,2) NULL,
+        lateral_passes_per90 DECIMAL(6,2) NULL,
+        lateral_passes_accurate_pct DECIMAL(5,2) NULL,
+        short_medium_passes_per90 DECIMAL(6,2) NULL,
+        short_medium_passes_accurate_pct DECIMAL(5,2) NULL,
+        long_passes_per90 DECIMAL(6,2) NULL,
+        long_passes_accurate_pct DECIMAL(5,2) NULL,
+        avg_pass_length DECIMAL(5,2) NULL,
+        avg_long_pass_length DECIMAL(5,2) NULL,
+        shot_assists_per90 DECIMAL(6,2) NULL,
+        second_assists_per90 DECIMAL(6,2) NULL,
+        third_assists_per90 DECIMAL(6,2) NULL,
+        smart_passes_per90 DECIMAL(6,2) NULL,
+        smart_passes_accurate_pct DECIMAL(5,2) NULL,
+        key_passes_per90 DECIMAL(6,2) NULL,
+        passes_final_third_per90 DECIMAL(6,2) NULL,
+        passes_final_third_accurate_pct DECIMAL(5,2) NULL,
+        passes_penalty_area_per90 DECIMAL(6,2) NULL,
+        passes_penalty_area_accurate_pct DECIMAL(5,2) NULL,
+        through_passes_per90 DECIMAL(6,2) NULL,
+        through_passes_accurate_pct DECIMAL(5,2) NULL,
+        deep_completions_per90 DECIMAL(6,2) NULL,
+        deep_completed_crosses_per90 DECIMAL(6,2) NULL,
+        progressive_passes_per90 DECIMAL(6,2) NULL,
+        progressive_passes_accurate_pct DECIMAL(5,2) NULL,
+        free_kicks_per90 DECIMAL(6,2) NULL,
+        direct_free_kicks_per90 DECIMAL(6,2) NULL,
+        direct_free_kicks_on_target_pct DECIMAL(5,2) NULL,
+        corners_per90 DECIMAL(6,2) NULL,
+        penalty_conversion_pct DECIMAL(5,2) NULL,
+        conceded_goals_per90 DECIMAL(6,2) NULL,
+        shots_against_per90 DECIMAL(6,2) NULL,
+        save_rate_pct DECIMAL(5,2) NULL,
+        xg_against DECIMAL(6,2) NULL,
+        xg_against_per90 DECIMAL(6,2) NULL,
+        prevented_goals DECIMAL(6,2) NULL,
+        prevented_goals_per90 DECIMAL(6,2) NULL,
+        gk_back_passes_per90 DECIMAL(6,2) NULL,
+        gk_exits_per90 DECIMAL(6,2) NULL,
+        gk_aerial_duels_per90 DECIMAL(6,2) NULL,
+        total_distance_per90 DECIMAL(8,2) NULL,
+        running_distance_per90 DECIMAL(8,2) NULL,
+        hsr_distance_per90 DECIMAL(8,2) NULL,
+        sprint_distance_per90 DECIMAL(8,2) NULL,
+        hi_distance_per90 DECIMAL(8,2) NULL,
+        meters_per_min DECIMAL(6,2) NULL,
+        max_speed DECIMAL(5,2) NULL,
+        medium_accel_per90 DECIMAL(6,2) NULL,
+        high_accel_per90 DECIMAL(6,2) NULL,
+        medium_decel_per90 DECIMAL(6,2) NULL,
+        high_decel_per90 DECIMAL(6,2) NULL,
+        hsr_count_per90 DECIMAL(6,2) NULL,
+        sprint_count_per90 DECIMAL(6,2) NULL,
+        hi_count_per90 DECIMAL(6,2) NULL,
+        created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        UNIQUE KEY uniq_wyscout_stats (wyscout_player_id, season(20), division(20)),
+        INDEX idx_wyscout_stats_season (season),
+        FOREIGN KEY (wyscout_player_id) REFERENCES wyscout_players(id) ON DELETE CASCADE
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+    `);
+  } catch (err) { if (!err?.message?.includes('already exists')) console.warn('[warn] wyscout_player_stats migration:', err?.message); }
+
+  // ── One-shot backfill of the WyScout catalogue from legacy per-user imports ─
+  // Runs only when wyscout_players is empty. Extracts every players row that
+  // looks like a WyScout import (wyscout_division IS NOT NULL) and whose owner
+  // had admin/importateur role, deduping by normalizeStr(name)+'|'+generation.
+  // Stats are copied from player_wyscout_stats over to wyscout_player_stats.
+  try {
+    const [[{ count: catalogueCount }]] = await pool.query('SELECT COUNT(*) AS count FROM wyscout_players');
+    if (catalogueCount === 0) {
+      const [legacyPlayers] = await pool.query(`
+        SELECT p.id, p.name, p.club, p.league, p.position, p.zone, p.foot,
+               p.nationality, p.passport_country, p.generation, p.height, p.weight,
+               p.on_loan, p.matches_played, p.minutes_played, p.market_value,
+               p.contract_end, p.photo_url, p.wyscout_season, p.wyscout_division,
+               p.wyscout_team_in_timeframe, p.user_id
+        FROM players p
+        WHERE p.wyscout_division IS NOT NULL
+          AND EXISTS (
+            SELECT 1 FROM user_roles ur
+            WHERE ur.user_id = p.user_id AND ur.role IN ('admin','importateur')
+          )
+      `);
+
+      if (legacyPlayers.length > 0) {
+        console.log(`[migration] wyscout backfill: ${legacyPlayers.length} legacy players to migrate`);
+        const playerCols = [
+          'id', 'dedup_key', 'name', 'club', 'team_in_timeframe', 'league',
+          'position', 'zone', 'foot', 'nationality', 'passport_country',
+          'generation', 'height', 'weight', 'on_loan', 'matches_played',
+          'minutes_played', 'market_value', 'contract_end', 'photo_url',
+          'wyscout_season', 'wyscout_division', 'imported_by',
+        ];
+        const seenKeys = new Map(); // dedup_key -> { wyscoutId, legacyPlayerIds:Set }
+
+        for (const p of legacyPlayers) {
+          const nm = normalizeStr(p.name || '');
+          if (!nm) continue;
+          const dedupKey = `${nm}|${p.generation ?? 0}`.slice(0, 191);
+          let entry = seenKeys.get(dedupKey);
+          if (!entry) {
+            entry = { wyscoutId: uuidv4(), legacyPlayerIds: new Set(), first: p };
+            seenKeys.set(dedupKey, entry);
+          }
+          entry.legacyPlayerIds.add(p.id);
+        }
+
+        const insertRows = [...seenKeys.entries()].map(([dedupKey, { wyscoutId, first }]) => [
+          wyscoutId, dedupKey, first.name, first.club || null,
+          first.wyscout_team_in_timeframe || null, first.league || null,
+          first.position || null, first.zone || null, first.foot || null,
+          first.nationality || null, first.passport_country || null,
+          first.generation, first.height, first.weight, first.on_loan,
+          first.matches_played, first.minutes_played, first.market_value,
+          first.contract_end, first.photo_url || null,
+          first.wyscout_season, first.wyscout_division, first.user_id,
+        ]);
+
+        const CHUNK = 500;
+        for (let i = 0; i < insertRows.length; i += CHUNK) {
+          const chunk = insertRows.slice(i, i + CHUNK);
+          const ph = chunk.map(() => `(${playerCols.map(() => '?').join(',')})`).join(',');
+          await pool.query(
+            `INSERT IGNORE INTO wyscout_players (${playerCols.join(',')}) VALUES ${ph}`,
+            chunk.flat()
+          );
+        }
+        console.log(`[migration] wyscout backfill: ${seenKeys.size} unique catalogue rows inserted`);
+
+        // Now copy stats. Build a map legacyPlayerId -> wyscoutPlayerId
+        const legacyToWyscout = new Map();
+        for (const [, { wyscoutId, legacyPlayerIds }] of seenKeys) {
+          for (const lid of legacyPlayerIds) legacyToWyscout.set(lid, wyscoutId);
+        }
+
+        // Stream stats in chunks to avoid loading 100k rows into memory at once
+        const legacyIds = [...legacyToWyscout.keys()];
+        const STAT_FETCH_CHUNK = 500;
+        let statsInserted = 0;
+        for (let i = 0; i < legacyIds.length; i += STAT_FETCH_CHUNK) {
+          const chunkIds = legacyIds.slice(i, i + STAT_FETCH_CHUNK);
+          const phIds = chunkIds.map(() => '?').join(',');
+          const [statRows] = await pool.query(
+            `SELECT * FROM player_wyscout_stats WHERE player_id IN (${phIds})`,
+            chunkIds
+          );
+          if (!statRows.length) continue;
+
+          // Build insert rows mirroring wyscout_player_stats columns (drop user_id).
+          // Use a fresh UUID for id to avoid PK collision with the legacy row.
+          const statCols = Object.keys(statRows[0]).filter(c => c !== 'user_id' && c !== 'player_id' && c !== 'id' && c !== 'created_at' && c !== 'updated_at');
+          const allCols = ['id', 'wyscout_player_id', ...statCols];
+          const STAT_INSERT_CHUNK = 100;
+          for (let j = 0; j < statRows.length; j += STAT_INSERT_CHUNK) {
+            const insertChunk = statRows.slice(j, j + STAT_INSERT_CHUNK);
+            const vals = [];
+            for (const s of insertChunk) {
+              const wyscoutPlayerId = legacyToWyscout.get(s.player_id);
+              if (!wyscoutPlayerId) continue;
+              vals.push(uuidv4(), wyscoutPlayerId, ...statCols.map(c => s[c]));
+            }
+            if (!vals.length) continue;
+            const realCount = vals.length / allCols.length;
+            const ph = Array.from({ length: realCount }, () => `(${allCols.map(() => '?').join(',')})`).join(',');
+            try {
+              await pool.query(
+                `INSERT IGNORE INTO wyscout_player_stats (${allCols.join(',')}) VALUES ${ph}`,
+                vals
+              );
+              statsInserted += realCount;
+            } catch (err) {
+              console.warn('[migration] wyscout stats backfill chunk:', err?.message);
+            }
+          }
+        }
+        console.log(`[migration] wyscout backfill: ${statsInserted} stat rows inserted`);
+      }
+    }
+  } catch (err) {
+    console.warn('[warn] wyscout catalogue backfill skipped:', err?.message);
+  }
+
   // Ensure player_org_shares table exists
   try {
     await pool.query(`
@@ -1649,27 +1955,12 @@ async function _legacyRunMigrations() {
     console.warn("[warn] purge-numeric-leagues migration:", err?.message);
   }
 
-  // Fix wrong leagues using static club→league mapping
+  // Fix wrong leagues using the alias-aware club→league resolver
+  // (handles "Paris SG" / "PSG" / "Paris Saint-Germain", accents, etc.)
   try {
-    const CLUB_TO_LEAGUE = require('../src/data/club-to-league.json');
-    let totalFixed = 0;
-    for (const [clubName, correctLeague] of Object.entries(CLUB_TO_LEAGUE)) {
-      const [result] = await pool.query(
-        "UPDATE players SET league = ? WHERE club = ? AND (league IS NULL OR league = '' OR league != ?)",
-        [correctLeague, clubName, correctLeague]
-      );
-      totalFixed += result.affectedRows || 0;
-    }
-    try {
-      for (const [clubName, correctLeague] of Object.entries(CLUB_TO_LEAGUE)) {
-        await pool.query(
-          "UPDATE club_directory SET competition = ? WHERE club_name = ? AND competition != ?",
-          [correctLeague, clubName, correctLeague]
-        );
-      }
-    } catch { /* club_directory may not exist yet */ }
-    if (totalFixed > 0) {
-      console.log(`[migration] Fixed ${totalFixed} player league values (static club→league mapping)`);
+    const { playersFixed, directoryFixed, clubsScanned } = await fixPlayerLeaguesByClub(pool);
+    if (playersFixed > 0 || directoryFixed > 0) {
+      console.log(`[migration] Fixed leagues: ${playersFixed} players, ${directoryFixed} directory entries (scanned ${clubsScanned} distinct clubs)`);
     }
   } catch (err) {
     console.warn("[warn] fix-club-leagues migration:", err?.message);
@@ -2946,6 +3237,20 @@ app.post("/api/admin/test-email", authMiddleware, ensureAdmin, async (req, res) 
   } catch (err) {
     console.error("[test-email] exception:", err?.message, err?.stack);
     return res.status(500).json({ error: `Erreur: ${err?.message}` });
+  }
+});
+
+// ── POST /api/admin/fix-player-leagues ─────────────────────────────────────
+// Backfills players.league from the static club→league mapping (alias-aware).
+// Use when the startup migration hasn't run yet or to clean up bad imports.
+app.post("/api/admin/fix-player-leagues", authMiddleware, ensureAdmin, async (_req, res) => {
+  try {
+    const result = await fixPlayerLeaguesByClub(pool);
+    console.log(`[admin/fix-player-leagues] players=${result.playersFixed} directory=${result.directoryFixed} scanned=${result.clubsScanned}`);
+    return res.json(result);
+  } catch (err) {
+    console.error("[admin/fix-player-leagues] exception:", err?.message, err?.stack);
+    return res.status(500).json({ error: err?.message || "Échec de la correction." });
   }
 });
 
@@ -4505,10 +4810,8 @@ app.get("/api/players", authMiddleware, async (req, res) => {
 
     // ── Sorting ──
     // Priority 1 (always): has_news players on top
-    // Priority 2 (always): data-richness score — players with the most data (excl. Wyscout) first
-    //   Weights: external_data (enriched) = 4, photo_url = 2, transfermarkt_id = 2, each other nullable field = 1
-    //   Fields with NOT NULL DEFAULT only score when set to a non-default value
-    // Priority 3: user-chosen sort (tiebreaker within each richness tier)
+    // Priority 2: user-chosen sort (must come before richness so the dropdown actually works)
+    // Priority 3: data-richness score — tiebreaker only, so richer profiles bubble up within equal sort values
     const DATA_RICHNESS_SCORE = `(
       CASE WHEN p.\`external_data\` IS NOT NULL AND p.\`external_data\` NOT IN ('', 'null', '{}') THEN 4 ELSE 0 END +
       CASE WHEN p.\`photo_url\`         IS NOT NULL AND p.\`photo_url\` != ''         THEN 2 ELSE 0 END +
@@ -4532,7 +4835,6 @@ app.get("/api/players", authMiddleware, async (req, res) => {
     if (hasNewsCol) {
       orderParts.push("CASE WHEN p.`has_news` IS NOT NULL AND p.`has_news` != '' THEN 0 ELSE 1 END ASC");
     }
-    orderParts.push(DATA_RICHNESS_SCORE);
     switch (sort) {
       case "name": orderParts.push("p.`name` ASC"); break;
       case "age-asc": orderParts.push("p.`generation` DESC"); break;
@@ -4549,7 +4851,11 @@ app.get("/api/players", authMiddleware, async (req, res) => {
       case "pass-accuracy": orderParts.push("CAST(JSON_EXTRACT(p.`external_data`, '$.performance_stats.stats.passes_accuracy') AS DECIMAL(5,2)) DESC"); break;
       default: orderParts.push("p.`name` ASC");
     }
+    orderParts.push(DATA_RICHNESS_SCORE);
     const orderSql = `ORDER BY ${orderParts.join(", ")}`;
+
+    // TEMP debug — remove once sort issue is confirmed fixed
+    console.log(`[GET /api/players] sort=${sort} offset=${offset} → ORDER BY parts: ${orderParts.length}`);
 
     // ── IDs-only mode (for "select all" across all pages) ──
     if (req.query.idsOnly === "1") {
@@ -4688,6 +4994,81 @@ app.post("/api/players/resolve-names", authMiddleware, async (req, res) => {
   } catch (err) {
     console.error("[resolve-names] ERROR:", err.message);
     return res.status(500).json({ error: err.message });
+  }
+});
+
+// ── Server-side duplicate detection ──
+// Mirrors src/hooks/use-players.ts → isSamePlayer / normalizeName. Keeping the
+// loop here avoids dragging the full roster (with external_data) to the client
+// just to do an O(n²) compare in React.
+function srvNormalizeName(name) {
+  if (!name) return "";
+  return String(name)
+    .normalize("NFD")
+    .replace(/[̀-ͯ]/g, "")
+    .toLowerCase()
+    .replace(/[^a-z0-9 ]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function srvIsSamePlayer(a, b) {
+  if (a.transfermarkt_id && b.transfermarkt_id && a.transfermarkt_id === b.transfermarkt_id) return true;
+  if (a.transfermarkt_id && b.transfermarkt_id && a.transfermarkt_id !== b.transfermarkt_id) return false;
+  const nA = srvNormalizeName(a.name);
+  const nB = srvNormalizeName(b.name);
+  if (!nA || !nB) return false;
+  const sameClub = !!(a.club && b.club && srvNormalizeName(a.club) === srvNormalizeName(b.club));
+  const genClose = Math.abs((a.generation || 0) - (b.generation || 0)) <= 1;
+  const bothGenKnown = a.generation !== 2000 && b.generation !== 2000;
+  if (nA === nB && sameClub) return true;
+  if (nA === nB && bothGenKnown && genClose) return true;
+  if (nA === nB && a.generation === b.generation) return true;
+  if (nA === nB && !bothGenKnown && sameClub) return true;
+  if (!sameClub || !genClose) return false;
+  const partsA = nA.split(" ").filter(Boolean);
+  const partsB = nB.split(" ").filter(Boolean);
+  const lastA = partsA[partsA.length - 1];
+  const lastB = partsB[partsB.length - 1];
+  if (lastA === lastB && lastA && lastA.length >= 3 && partsA[0]?.[0] === partsB[0]?.[0]) return true;
+  return false;
+}
+
+app.get("/api/players/duplicates", authMiddleware, async (req, res) => {
+  try {
+    const userId = req.user.id;
+    const hasArchivedCol = await playersHasIsArchived();
+    const archivedFilter = hasArchivedCol ? " AND `is_archived` = 0" : "";
+    // Only the fields needed for duplicate detection + display in the dialog.
+    const [rows] = await pool.query(
+      `SELECT \`id\`, \`name\`, \`generation\`, \`club\`, \`transfermarkt_id\`
+         FROM \`players\`
+        WHERE \`user_id\` = ?${archivedFilter}
+        ORDER BY \`name\``,
+      [userId]
+    );
+
+    const processed = new Set();
+    const groups = [];
+    for (let i = 0; i < rows.length; i++) {
+      if (processed.has(rows[i].id)) continue;
+      const dupes = [];
+      for (let j = i + 1; j < rows.length; j++) {
+        if (processed.has(rows[j].id)) continue;
+        if (srvIsSamePlayer(rows[i], rows[j])) {
+          dupes.push(rows[j]);
+          processed.add(rows[j].id);
+        }
+      }
+      if (dupes.length > 0) {
+        processed.add(rows[i].id);
+        groups.push({ keep: rows[i], duplicates: dupes });
+      }
+    }
+    return res.json({ groups });
+  } catch (err) {
+    console.error("[GET /api/players/duplicates]", err);
+    return res.status(500).json({ error: err?.message || "Server error" });
   }
 });
 
@@ -5989,87 +6370,17 @@ app.post("/api/import/wyscout", authMiddleware, wyscoutUploadMiddleware, async (
 
   log(`parsed ${rows.length} rows, ${Object.keys(rows[0]||{}).length} columns`);
 
-  const userId = req.user.id;
+  const importerId = req.user.id;
   const now = new Date().toISOString().slice(0, 19).replace('T', ' ');
   const errors = [];
 
-  log('step 1: loading existing players');
-  // ── STEP 1 — Load current user's players + cross-user global lookup ──────────
-  // Maps use normalizeStr() keys (accent-insensitive, punctuation-stripped) so
-  // "Mbappé" / "Mbappe" / "mbappe" all collide. We also build an "initial+last"
-  // map ("k mbappe") so truncated imports like "K. Mbappé" resolve to an existing
-  // "Kylian Mbappé" record instead of creating a duplicate.
-  const [existingPlayers] = await pool.query(
-    'SELECT id, name, club FROM players WHERE user_id = ?',
-    [userId]
-  );
-  const byNameClub     = new Map(); // normName\0normClub → id
-  const byName         = new Map(); // normName → [id, ...]
-  const byInitialLast  = new Map(); // initial-last key → [{id, normClub}, ...]
-  for (const p of existingPlayers) {
-    const nm = normalizeStr(p.name || '');
-    const cl = normalizeStr(p.club || '');
-    if (nm) {
-      byNameClub.set(`${nm}\0${cl}`, p.id);
-      const arr = byName.get(nm); if (arr) arr.push(p.id); else byName.set(nm, [p.id]);
-    }
-    const il = playerInitialLastKey(p.name || '');
-    if (il) {
-      const arr = byInitialLast.get(il);
-      const entry = { id: p.id, normClub: cl };
-      if (arr) arr.push(entry); else byInitialLast.set(il, [entry]);
-    }
-  }
-
-  // Cross-user dedup: find players imported by OTHER users (Wyscout only)
-  const [globalPlayers] = await pool.query(
-    "SELECT id, name, club FROM players WHERE user_id != ? AND wyscout_division IS NOT NULL",
-    [userId]
-  );
-  const globalByNameClub    = new Map();
-  const globalByName        = new Map();
-  const globalByInitialLast = new Map();
-  for (const p of globalPlayers) {
-    const nm = normalizeStr(p.name || '');
-    const cl = normalizeStr(p.club || '');
-    if (nm) {
-      if (!globalByNameClub.has(`${nm}\0${cl}`)) globalByNameClub.set(`${nm}\0${cl}`, p.id);
-      if (!globalByName.has(nm)) globalByName.set(nm, p.id);
-    }
-    const il = playerInitialLastKey(p.name || '');
-    if (il) {
-      const arr = globalByInitialLast.get(il);
-      const entry = { id: p.id, normClub: cl };
-      if (arr) arr.push(entry); else globalByInitialLast.set(il, [entry]);
-    }
-  }
-
-  // ── Alias map: alias_norm → [{player_id, ownedByUser}, ...] ─────────────────
-  // We load ALL aliases for this user's players plus aliases pointing at any
-  // global wyscout player. Reads will prefer user-owned matches over global.
-  const aliasByNorm = new Map();
-  try {
-    const [aliasRows] = await pool.query(`
-      SELECT a.alias_norm, a.player_id, p.user_id
-      FROM player_name_aliases a
-      JOIN players p ON p.id = a.player_id
-      WHERE p.user_id = ? OR p.wyscout_division IS NOT NULL
-    `, [userId]);
-    for (const a of aliasRows) {
-      const arr = aliasByNorm.get(a.alias_norm) || [];
-      arr.push({ id: a.player_id, ownedByUser: a.user_id === userId });
-      aliasByNorm.set(a.alias_norm, arr);
-    }
-  } catch (e) {
-    // Table may not exist yet on first deploy — fall through with empty map
-    log(`alias load skipped: ${e?.message}`);
-  }
-
-  log(`step 1 done: ${existingPlayers.length} own players, ${globalPlayers.length} global (other users), ${aliasByNorm.size} alias keys loaded`);
-  log('step 2: building memory records');
-  // ── STEP 2 — Parse all rows into memory records (no DB calls here) ────────
-  const playerRecs = []; // bio fields
-  const statsRecs  = []; // stat fields
+  log('step 1: building memory records');
+  // ── STEP 1 — Parse all rows into in-memory records with a global dedup_key.
+  // dedup_key = normalizeStr(name) + "|" + generation. The catalogue is
+  // shared across all accounts (see wyscout_players migration), so each
+  // (name, birth-year) pair maps to a single global row.
+  const playerRecs = []; // identity / bio
+  const statsRecs  = []; // one per (player, season, division) row from the file
 
   for (const row of rows) {
     const playerName = String(row['Player'] || '').trim();
@@ -6079,7 +6390,6 @@ app.post("/api/import/wyscout", authMiddleware, wyscoutUploadMiddleware, async (
     const teamInTF       = String(row['Team within selected timeframe'] || '').trim() || null;
     const rawPos         = String(row['Position'] || '').trim().toUpperCase();
     const posMap         = WYSCOUT_POS_MAP[rawPos] || { position: 'MC', zone: 'Milieu' };
-    // Use '' instead of null for season/division so UNIQUE KEY (player_id, season, division) deduplicates correctly
     const season         = String(row['season'] || '').trim();
     const division       = String(row['division'] || '').trim();
     const continent      = String(row['continent'] || '').trim() || null;
@@ -6096,155 +6406,93 @@ app.post("/api/import/wyscout", authMiddleware, wyscoutUploadMiddleware, async (
     const marketValue    = mapWyscoutMarketValue(row['Market value']);
     const contractEnd    = mapWyscoutContractDate(row['Contract expires']);
     const foot           = mapWyscoutFoot(row['Foot']);
-    const nationality    = String(row['Birth country'] || '').trim() || 'France';
+    const nationality    = String(row['Birth country'] || '').trim() || null;
     const age            = parseInt(row['Age']) || null;
-    const generation     = age && yearStart ? (yearStart - age) : 2000;
+    const generation     = age && yearStart ? (yearStart - age) : null;
     const matchesPlayed  = parseInt(row['Matches played']) || null;
     const minutesPlayed  = parseInt(row['Minutes played']) || null;
 
-    // ── Resolve player ID ──────────────────────────────────────────────────
-    // Match priority (current user first, then global wyscout pool):
-    //   1) exact normalized name + club
-    //   2) alias_norm (any prior import or TM enrichment)
-    //   3) exact normalized name (any club) — single candidate only
-    //   4) initial+last fallback (e.g. "K. Mbappé" → "Kylian Mbappé") with club tiebreak
-    // matchedExistingName tells us whether we found an established canonical record
-    // we should NOT overwrite the `name` field for (preserves "Kylian" against "K.").
     const nm = normalizeStr(playerName);
-    const cl = normalizeStr(club);
-    const il = playerInitialLastKey(playerName);
-
-    let playerId = null;
-    let isNew = false, isLinked = false, matchedExistingName = false;
-
-    // 1) user-owned exact name+club
-    if (nm) playerId = byNameClub.get(`${nm}\0${cl}`) || null;
-    if (playerId) matchedExistingName = true;
-
-    // 2) alias table — prefer user-owned. Disambiguate homonyms by club below if needed
-    if (!playerId && nm) {
-      const aliasMatches = aliasByNorm.get(nm);
-      if (aliasMatches && aliasMatches.length > 0) {
-        const owned = aliasMatches.filter(a => a.ownedByUser);
-        const pool_ = owned.length ? owned : aliasMatches;
-        // If multiple alias matches and we have a club hint, try to disambiguate
-        if (pool_.length > 1 && cl) {
-          const ids = pool_.map(a => a.id);
-          // Pick the one whose current club matches
-          const candidates = existingPlayers.concat(globalPlayers).filter(p => ids.includes(p.id));
-          const clubMatch = candidates.find(c => normalizeStr(c.club || '') === cl);
-          if (clubMatch) playerId = clubMatch.id;
-        }
-        if (!playerId) playerId = pool_[0].id;
-        if (playerId) {
-          matchedExistingName = true;
-          isLinked = !pool_.find(a => a.id === playerId)?.ownedByUser;
-        }
-      }
-    }
-
-    // 3) user-owned exact name (any club) — only if unambiguous
-    if (!playerId && nm) {
-      const cand = byName.get(nm);
-      if (cand && cand.length === 1) { playerId = cand[0]; matchedExistingName = true; }
-    }
-
-    // 4) user-owned initial+last fallback (Kylian Mbappé ↔ K. Mbappé)
-    if (!playerId && il) {
-      const cands = byInitialLast.get(il);
-      if (cands && cands.length > 0) {
-        if (cands.length === 1) {
-          playerId = cands[0].id; matchedExistingName = true;
-        } else if (cl) {
-          const m = cands.find(c => c.normClub && (c.normClub === cl || c.normClub.includes(cl) || cl.includes(c.normClub)));
-          if (m) { playerId = m.id; matchedExistingName = true; }
-        }
-      }
-    }
-
-    // 5) global lookup (other users' wyscout players)
-    if (!playerId) {
-      let globalId = nm ? (globalByNameClub.get(`${nm}\0${cl}`) || globalByName.get(nm) || null) : null;
-      if (!globalId && il) {
-        const cands = globalByInitialLast.get(il);
-        if (cands && cands.length === 1) globalId = cands[0].id;
-        else if (cands && cl) {
-          const m = cands.find(c => c.normClub && (c.normClub === cl || c.normClub.includes(cl) || cl.includes(c.normClub)));
-          if (m) globalId = m.id;
-        }
-      }
-      if (globalId) {
-        playerId = globalId;
-        isLinked = true;
-        matchedExistingName = true;
-      }
-    }
-
-    // 6) brand new player
-    if (!playerId) {
-      playerId = uuidv4();
-      isNew = true;
-    }
-
-    // Register resolutions so subsequent rows of same player in this file resolve
-    if (nm) {
-      if (!byNameClub.has(`${nm}\0${cl}`)) byNameClub.set(`${nm}\0${cl}`, playerId);
-      const arr = byName.get(nm);
-      if (!arr) byName.set(nm, [playerId]);
-      else if (!arr.includes(playerId)) arr.push(playerId);
-    }
-    if (il) {
-      const arr = byInitialLast.get(il);
-      const entry = { id: playerId, normClub: cl };
-      if (!arr) byInitialLast.set(il, [entry]);
-      else if (!arr.find(e => e.id === playerId)) arr.push(entry);
-    }
+    if (!nm) continue;
+    const dedupKey = `${nm}|${generation ?? 0}`.slice(0, 191);
 
     playerRecs.push({
-      id: playerId, isNew, isLinked, matchedExistingName,
-      rawImportedName: playerName,
-      name: playerName, club, division: division || '',
-      position: posMap.position, zone: posMap.zone, nationality, foot, generation,
-      marketValue, contractEnd, height, weight, onLoan, matchesPlayed, minutesPlayed,
-      passportCountry, season, wyscoutDivision: division, teamInTF,
+      id: uuidv4(), // tentative — real id resolved post-upsert via dedup_key
+      dedupKey,
+      name: playerName,
+      club: club || null,
+      teamInTF,
+      league: resolveLeagueByClub(club) || null,
+      position: posMap.position, zone: posMap.zone,
+      nationality, passportCountry, foot, generation,
+      height, weight, onLoan, matchesPlayed, minutesPlayed,
+      marketValue, contractEnd,
+      wyscoutSeason: season, wyscoutDivision: division,
     });
 
-    // Build stats values array in same order as WYSCOUT_STATS_MAP
     const statVals = WYSCOUT_STATS_MAP.map(({ e }) => wyscoutNum(row[e]));
     statsRecs.push({
-      id: uuidv4(), playerId, userId, season, division, club,
-      continent, country, countryRaw, yearStart, yearEnd, srcFilename, srcFilePath,
+      id: uuidv4(),
+      dedupKey,
+      season, division, club,
+      continent, country, countryRaw,
+      yearStart, yearEnd, srcFilename, srcFilePath,
       statVals,
     });
   }
 
-  log(`step 2 done: ${playerRecs.length} player records, ${statsRecs.length} stats records`);
-  log('step 3: batch upsert players');
-  // ── STEP 3 — Batch upsert players (INSERT … ON DUPLICATE KEY UPDATE on PK id) ──
-  // 500 rows per chunk → ~64 queries for 31k rows instead of 126k individual queries
+  log(`step 1 done: ${playerRecs.length} player records, ${statsRecs.length} stats records`);
+  log('step 2: upserting wyscout_players');
+  // ── STEP 2 — UPSERT into the global wyscout_players catalogue.
+  // De-dupe within the file first (same player may appear across multiple
+  // seasons/divisions) so we only emit one UPSERT row per dedup_key.
+  const seenKeys = new Set();
+  const uniquePlayerRecs = [];
+  for (const r of playerRecs) {
+    if (seenKeys.has(r.dedupKey)) continue;
+    seenKeys.add(r.dedupKey);
+    uniquePlayerRecs.push(r);
+  }
+
   const PLAYER_CHUNK = 500;
   const playerCols = [
-    'id', 'user_id', 'name', 'club', 'league', 'position', 'zone',
-    'nationality', 'foot', 'generation', 'market_value', 'contract_end',
-    'height', 'weight', 'on_loan', 'matches_played', 'minutes_played',
-    'passport_country', 'wyscout_season', 'wyscout_division', 'wyscout_team_in_timeframe',
-    'current_level', 'potential', 'general_opinion', 'ts_report_published',
+    'id', 'dedup_key', 'name', 'club', 'team_in_timeframe', 'league',
+    'position', 'zone', 'foot', 'nationality', 'passport_country',
+    'generation', 'height', 'weight', 'on_loan', 'matches_played',
+    'minutes_played', 'market_value', 'contract_end',
+    'wyscout_season', 'wyscout_division', 'imported_by',
     'created_at', 'updated_at',
   ];
   const playerUpdateCols = [
-    'club', 'position', 'zone', 'nationality', 'foot', 'generation',
-    'market_value', 'contract_end', 'height', 'weight', 'on_loan',
-    'matches_played', 'minutes_played', 'passport_country',
-    'wyscout_season', 'wyscout_division', 'wyscout_team_in_timeframe', 'updated_at',
+    'name', 'club', 'team_in_timeframe', 'league', 'position', 'zone',
+    'foot', 'nationality', 'passport_country', 'generation', 'height',
+    'weight', 'on_loan', 'matches_played', 'minutes_played',
+    'market_value', 'contract_end', 'wyscout_season', 'wyscout_division',
+    'imported_by', 'updated_at',
   ];
 
-  // Separate bio records: only process own (new or update) — skip linked (already exist in DB)
-  const bioRecs    = playerRecs.filter(r => !r.isLinked);
-  const linkedRecs = playerRecs.filter(r => r.isLinked);
+  // Pre-fetch which dedup_keys already exist so we can report created vs updated.
+  const allDedupKeys = [...seenKeys];
+  const existingKeys = new Set();
+  const KEY_CHUNK = 1000;
+  for (let i = 0; i < allDedupKeys.length; i += KEY_CHUNK) {
+    const chunk = allDedupKeys.slice(i, i + KEY_CHUNK);
+    if (!chunk.length) continue;
+    const ph = chunk.map(() => '?').join(',');
+    try {
+      const [exRows] = await pool.query(
+        `SELECT dedup_key FROM wyscout_players WHERE dedup_key IN (${ph})`,
+        chunk
+      );
+      for (const r of exRows) existingKeys.add(r.dedup_key);
+    } catch (err) {
+      log(`pre-check failed (proceeding): ${err?.message}`);
+    }
+  }
 
-  let created = 0, updated = 0, linked = 0;
-  for (let i = 0; i < bioRecs.length; i += PLAYER_CHUNK) {
-    const chunk = bioRecs.slice(i, i + PLAYER_CHUNK);
+  let upsertCount = 0;
+  for (let i = 0; i < uniquePlayerRecs.length; i += PLAYER_CHUNK) {
+    const chunk = uniquePlayerRecs.slice(i, i + PLAYER_CHUNK);
     if (!chunk.length) continue;
 
     const rowPlaceholders = chunk.map(() => `(${playerCols.map(() => '?').join(',')})`).join(',');
@@ -6253,89 +6501,51 @@ app.post("/api/import/wyscout", authMiddleware, wyscoutUploadMiddleware, async (
     const vals = [];
     for (const r of chunk) {
       vals.push(
-        r.id, userId, r.name, r.club, r.division,
-        r.position, r.zone, r.nationality, r.foot, r.generation,
-        r.marketValue, r.contractEnd, r.height, r.weight, r.onLoan,
-        r.matchesPlayed, r.minutesPlayed, r.passportCountry,
-        r.season, r.wyscoutDivision, r.teamInTF,
-        0, 0, 'À revoir', 0,
+        r.id, r.dedupKey, r.name, r.club, r.teamInTF, r.league,
+        r.position, r.zone, r.foot, r.nationality, r.passportCountry,
+        r.generation, r.height, r.weight, r.onLoan, r.matchesPlayed,
+        r.minutesPlayed, r.marketValue, r.contractEnd,
+        r.wyscoutSeason, r.wyscoutDivision, importerId,
         now, now,
       );
     }
 
     try {
       await pool.query(
-        `INSERT INTO players (${playerCols.join(',')}) VALUES ${rowPlaceholders}
+        `INSERT INTO wyscout_players (${playerCols.join(',')}) VALUES ${rowPlaceholders}
          ON DUPLICATE KEY UPDATE ${updateClause}`,
         vals
       );
-      created += chunk.filter(r => r.isNew).length;
-      updated += chunk.filter(r => !r.isNew).length;
+      upsertCount += chunk.length;
     } catch (err) {
       for (const r of chunk) errors.push({ name: r.name, error: err?.message });
     }
   }
 
-  // ── STEP 3.5 — Batch-insert viewer links for cross-user matched players ──────
-  const newViewerLinks = [];
-  const seenLinked = new Set();
-  for (const r of linkedRecs) {
-    const key = `${r.id}\0${userId}`;
-    if (!seenLinked.has(key)) {
-      seenLinked.add(key);
-      newViewerLinks.push({ player_id: r.id, viewer_user_id: userId });
-    }
-  }
-  if (newViewerLinks.length > 0) {
-    const pvlPlaceholders = newViewerLinks.map(() => '(?, ?)').join(', ');
-    const pvlVals = newViewerLinks.flatMap(l => [l.player_id, l.viewer_user_id]);
-    await pool.query(
-      `INSERT IGNORE INTO player_viewer_links (player_id, viewer_user_id) VALUES ${pvlPlaceholders}`,
-      pvlVals
-    ).catch(err => console.warn('[import/wyscout] viewer_links insert:', err?.message));
-    linked = newViewerLinks.length;
-    log(`step 3.5: ${linked} viewer links inserted`);
-  }
+  const created = uniquePlayerRecs.filter(r => !existingKeys.has(r.dedupKey)).length;
+  const updated = uniquePlayerRecs.length - created;
 
-  // ── STEP 3.6 — Batch-insert aliases for matched / linked players ──────────────
-  // Only record aliases for rows that matched an EXISTING player record (otherwise
-  // the imported name IS the canonical name — no alias needed). Skip self-aliases
-  // where the imported name normalizes to the matched player's existing name.
-  const aliasInserts = [];
-  const seenAlias = new Set();
-  const playerNameById = new Map(existingPlayers.concat(globalPlayers).map(p => [p.id, p.name]));
-  for (const r of playerRecs) {
-    if (!r.matchedExistingName) continue;
-    const aliasNorm = normalizeStr(r.rawImportedName);
-    if (!aliasNorm || aliasNorm.length > 191) continue;
-    const canonical = playerNameById.get(r.id);
-    if (canonical && normalizeStr(canonical) === aliasNorm) continue;
-    const key = `${aliasNorm}\0${r.id}`;
-    if (seenAlias.has(key)) continue;
-    seenAlias.add(key);
-    aliasInserts.push([aliasNorm, r.id, 'import', String(r.rawImportedName).slice(0, 255)]);
+  // Resolve dedup_key → actual wyscout_player_id so we can attach stats below.
+  log('step 2.5: resolving wyscout_player_ids');
+  const dedupKeyToId = new Map();
+  for (let i = 0; i < allDedupKeys.length; i += KEY_CHUNK) {
+    const chunk = allDedupKeys.slice(i, i + KEY_CHUNK);
+    if (!chunk.length) continue;
+    const ph = chunk.map(() => '?').join(',');
+    const [resolved] = await pool.query(
+      `SELECT id, dedup_key FROM wyscout_players WHERE dedup_key IN (${ph})`,
+      chunk
+    );
+    for (const r of resolved) dedupKeyToId.set(r.dedup_key, r.id);
   }
-  if (aliasInserts.length > 0) {
-    const ALIAS_CHUNK = 500;
-    for (let i = 0; i < aliasInserts.length; i += ALIAS_CHUNK) {
-      const chunk = aliasInserts.slice(i, i + ALIAS_CHUNK);
-      const ph = chunk.map(() => '(?, ?, ?, ?)').join(', ');
-      const vals = chunk.flat();
-      await pool.query(
-        `INSERT IGNORE INTO player_name_aliases (alias_norm, player_id, source, raw_name) VALUES ${ph}`,
-        vals
-      ).catch(err => console.warn('[import/wyscout] alias insert:', err?.message));
-    }
-    log(`step 3.6: ${aliasInserts.length} alias entries recorded`);
-  }
+  log(`step 2 done: ${upsertCount} upserts (${created} new, ${updated} updated), ${dedupKeyToId.size} ids resolved`);
 
-  log(`step 3 done: ${created} created, ${updated} updated, ${errors.filter(e=>!e.error.startsWith('stats:')).length} bio errors`);
-  log('step 4: batch upsert stats');
-  // ── STEP 4 — Batch upsert stats (smaller chunks due to ~113 columns per row) ──
-  // 150 rows per chunk → ~211 queries for 31k rows
+  log('step 3: upserting wyscout_player_stats');
+  // ── STEP 3 — UPSERT stats. Same column layout as the legacy per-user table,
+  // but keyed on wyscout_player_id (no user scoping).
   const STATS_CHUNK = 150;
   const statFixedCols = [
-    'id', 'player_id', 'user_id', 'season', 'division', 'team',
+    'id', 'wyscout_player_id', 'season', 'division', 'team',
     'continent', 'country', 'country_raw', 'year_start', 'year_end',
     'source_filename', 'source_file_path',
   ];
@@ -6349,19 +6559,21 @@ app.post("/api/import/wyscout", authMiddleware, wyscoutUploadMiddleware, async (
     'source_file_path = VALUES(source_file_path)', 'updated_at = NOW()',
   ].join(', ');
 
-  // Skip stats for linked players (stats already exist under the original player_id)
-  const linkedPlayerIds = new Set(linkedRecs.map(r => r.id));
-  const statsToInsert = statsRecs.filter(s => !linkedPlayerIds.has(s.playerId));
-
-  for (let i = 0; i < statsToInsert.length; i += STATS_CHUNK) {
-    const chunk = statsToInsert.slice(i, i + STATS_CHUNK);
+  let statsUpserted = 0;
+  for (let i = 0; i < statsRecs.length; i += STATS_CHUNK) {
+    const chunk = statsRecs.slice(i, i + STATS_CHUNK);
     if (!chunk.length) continue;
 
-    const rowPlaceholders = chunk.map(() => `(${allStatCols.map(() => '?').join(',')})`).join(',');
+    const resolved = chunk
+      .map(s => ({ ...s, wyscoutPlayerId: dedupKeyToId.get(s.dedupKey) }))
+      .filter(s => s.wyscoutPlayerId);
+    if (!resolved.length) continue;
+
+    const rowPlaceholders = resolved.map(() => `(${allStatCols.map(() => '?').join(',')})`).join(',');
     const vals = [];
-    for (const s of chunk) {
+    for (const s of resolved) {
       vals.push(
-        s.id, s.playerId, s.userId,
+        s.id, s.wyscoutPlayerId,
         s.season, s.division, s.club,
         s.continent, s.country, s.countryRaw,
         s.yearStart, s.yearEnd,
@@ -6372,23 +6584,24 @@ app.post("/api/import/wyscout", authMiddleware, wyscoutUploadMiddleware, async (
 
     try {
       await pool.query(
-        `INSERT INTO player_wyscout_stats (${allStatCols.join(',')}) VALUES ${rowPlaceholders}
+        `INSERT INTO wyscout_player_stats (${allStatCols.join(',')}) VALUES ${rowPlaceholders}
          ON DUPLICATE KEY UPDATE ${statUpdateClause}`,
         vals
       );
+      statsUpserted += resolved.length;
     } catch (err) {
-      // Stats errors are non-blocking (bio was already saved)
-      for (const s of chunk) errors.push({ name: s.playerId, error: 'stats: ' + err?.message });
+      for (const s of resolved) errors.push({ name: s.wyscoutPlayerId, error: 'stats: ' + err?.message });
     }
   }
 
   const durationMs = Date.now() - t0;
-  log(`step 4 done — total ${durationMs}ms. created=${created} updated=${updated} linked=${linked} errors=${errors.length}`);
+  log(`step 3 done — total ${durationMs}ms. created=${created} updated=${updated} stats=${statsUpserted} errors=${errors.length}`);
 
   const bioErrors  = errors.filter(e => !e.error?.startsWith('stats:'));
   const statErrors = errors.filter(e =>  e.error?.startsWith('stats:'));
   return res.json({
-    created, updated, linked, total: rows.length,
+    created, updated, linked: 0, total: rows.length,
+    stats: statsUpserted,
     errors: bioErrors,
     statErrors: statErrors.length,
     durationMs,
@@ -6402,6 +6615,295 @@ app.post("/api/import/wyscout", authMiddleware, wyscoutUploadMiddleware, async (
         error: `Erreur serveur lors de l'import (${durationMs}ms) : ${fatalErr?.message || 'Erreur inconnue'}`,
         hint: 'Consultez les logs du serveur pour plus de détails (npm run api).',
       });
+  }
+});
+
+// ── Global WyScout catalogue read endpoints ─────────────────────────────────
+// Backs the /data page (PlayerCompare.tsx). All authenticated users can read.
+
+// GET /api/wyscout/search?q=...&position=...&limit=50&offset=0
+// Fuzzy match on name+club via normalizeStr()-style accent-insensitive LIKE.
+app.get('/api/wyscout/search', authMiddleware, async (req, res) => {
+  const q = String(req.query.q || '').trim();
+  const position = String(req.query.position || '').trim();
+  const limit = Math.min(Math.max(parseInt(req.query.limit) || 50, 1), 200);
+  const offset = Math.max(parseInt(req.query.offset) || 0, 0);
+
+  const where = [];
+  const params = [];
+  if (q) {
+    const like = `%${q}%`;
+    where.push('(name LIKE ? OR club LIKE ?)');
+    params.push(like, like);
+  }
+  if (position) {
+    where.push('position = ?');
+    params.push(position);
+  }
+  const whereSql = where.length ? `WHERE ${where.join(' AND ')}` : '';
+
+  try {
+    const [rows] = await pool.query(
+      `SELECT id, name, club, team_in_timeframe, league, position, zone,
+              foot, nationality, passport_country, generation, height, weight,
+              on_loan, matches_played, minutes_played, market_value, contract_end,
+              photo_url, wyscout_season, wyscout_division, updated_at
+       FROM wyscout_players ${whereSql}
+       ORDER BY name ASC
+       LIMIT ? OFFSET ?`,
+      [...params, limit, offset]
+    );
+    const [[{ total }]] = await pool.query(
+      `SELECT COUNT(*) AS total FROM wyscout_players ${whereSql}`,
+      params
+    );
+    return res.json({ results: rows, total: Number(total), limit, offset });
+  } catch (err) {
+    console.warn('[api/wyscout/search] error:', err?.message);
+    return res.status(500).json({ error: 'Erreur lors de la recherche.' });
+  }
+});
+
+// GET /api/wyscout/players/:id — identity + list of available (season, division) tuples
+app.get('/api/wyscout/players/:id', authMiddleware, async (req, res) => {
+  try {
+    const [[player]] = await pool.query(
+      `SELECT id, name, club, team_in_timeframe, league, position, zone,
+              foot, nationality, passport_country, generation, height, weight,
+              on_loan, matches_played, minutes_played, market_value, contract_end,
+              photo_url, wyscout_season, wyscout_division, created_at, updated_at
+       FROM wyscout_players WHERE id = ? LIMIT 1`,
+      [req.params.id]
+    );
+    if (!player) return res.status(404).json({ error: 'Joueur introuvable.' });
+
+    const [seasons] = await pool.query(
+      `SELECT season, division, team, matches_played, minutes_played
+       FROM wyscout_player_stats WHERE wyscout_player_id = ?
+       ORDER BY season DESC, division ASC`,
+      [req.params.id]
+    );
+
+    return res.json({ player, seasons });
+  } catch (err) {
+    console.warn('[api/wyscout/players/:id] error:', err?.message);
+    return res.status(500).json({ error: 'Erreur serveur.' });
+  }
+});
+
+// GET /api/wyscout/players/:id/stats?season=...&division=...&all=1
+// Without filters or with all=1 → returns every (season, division) row as
+// { rows: [...] } so the Data page can drive its own filters/aggregation.
+// With season/division → returns the single matching row as { stats: {...} }
+// (kept for the catalog dialog and the radar-by-season usage).
+// Each row exposes player_id (= wyscout_player_id) so it stays compatible
+// with the WyscoutStatRow type the analysis libs already consume.
+app.get('/api/wyscout/players/:id/stats', authMiddleware, async (req, res) => {
+  const season = String(req.query.season || '').trim();
+  const division = String(req.query.division || '').trim();
+  const wantAll = String(req.query.all || '') === '1' || (!season && !division);
+
+  try {
+    if (wantAll) {
+      const [rows] = await pool.query(
+        `SELECT *, wyscout_player_id AS player_id
+         FROM wyscout_player_stats
+         WHERE wyscout_player_id = ?
+         ORDER BY season DESC, division ASC`,
+        [req.params.id]
+      );
+      return res.json({ rows });
+    }
+
+    let sql = `SELECT *, wyscout_player_id AS player_id FROM wyscout_player_stats WHERE wyscout_player_id = ?`;
+    const params = [req.params.id];
+    if (season) { sql += ' AND season = ?'; params.push(season); }
+    if (division) { sql += ' AND division = ?'; params.push(division); }
+    sql += ' ORDER BY season DESC, division ASC LIMIT 1';
+
+    const [[stats]] = await pool.query(sql, params);
+    if (!stats) return res.status(404).json({ error: 'Statistiques introuvables.' });
+    return res.json({ stats });
+  } catch (err) {
+    console.warn('[api/wyscout/players/:id/stats] error:', err?.message);
+    return res.status(500).json({ error: 'Erreur serveur.' });
+  }
+});
+
+// GET /api/wyscout/benchmarks?position=&division=&minMinutes=600
+// Average stats across all global WyScout players matching the filter. Cached
+// in-memory for 10 minutes per (position,division,minMinutes) tuple — the
+// catalogue is admin-imported so it rarely changes between requests.
+const WYSCOUT_BENCHMARK_CACHE = new Map();
+const WYSCOUT_BENCHMARK_TTL_MS = 10 * 60 * 1000;
+const WYSCOUT_BENCHMARK_COLS = [
+  'matches_played', 'minutes_played', 'goals', 'xg', 'assists', 'xa',
+  'shots', 'goals_per90', 'np_goals_per90', 'xg_per90', 'shots_per90',
+  'shots_on_target_pct', 'goal_conversion_pct', 'assists_per90', 'xa_per90',
+  'crosses_per90', 'crosses_accurate_pct', 'dribbles_per90', 'dribbles_success_pct',
+  'offensive_duels_per90', 'offensive_duels_won_pct', 'touches_in_box_per90',
+  'progressive_runs_per90', 'accelerations_per90', 'passes_per90',
+  'passes_accurate_pct', 'forward_passes_per90', 'forward_passes_accurate_pct',
+  'long_passes_per90', 'long_passes_accurate_pct', 'key_passes_per90',
+  'smart_passes_per90', 'through_passes_per90', 'progressive_passes_per90',
+  'passes_final_third_per90', 'passes_penalty_area_per90', 'shot_assists_per90',
+  'defensive_actions_per90', 'defensive_duels_per90', 'defensive_duels_won_pct',
+  'aerial_duels_per90', 'aerial_duels_won_pct', 'sliding_tackles_per90',
+  'interceptions_per90', 'fouls_per90', 'duels_per90', 'duels_won_pct',
+  'save_rate_pct', 'conceded_goals_per90', 'shots_against_per90', 'clean_sheets',
+  'prevented_goals_per90', 'gk_exits_per90', 'gk_aerial_duels_per90',
+  'total_distance_per90', 'max_speed', 'hi_distance_per90', 'sprint_distance_per90',
+];
+app.get('/api/wyscout/benchmarks', authMiddleware, async (req, res) => {
+  const position = String(req.query.position || '').trim();
+  const division = String(req.query.division || '').trim();
+  const minMinutes = Math.max(parseInt(req.query.minMinutes) || 600, 0);
+
+  const cacheKey = `${position}|${division}|${minMinutes}`;
+  const cached = WYSCOUT_BENCHMARK_CACHE.get(cacheKey);
+  if (cached && Date.now() - cached.at < WYSCOUT_BENCHMARK_TTL_MS) {
+    return res.json(cached.data);
+  }
+
+  try {
+    const where = [];
+    const params = [];
+    if (position) {
+      where.push('wp.position = ?');
+      params.push(position);
+    }
+    if (division) {
+      where.push('s.division = ?');
+      params.push(division);
+    }
+    where.push('s.minutes_played >= ?');
+    params.push(minMinutes);
+    const whereSql = where.length ? `WHERE ${where.join(' AND ')}` : '';
+
+    const avgCols = WYSCOUT_BENCHMARK_COLS.map(c => `AVG(s.${c}) AS ${c}`).join(', ');
+    const sql = `
+      SELECT COUNT(*) AS sample_size, ${avgCols}
+      FROM wyscout_player_stats s
+      JOIN wyscout_players wp ON wp.id = s.wyscout_player_id
+      ${whereSql}
+    `;
+
+    const [[row]] = await pool.query(sql, params);
+    const benchmark = {};
+    for (const col of WYSCOUT_BENCHMARK_COLS) {
+      const v = row[col];
+      benchmark[col] = v === null || v === undefined ? null : Number(v);
+    }
+    const data = {
+      position: position || null,
+      division: division || null,
+      minMinutes,
+      sample_size: Number(row.sample_size) || 0,
+      benchmark,
+    };
+    WYSCOUT_BENCHMARK_CACHE.set(cacheKey, { at: Date.now(), data });
+    return res.json(data);
+  } catch (err) {
+    console.warn('[api/wyscout/benchmarks] error:', err?.message);
+    return res.status(500).json({ error: 'Erreur serveur.' });
+  }
+});
+
+// GET /api/wyscout/peers?position=&division=&minMinutes=600&limit=500
+// Returns a representative peer sample for similarity / percentile work.
+// Each row is the *most-played* season of a wyscout_player, enriched with
+// the player's name + club + position so the UI can render labels.
+// Cached 10 min per (position, division, minMinutes, limit).
+const WYSCOUT_PEERS_CACHE = new Map();
+const WYSCOUT_PEERS_TTL_MS = 10 * 60 * 1000;
+app.get('/api/wyscout/peers', authMiddleware, async (req, res) => {
+  const position = String(req.query.position || '').trim();
+  const division = String(req.query.division || '').trim();
+  const minMinutes = Math.max(parseInt(req.query.minMinutes) || 600, 0);
+  const limit = Math.min(Math.max(parseInt(req.query.limit) || 500, 1), 2000);
+
+  const cacheKey = `${position}|${division}|${minMinutes}|${limit}`;
+  const cached = WYSCOUT_PEERS_CACHE.get(cacheKey);
+  if (cached && Date.now() - cached.at < WYSCOUT_PEERS_TTL_MS) {
+    return res.json(cached.data);
+  }
+
+  try {
+    const where = [];
+    const params = [];
+    if (position) { where.push('wp.position = ?'); params.push(position); }
+    if (division) { where.push('s.division = ?'); params.push(division); }
+    where.push('s.minutes_played >= ?'); params.push(minMinutes);
+    const whereSql = `WHERE ${where.join(' AND ')}`;
+
+    // Keep only one (max-minutes) season per peer to avoid double counting.
+    const [rows] = await pool.query(
+      `SELECT s.*, s.wyscout_player_id AS player_id,
+              wp.name, wp.position AS player_position, wp.club
+       FROM wyscout_player_stats s
+       JOIN wyscout_players wp ON wp.id = s.wyscout_player_id
+       JOIN (
+         SELECT wyscout_player_id, MAX(minutes_played) AS max_min
+         FROM wyscout_player_stats
+         WHERE minutes_played >= ?
+         GROUP BY wyscout_player_id
+       ) latest ON latest.wyscout_player_id = s.wyscout_player_id AND latest.max_min = s.minutes_played
+       ${whereSql}
+       ORDER BY s.minutes_played DESC
+       LIMIT ?`,
+      [minMinutes, ...params, limit]
+    );
+    const data = { position: position || null, division: division || null, minMinutes, count: rows.length, rows };
+    WYSCOUT_PEERS_CACHE.set(cacheKey, { at: Date.now(), data });
+    return res.json(data);
+  } catch (err) {
+    console.warn('[api/wyscout/peers] error:', err?.message);
+    return res.status(500).json({ error: 'Erreur serveur.' });
+  }
+});
+
+// GET /api/wyscout/players/:id/match-mine
+// Helper for the player profile "Data" tab: tries to find this user's local
+// player that corresponds to the given wyscout_player_id by name+generation.
+// Used to wire the "Voir la data" link from the player profile back to /data.
+app.get('/api/wyscout/match-local/:wyscoutId', authMiddleware, async (req, res) => {
+  try {
+    const [[wp]] = await pool.query(
+      `SELECT name, generation FROM wyscout_players WHERE id = ? LIMIT 1`,
+      [req.params.wyscoutId]
+    );
+    if (!wp) return res.json({ matched: null });
+    // best-effort: same normalized name, same generation if available
+    const [rows] = await pool.query(
+      `SELECT id FROM players WHERE user_id = ? AND name = ? LIMIT 1`,
+      [req.user.id, wp.name]
+    );
+    return res.json({ matched: rows[0]?.id || null });
+  } catch (err) {
+    console.warn('[api/wyscout/match-local] error:', err?.message);
+    return res.json({ matched: null });
+  }
+});
+
+// Reverse helper: from a local players.id, find the matching wyscout_players.id.
+// Used by ProfileDataTab to surface a "Voir la data WyScout" link.
+app.get('/api/wyscout/match-from-local/:playerId', authMiddleware, async (req, res) => {
+  try {
+    const [[lp]] = await pool.query(
+      `SELECT name, generation FROM players WHERE id = ? AND (user_id = ?
+         OR id IN (SELECT player_id FROM player_viewer_links WHERE viewer_user_id = ?)) LIMIT 1`,
+      [req.params.playerId, req.user.id, req.user.id]
+    );
+    if (!lp) return res.json({ matched: null });
+    const dedupKey = `${normalizeStr(lp.name || '')}|${lp.generation ?? 0}`.slice(0, 191);
+    const [[wp]] = await pool.query(
+      `SELECT id FROM wyscout_players WHERE dedup_key = ? LIMIT 1`,
+      [dedupKey]
+    );
+    return res.json({ matched: wp?.id || null });
+  } catch (err) {
+    console.warn('[api/wyscout/match-from-local] error:', err?.message);
+    return res.json({ matched: null });
   }
 });
 
@@ -9784,6 +10286,70 @@ function clubsEquivalent(a, b) {
   if (!a && !b) return true;
   if (!a || !b) return false;
   return canonicalClub(a) === canonicalClub(b);
+}
+
+// Map: normalized club name (canonical OR alias) → league name (from src/data/club-to-league.json).
+// Combines the static club→league mapping with the alias table so "Paris SG", "PSG",
+// "Paris Saint-Germain" all resolve to "Ligue 1".
+const STATIC_CLUB_LEAGUE_BY_NORM = (() => {
+  const out = new Map();
+  let staticMap = {};
+  try { staticMap = require('../src/data/club-to-league.json'); }
+  catch (e) { console.warn("[warn] resolveLeagueByClub: could not load club-to-league.json:", e?.message); }
+  for (const [canonical, league] of Object.entries(staticMap)) {
+    out.set(normalizeStr(canonical), league);
+  }
+  for (const [canonical, aliases] of Object.entries(CLUB_NAME_MAP)) {
+    const league = staticMap[canonical];
+    if (!league) continue;
+    for (const alias of aliases) out.set(normalizeStr(alias), league);
+  }
+  return out;
+})();
+
+function resolveLeagueByClub(clubName) {
+  if (!clubName) return null;
+  return STATIC_CLUB_LEAGUE_BY_NORM.get(normalizeStr(clubName)) || null;
+}
+
+// Backfill: scan every distinct club already in the DB and update players
+// whose league doesn't match what the static club→league mapping says.
+// Alias-aware via resolveLeagueByClub ("Paris SG", "PSG", accents, …).
+async function fixPlayerLeaguesByClub(pool) {
+  let playersFixed = 0;
+  let directoryFixed = 0;
+  let clubsScanned = 0;
+
+  const [distinctRows] = await pool.query(
+    "SELECT DISTINCT club FROM players WHERE club IS NOT NULL AND club != ''"
+  );
+  for (const { club } of distinctRows) {
+    clubsScanned++;
+    const correctLeague = resolveLeagueByClub(club);
+    if (!correctLeague) continue;
+    const [result] = await pool.query(
+      "UPDATE players SET league = ? WHERE club = ? AND (league IS NULL OR league = '' OR league != ?)",
+      [correctLeague, club, correctLeague]
+    );
+    playersFixed += result.affectedRows || 0;
+  }
+
+  try {
+    const [dirRows] = await pool.query(
+      "SELECT DISTINCT club_name FROM club_directory WHERE club_name IS NOT NULL AND club_name != ''"
+    );
+    for (const { club_name } of dirRows) {
+      const correctLeague = resolveLeagueByClub(club_name);
+      if (!correctLeague) continue;
+      const [result] = await pool.query(
+        "UPDATE club_directory SET competition = ? WHERE club_name = ? AND competition != ?",
+        [correctLeague, club_name, correctLeague]
+      );
+      directoryFixed += result.affectedRows || 0;
+    }
+  } catch { /* club_directory may not exist yet */ }
+
+  return { playersFixed, directoryFixed, clubsScanned };
 }
 
 // Compare two agent strings loosely (case/whitespace/accent-insensitive).
@@ -15221,10 +15787,39 @@ app.delete("/api/followed-leagues/:leagueId", authMiddleware, async (req, res) =
   try { await pool.query("ALTER TABLE news_articles ADD INDEX idx_news_country (country, published_at)"); }
   catch (err) { if (err.errno !== 1061) console.warn('[warn] news_articles country idx:', err?.message); }
 
-  // Per-article translations cache: keyed by (article_id, target_lang).
-  // DeepL bills per character — we cache so a given (article, target) pair is
-  // never re-translated. FK requires matching collation on the referenced col,
-  // which the CONVERT TO above ensures.
+  // Backfill lang/country from the `source` slug for legacy rows that were
+  // scraped before those columns existed (or any row that somehow ended up
+  // with NULL). The country chips on the News page only appear for rows that
+  // have country set — without this backfill, the filter looks broken even
+  // though the SQL works fine.
+  const SOURCE_COUNTRY_MAP = {
+    lequipe: ['fr', 'FR'], rmc: ['fr', 'FR'], '20min': ['fr', 'FR'],
+    gazzetta: ['it', 'IT'], 'corriere-sport': ['it', 'IT'], tuttosport: ['it', 'IT'], ansa: ['it', 'IT'],
+    marca: ['es', 'ES'], as: ['es', 'ES'], 'mundo-dep': ['es', 'ES'], 'sport-es': ['es', 'ES'],
+    'bbc-sport': ['en', 'GB'], guardian: ['en', 'GB'], 'sky-sports': ['en', 'GB'],
+    bild: ['de', 'DE'], kicker: ['de', 'DE'], faz: ['de', 'DE'], spiegel: ['de', 'DE'],
+    record: ['pt', 'PT'],
+  };
+  try {
+    let totalBackfilled = 0;
+    for (const [src, [lang, country]] of Object.entries(SOURCE_COUNTRY_MAP)) {
+      const [r] = await pool.query(
+        "UPDATE news_articles SET lang = COALESCE(lang, ?), country = COALESCE(country, ?) WHERE source = ? AND (lang IS NULL OR country IS NULL OR country = '')",
+        [lang, country, src]
+      );
+      if (r.affectedRows > 0) totalBackfilled += r.affectedRows;
+    }
+    if (totalBackfilled > 0) {
+      console.log(`[migration] news_articles: backfilled lang/country on ${totalBackfilled} legacy rows`);
+    }
+  } catch (err) {
+    console.warn('[warn] news_articles lang/country backfill:', err?.message);
+  }
+
+  // Per-article translations cache: keyed by (article_id, target_lang). We
+  // cache so a given (article, target) pair is never re-translated. FK requires
+  // matching collation on the referenced col, which the CONVERT TO above
+  // ensures.
   try {
     // No FK to news_articles — this codebase has multiple FKs that fail to
     // create on this DB (TiDB / collation incompatibilities); we follow the
@@ -15235,7 +15830,7 @@ app.delete("/api/followed-leagues/:leagueId", authMiddleware, async (req, res) =
       title TEXT NOT NULL,
       description TEXT NULL,
       content LONGTEXT NULL,
-      provider VARCHAR(20) NOT NULL DEFAULT 'deepl',
+      provider VARCHAR(20) NOT NULL DEFAULT 'google',
       translated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
       updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
       PRIMARY KEY (article_id, target_lang),
@@ -15243,6 +15838,29 @@ app.delete("/api/followed-leagues/:leagueId", authMiddleware, async (req, res) =
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`);
   } catch (err) {
     if (!err?.message?.includes('already exists')) console.warn('[warn] news_translations table:', err?.message);
+  }
+
+  // One-shot cleanup: rows scraped before the CDATA/entity-decoding fix have
+  // titles that literally contain "<![CDATA[…]]>", "&lt;b&gt;…", "&quot;…",
+  // and similar gibberish. The next scrape can't fix them (their article_url
+  // has likely scrolled off the feed) so we just delete them — the scraper
+  // will repopulate from current feeds. Idempotent: once cleaned, future
+  // startups match 0 rows and the query is a no-op.
+  try {
+    const [result] = await pool.query(`
+      DELETE FROM news_articles
+      WHERE title LIKE '%<![CDATA[%'
+         OR title LIKE '%&lt;%'
+         OR title LIKE '%&quot;%'
+         OR title LIKE '%&#39;%'
+         OR title LIKE '%&hellip;%'
+         OR title LIKE '%�%'
+    `);
+    if (result?.affectedRows > 0) {
+      console.log(`[migration] news_articles: deleted ${result.affectedRows} legacy rows with un-decoded HTML/CDATA in title`);
+    }
+  } catch (err) {
+    console.warn('[warn] news_articles cleanup:', err?.message);
   }
 })();
 
@@ -15371,25 +15989,28 @@ function parseRSSItems(xml) {
 }
 
 // ── Football-only filter ─────────────────────────────────────────────────────
-// Some feeds (Bild /feed/sport.xml, Kicker /news/aktuell, Record /rss) mix
-// every sport — we don't want F1, cycling or boxing articles polluting the
-// football news section. Two-layer defense:
-//   1. NON_FOOTBALL_HINT: any of these words in the categories => drop
-//   2. FOOTBALL_HINT:     for mixed feeds (`mixed: true`), require a positive
-//      football match (in categories OR title) to keep
-// Football-only feeds (Gazzetta /calcio, Guardian /football, ...) skip the
-// positive-match requirement so we don't accidentally drop articles whose
-// title doesn't happen to contain the word "football".
+// Two-layer defense applied to EVERY feed (even URLs that look football-only —
+// publishers occasionally cross-post other sports under /calcio, /football, …):
+//   1. NON_FOOTBALL_HINT: any keyword from another sport in title/desc/cat → drop
+//   2. FOOTBALL_HINT:     require a positive football match somewhere
+// The positive check is the strict default. For football-only URL feeds it's
+// nearly always satisfied; the rare miss is preferable to letting non-football
+// content through.
 
-const NON_FOOTBALL_HINT = /\b(cycling|cyclisme|ciclismo|radsport|tour\s*de\s*france|giro\s*d['']italia|vuelta|tennis|atp|wta|roland[- ]garros|wimbledon|formel\s*1|formula\s*1|formule\s*1|f1|grand\s*prix|motogp|motorrad|motorsport|basket(?:ball)?|nba|wnba|rugby|xv\s*de\s*france|six\s*nations|boxing|boxe(?:n|o)?|mma|ufc|handball|hockey|nhl|eishockey|wintersport|ski(?:ing|fahren|sprung|alpin)?|snowboard|biathlon|leichtathletik|athlétisme|athletics|atletica|swimming|natation|schwimmen|nuoto|golf|sailing|voile|esports?|formula\s*e|equestrian|pferdesport|wrestling|catch|darts|am\s*radsport|cricket|baseball|nfl|am\s*nfl|am\s*motorsport|olympia|jeux\s*olympiques)\b/i;
+// Avoid generic words that also appear in legitimate football articles:
+//   - "vuelta" alone is Spanish for "return" → use the cycling event names
+//   - "américain"/"american" too generic ("rêve américain" appears for the Bleus) → rely on NFL/super bowl
+//   - "marathon"/"trail" used in football contexts ("marathon match")
+const NON_FOOTBALL_HINT = /\b(cycling|cyclisme|ciclismo|radsport|tour\s*de\s*france|giro\s*d['']italia|vuelta\s+a\s+espa[ñn]a|vuelta\s+ciclista|tennis|atp|wta|roland[- ]garros|wimbledon|formel\s*1|formula\s*1|formule\s*1|\bf1\b|grand\s*prix|motogp|motorrad|motorsport|basket(?:ball)?|nba|wnba|rugby|xv\s*de\s*france|six\s*nations|boxing|boxe(?:n|o)?|mma|ufc|handball|hockey|nhl|eishockey|wintersport|ski(?:ing|fahren|sprung|alpin)?|snowboard|biathlon|leichtathletik|athlétisme|athletics|atletica|swimming|natation|schwimmen|nuoto|golf|america['']?s\s+cup|round[- ]the[- ]world|voile|esports?|formula\s*e|equestrian|pferdesport|wrestling|darts|cricket|baseball|nfl|super\s*bowl|olympia|jeux\s*olympiques|jo\s*\d{4}|paralympic|padel|p[ée]tanque|fl[ée]chettes|judo|karate|taekwondo|escrime|aviron|canoe|kayak|gymnastique|halt[ée]rophilie|patinage|curling|luge|bobsleigh|skeleton|crossfit|ironman|triathlon|water[- ]polo|volley|beach[- ]volley|softball|squash|badminton|ping[- ]pong|tennis\s*de\s*table)\b/i;
 
-const FOOTBALL_HINT = /\b(football|futbol|fútbol|calcio|fußball|fussball|futebol|soccer|foot(?:ball)?|ligue\s*1|ligue\s*2|premier\s*league|bundesliga|serie\s*a|serie\s*b|liga|laliga|primeira\s*liga|eredivisie|champions[- ]league|europa[- ]league|conference[- ]league|coupe\s*du\s*monde|world\s*cup|copa[- ]am[ée]rica|coppa\s*italia|coupe\s*de\s*france|fa\s*cup|dfb[- ]pokal|copa\s*del\s*rey|copa\s*libertadores|mls|j[1-3]\s*league|equipe\s*de\s*france|selección|seleção|azzurri|nationalmannschaft|psg|paris\s*sg|paris\s*saint[- ]germain|real\s*madrid|barcelone|barcelona|barça|fc\s*barcelona|atletico|atlético|atl[ée]tico|bayern|borussia|dortmund|leipzig|leverkusen|juventus|inter\s*milan|ac\s*milan|napoli|roma|lazio|liverpool|manchester|chelsea|arsenal|tottenham|newcastle|man\s*city|man\s*utd|ajax|porto|benfica|sporting|fenerbahce|galatasaray|olympique\s*marseille|om|olympique\s*lyonnais|monaco|saint[- ]étienne|stade\s*rennais|stade\s*brestois|udinese|fiorentina|atalanta|cagliari|sassuolo|valencia|sevilla|villarreal|betis|girona|getafe|coupe|pokal|copa|ligue\s*des\s*champions|euro\s*\d{4}|qualif|qualifications?|playoff|relegation|mercato|transfert|transfer\s*window)\b/i;
+const FOOTBALL_HINT = /\b(football|futbol|fútbol|calcio|fußball|fussball|futebol|soccer|foot(?:ball)?|ligue\s*1|ligue\s*2|premier\s*league|bundesliga|serie\s*a|serie\s*b|liga|laliga|primeira\s*liga|eredivisie|champions[- ]league|europa[- ]league|conference[- ]league|coupe\s*du\s*monde|world\s*cup|copa[- ]am[ée]rica|coppa\s*italia|coupe\s*de\s*france|fa\s*cup|dfb[- ]pokal|copa\s*del\s*rey|copa\s*libertadores|mls|j[1-3]\s*league|equipe\s*de\s*france|selección|seleção|azzurri|nationalmannschaft|psg|paris\s*sg|paris\s*saint[- ]germain|real\s*madrid|barcelone|barcelona|barça|fc\s*barcelona|atletico|atlético|atl[ée]tico|bayern|borussia|dortmund|leipzig|leverkusen|juventus|inter\s*milan|ac\s*milan|napoli|roma|lazio|liverpool|manchester|chelsea|arsenal|tottenham|newcastle|man\s*city|man\s*utd|ajax|porto|benfica|sporting|fenerbahce|galatasaray|olympique\s*marseille|olympique\s*lyonnais|monaco|saint[- ]étienne|stade\s*rennais|stade\s*brestois|udinese|fiorentina|atalanta|cagliari|sassuolo|valencia|sevilla|villarreal|betis|girona|getafe|pokal|copa|ligue\s*des\s*champions|euro\s*\d{4}|qualif|qualifications?|playoff|relegation|mercato|transfert|transfer\s*window|fifa|uefa|var|penalty|tackle|attaquant|d[ée]fenseur|milieu\s*de\s*terrain|gardien|goalkeeper|striker|midfielder|defender|stadt?ion|stade|stadium|mbapp[ée]|messi|ronaldo|haaland|griezmann|benzema|neymar|vinicius|lewandowski|kane|salah|de\s*bruyne|modric|kroos|pep\s*guardiola|carlo\s*ancelotti|deschamps|kylian|antoine|kvaratskhelia|bellingham|saka|foden|rashford|sancho|pulisic|pulisić|hojlund|gyokeres|nkunku|dembele|coman|theo\s*hernandez|hernandez|barcola|kolo\s*muani|maignan|donnarumma|allianz\s*arena|santiago\s*bernabeu|santiago\s*bernab[ée]u|camp\s*nou|old\s*trafford|emirates|anfield|stamford\s*bridge|parc\s*des\s*princes|v[ée]lodrome|san\s*siro|gianlu[c]a|lione|inter|d[ée]rby|derby|d[ée]butant|recrue|signature|signing|contrat|prolongation|capitaine|captain|kapit[äa]n|championnat|saison|matchday|journ[ée]e|coup\s*franc|corner|hors[- ]jeu|offside|carton|jaune|rouge|but|gol|tor|goal|c1|c2|c3)\b/i;
 
-function articleLooksLikeFootball(item) {
+function articleLooksLikeFootball(item, requirePositiveMatch = true) {
   const catText = (item.categories || []).join(' ').toLowerCase();
-  // Strong negative override on categories — these are explicit sport tags.
-  if (catText && NON_FOOTBALL_HINT.test(catText)) return false;
   const allText = `${item.title || ''} ${item.description || ''} ${catText}`.toLowerCase();
+  // Strong negative override: any non-football sport keyword anywhere kills it.
+  if (NON_FOOTBALL_HINT.test(allText)) return false;
+  if (!requirePositiveMatch) return true;
   return FOOTBALL_HINT.test(allText);
 }
 
@@ -15435,7 +16056,7 @@ async function fetchRssBody(url, headers) {
 
 // ── RSS news fetcher — free, reliable primary source ─────────────────────────
 // Multi-country football press. `lang`/`country` are stored on each article so
-// the UI can filter by country and translate on demand via DeepL.
+// the UI can filter by country and translate on demand.
 const NEWS_RSS_FEEDS = [
   // 🇫🇷 France — old direct RSS URLs (Foot Mercato, Maxifoot, Goal.com, the
   // public lequipe.fr/rss/* path) were retired by their publishers. The DWH
@@ -15443,13 +16064,14 @@ const NEWS_RSS_FEEDS = [
   { url: 'https://dwh.lequipe.fr/api/edito/rss?path=/Football',                              source: 'lequipe',        label: "L'Équipe",            lang: 'fr', country: 'FR' },
   { url: 'https://rmcsport.bfmtv.com/rss/football/',                                         source: 'rmc',            label: 'RMC Sport',           lang: 'fr', country: 'FR' },
   { url: 'https://www.20minutes.fr/feeds/rss-football.xml',                                  source: '20min',          label: '20 Minutes',          lang: 'fr', country: 'FR' },
-  // 🇮🇹 Italie
-  { url: 'https://www.gazzetta.it/rss/calcio.xml',                                           source: 'gazzetta',       label: 'Gazzetta dello Sport', lang: 'it', country: 'IT' },
-  { url: 'https://www.corrieredellosport.it/rss/calcio.xml',                                 source: 'corriere-sport', label: 'Corriere dello Sport', lang: 'it', country: 'IT' },
+  // 🇮🇹 Italie — Gazzetta /calcio.xml stopped refreshing after March 2026, dropped.
+  // Corriere needs the URL WITHOUT .xml; the .xml endpoint serves an empty stub.
+  { url: 'https://www.corrieredellosport.it/rss/calcio',                                     source: 'corriere-sport', label: 'Corriere dello Sport', lang: 'it', country: 'IT' },
   { url: 'https://www.tuttosport.com/rss/calcio',                                            source: 'tuttosport',     label: 'Tuttosport',           lang: 'it', country: 'IT' },
-  // 🇪🇸 Espagne
-  { url: 'https://e00-marca.uecdn.es/rss/futbol/futbol-internacional.xml',                   source: 'marca',          label: 'Marca',                lang: 'es', country: 'ES' },
-  { url: 'https://as.com/rss/futbol/portada.xml',                                            source: 'as',             label: 'AS',                   lang: 'es', country: 'ES' },
+  { url: 'https://www.ansa.it/sito/notizie/sport/calcio/calcio_rss.xml',                     source: 'ansa',           label: 'ANSA Calcio',          lang: 'it', country: 'IT' },
+  // 🇪🇸 Espagne — AS RSS endpoints all frozen since 2022 (publisher-side), dropped.
+  // Marca /futbol-internacional.xml is also frozen; /futbol/mas-futbol.xml is live.
+  { url: 'https://e00-marca.uecdn.es/rss/futbol/mas-futbol.xml',                             source: 'marca',          label: 'Marca',                lang: 'es', country: 'ES' },
   { url: 'https://www.mundodeportivo.com/rss/futbol.xml',                                    source: 'mundo-dep',      label: 'Mundo Deportivo',      lang: 'es', country: 'ES' },
   { url: 'https://www.sport.es/es/rss/futbol/rss.xml',                                       source: 'sport-es',       label: 'Sport.es',             lang: 'es', country: 'ES' },
   // 🇬🇧 Angleterre
@@ -15465,6 +16087,34 @@ const NEWS_RSS_FEEDS = [
   // 🇵🇹 Portugal — Record /rss is all sports
   { url: 'https://www.record.pt/rss',                                                        source: 'record',         label: 'Record',               lang: 'pt', country: 'PT', mixed: true },
 ];
+
+// Some publishers (Sky Sports, Bild, Record) emit pubDate values with named
+// timezone abbreviations like "BST", "CEST", "CET" — these are NOT in JS's
+// Date parser, so `new Date(s)` returns Invalid Date and the article gets
+// stamped with the current time instead. That makes them look artificially
+// fresh on every scrape. Map the abbreviations to their numeric offsets first.
+const TZ_ABBR_OFFSETS = {
+  GMT: '+0000', UTC: '+0000', UT: '+0000', Z: '+0000',
+  BST: '+0100', // British Summer Time
+  CET: '+0100', WET: '+0000',
+  CEST: '+0200', WEST: '+0100', EET: '+0200', EEST: '+0300',
+  EST: '-0500', EDT: '-0400',
+  CST: '-0600', CDT: '-0500',
+  MST: '-0700', MDT: '-0600',
+  PST: '-0800', PDT: '-0700',
+};
+function parsePubDate(raw) {
+  if (!raw) return null;
+  let d = new Date(raw);
+  if (!isNaN(d.getTime())) return d;
+  // Replace a trailing timezone abbreviation with a numeric offset.
+  const m = raw.match(/(.*?)\s+([A-Z]{2,4})\s*$/);
+  if (m && TZ_ABBR_OFFSETS[m[2]]) {
+    d = new Date(`${m[1]} ${TZ_ABBR_OFFSETS[m[2]]}`);
+    if (!isNaN(d.getTime())) return d;
+  }
+  return null;
+}
 
 async function fetchNewsFromRSS() {
   const articles = [];
@@ -15484,29 +16134,26 @@ async function fetchNewsFromRSS() {
         'Accept-Language': feed.lang ? `${feed.lang},en;q=0.7` : 'en',
       });
       const items = parseRSSItems(xml);
-      // For mixed-sport feeds we MUST drop articles that aren't football.
-      // For football-only feeds we still drop articles whose categories
-      // explicitly tag a non-football sport (rare cross-posts).
+      // Football filter applied to every feed — even URLs that look
+      // football-only sometimes carry cross-posts of other sports. Mixed-sport
+      // feeds require a strict positive football match; football-only feeds
+      // only need to clear the negative check (no rugby/F1/cycling keyword),
+      // so an article like "Mbappé sort sur blessure" — no club/league named —
+      // still gets through.
       const filtered = items.filter(it => {
         if (!it.title || !it.link) return false;
-        const catText = (it.categories || []).join(' ').toLowerCase();
-        if (catText && NON_FOOTBALL_HINT.test(catText)) return false;
-        if (feed.mixed) return articleLooksLikeFootball(it);
-        return true;
+        return articleLooksLikeFootball(it, !!feed.mixed);
       });
       const out = [];
       for (const item of filtered.slice(0, 20)) {
         if (!item.title || !item.link) continue;
-        // pubDate is wildly inconsistent across publishers — some use
-        // non-standard RFC822 variants Bild / Sky Sports do. Wrap in try/catch
-        // so one bad date doesn't kill the whole feed's batch.
+        // pubDate is wildly inconsistent across publishers. parsePubDate handles
+        // the named-timezone variants (BST, CEST...) that `new Date()` rejects.
+        // Fall back to "now" only if we still can't parse it — that's strictly
+        // better than dropping the article entirely.
         let publishedAt = new Date().toISOString();
-        if (item.pubDate) {
-          try {
-            const d = new Date(item.pubDate);
-            if (!isNaN(d.getTime())) publishedAt = d.toISOString();
-          } catch { /* keep fallback */ }
-        }
+        const parsed = parsePubDate(item.pubDate);
+        if (parsed) publishedAt = parsed.toISOString();
         const cleanedDesc = item.description ? item.description.slice(0, 500) : null;
         out.push({
           external_id:  item.link,
@@ -15894,7 +16541,7 @@ app.get("/api/news/unified", authMiddleware, async (req, res) => {
 
     // Listing-level translation: swap title/excerpt with cached translations
     // when ?translate=<lang> is set. We do NOT translate on the fly here (would
-    // hit DeepL on every list refresh and balloon quota) — only pre-cached
+    // hammer the translation endpoint on every list refresh) — only pre-cached
     // translations from the article reader are applied.
     if (translateTo && items.length) {
       const ids = items.filter(it => it.type === 'article' && it.lang && it.lang !== translateTo).map(it => it.id);
@@ -15981,11 +16628,13 @@ app.get("/api/news/content/:id", authMiddleware, async (req, res) => {
   }
 });
 
-// ── DeepL translation helper ─────────────────────────────────────────────────
-// Every translation is cached in news_translations so a given (article_id,
-// target_lang) pair is only translated once. DeepL bills per character, so
-// caching matters. Set DEEPL_API_KEY_FREE for the free tier endpoint
-// (500k chars/month) or DEEPL_API_KEY for the paid endpoint.
+// ── Google Translate helper ──────────────────────────────────────────────────
+// Uses the public translate.googleapis.com endpoint (the same one wrapped by
+// the various google-translate-api npm packages). Free, no API key, no
+// dependency. Soft-limited to ~5 000 chars per request, so longer content is
+// split on paragraph boundaries and reassembled.
+// Every translation is still cached in news_translations so a given
+// (article_id, target_lang) pair is only translated once.
 const SUPPORTED_TARGET_LANGS = new Set(['fr', 'en', 'es', 'de', 'it', 'pt']);
 
 function sanitizeTargetLang(v) {
@@ -15994,45 +16643,66 @@ function sanitizeTargetLang(v) {
   return SUPPORTED_TARGET_LANGS.has(s) ? s : null;
 }
 
-async function deepLTranslate(texts, sourceLang, targetLang) {
-  const freeKey = process.env.DEEPL_API_KEY_FREE;
-  const proKey  = process.env.DEEPL_API_KEY;
-  const key = freeKey || proKey;
-  if (!key) return null;
-  const baseUrl = freeKey ? 'https://api-free.deepl.com/v2/translate' : 'https://api.deepl.com/v2/translate';
-  const upper = (s) => s ? s.toUpperCase() : null;
-  // DeepL requires a regional flavor for EN (EN-US/EN-GB) and PT (PT-PT/PT-BR).
-  const tgtRaw = upper(targetLang);
-  const targetParam = tgtRaw === 'EN' ? 'EN-US' : tgtRaw === 'PT' ? 'PT-PT' : tgtRaw;
+async function googleTranslateChunk(text, src, tgt) {
+  const params = new URLSearchParams({
+    client: 'gtx',
+    sl: src || 'auto',
+    tl: tgt,
+    dt: 't',
+    q: text,
+  });
+  const res = await fetch(`https://translate.googleapis.com/translate_a/single?${params}`, {
+    headers: {
+      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36',
+    },
+    signal: AbortSignal.timeout(20000),
+  });
+  if (!res.ok) {
+    const txt = await res.text().catch(() => '');
+    throw new Error(`HTTP ${res.status} ${txt.slice(0, 120)}`);
+  }
+  const data = await res.json();
+  // Shape: [[[translated, original, null, null, ...], ...], null, sourceLang]
+  if (!Array.isArray(data) || !Array.isArray(data[0])) {
+    throw new Error('Unexpected response shape');
+  }
+  return data[0].map(seg => (seg && seg[0]) || '').join('');
+}
 
-  const body = new URLSearchParams();
-  for (const t of texts) body.append('text', t || '');
-  body.set('target_lang', targetParam);
-  if (sourceLang) body.set('source_lang', upper(sourceLang));
-  body.set('preserve_formatting', '1');
+// Split a long string into <= CHUNK pieces, preferring paragraph breaks.
+function splitForTranslate(text, chunkSize = 4500) {
+  if (text.length <= chunkSize) return [text];
+  const parts = [];
+  let remaining = text;
+  while (remaining.length > chunkSize) {
+    let cut = remaining.lastIndexOf('\n\n', chunkSize);
+    if (cut < chunkSize / 2) cut = remaining.lastIndexOf('\n',  chunkSize);
+    if (cut < chunkSize / 2) cut = remaining.lastIndexOf('. ',  chunkSize);
+    if (cut < chunkSize / 2) cut = chunkSize;
+    parts.push(remaining.slice(0, cut));
+    remaining = remaining.slice(cut);
+  }
+  if (remaining) parts.push(remaining);
+  return parts;
+}
 
+async function googleTranslate(texts, sourceLang, targetLang) {
+  const src = sourceLang ? sourceLang.toLowerCase() : 'auto';
+  const tgt = targetLang.toLowerCase();
+  const out = [];
   try {
-    const res = await fetch(baseUrl, {
-      method: 'POST',
-      headers: {
-        'Authorization': `DeepL-Auth-Key ${key}`,
-        'Content-Type': 'application/x-www-form-urlencoded',
-      },
-      body,
-      signal: AbortSignal.timeout(20000),
-    });
-    if (!res.ok) {
-      const txt = await res.text().catch(() => '');
-      console.warn('[deepl] HTTP', res.status, txt.slice(0, 200));
-      return null;
+    for (const text of texts) {
+      if (!text || !String(text).trim()) { out.push(''); continue; }
+      const chunks = splitForTranslate(String(text));
+      const parts = [];
+      for (const c of chunks) parts.push(await googleTranslateChunk(c, src, tgt));
+      out.push(parts.join(''));
     }
-    const data = await res.json();
-    if (!Array.isArray(data.translations)) return null;
-    return data.translations.map(t => t.text);
   } catch (err) {
-    console.warn('[deepl] fetch error:', err?.message);
+    console.warn('[google-translate] error:', err?.message);
     return null;
   }
+  return out;
 }
 
 async function ensureTranslation(row, targetLang) {
@@ -16049,7 +16719,7 @@ async function ensureTranslation(row, targetLang) {
     row.description || '',
     row.content || '',
   ];
-  const out = await deepLTranslate(inputs, row.lang, targetLang);
+  const out = await googleTranslate(inputs, row.lang, targetLang);
   if (!out || out.length < 1) return null;
 
   const translated = {
@@ -16061,7 +16731,7 @@ async function ensureTranslation(row, targetLang) {
   try {
     await pool.query(
       `INSERT INTO news_translations (article_id, target_lang, title, description, content, provider)
-       VALUES (?, ?, ?, ?, ?, 'deepl')
+       VALUES (?, ?, ?, ?, ?, 'google')
        ON DUPLICATE KEY UPDATE title = VALUES(title), description = VALUES(description), content = VALUES(content), updated_at = NOW()`,
       [
         row.id,
@@ -16101,7 +16771,7 @@ app.post("/api/news/translate/:id", authMiddleware, async (req, res) => {
     if (!translated) {
       return res.status(503).json({
         error: 'Traduction indisponible',
-        hint:  'DEEPL_API_KEY (ou DEEPL_API_KEY_FREE) non configurée côté serveur.',
+        hint:  'Le service Google Translate n\'a pas répondu — réessayez dans un instant.',
       });
     }
     return res.json({
@@ -18208,6 +18878,7 @@ app.post("/api/admin/cron-trigger", authMiddleware, ensureAdmin, async (req, res
     'nightly-enrichment': () => runNightlyEnrichment(),
     'inactive-cleanup':   () => runInactiveUserCleanup(!!dry_run),
     'buzz-scrape':        () => runBuzzScrape(),
+    'news-scrape':        () => runNewsScrape(),
     'sb-form-alerts':     () => runWatchlistFormAlerts(),
     'sb-sync':            () => runStatsBombSyncJob(true),
   };

@@ -56,13 +56,16 @@ export function ImportTmMatchDialog({ externalOpen, onExternalOpenChange }: { ex
   const { toast } = useToast();
   const queryClient = useQueryClient();
   const importPlayers = useImportPlayers();
-  const { data: existingPlayers = [] } = usePlayers();
   const { addOperation, updateOperation, completeOperation } = useOperationBanner();
 
   const controlled = externalOpen !== undefined;
   const [internalOpen, setInternalOpen] = useState(false);
   const open = controlled ? externalOpen : internalOpen;
   const setOpen = controlled ? (v: boolean) => onExternalOpenChange?.(v) : setInternalOpen;
+
+  // Only load the full roster while the dialog is open — when mounted closed on
+  // Players.tsx this used to fire on every page navigation and dominate load time.
+  const { data: existingPlayers = [] } = usePlayers({ enabled: open });
   const [tmUrl, setTmUrl] = useState('');
   const [loading, setLoading] = useState(false);
   const [importing, setImporting] = useState(false);

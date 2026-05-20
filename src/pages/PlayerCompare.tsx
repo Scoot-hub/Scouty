@@ -40,6 +40,7 @@ import {
 } from '@dnd-kit/sortable';
 import { CSS } from '@dnd-kit/utilities';
 import * as XLSX from 'xlsx';
+import { WyscoutCatalogSearch } from '@/components/wyscout/CatalogSearch';
 
 // ────────────────────────────────────────────────────────────────────────────
 // Stats catalog
@@ -1453,8 +1454,8 @@ export default function PlayerCompare() {
           <GitCompareArrows className="w-5 h-5 text-violet-500" />
         </div>
         <div>
-          <h1 className="text-2xl font-extrabold tracking-tight">Comparateur de joueurs</h1>
-          <p className="text-sm text-muted-foreground">WyScout — multi-saisons, multi-joueurs, benchmarks de poste</p>
+          <h1 className="text-2xl font-extrabold tracking-tight">Data</h1>
+          <p className="text-sm text-muted-foreground">Base WyScout partagée — recherche, fiche joueur, comparaison</p>
         </div>
         <div className="ml-auto flex items-center gap-2 flex-wrap">
           <Badge variant="outline" className="text-[10px] gap-1"><FileSpreadsheet className="w-3 h-3 text-emerald-500" /> WyScout</Badge>
@@ -1508,6 +1509,9 @@ export default function PlayerCompare() {
           </Popover>
         </div>
       </div>
+
+      {/* WyScout shared catalogue search */}
+      <WyscoutCatalogSearch />
 
       {/* Players panel */}
       <Card className="card-warm">

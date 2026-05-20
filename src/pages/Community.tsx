@@ -6,6 +6,7 @@ import { supabase } from '@/integrations/supabase/client';
 import { useAuth } from '@/contexts/AuthContext';
 import { useIsPremium, useIsAdmin, useMyPermissions } from '@/hooks/use-admin';
 import { usePlayers } from '@/hooks/use-players';
+import { useMyMatches } from '@/hooks/use-match-assignments';
 import { Card, CardContent } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -20,7 +21,7 @@ import {
   MessageCircle, HelpCircle, Lightbulb, Trophy, Users as UsersIcon, Heart, ExternalLink, Trash2, AlertTriangle,
   Link2, ImageIcon, Archive, ArchiveRestore, Building2, Search, Pin, PinOff, Eye, ChevronDown, ChevronUp,
   ShieldCheck, MoreVertical, ArrowUp, ArrowDown, X as XClose, CheckSquare, Square,
-  CheckCircle2, Lock, Unlock, Globe,
+  CheckCircle2, Lock, Unlock, Globe, Upload, Loader2,
 } from 'lucide-react';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from '@/components/ui/dialog';
 import { moderateFields } from '@/lib/content-moderation';
@@ -114,6 +115,19 @@ function ClubTag({ name }: { name: string }) {
     >
       <Building2 className="w-3 h-3 shrink-0" />
       {name}
+    </Link>
+  );
+}
+
+function MatchTag({ label }: { label: string }) {
+  // label format: "Home vs Away • date" or just "Home vs Away"
+  return (
+    <Link
+      to={`/roadmap`}
+      className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-green-500/10 text-green-700 dark:text-green-400 border border-green-500/20 text-[12px] font-semibold hover:bg-green-500/20 transition-colors no-underline align-baseline"
+    >
+      <Trophy className="w-3 h-3 shrink-0" />
+      {label}
     </Link>
   );
 }
@@ -229,6 +243,8 @@ function renderContent(text: string): React.ReactNode[] {
         result.push(<ClubTag key={key++} name={text.slice(5)} />);
       } else if (text.startsWith('champ:')) {
         result.push(<ChampTag key={key++} name={text.slice(6)} />);
+      } else if (text.startsWith('match:')) {
+        result.push(<MatchTag key={key++} label={text.slice(6)} />);
       } else {
         // Regular external link
         result.push(
@@ -576,17 +592,17 @@ function CommunityFull() {
   const [likedPosts, setLikedPosts] = useState<Set<string>>(new Set());
   const [animatingLike, setAnimatingLike] = useState<string | null>(null);
   const [justPosted, setJustPosted] = useState<string | null>(null);
-  const [postCooldown, setPostCooldown] = useState(0);
-  const [replyCooldown, setReplyCooldown] = useState(0);
   const [justReplied, setJustReplied] = useState<string | null>(null);
   const [deletePostId, setDeletePostId] = useState<string | null>(null);
   const [deleteReplyId, setDeleteReplyId] = useState<string | null>(null);
   const [showDeleteAllDialog, setShowDeleteAllDialog] = useState(false);
   const [linkForm, setLinkForm] = useState({ open: false, text: '', url: '' });
-  const [imageForm, setImageForm] = useState({ open: false, url: '' });
+  const [imageForm, setImageForm] = useState({ open: false, url: '', uploading: false });
   const [playerForm, setPlayerForm] = useState({ open: false, search: '' });
   const [clubForm, setClubForm] = useState({ open: false, search: '' });
   const [champForm, setChampForm] = useState({ open: false });
+  const [matchForm, setMatchForm] = useState({ open: false, search: '' });
+  const imageFileInputRef = useRef<HTMLInputElement>(null);
   const [heartParticles, setHeartParticles] = useState<Record<string, number[]>>({});
   const heartIdRef = useRef(0);
   const [moderationMode, setModerationMode] = useState(false);
@@ -623,16 +639,6 @@ function CommunityFull() {
     }, 0);
   }, []);
 
-  // Cooldown timers
-  useEffect(() => {
-    if (postCooldown <= 0 && replyCooldown <= 0) return;
-    const timer = setInterval(() => {
-      setPostCooldown(v => Math.max(v - 1, 0));
-      setReplyCooldown(v => Math.max(v - 1, 0));
-    }, 1000);
-    return () => clearInterval(timer);
-  }, [postCooldown > 0, replyCooldown > 0]);
-
   // --- Own players (for player attachment picker) ---
   const { data: allPlayers = [] } = usePlayers();
   const filteredPlayers = playerForm.open && playerForm.search.trim().length >= 1
@@ -641,6 +647,19 @@ function CommunityFull() {
         (p.club && p.club.toLowerCase().includes(playerForm.search.toLowerCase()))
       ).slice(0, 8)
     : playerForm.open ? allPlayers.slice(0, 8) : [];
+
+  // --- My matches (for match attachment picker) ---
+  const { data: myMatches = [] } = useMyMatches();
+  const filteredMatches = matchForm.open
+    ? (matchForm.search.trim().length === 0
+        ? myMatches.slice(0, 8)
+        : myMatches.filter(m => {
+            const q = matchForm.search.toLowerCase();
+            return m.home_team.toLowerCase().includes(q) ||
+              m.away_team.toLowerCase().includes(q) ||
+              (m.competition && m.competition.toLowerCase().includes(q));
+          }).slice(0, 8))
+    : [];
 
   // --- Club search (for club attachment picker) ---
   const { data: clubSuggestions = [] } = useQuery<Array<{ club_name: string; logo_url: string | null; competition: string | null }>>({
@@ -657,10 +676,41 @@ function CommunityFull() {
   // --- Helpers to close all toolbars ---
   const closeAllToolbars = () => {
     setLinkForm({ open: false, text: '', url: '' });
-    setImageForm({ open: false, url: '' });
+    setImageForm({ open: false, url: '', uploading: false });
     setPlayerForm({ open: false, search: '' });
     setClubForm({ open: false, search: '' });
     setChampForm({ open: false });
+    setMatchForm({ open: false, search: '' });
+  };
+
+  // --- Upload an image file and insert as ![image](url) at the cursor ---
+  const handleImageUpload = async (file: File | null | undefined) => {
+    if (!file) return;
+    if (file.size > 4 * 1024 * 1024) {
+      toast.error(t('community.image_too_large'));
+      return;
+    }
+    setImageForm(f => ({ ...f, uploading: true }));
+    try {
+      const fd = new FormData();
+      fd.append('photo', file);
+      const res = await fetch(`${API_BASE}/upload-image`, { method: 'POST', credentials: 'include', body: fd });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Échec du téléchargement');
+      insertAtCursor(`![image](${data.photo_url})`);
+      setImageForm({ open: false, url: '', uploading: false });
+    } catch (err: unknown) {
+      setImageForm(f => ({ ...f, uploading: false }));
+      toast.error(err instanceof Error ? err.message : String(err));
+    }
+  };
+
+  // Format a date string as a compact, locale-aware label for match chips
+  const formatMatchDate = (dateStr: string) => {
+    try {
+      const d = new Date(dateStr + (dateStr.length === 10 ? 'T00:00:00' : ''));
+      return d.toLocaleDateString(i18n.language, { day: 'numeric', month: 'short' });
+    } catch { return dateStr; }
   };
 
   // --- Like with floating hearts ---
@@ -887,7 +937,6 @@ function CommunityFull() {
       setContent('');
       setComposing(false);
       setPostLang(i18n.language.split('-')[0]);
-      setPostCooldown(300);
       queryClient.invalidateQueries({ queryKey: ['community-posts'] });
       queryClient.invalidateQueries({ queryKey: ['community-mentionable-users'] });
       setTimeout(() => {
@@ -972,7 +1021,6 @@ function CommunityFull() {
       setReplyContent('');
       setReplyingTo(null);
       mentionMapRef.current.clear();
-      setReplyCooldown(60);
       queryClient.invalidateQueries({ queryKey: ['community-posts'] });
       queryClient.invalidateQueries({ queryKey: ['community-replies'] });
       queryClient.invalidateQueries({ queryKey: ['community-mentionable-users'] });
@@ -1258,6 +1306,11 @@ function CommunityFull() {
                   className={cn('flex items-center gap-1.5 px-2 py-1 rounded text-xs font-medium border transition-colors', champForm.open ? 'bg-amber-500/10 border-amber-400 text-amber-600' : 'border-border text-muted-foreground hover:text-amber-600 hover:border-amber-400')}>
                   <Trophy className="w-3.5 h-3.5" />Championnat
                 </button>
+                {/* Match */}
+                <button type="button" onClick={() => { closeAllToolbars(); setMatchForm({ open: true, search: '' }); }}
+                  className={cn('flex items-center gap-1.5 px-2 py-1 rounded text-xs font-medium border transition-colors', matchForm.open ? 'bg-green-500/10 border-green-400 text-green-600' : 'border-border text-muted-foreground hover:text-green-600 hover:border-green-400')}>
+                  <Calendar className="w-3.5 h-3.5" />{t('community.insert_match')}
+                </button>
               </div>
 
               {/* Panel : lien externe */}
@@ -1271,9 +1324,49 @@ function CommunityFull() {
 
               {/* Panel : image */}
               {imageForm.open && (
-                <div className="flex gap-2 p-3 rounded-lg border border-border bg-muted/40 animate-in fade-in duration-150">
-                  <Input placeholder="https://... (.jpg, .png, .gif…)" value={imageForm.url} onChange={e => setImageForm(f => ({ ...f, url: e.target.value }))} className="h-8 text-xs flex-1" />
-                  <Button size="sm" className="h-8 text-xs" disabled={!imageForm.url.trim()} onClick={() => { insertAtCursor(`![image](${imageForm.url.trim()})`); setImageForm({ open: false, url: '' }); }}>{t('common.add')}</Button>
+                <div className="p-3 rounded-lg border border-border bg-muted/40 animate-in fade-in duration-150 space-y-2">
+                  <p className="text-xs font-semibold text-foreground/80 flex items-center gap-1.5">
+                    <ImageIcon className="w-3.5 h-3.5" />{t('community.insert_image')}
+                  </p>
+                  <input
+                    ref={imageFileInputRef}
+                    type="file"
+                    accept="image/jpeg,image/png,image/webp,image/gif"
+                    className="hidden"
+                    onChange={e => { handleImageUpload(e.target.files?.[0]); e.target.value = ''; }}
+                  />
+                  <div className="flex gap-2 flex-wrap">
+                    <Button
+                      size="sm"
+                      type="button"
+                      variant="outline"
+                      className="h-8 text-xs gap-1.5"
+                      disabled={imageForm.uploading}
+                      onClick={() => imageFileInputRef.current?.click()}
+                    >
+                      {imageForm.uploading ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Upload className="w-3.5 h-3.5" />}
+                      {imageForm.uploading ? t('community.uploading_image') : t('community.upload_image')}
+                    </Button>
+                    <span className="text-[10px] text-muted-foreground self-center">{t('community.image_or_url')}</span>
+                  </div>
+                  <div className="flex gap-2">
+                    <Input
+                      placeholder="https://... (.jpg, .png, .webp, .gif)"
+                      value={imageForm.url}
+                      onChange={e => setImageForm(f => ({ ...f, url: e.target.value }))}
+                      className="h-8 text-xs flex-1"
+                      disabled={imageForm.uploading}
+                    />
+                    <Button
+                      size="sm"
+                      className="h-8 text-xs"
+                      disabled={!imageForm.url.trim() || imageForm.uploading}
+                      onClick={() => { insertAtCursor(`![image](${imageForm.url.trim()})`); setImageForm({ open: false, url: '', uploading: false }); }}
+                    >
+                      {t('common.add')}
+                    </Button>
+                  </div>
+                  <p className="text-[10px] text-muted-foreground">{t('community.image_hint')}</p>
                 </div>
               )}
 
@@ -1352,17 +1445,58 @@ function CommunityFull() {
                   </div>
                 </div>
               )}
+
+              {/* Panel : match */}
+              {matchForm.open && (
+                <div className="p-3 rounded-lg border border-green-300/50 bg-green-50/40 dark:bg-green-950/20 dark:border-green-800/30 animate-in fade-in duration-150 space-y-2">
+                  <p className="text-xs font-semibold text-green-700 dark:text-green-400 flex items-center gap-1.5">
+                    <Calendar className="w-3.5 h-3.5" />{t('community.link_match_planning')}
+                  </p>
+                  {myMatches.length === 0 ? (
+                    <div className="text-xs text-muted-foreground py-2 text-center">
+                      {t('community.no_matches_planning')}{' '}
+                      <Link to="/fixtures" className="text-primary hover:underline">{t('community.add_matches_from_fixtures')}</Link>
+                    </div>
+                  ) : (
+                    <>
+                      <div className="relative">
+                        <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-muted-foreground" />
+                        <Input autoFocus placeholder={t('community.search_match')} value={matchForm.search} onChange={e => setMatchForm(f => ({ ...f, search: e.target.value }))} className="h-8 text-xs pl-8" />
+                      </div>
+                      {filteredMatches.length > 0 ? (
+                        <div className="space-y-0.5 max-h-44 overflow-y-auto">
+                          {filteredMatches.map(m => {
+                            const dateLabel = formatMatchDate(m.match_date);
+                            const display = `${m.home_team} vs ${m.away_team} • ${dateLabel}`;
+                            return (
+                              <button key={m.id} type="button" onClick={() => { insertAtCursor(`[match:${display}](${m.id})`); setMatchForm({ open: false, search: '' }); }}
+                                className="w-full text-left px-2.5 py-1.5 rounded-lg text-xs hover:bg-green-100/70 dark:hover:bg-green-900/30 flex items-center gap-2 transition-colors">
+                                {m.home_badge && <img src={m.home_badge} alt="" className="w-5 h-5 object-contain shrink-0" onError={e => { (e.target as HTMLImageElement).style.display = 'none'; }} />}
+                                <span className="font-medium flex-1 truncate">{m.home_team} vs {m.away_team}</span>
+                                {m.away_badge && <img src={m.away_badge} alt="" className="w-5 h-5 object-contain shrink-0" onError={e => { (e.target as HTMLImageElement).style.display = 'none'; }} />}
+                                <span className="text-muted-foreground text-[10px] shrink-0">{dateLabel}{m.competition ? ` · ${m.competition}` : ''}</span>
+                              </button>
+                            );
+                          })}
+                        </div>
+                      ) : (
+                        <p className="text-xs text-muted-foreground text-center py-2">{t('community.no_match_found')}</p>
+                      )}
+                    </>
+                  )}
+                </div>
+              )}
             </div>
             <div className="flex items-center gap-2 justify-end">
-              <Button variant="ghost" size="sm" onClick={() => { setComposing(false); setTitle(''); setContent(''); setLinkForm({ open: false, text: '', url: '' }); setImageForm({ open: false, url: '' }); }}>
+              <Button variant="ghost" size="sm" onClick={() => { setComposing(false); setTitle(''); setContent(''); closeAllToolbars(); }}>
                 {t('common.cancel')}
               </Button>
               <Button
                 size="sm"
                 onClick={() => createPost.mutate()}
-                disabled={!title.trim() || !content.trim() || createPost.isPending || postCooldown > 0}
+                disabled={!title.trim() || !content.trim() || createPost.isPending}
               >
-                {createPost.isPending ? t('common.loading') : postCooldown > 0 ? `${Math.floor(postCooldown / 60)}:${String(postCooldown % 60).padStart(2, '0')}` : t('community.publish')}
+                {createPost.isPending ? t('common.loading') : t('community.publish')}
               </Button>
             </div>
           </CardContent>
@@ -1790,9 +1924,8 @@ function CommunityFull() {
                                   )}
                                 </div>
                                 <Button size="sm" variant="outline" onClick={() => replyToPost.mutate(post.id)}
-                                  disabled={!replyContent.trim() || replyToPost.isPending || replyCooldown > 0}
-                                  title={replyCooldown > 0 ? `${replyCooldown}s` : ''}>
-                                  {replyCooldown > 0 ? <span className="text-[10px] font-mono">{replyCooldown}s</span> : <Send className="w-3.5 h-3.5" />}
+                                  disabled={!replyContent.trim() || replyToPost.isPending}>
+                                  <Send className="w-3.5 h-3.5" />
                                 </Button>
                               </div>
                             )}

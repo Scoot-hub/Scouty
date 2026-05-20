@@ -12,7 +12,7 @@ import { Slider } from '@/components/ui/slider';
 import { toast } from 'sonner';
 import {
   ArrowLeft, Clock, CheckCircle2, XCircle, Play, RefreshCw, Loader2,
-  CalendarDays, FileWarning, Trash2, Crown, UserX, Zap, Gauge, Timer, Minus, Database, Bell,
+  CalendarDays, FileWarning, Trash2, Crown, UserX, Zap, Gauge, Timer, Minus, Database, Bell, Newspaper,
 } from 'lucide-react';
 
 function authInit(): RequestInit {
@@ -41,6 +41,7 @@ const JOB_META: Record<string, {
   'nightly-enrichment':  { label: 'Enrichissement nocturne',    desc: 'Enrichit les données de tous les joueurs des utilisateurs premium.',          schedule: 'Chaque jour à 02:00',       icon: Zap,           color: 'text-purple-500', supportsDryRun: false },
   'inactive-cleanup':    { label: 'Comptes inactifs',           desc: 'Supprime les comptes sans activité depuis 5 ans. Avertit à 4 ans 11 mois.',   schedule: '1er du mois à 03:00',       icon: UserX,         color: 'text-red-500',    supportsDryRun: true  },
   'buzz-scrape':         { label: 'Buzz Football',              desc: 'Agrège les flux RSS des médias football (L\'Équipe, Goal, RMC...) pour la page Buzz.',  schedule: 'Toutes les 30 minutes', icon: Zap,           color: 'text-orange-500', supportsDryRun: false },
+  'news-scrape':         { label: 'Actualités presse',          desc: 'Agrège les flux RSS de la presse internationale (FR, IT, ES, GB, DE, PT) pour la page Actualités.', schedule: 'Toutes les 3 heures', icon: Newspaper,    color: 'text-sky-500',    supportsDryRun: false },
   'report-reminders':   { label: 'Rappels de rapports',         desc: 'Notifie les scouts quand un joueur suivi n\'a pas de rapport depuis trop longtemps.',    schedule: 'Chaque jour à 09:30',       icon: Bell,          color: 'text-cyan-500',   supportsDryRun: true  },
   'sb-form-alerts':     { label: 'Alertes forme StatsBomb',     desc: 'Analyse la forme récente des joueurs en watchlist via les données StatsBomb et envoie des alertes.', schedule: 'Chaque mercredi à 09:00', icon: Zap, color: 'text-violet-500', supportsDryRun: false },
   'sb-sync':            { label: 'Sync StatsBomb Open Data',    desc: 'Synchronise les données StatsBomb depuis GitHub (incrémental — saute si aucun changement de SHA).', schedule: 'Chaque lundi à 03:00', icon: Database, color: 'text-violet-600', supportsDryRun: false },

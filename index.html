@@ -64,6 +64,16 @@
       </style>
     </div>
     <div id="root"></div>
+    <script>
+      // Safety net: if the JS bundle fails to load (network error, stale
+      // chunk after a deploy, etc.) drop the static-loader after 10s so the
+      // user is not stuck behind an opaque overlay. App.tsx removes it on
+      // mount in the normal path; this is only the fallback.
+      setTimeout(function () {
+        var el = document.getElementById('static-loader');
+        if (el) el.remove();
+      }, 10000);
+    </script>
     <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>

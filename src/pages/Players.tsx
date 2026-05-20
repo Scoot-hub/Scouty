@@ -2,10 +2,10 @@ import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } fro
 import { Link, useSearchParams, useNavigate } from 'react-router-dom';
 import { useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
-import * as XLSX from 'xlsx';
-import { usePlayers, usePlayersPaginated, usePlayerFacets, isSamePlayer, useToggleArchive, fetchAllPlayerIds, type PlayersFilters, type PaginatedResponse } from '@/hooks/use-players';
+// xlsx (424 KB) is dynamically imported inside handleExportExcel — pulling it
+// in eagerly added a half-second to every page navigation.
+import { usePlayers, usePlayersPaginated, usePlayerFacets, useToggleArchive, fetchAllPlayerIds, type PlayersFilters, type PaginatedResponse } from '@/hooks/use-players';
 import { useMyOrganizations } from '@/hooks/use-organization';
-import { ShareWithOrgPopover, BulkShareDialog } from '@/components/ShareWithOrgPopover';
 import { useIsPremium, useIsAdmin } from '@/hooks/use-admin';
 import { PermGate } from '@/components/PermGate';
 import { getPlayerAge, getOpinionBgClass, getOpinionEmoji, getOpinionTranslationKey, ALL_OPINIONS, getTaskBgClass, getTaskEmoji, getTaskTranslationKey, translateFoot, PLAYER_TASKS, resolveLeagueName, translateCountry, type Opinion, type Position, type Foot, type PlayerTask, type Player } from '@/types/player';
@@ -28,17 +28,22 @@ import { Button } from '@/components/ui/button';
 import { Checkbox } from '@/components/ui/checkbox';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from '@/components/ui/dialog';
-import { ImportPlayersDialog } from '@/components/ImportPlayersDialog';
-import { ImportTmClubDialog } from '@/components/ImportTmClubDialog';
-import { ImportTmMatchDialog } from '@/components/ImportTmMatchDialog';
-import { AddToWatchlistDialog } from '@/components/AddToWatchlistDialog';
+// Heavy dialogs (~30-100 KB each, with deep imports of xlsx, supabase, etc) —
+// React.lazy + only mounted when open keeps them out of the navigation path.
+const LazyImportPlayersDialog = lazy(() => import('@/components/ImportPlayersDialog').then(m => ({ default: m.ImportPlayersDialog })));
+const LazyImportTmClubDialog = lazy(() => import('@/components/ImportTmClubDialog').then(m => ({ default: m.ImportTmClubDialog })));
+const LazyImportTmMatchDialog = lazy(() => import('@/components/ImportTmMatchDialog').then(m => ({ default: m.ImportTmMatchDialog })));
+const LazyAddToWatchlistDialog = lazy(() => import('@/components/AddToWatchlistDialog').then(m => ({ default: m.AddToWatchlistDialog })));
+const LazyBulkShareDialog = lazy(() => import('@/components/ShareWithOrgPopover').then(m => ({ default: m.BulkShareDialog })));
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from '@/components/ui/dropdown-menu';
 import { supabase } from '@/integrations/supabase/client';
-import { Search, RotateCcw, Users, RefreshCw, ChevronDown, ChevronUp, SlidersHorizontal, Download, X, LayoutGrid, List, Table2, Building2, Swords, Eye, Zap, Check, Sparkles, Copy, Trash2, FileText, Upload, FilePlus, ClipboardList, Trophy, TrendingUp, BarChart3, CalendarDays, Info } from 'lucide-react';
+import { Search, RotateCcw, Users, RefreshCw, ChevronDown, ChevronUp, SlidersHorizontal, Download, X, LayoutGrid, List, Table2, Building2, Swords, Eye, Zap, Check, Sparkles, Copy, Trash2, FileText, Upload, FilePlus, ClipboardList, Trophy, TrendingUp, BarChart3, CalendarDays, Info, FileSpreadsheet } from 'lucide-react';
 import { useRemainingCredits } from '@/hooks/use-credits';
 import { CreditLimitDialog } from '@/components/CreditLimitDialog';
 import { getPlayerPerfStats, CHART_COLORS } from '@/lib/player-stats';
 const LazyCompareRadar = lazy(() => import('@/components/charts/CompareRadarChart'));
+import { VirtualizedPlayerGrid } from '@/components/VirtualizedPlayerGrid';
+import { VirtualizedPlayerTable } from '@/components/VirtualizedPlayerTable';
 import { toast } from 'sonner';
 import { useOperationBanner } from '@/contexts/OperationBannerContext';
 
@@ -178,6 +183,31 @@ export default function Players() {
   const [sort, setSort] = useState<SortOption>(() => loadFilters().sort ?? 'name');
   const [tableSortKey, setTableSortKey] = useState<string>('name');
   const [tableSortDir, setTableSortDir] = useState<'asc' | 'desc'>('asc');
+
+  // Dropdown choice must also drive the table view — otherwise VirtualizedPlayerTable
+  // re-sorts the loaded rows by its own tableSortKey and silently overrides the
+  // server's ORDER BY, so the dropdown looks broken in table mode.
+  useEffect(() => {
+    const map: Record<SortOption, [string, 'asc' | 'desc'] | undefined> = {
+      'name':           ['name',          'asc'],
+      'age-asc':        ['age',           'asc'],
+      'age-desc':       ['age',           'desc'],
+      'level':          ['level',         'desc'],
+      'potential':      ['potential',     'desc'],
+      'rating':         ['rating',        'desc'],
+      'goals':          ['goals',         'desc'],
+      'assists':        ['assists',       'desc'],
+      'minutes':        ['minutes',       'desc'],
+      'xg':             ['xg',            'desc'],
+      'pass-accuracy':  ['pass_accuracy', 'desc'],
+      // recent / contract have no table column — leave the table sort alone;
+      // the server still returns rows in the dropdown's order.
+      'recent':   undefined,
+      'contract': undefined,
+    };
+    const mapped = map[sort];
+    if (mapped) { setTableSortKey(mapped[0]); setTableSortDir(mapped[1]); }
+  }, [sort]);
   const [leaderboardOpen, setLeaderboardOpen] = useState(false);
   const [leaderboardTab, setLeaderboardTab] = useState<string>('rating');
   const [compareDialogOpen, setCompareDialogOpen] = useState(false);
@@ -189,7 +219,8 @@ export default function Players() {
     recentCount: number;
     total: number;
   }>({ open: false, recentCount: 0, total: 0 });
-  const [duplicateGroups, setDuplicateGroups] = useState<{ keep: Player; duplicates: Player[] }[]>([]);
+  type DupLite = { id: string; name: string; generation: number; club: string };
+  const [duplicateGroups, setDuplicateGroups] = useState<{ keep: DupLite; duplicates: DupLite[] }[]>([]);
   const [duplicateDialogOpen, setDuplicateDialogOpen] = useState(false);
   const [deletingDuplicates, setDeletingDuplicates] = useState(false);
   const [filtersOpen, setFiltersOpen] = useState<boolean>(() => loadFilters().filtersOpen ?? false);
@@ -283,8 +314,9 @@ export default function Players() {
   const { val: countVal, trigger: triggerCount } = useCountUp(totalFiltered);
   useEffect(() => { if (totalFiltered > 0) triggerCount(); }, [totalFiltered]); // eslint-disable-line
 
-  // Legacy: usePlayers() is still needed for features that need the full list (enrichment, duplicates, export, import)
-  const { data: players = [] } = usePlayers();
+  // Lazy: only fetched when Export or Find Duplicates is triggered. Mount-time
+  // load of every player was the dominant frontend cost on rosters >500.
+  const { refetch: refetchAllPlayers, isFetching: isFetchingAll } = usePlayers({ enabled: false });
 
   const { data: facets } = usePlayerFacets(showArchived);
 
@@ -363,6 +395,7 @@ export default function Players() {
   const [watchlistDialogOpen, setWatchlistDialogOpen] = useState(false);
   const [importClubOpen, setImportClubOpen] = useState(false);
   const [importMatchOpen, setImportMatchOpen] = useState(false);
+  const [importExcelOpen, setImportExcelOpen] = useState(false);
   const [orgDialogOpen, setOrgDialogOpen] = useState(false);
   const [bulkReportOpen, setBulkReportOpen] = useState(false);
   const [bulkReportDate, setBulkReportDate] = useState(new Date().toISOString().slice(0, 10));
@@ -376,20 +409,20 @@ export default function Players() {
   const [bulkTaskSubmitting, setBulkTaskSubmitting] = useState(false);
 
   const autoFetchedRef = useRef(!!sessionStorage.getItem('photos_fetched_session'));
+  // Auto-fetch photos for players without one (once per browser session). We no
+  // longer have the full player list at mount, so we just wait until facets
+  // confirms there's at least one active player and let the server short-circuit
+  // when there's nothing to do.
   useEffect(() => {
-    if (players.length === 0 || autoFetchedRef.current) return;
+    if (autoFetchedRef.current) return;
+    if (!facets || facets.activeCount === 0) return;
     autoFetchedRef.current = true;
     sessionStorage.setItem('photos_fetched_session', '1');
-
-    // Auto-fetch photos for players without one (once per browser session)
-    const withoutPhoto = players.filter(p => !p.photo_url).length;
-    if (withoutPhoto > 0) {
-      supabase.functions.invoke('fetch-player-photos')
-        .then(({ data, error }) => { if (!error && data?.updated > 0) refetch(); })
-        .catch(console.error);
-    }
+    supabase.functions.invoke('fetch-player-photos')
+      .then(({ data, error }) => { if (!error && data?.updated > 0) refetch(); })
+      .catch(console.error);
     // Club logos are fetched on-demand by ClubBadge (saves to DB automatically)
-  }, [players]);
+  }, [facets, refetch]);
 
   const CONTRACT_RANGES = [
     { label: t('players.contract_expired'), key: 'expired' },
@@ -440,33 +473,16 @@ export default function Players() {
   const handleFindDuplicates = async () => {
     const ok = await tryConsumeCredits(1, 'find_duplicates');
     if (!ok) return;
-
-    const groups: { keep: Player; duplicates: Player[] }[] = [];
-    const processed = new Set<string>();
-
-    for (let i = 0; i < players.length; i++) {
-      if (processed.has(players[i].id)) continue;
-      const dupes: Player[] = [];
-
-      for (let j = i + 1; j < players.length; j++) {
-        if (processed.has(players[j].id)) continue;
-        if (isSamePlayer(players[i].name, players[i].generation, players[j].name, players[j].generation, players[i].club, players[j].club)) {
-          dupes.push(players[j]);
-          processed.add(players[j].id);
-        }
-      }
-
-      if (dupes.length > 0) {
-        processed.add(players[i].id);
-        groups.push({ keep: players[i], duplicates: dupes });
-      }
-    }
-
-    setDuplicateGroups(groups);
-    setDuplicateDialogOpen(true);
-
-    if (groups.length === 0) {
-      toast.success(t('players.no_duplicates'));
+    try {
+      const resp = await fetch('/api/players/duplicates', { credentials: 'include' });
+      if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+      const body = await resp.json() as { groups: { keep: DupLite; duplicates: DupLite[] }[] };
+      setDuplicateGroups(body.groups);
+      setDuplicateDialogOpen(true);
+      if (body.groups.length === 0) toast.success(t('players.no_duplicates'));
+    } catch (err) {
+      console.error('find-duplicates failed', err);
+      toast.error(t('common.error'));
     }
   };
 
@@ -573,7 +589,7 @@ export default function Players() {
       }
       const enrichResult = data as { alreadyRunning?: boolean; total?: number } | null;
       if (enrichResult?.alreadyRunning) { toast(t('players.enrichment_already_running') || 'Enrichissement déjà en cours'); return; }
-      const total = enrichResult?.total ?? players.length;
+      const total = enrichResult?.total ?? (showArchived ? archivedCount : activeCount);
       const opId = `enrich-all-${Date.now()}`;
       addOperation({ id: opId, type: 'enrichment', label: t('banner.enrichment_label', { count: total }), current: 0, total });
       // Poll server for real progress + credit balance
@@ -765,11 +781,13 @@ export default function Players() {
     }
   };
 
-  const toggleSelect = (id: string) => {
+  // Stable identity so the memoized PlayerCard doesn't re-render on every state
+  // change in the parent (search, filter dropdowns, etc).
+  const toggleSelect = useCallback((id: string) => {
     setSelectedIds(prev => { const next = new Set(prev); if (next.has(id)) next.delete(id); else next.add(id); return next; });
-  };
+  }, []);
 
-  const toggleSelectAll = async () => {
+  const toggleSelectAll = useCallback(async () => {
     if (totalFiltered > 0 && selectedIds.size >= totalFiltered) {
       setSelectedIds(new Set());
     } else {
@@ -780,7 +798,19 @@ export default function Players() {
         console.error('Failed to fetch all player IDs:', err);
       }
     }
-  };
+  }, [totalFiltered, selectedIds, paginatedFilters]);
+
+  // Column-header click: same key → toggle direction; new key → reset to desc.
+  const handleTableSort = useCallback((key: string) => {
+    setTableSortKey(prevKey => {
+      if (prevKey === key) {
+        setTableSortDir(d => d === 'asc' ? 'desc' : 'asc');
+        return prevKey;
+      }
+      setTableSortDir('desc');
+      return key;
+    });
+  }, []);
 
   const toggleInList = <T,>(list: T[], item: T, setter: (v: T[]) => void) => {
     setter(list.includes(item) ? list.filter(x => x !== item) : [...list, item]);
@@ -827,13 +857,20 @@ export default function Players() {
     supabase.from('players').update({ has_news: null }).in('id', idsWithNews).then();
   }, [filtered, queryClient]);
 
-  // Export: selected players if any, otherwise the full unfiltered list
-  const playersToExport = selectedIds.size > 0 ? players.filter(p => selectedIds.has(p.id)) : players;
+  const exportCount = selectedIds.size > 0 ? selectedIds.size : (showArchived ? archivedCount : activeCount);
 
   const handleExportExcel = async () => {
-    if (playersToExport.length === 0) return;
+    if (exportCount === 0) return;
     setExporting(true);
     try {
+      // Lazy-fetch the full roster only when the user actually exports — this is
+      // the only place that still needs every row's full payload.
+      const allResult = await refetchAllPlayers();
+      const allPlayers = allResult.data ?? [];
+      const playersToExport = selectedIds.size > 0
+        ? allPlayers.filter(p => selectedIds.has(p.id))
+        : allPlayers;
+      if (playersToExport.length === 0) { setExporting(false); return; }
       const playerIds = playersToExport.map(p => p.id);
       const { data: allValues } = await supabase
         .from('custom_field_values')
@@ -895,6 +932,7 @@ export default function Players() {
         return row;
       });
 
+      const XLSX = await import('xlsx');
       const ws = XLSX.utils.json_to_sheet(rows);
       const wb = XLSX.utils.book_new();
       XLSX.utils.book_append_sheet(wb, ws, 'Players');
@@ -1162,19 +1200,25 @@ export default function Players() {
               </Tooltip>
             </DropdownMenuContent>
           </DropdownMenu>
-          <AddToWatchlistDialog
-            playerIds={Array.from(selectedIds)}
-            onDone={() => setSelectedIds(new Set())}
-            open={watchlistDialogOpen}
-            onOpenChange={setWatchlistDialogOpen}
-          />
-          {hasOrg && (
-            <BulkShareDialog
-              playerIds={Array.from(selectedIds)}
-              open={orgDialogOpen}
-              onOpenChange={setOrgDialogOpen}
-              onDone={handleBulkAddDone}
-            />
+          {watchlistDialogOpen && (
+            <Suspense fallback={null}>
+              <LazyAddToWatchlistDialog
+                playerIds={Array.from(selectedIds)}
+                onDone={() => setSelectedIds(new Set())}
+                open={watchlistDialogOpen}
+                onOpenChange={setWatchlistDialogOpen}
+              />
+            </Suspense>
+          )}
+          {hasOrg && orgDialogOpen && (
+            <Suspense fallback={null}>
+              <LazyBulkShareDialog
+                playerIds={Array.from(selectedIds)}
+                open={orgDialogOpen}
+                onOpenChange={setOrgDialogOpen}
+                onDone={handleBulkAddDone}
+              />
+            </Suspense>
           )}
           {/* Duplicate detection dialog */}
           <Dialog open={duplicateDialogOpen} onOpenChange={setDuplicateDialogOpen}>
@@ -1313,19 +1357,35 @@ export default function Players() {
             </DialogContent>
           </Dialog>
 
-          <Button variant="outline" size="sm" className="rounded-xl" onClick={handleExportExcel} disabled={exporting || playersToExport.length === 0}>
+          <Button variant="outline" size="sm" className="rounded-xl" onClick={handleExportExcel} disabled={exporting || isFetchingAll || exportCount === 0}>
             <Download className="w-4 h-4 sm:mr-1.5" />
             <span className="hidden sm:inline">
-              {exporting
+              {exporting || isFetchingAll
                 ? t('players.exporting')
-                : selectedIds.size > 0
-                  ? `${t('players.export_excel')} (${selectedIds.size})`
-                  : `${t('players.export_excel')} (${players.length})`}
+                : `${t('players.export_excel')} (${exportCount})`}
             </span>
           </Button>
-          <ImportTmClubDialog externalOpen={importClubOpen} onExternalOpenChange={setImportClubOpen} />
-          <ImportTmMatchDialog externalOpen={importMatchOpen} onExternalOpenChange={setImportMatchOpen} />
-          <ImportPlayersDialog />
+          {/* Import Excel — the trigger button used to live inside <ImportPlayersDialog>;
+              now the dialog only mounts when actually opened (lazy chunk + no `usePlayers()` query). */}
+          <Button variant="outline" size="sm" className="rounded-xl" onClick={() => setImportExcelOpen(true)}>
+            <FileSpreadsheet className="w-4 h-4 sm:mr-1.5" />
+            <span className="hidden sm:inline">{t('players.import_excel')}</span>
+          </Button>
+          {importClubOpen && (
+            <Suspense fallback={null}>
+              <LazyImportTmClubDialog externalOpen={importClubOpen} onExternalOpenChange={setImportClubOpen} />
+            </Suspense>
+          )}
+          {importMatchOpen && (
+            <Suspense fallback={null}>
+              <LazyImportTmMatchDialog externalOpen={importMatchOpen} onExternalOpenChange={setImportMatchOpen} />
+            </Suspense>
+          )}
+          {importExcelOpen && (
+            <Suspense fallback={null}>
+              <LazyImportPlayersDialog externalOpen={importExcelOpen} onExternalOpenChange={setImportExcelOpen} />
+            </Suspense>
+          )}
         </div>
       </div>
 
@@ -1387,7 +1447,7 @@ export default function Players() {
                   <ChevronDown className={`w-4 h-4 opacity-50 shrink-0 ml-1 transition-transform ${sortDropdownOpen ? 'rotate-180' : ''}`} />
                 </button>
                 {sortDropdownOpen && (
-                  <div className="absolute top-full left-0 mt-1 z-20 bg-popover border border-border rounded-lg shadow-lg w-44 sm:w-52 p-1 max-h-80 overflow-y-auto">
+                  <div className="absolute top-full left-0 mt-1 z-50 bg-popover border border-border rounded-lg shadow-lg w-44 sm:w-52 p-1 max-h-80 overflow-y-auto">
                     <p className="text-[9px] font-black uppercase tracking-wider text-muted-foreground px-2 py-1">{t('players.sort_general')}</p>
                     {([
                       { value: 'name', label: t('players.sort_name') },
@@ -1606,7 +1666,7 @@ export default function Players() {
                         <ChevronDown className={`w-3.5 h-3.5 text-muted-foreground shrink-0 ml-1 transition-transform ${posDropdownOpen ? 'rotate-180' : ''}`} />
                       </button>
                       {posDropdownOpen && (
-                        <div className="absolute top-full left-0 right-0 mt-1 z-20 bg-popover border border-border rounded-lg shadow-lg p-2 space-y-2">
+                        <div className="absolute top-full left-0 right-0 mt-1 z-50 bg-popover border border-border rounded-lg shadow-lg p-2 space-y-2">
                           {([
                             { zone: t('players.zone_goalkeeper'), keys: ['GK'] as Position[] },
                             { zone: t('players.zone_defence'), keys: ['DC', 'LD', 'LG'] as Position[] },
@@ -1691,7 +1751,7 @@ export default function Players() {
                         <ChevronDown className={`w-3.5 h-3.5 text-muted-foreground shrink-0 ml-1 transition-transform ${leagueDropdownOpen ? 'rotate-180' : ''}`} />
                       </button>
                       {leagueDropdownOpen && (
-                        <div className="absolute top-full left-0 mt-1 z-20 bg-popover border border-border rounded-lg shadow-lg w-80">
+                        <div className="absolute top-full left-0 mt-1 z-50 bg-popover border border-border rounded-lg shadow-lg w-80">
                           <div className="p-2 border-b border-border/40">
                             <div className="relative">
                               <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3 h-3 text-muted-foreground" />
@@ -1738,7 +1798,7 @@ export default function Players() {
                         <ChevronDown className={`w-3.5 h-3.5 text-muted-foreground shrink-0 ml-1 transition-transform ${clubDropdownOpen ? 'rotate-180' : ''}`} />
                       </button>
                       {clubDropdownOpen && (
-                        <div className="absolute top-full left-0 mt-1 z-20 bg-popover border border-border rounded-lg shadow-lg w-80">
+                        <div className="absolute top-full left-0 mt-1 z-50 bg-popover border border-border rounded-lg shadow-lg w-80">
                           <div className="p-2 border-b border-border/40">
                             <div className="relative">
                               <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3 h-3 text-muted-foreground" />
@@ -1785,7 +1845,7 @@ export default function Players() {
                         <ChevronDown className={`w-3.5 h-3.5 text-muted-foreground shrink-0 ml-1 transition-transform ${opinionDropdownOpen ? 'rotate-180' : ''}`} />
                       </button>
                       {opinionDropdownOpen && (
-                        <div className="absolute top-full left-0 mt-1 z-20 bg-popover border border-border rounded-lg shadow-lg w-56">
+                        <div className="absolute top-full left-0 mt-1 z-50 bg-popover border border-border rounded-lg shadow-lg w-56">
                           <div className="p-1">
                             {allOpinions.map(o => (
                               <label key={o} className={`flex items-center gap-2 px-2 py-1.5 rounded-md cursor-pointer transition-colors ${opinions.includes(o) ? 'bg-primary/10' : 'hover:bg-muted'}`}>
@@ -1816,7 +1876,7 @@ export default function Players() {
                         <ChevronDown className={`w-3.5 h-3.5 text-muted-foreground shrink-0 ml-1 transition-transform ${roleDropdownOpen ? 'rotate-180' : ''}`} />
                       </button>
                       {roleDropdownOpen && (
-                        <div className="absolute top-full left-0 mt-1 z-20 bg-popover border border-border rounded-lg shadow-lg w-56">
+                        <div className="absolute top-full left-0 mt-1 z-50 bg-popover border border-border rounded-lg shadow-lg w-56">
                           <div className="max-h-64 overflow-y-auto p-1">
                             {availableRoles.map(role => (
                               <label key={role} className={`flex items-center gap-2 px-2 py-1.5 rounded-md cursor-pointer transition-colors ${selectedRoles.includes(role) ? 'bg-primary/10' : 'hover:bg-muted'}`}>
@@ -1849,7 +1909,7 @@ export default function Players() {
                         <ChevronDown className={`w-3.5 h-3.5 text-muted-foreground shrink-0 ml-1 transition-transform ${taskDropdownOpen ? 'rotate-180' : ''}`} />
                       </button>
                       {taskDropdownOpen && (
-                        <div className="absolute top-full left-0 mt-1 z-20 bg-popover border border-border rounded-lg shadow-lg w-48">
+                        <div className="absolute top-full left-0 mt-1 z-50 bg-popover border border-border rounded-lg shadow-lg w-48">
                           <div className="p-1">
                             {PLAYER_TASKS.map(tk => (
                               <label key={tk} className={`flex items-center gap-2 px-2 py-1.5 rounded-md cursor-pointer transition-colors ${selectedTasks.includes(tk) ? 'bg-primary/10' : 'hover:bg-muted'}`}>
@@ -1885,7 +1945,7 @@ export default function Players() {
                         <ChevronDown className={`w-3.5 h-3.5 text-muted-foreground shrink-0 ml-1 transition-transform ${contractDropdownOpen ? 'rotate-180' : ''}`} />
                       </button>
                       {contractDropdownOpen && (
-                        <div className="absolute top-full left-0 mt-1 z-20 bg-popover border border-border rounded-lg shadow-lg w-56">
+                        <div className="absolute top-full left-0 mt-1 z-50 bg-popover border border-border rounded-lg shadow-lg w-56">
                           <div className="p-1">
                             {CONTRACT_RANGES.map(r => (
                               <label key={r.key} className={`flex items-center gap-2 px-2 py-1.5 rounded-md cursor-pointer transition-colors ${selectedContractRanges.includes(r.key) ? 'bg-primary/10' : 'hover:bg-muted'}`}>
@@ -2016,269 +2076,25 @@ export default function Players() {
         <div className="flex-1">
           {/* Table View */}
           {viewMode === 'table' ? (
-            <div className="overflow-x-auto rounded-xl border border-border bg-card">
-              <table className="w-full text-xs">
-                <thead>
-                  <tr className="bg-muted/50 text-muted-foreground">
-                    <th className="px-2 py-2 w-8"><Checkbox checked={totalFiltered > 0 && selectedIds.size >= totalFiltered} onCheckedChange={toggleSelectAll} /></th>
-                    {([
-                      { key: 'name', label: t('players.col_name'), align: 'left' },
-                      { key: 'age', label: t('players.age'), align: 'center' },
-                      { key: 'position', label: t('players.col_position'), align: 'center' },
-                      { key: 'club', label: t('players.col_club'), align: 'left' },
-                      { key: 'rating', label: 'Rating', align: 'center' },
-                      { key: 'goals', label: t('players.stat_goals'), align: 'center' },
-                      { key: 'assists', label: t('players.stat_assists'), align: 'center' },
-                      { key: 'xg', label: 'xG', align: 'center' },
-                      { key: 'xa', label: 'xA', align: 'center' },
-                      { key: 'minutes', label: 'Min', align: 'center' },
-                      { key: 'pass_accuracy', label: 'Pass%', align: 'center' },
-                      { key: 'duels_won_pct', label: 'Duels%', align: 'center' },
-                      { key: 'level', label: t('players.level'), align: 'center' },
-                      { key: 'potential', label: t('players.potential'), align: 'center' },
-                    ] as { key: string; label: string; align: string }[]).map(col => (
-                      <th key={col.key}
-                        className={`px-2 py-2 font-semibold cursor-pointer hover:text-foreground select-none whitespace-nowrap ${col.align === 'left' ? 'text-left' : 'text-center'}`}
-                        onClick={() => { if (tableSortKey === col.key) setTableSortDir(d => d === 'asc' ? 'desc' : 'asc'); else { setTableSortKey(col.key); setTableSortDir('desc'); } }}>
-                        {col.label} {tableSortKey === col.key ? (tableSortDir === 'desc' ? '↓' : '↑') : ''}
-                      </th>
-                    ))}
-                  </tr>
-                </thead>
-                <tbody>
-                  {(() => {
-                    const rows = filtered.map(p => ({ ...p, perf: getPlayerPerfStats(p) }));
-                    const sorted = [...rows].sort((a, b) => {
-                      const dir = tableSortDir === 'asc' ? 1 : -1;
-                      if (tableSortKey === 'name') return dir * a.name.localeCompare(b.name);
-                      if (tableSortKey === 'age') return dir * (getPlayerAge(a.generation, a.date_of_birth) - getPlayerAge(b.generation, b.date_of_birth));
-                      if (tableSortKey === 'position') return dir * a.position.localeCompare(b.position);
-                      if (tableSortKey === 'club') return dir * a.club.localeCompare(b.club);
-                      if (tableSortKey === 'level') return dir * (a.current_level - b.current_level);
-                      if (tableSortKey === 'potential') return dir * (a.potential - b.potential);
-                      const aVal = a.perf[tableSortKey as keyof PerfStats] ?? -Infinity;
-                      const bVal = b.perf[tableSortKey as keyof PerfStats] ?? -Infinity;
-                      return dir * (aVal - bVal);
-                    });
-                    return sorted.map((p, rowIdx) => {
-                      const ratingColor = (p.perf.rating ?? 0) >= 7.5 ? 'text-emerald-600 dark:text-emerald-400' : (p.perf.rating ?? 0) >= 7.0 ? 'text-blue-600 dark:text-blue-400' : (p.perf.rating ?? 0) >= 6.5 ? 'text-amber-600 dark:text-amber-400' : '';
-                      return (
-                        <tr
-                          key={p.id}
-                          className="border-t border-border/30 hover:bg-muted/30 transition-colors cursor-pointer"
-                          style={{ animation: `reveal-up 0.4s ease both`, animationDelay: `${Math.min(rowIdx * 30, 300)}ms` }}
-                          onClick={() => navigate(`/player/${p.id}`)}
-                        >
-                          <td className="px-2 py-2" onClick={e => { e.stopPropagation(); toggleSelect(p.id); }}><Checkbox checked={selectedIds.has(p.id)} /></td>
-                          <td className="px-2 py-2 font-medium">
-                            <div className="flex items-center gap-2">
-                              <PlayerAvatar name={p.name} photoUrl={p.photo_url} size="sm" />
-                              <span className="truncate max-w-[140px]">{p.name}</span>
-                            </div>
-                          </td>
-                          <td className="text-center px-2 py-2">{getPlayerAge(p.generation, p.date_of_birth)}</td>
-                          <td className="text-center px-2 py-2">{posShort[p.position]}</td>
-                          <td className="px-2 py-2"><span className="truncate block max-w-[120px]">{p.club}</span></td>
-                          <td className={`text-center px-2 py-2 font-bold ${ratingColor}`}>{p.perf.rating?.toFixed(2) ?? '—'}</td>
-                          <td className="text-center px-2 py-2 font-bold">{p.perf.goals ?? '—'}</td>
-                          <td className="text-center px-2 py-2 font-bold">{p.perf.assists ?? '—'}</td>
-                          <td className="text-center px-2 py-2">{p.perf.xg?.toFixed(1) ?? '—'}</td>
-                          <td className="text-center px-2 py-2">{p.perf.xa?.toFixed(1) ?? '—'}</td>
-                          <td className="text-center px-2 py-2">{p.perf.minutes ?? '—'}</td>
-                          <td className="text-center px-2 py-2">{p.perf.pass_accuracy != null ? `${Math.round(p.perf.pass_accuracy)}%` : '—'}</td>
-                          <td className="text-center px-2 py-2">{p.perf.duels_won_pct != null ? `${p.perf.duels_won_pct}%` : '—'}</td>
-                          <td className="text-center px-2 py-2 font-bold">{p.current_level > 0 ? p.current_level : <span className="text-muted-foreground font-normal">NA</span>}</td>
-                          <td className="text-center px-2 py-2 font-bold text-primary">{p.potential > 0 ? p.potential : <span className="text-muted-foreground font-normal">NA</span>}</td>
-                        </tr>
-                      );
-                    });
-                  })()}
-                </tbody>
-              </table>
-            </div>
+            <VirtualizedPlayerTable
+              players={filtered}
+              sortKey={tableSortKey}
+              sortDir={tableSortDir}
+              selectedIds={selectedIds}
+              allSelected={totalFiltered > 0 && selectedIds.size >= totalFiltered}
+              onSortChange={handleTableSort}
+              onToggleSelect={toggleSelect}
+              onToggleSelectAll={toggleSelectAll}
+            />
           ) : (
-          <div className="grid gap-3 grid-cols-1 md:grid-cols-2 xl:grid-cols-3">
-            {filtered.map((player, idx) => {
-              const ext = (player.external_data ?? {}) as Record<string, unknown>;
-              return (
-                <div
-                  key={player.id}
-                  className="relative"
-                  style={{ animation: 'reveal-scale 0.35s ease both', animationDelay: `${(idx % 6) * 55}ms` }}
-                >
-                  <div className="absolute top-2 right-2 z-10 flex items-center gap-1.5" onClick={(e) => e.stopPropagation()}>
-                    {hasOrg && (
-                      <div className="relative">
-                        <ShareWithOrgPopover playerId={player.id} compact />
-                      </div>
-                    )}
-                    <Checkbox checked={selectedIds.has(player.id)} onCheckedChange={() => toggleSelect(player.id)} />
-                  </div>
-                  <Card className={`card-warm overflow-hidden hover:scale-[1.015] hover:shadow-lg hover:-translate-y-0.5 transition-all duration-200 group ${player.has_news ? 'ring-2 ring-amber-400 dark:ring-amber-500 shadow-amber-400/10' : ''}`}>
-                    <Link to={`/player/${player.id}`} className="block" onClick={() => player.has_news && dismissNews(player.id)}>
-                      <div className="p-3 sm:p-4">
-                        <div className="flex items-center gap-2.5 sm:gap-3 mb-2.5 sm:mb-3">
-                          <PlayerAvatar name={player.name} photoUrl={player.photo_url} size="lg" />
-                          <div className="flex-1 min-w-0">
-                            <div className="flex items-center gap-1.5 sm:gap-2 flex-wrap">
-                              <h3 className="font-bold text-sm sm:text-base truncate max-w-[140px] sm:max-w-none group-hover:text-primary transition-colors duration-200">{player.name}</h3>
-                              {player.task && (
-                                <span className={`shrink-0 flex items-center gap-0.5 sm:gap-1 px-1 sm:px-1.5 py-0.5 rounded-full text-[9px] sm:text-[10px] font-bold uppercase tracking-wide ${getTaskBgClass(player.task as PlayerTask)}`}>
-                                  {getTaskEmoji(player.task as PlayerTask)} <span className="hidden sm:inline">{t(getTaskTranslationKey(player.task as PlayerTask))}</span>
-                                </span>
-                              )}
-                              {player.has_news && (
-                                <span className="shrink-0 relative flex items-center gap-0.5 sm:gap-1 px-1 sm:px-1.5 py-0.5 rounded-full bg-amber-100 dark:bg-amber-900/40 text-amber-700 dark:text-amber-300 text-[9px] sm:text-[10px] font-bold uppercase tracking-wide">
-                                  <span className="absolute inset-0 rounded-full bg-amber-400/30 animate-ping opacity-75" />
-                                  <Sparkles className="w-3 h-3 relative" />
-                                  <span className="hidden sm:inline relative">{t('players.new_badge')}: {t(`players.news_${player.has_news}`)}</span>
-                                </span>
-                              )}
-                            </div>
-                            <div className="flex items-center gap-2 mt-0.5">
-                              <ClubBadge club={player.club} size="sm" />
-                              <div className="min-w-0">
-                                <span className="text-xs sm:text-sm text-muted-foreground block truncate">{player.club}</span>
-                                {ext.on_loan && ext.parent_club && (
-                                  <div className="flex items-center gap-1 mt-0.5">
-                                    <span className="text-[10px] text-amber-600 dark:text-amber-400 font-medium">{t('profile.on_loan')}</span>
-                                    <ClubBadge club={ext.parent_club} size="xs" />
-                                    <span className="text-[10px] text-muted-foreground truncate">{ext.parent_club}</span>
-                                  </div>
-                                )}
-                              </div>
-                            </div>
-                          </div>
-                        </div>
-                        <div className="flex items-center gap-1 sm:gap-1.5">
-                          <FlagIcon nationality={player.nationality} size="sm" />
-                          <span className="px-1.5 sm:px-2 py-0.5 rounded-md bg-muted text-[11px] sm:text-xs font-medium">{getPlayerAge(player.generation, player.date_of_birth)} {t('common.year')}</span>
-                          <span className="px-1.5 sm:px-2 py-0.5 rounded-md bg-muted text-[11px] sm:text-xs font-medium">{posShort[player.position]}</span>
-                          <div className="ml-auto flex items-center gap-1.5 sm:gap-2 text-sm font-bold font-mono">
-                            <span title={t('players.level')} className={player.current_level > 0 ? '' : 'text-muted-foreground font-normal'}>
-                              {player.current_level > 0 ? player.current_level : 'NA'}
-                            </span>
-                            <span className="text-muted-foreground font-normal">/</span>
-                            <span className={player.potential > 0 ? 'text-primary' : 'text-muted-foreground font-normal'} title={t('players.potential')}>
-                              {player.potential > 0 ? player.potential : 'NA'}
-                            </span>
-                          </div>
-                        </div>
-                        {/* Level/potential bars */}
-                        <div className="mt-2 space-y-1">
-                          <div className="flex items-center gap-1.5">
-                            <span className="text-[9px] text-muted-foreground w-[34px] shrink-0">{t('players.level')}</span>
-                            <div className="flex-1 h-1.5 rounded-full bg-muted overflow-hidden">
-                              <div
-                                className="h-full rounded-full bg-primary/70 transition-all duration-700 ease-out group-hover:bg-primary"
-                                style={{ width: `${(player.current_level / 10) * 100}%` }}
-                              />
-                            </div>
-                          </div>
-                          <div className="flex items-center gap-1.5">
-                            <span className="text-[9px] text-muted-foreground w-[34px] shrink-0">{t('players.potential')}</span>
-                            <div className="flex-1 h-1.5 rounded-full bg-muted overflow-hidden">
-                              <div
-                                className="h-full rounded-full bg-emerald-500/60 transition-all duration-700 ease-out delay-75 group-hover:bg-emerald-500"
-                                style={{ width: `${(player.potential / 10) * 100}%` }}
-                              />
-                            </div>
-                          </div>
-                          {/* Data completion bar */}
-                          {(() => {
-                            const pct = computeCompletionPct(player);
-                            const color = completionColor(pct);
-                            return (
-                              <div className="flex items-center gap-1.5 pt-0.5">
-                                <span className="text-[9px] text-muted-foreground w-[34px] shrink-0">{t('players.completion')}</span>
-                                <div className="flex-1 h-1.5 rounded-full bg-muted overflow-hidden">
-                                  <div
-                                    className={`h-full rounded-full transition-all duration-700 ease-out delay-100 ${pct >= 80 ? 'bg-emerald-500' : pct >= 50 ? 'bg-amber-500' : 'bg-rose-500'}`}
-                                    style={{ width: `${pct}%` }}
-                                  />
-                                </div>
-                                <span className={`text-[9px] font-bold tabular-nums rounded px-1 py-0.5 shrink-0 ${color}`}>{pct}%</span>
-                              </div>
-                            );
-                          })()}
-                          {/* Enrichment status */}
-                          {player.external_data_fetched_at ? (
-                            <div className="flex items-center gap-1 mt-0.5">
-                              <Zap className="w-2.5 h-2.5 text-sky-500 shrink-0" />
-                              <span className="text-[9px] text-sky-600 dark:text-sky-400">
-                                {t('players.enriched_on', { date: formatEnrichDate(player.external_data_fetched_at, dateFormat, t) })}
-                              </span>
-                            </div>
-                          ) : (
-                            <div className="flex items-center gap-1 mt-0.5">
-                              <Zap className="w-2.5 h-2.5 text-muted-foreground/40 shrink-0" />
-                              <span className="text-[9px] text-muted-foreground/50">{t('players.not_enriched')}</span>
-                            </div>
-                          )}
-                        </div>
-                        {viewMode === 'detailed' && (
-                          <>
-                          <div className="grid grid-cols-4 gap-2 mt-3 pt-3 border-t border-border/30">
-                            <div className="rounded-lg bg-muted/50 py-2 px-1 text-center">
-                              <p className="text-[10px] text-muted-foreground mb-0.5">{t('players.foot')}</p>
-                              <p className="text-xs font-semibold">{translateFoot(player.foot, t)}</p>
-                            </div>
-                            <div className="rounded-lg bg-muted/50 py-2 px-1 text-center">
-                              <p className="text-[10px] text-muted-foreground mb-0.5">{t('players.height')}</p>
-                              <p className="text-xs font-semibold">{ext.height || '—'}</p>
-                            </div>
-                            <div className="rounded-lg bg-muted/50 py-2 px-1 text-center">
-                              <p className="text-[10px] text-muted-foreground mb-0.5">{t('players.value')}</p>
-                              <p className="text-xs font-semibold truncate">{convertMV((ext.market_value as string) || player.market_value, currency, rates)}</p>
-                            </div>
-                            <div className={`rounded-lg py-2 px-1 text-center ${ext.on_loan ? 'bg-amber-50 dark:bg-amber-950/30 ring-1 ring-amber-200 dark:ring-amber-800' : 'bg-muted/50'}`}>
-                              <p className="text-[10px] text-muted-foreground mb-0.5">{t('players.contract')}</p>
-                              <p className={`text-xs font-semibold ${player.contract_end && (new Date(player.contract_end).getTime() - Date.now()) / (1000 * 60 * 60 * 24) < 180 ? 'text-destructive' : ''}`}>
-                                {formatDateShort(player.contract_end, dateFormat)}
-                              </p>
-                              {ext.on_loan && (
-                                <p className="text-[9px] text-amber-600 dark:text-amber-400 mt-0.5">{t('profile.on_loan_short')}</p>
-                              )}
-                            </div>
-                          </div>
-                          {(() => {
-                            const perf = getPlayerPerfStats(player);
-                            if (perf.rating == null && perf.goals == null) return null;
-                            const ratingColor = (perf.rating ?? 0) >= 7.5 ? 'text-emerald-600 dark:text-emerald-400' : (perf.rating ?? 0) >= 7.0 ? 'text-blue-600 dark:text-blue-400' : (perf.rating ?? 0) >= 6.5 ? 'text-amber-600 dark:text-amber-400' : 'text-muted-foreground';
-                            return (
-                              <div className="grid grid-cols-5 gap-1.5 mt-2">
-                                <div className="rounded-lg bg-muted/50 py-1.5 px-1 text-center">
-                                  <p className="text-[9px] text-muted-foreground mb-0.5">Rating</p>
-                                  <p className={`text-xs font-bold ${ratingColor}`}>{perf.rating != null ? perf.rating.toFixed(1) : '—'}</p>
-                                </div>
-                                <div className="rounded-lg bg-muted/50 py-1.5 px-1 text-center">
-                                  <p className="text-[9px] text-muted-foreground mb-0.5">{t('players.stat_goals')}</p>
-                                  <p className="text-xs font-bold">{perf.goals ?? '—'}</p>
-                                </div>
-                                <div className="rounded-lg bg-muted/50 py-1.5 px-1 text-center">
-                                  <p className="text-[9px] text-muted-foreground mb-0.5">{t('players.stat_assists')}</p>
-                                  <p className="text-xs font-bold">{perf.assists ?? '—'}</p>
-                                </div>
-                                <div className="rounded-lg bg-muted/50 py-1.5 px-1 text-center">
-                                  <p className="text-[9px] text-muted-foreground mb-0.5">{t('players.stat_apps')}</p>
-                                  <p className="text-xs font-bold">{perf.appearances ?? '—'}</p>
-                                </div>
-                                <div className="rounded-lg bg-muted/50 py-1.5 px-1 text-center">
-                                  <p className="text-[9px] text-muted-foreground mb-0.5">Min.</p>
-                                  <p className="text-xs font-bold">{perf.minutes != null ? (perf.minutes > 999 ? `${(perf.minutes / 1000).toFixed(1)}k` : perf.minutes) : '—'}</p>
-                                </div>
-                              </div>
-                            );
-                          })()}
-                          </>
-                        )}
-                      </div>
-                    </Link>
-                  </Card>
-                </div>
-              );
-            })}
-          </div>
+            <VirtualizedPlayerGrid
+              players={filtered}
+              viewMode={viewMode === 'detailed' ? 'detailed' : 'compact'}
+              selectedIds={selectedIds}
+              hasOrg={hasOrg}
+              onToggleSelect={toggleSelect}
+              onDismissNews={dismissNews}
+            />
           )}
 
           {filtered.length > 0 && (
