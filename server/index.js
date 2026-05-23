@@ -152,10 +152,20 @@ const enrichAllProgress = new Map();
 const ALLOWED_ORIGINS = process.env.ALLOWED_ORIGINS
   ? process.env.ALLOWED_ORIGINS.split(",").map(s => s.trim())
   : ["https://scouty.app", "http://localhost:8080", "http://localhost:3000"];
+
+// Vercel preview deployments follow the pattern *.vercel.app — allow them
+// when VERCEL_ALLOW_PREVIEWS is not explicitly set to "false"
+const ALLOW_VERCEL_PREVIEWS = process.env.VERCEL_ALLOW_PREVIEWS !== "false";
+
 app.use(cors({
   origin: (origin, cb) => {
     // Allow requests with no origin (mobile apps, curl, Postman, same-origin server calls)
-    if (!origin || ALLOWED_ORIGINS.includes(origin)) return cb(null, true);
+    if (!origin) return cb(null, true);
+    if (ALLOWED_ORIGINS.includes(origin)) return cb(null, true);
+    // Allow Vercel preview deployments (*.vercel.app)
+    if (ALLOW_VERCEL_PREVIEWS && /^https:\/\/[a-z0-9-]+-[a-z0-9]+-[a-z0-9]+\.vercel\.app$/.test(origin)) return cb(null, true);
+    // Also allow any subdomain of the main domain (e.g. www.scouty.app)
+    if (/^https:\/\/([a-z0-9-]+\.)?scouty\.app$/.test(origin)) return cb(null, true);
     cb(new Error(`CORS: origin not allowed — ${origin}`));
   },
   credentials: true,
