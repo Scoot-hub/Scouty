@@ -117,7 +117,11 @@ async function deleteStoredFile(url) {
 
 const app = express();
 const port = Number(process.env.API_PORT || 3001);
-const jwtSecret = process.env.API_JWT_SECRET || "change-this-secret";
+if (!process.env.API_JWT_SECRET) {
+  console.error("[FATAL] API_JWT_SECRET environment variable is not set. Server will not start.");
+  process.exit(1);
+}
+const jwtSecret = process.env.API_JWT_SECRET;
 
 const pool = mysql.createPool(createDbPoolConfig());
 
@@ -145,7 +149,18 @@ async function scrapeDelay(key, defaultMs) {
 // In-memory progress tracker for enrich-all (keyed by userId)
 const enrichAllProgress = new Map();
 
-app.use(cors({ origin: true, credentials: true }));
+const ALLOWED_ORIGINS = process.env.ALLOWED_ORIGINS
+  ? process.env.ALLOWED_ORIGINS.split(",").map(s => s.trim())
+  : ["https://scouty.app", "http://localhost:8080", "http://localhost:3000"];
+app.use(cors({
+  origin: (origin, cb) => {
+    // Allow requests with no origin (mobile apps, curl, Postman, same-origin server calls)
+    if (!origin || ALLOWED_ORIGINS.includes(origin)) return cb(null, true);
+    cb(new Error(`CORS: origin not allowed — ${origin}`));
+  },
+  credentials: true,
+}));
+app.set("trust proxy", 1); // Trust first proxy (Vercel/nginx) for accurate req.ip
 app.use(cookieParser());
 
 // ── Global API rate limiter ────────────────────────────────────────────────
@@ -155,7 +170,7 @@ const apiLimiter = rateLimit({
   standardHeaders: true,     // Return rate limit info in RateLimit-* headers
   legacyHeaders: false,      // Disable X-RateLimit-* headers
   message: { error: "Trop de requêtes, veuillez réessayer plus tard." },
-  skip: () => process.env.NODE_ENV !== "production",
+  skip: () => process.env.DISABLE_RATE_LIMIT === "true", // set in .env for local dev only
 });
 app.use("/api", apiLimiter);
 
@@ -343,8 +358,8 @@ app.post("/api/stripe/webhook", express.raw({ type: "application/json" }), async
   }
 });
 
-app.use(express.json({ limit: "250mb" }));
-app.use(express.urlencoded({ limit: "250mb", extended: true }));
+app.use(express.json({ limit: "10mb" }));
+app.use(express.urlencoded({ limit: "10mb", extended: true }));
 app.use("/uploads", express.static(UPLOAD_DIR));
 
 const upload = multer({
@@ -362,12 +377,18 @@ const upload = multer({
 });
 
 // ── Stripe session status (after checkout return) ────────────────────────
-app.get("/api/stripe/session-status", async (req, res) => {
+app.get("/api/stripe/session-status", authMiddleware, async (req, res) => {
   if (!stripe) return res.status(501).json({ error: "Stripe non configuré." });
   const sessionId = req.query.session_id;
   if (!sessionId) return res.status(400).json({ error: "session_id requis." });
   try {
     const session = await stripe.checkout.sessions.retrieve(sessionId);
+
+    // Ownership check — the session must belong to the authenticated user
+    const sessionUserId = session.metadata?.user_id || session.client_reference_id;
+    if (sessionUserId && sessionUserId !== req.user.id) {
+      return res.status(403).json({ error: "Forbidden" });
+    }
 
     // If payment is complete, activate premium directly (backup for webhook delay/failure)
     console.log("[session-status] Session:", session.id, "status:", session.status, "payment:", session.payment_status, "metadata:", JSON.stringify(session.metadata), "client_ref:", session.client_reference_id, "subscription:", session.subscription, "customer:", session.customer);
@@ -439,12 +460,6 @@ app.get("/api/stripe/session-status", async (req, res) => {
     return res.json({
       status: session.status,
       payment_status: session.payment_status,
-      _debug: {
-        metadata_user_id: session.metadata?.user_id || null,
-        client_reference_id: session.client_reference_id || null,
-        subscription: session.subscription || null,
-        customer: session.customer || null,
-      },
     });
   } catch (err) {
     console.error("[session-status] Error:", err?.message);
@@ -474,8 +489,8 @@ const ALLOWED_TABLES = {
   fixtures: ["id", "user_id", "home_team", "away_team", "match_date", "match_time", "competition", "venue", "score_home", "score_away", "notes", "is_favorite", "source", "api_fixture_id", "api_league_id", "created_at", "updated_at"],
   user_followed_leagues: ["id", "user_id", "league_id", "league_name", "league_country", "league_logo", "season", "created_at"],
   contacts: ["id", "user_id", "first_name", "last_name", "photo_url", "organization", "role_title", "phone", "email", "linkedin_url", "notes", "created_at", "updated_at"],
-  organizations: ["id", "name", "type", "invite_code", "logo_url", "description", "created_by", "created_at", "updated_at"],
-  organization_members: ["id", "organization_id", "user_id", "role", "joined_at"],
+  organizations: ["id", "name", "type", "invite_code", "logo_url", "description", "settings", "created_by", "created_at", "updated_at"],
+  organization_members: ["id", "organization_id", "user_id", "role", "joined_at", "messaging_blocked"],
   player_org_shares: ["id", "player_id", "organization_id", "user_id", "created_at"],
   match_assignments: ["id", "user_id", "organization_id", "assigned_to", "assigned_by", "home_team", "away_team", "match_date", "match_time", "competition", "venue", "home_badge", "away_badge", "notes", "status", "created_at", "updated_at"],
   community_posts: ["id", "user_id", "author_name", "category", "title", "content", "likes", "replies_count", "is_archived", "views", "is_pinned", "display_order", "is_closed", "accepted_reply_id", "closed_by", "closed_at", "created_at", "lang", "country"],
@@ -498,6 +513,14 @@ const USER_SCOPED_TABLES = new Set([
   "user_followed_leagues",
   "user_subscriptions",
   "user_roles",
+  "community_posts",    // H-4: users may only update/delete their own posts
+  "community_replies",  // H-4: same for replies
+]);
+
+// Fields that only moderators/admins may write on community tables
+const COMMUNITY_MODERATION_FIELDS = new Set([
+  "is_pinned", "display_order", "is_archived", "views",
+  "likes", "replies_count", "is_closed", "accepted_reply_id",
 ]);
 
 // ── API-Football (RapidAPI) cached fetcher ──────────────────────────
@@ -621,20 +644,37 @@ function computeBotScore(req, extraSignals = {}) {
 }
 
 // In-memory ban cache to avoid DB hit on every request (TTL: 5 minutes)
-const _banCache = new Map(); // userId → { isBanned, banReason, cachedAt }
+const _banCache = new Map(); // userId → { isBanned, banReason, banExpiresAt, cachedAt }
 const BAN_CACHE_TTL = 5 * 60 * 1000;
 
 async function isUserBanned(userId) {
   const cached = _banCache.get(userId);
   if (cached && Date.now() - cached.cachedAt < BAN_CACHE_TTL) {
-    return { isBanned: cached.isBanned, banReason: cached.banReason };
+    // Check if a temporary ban has expired since we cached it
+    if (cached.isBanned && cached.banExpiresAt && new Date(cached.banExpiresAt) <= new Date()) {
+      await pool.query('UPDATE users SET is_banned=0, ban_reason=NULL, banned_at=NULL, banned_by=NULL, ban_expires_at=NULL WHERE id=?', [userId]).catch(() => {});
+      _banCache.delete(userId);
+      return { isBanned: false, banReason: null, banExpiresAt: null };
+    }
+    return { isBanned: cached.isBanned, banReason: cached.banReason, banExpiresAt: cached.banExpiresAt };
   }
   try {
-    const [[row]] = await pool.query('SELECT is_banned, ban_reason FROM users WHERE id = ? LIMIT 1', [userId]);
-    const result = { isBanned: !!row?.is_banned, banReason: row?.ban_reason || null };
+    const [[row]] = await pool.query('SELECT is_banned, ban_reason, ban_expires_at FROM users WHERE id = ? LIMIT 1', [userId]);
+    // Auto-lift expired temporary bans
+    if (row?.is_banned && row?.ban_expires_at && new Date(row.ban_expires_at) <= new Date()) {
+      await pool.query('UPDATE users SET is_banned=0, ban_reason=NULL, banned_at=NULL, banned_by=NULL, ban_expires_at=NULL WHERE id=?', [userId]).catch(() => {});
+      const result = { isBanned: false, banReason: null, banExpiresAt: null };
+      _banCache.set(userId, { ...result, cachedAt: Date.now() });
+      return result;
+    }
+    const result = {
+      isBanned: !!row?.is_banned,
+      banReason: row?.ban_reason || null,
+      banExpiresAt: row?.ban_expires_at || null,
+    };
     _banCache.set(userId, { ...result, cachedAt: Date.now() });
     return result;
-  } catch { return { isBanned: false, banReason: null }; }
+  } catch { return { isBanned: false, banReason: null, banExpiresAt: null }; }
 }
 
 function invalidateBanCache(userId) { _banCache.delete(userId); }
@@ -678,6 +718,9 @@ function normalizeUserRow(userRow) {
     last_sign_in_at: userRow.last_sign_in_at,
     oauth_provider: userRow.oauth_provider || null,
     has_password: !!userRow.password_hash,
+    is_banned: !!userRow.is_banned && (!userRow.ban_expires_at || new Date(userRow.ban_expires_at) > new Date()),
+    ban_reason: (!!userRow.is_banned && (!userRow.ban_expires_at || new Date(userRow.ban_expires_at) > new Date())) ? (userRow.ban_reason || null) : null,
+    ban_expires_at: (!!userRow.is_banned && (!userRow.ban_expires_at || new Date(userRow.ban_expires_at) > new Date())) ? new Date(userRow.ban_expires_at).toISOString() : null,
   };
 }
 
@@ -725,6 +768,8 @@ async function authMiddleware(req, res, next) {
       });
     }
     req.user = normalizeUserRow(user);
+    const [adminCheck] = await pool.query("SELECT id FROM user_roles WHERE user_id = ? AND role = 'admin' LIMIT 1", [req.user.id]);
+    req.user.isAdmin = adminCheck.length > 0;
     next();
   } catch {
     return res.status(401).json({ error: "Invalid token" });
@@ -771,6 +816,10 @@ function parseRowJsonColumns(row) {
 
   if (typeof parsed.external_data === "string") {
     try { parsed.external_data = JSON.parse(parsed.external_data); } catch { parsed.external_data = null; }
+  }
+
+  if (typeof parsed.settings === "string") {
+    try { parsed.settings = JSON.parse(parsed.settings); } catch { parsed.settings = null; }
   }
 
   if (parsed.ts_report_published !== undefined) parsed.ts_report_published = !!parsed.ts_report_published;
@@ -945,6 +994,7 @@ async function _legacyRunMigrations() {
     "ALTER TABLE `users` ADD COLUMN `ban_reason`       TEXT         NULL",
     "ALTER TABLE `users` ADD COLUMN `banned_at`        DATETIME     NULL",
     "ALTER TABLE `users` ADD COLUMN `banned_by`        CHAR(36)     NULL",
+    "ALTER TABLE `users` ADD COLUMN `ban_expires_at`   DATETIME     NULL",
     "ALTER TABLE `users` ADD COLUMN `bot_score`        INT          NOT NULL DEFAULT 0",
     "ALTER TABLE `users` ADD COLUMN `registration_ip`  VARCHAR(45)  NULL",
     "ALTER TABLE `users` ADD COLUMN `registration_ip_hash` CHAR(64) NULL",
@@ -2229,14 +2279,16 @@ async function _legacyRunMigrations() {
   } catch (err) { if (err?.errno !== 1060) console.warn("[warn] notification_prefs migration:", err?.message); }
 
   // ── Org chat tables ────────────────────────────────────────────────────────
-  // Ensure referenced tables are InnoDB — the server's default engine is MyISAM,
-  // which does not support foreign keys. Without this, org_messages' FKs fail with
-  // "Failed to open the referenced table 'organizations'". Idempotent: ALTER is a
-  // no-op (apart from a quick table rebuild) when the engine is already InnoDB.
-  try { await pool.query(`ALTER TABLE organizations ENGINE=InnoDB`); }
-  catch (err) { console.warn('[warn] organizations → InnoDB:', err?.message); }
-  try { await pool.query(`ALTER TABLE users ENGINE=InnoDB`); }
-  catch (err) { console.warn('[warn] users → InnoDB:', err?.message); }
+  // Ensure referenced tables are InnoDB AND share the same collation (utf8mb4_unicode_ci)
+  // as the org_message tables. Without matching engine+collation the FK constraints fail:
+  //   - MyISAM doesn't support FKs at all
+  //   - Mixed collations (e.g. utf8mb4_general_ci vs utf8mb4_unicode_ci) make FKs incompatible
+  // CONVERT TO CHARACTER SET is idempotent: if the table already uses utf8mb4_unicode_ci it
+  // performs a fast metadata-only operation.
+  try { await pool.query(`ALTER TABLE organizations ENGINE=InnoDB, CONVERT TO CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci`); }
+  catch (err) { console.warn('[warn] organizations → InnoDB+unicode_ci:', err?.message); }
+  try { await pool.query(`ALTER TABLE users ENGINE=InnoDB, CONVERT TO CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci`); }
+  catch (err) { console.warn('[warn] users → InnoDB+unicode_ci:', err?.message); }
 
   try {
     await pool.query(`
@@ -2989,6 +3041,23 @@ app.post("/api/auth/google", rateLimitAuth, async (req, res) => {
     }
 
     const user = await getUserById(userId);
+
+    // Ban check — same as email/password login
+    if (user.is_banned) {
+      if (user.ban_expires_at && new Date(user.ban_expires_at) <= new Date()) {
+        // Expired ban — auto-lift
+        await pool.query('UPDATE users SET is_banned=0, ban_reason=NULL, banned_at=NULL, banned_by=NULL, ban_expires_at=NULL WHERE id=?', [userId]).catch(() => {});
+        invalidateBanCache(userId);
+      } else {
+        return res.status(403).json({
+          error: 'Compte suspendu.',
+          banned: true,
+          ban_reason: user.ban_reason || null,
+          ban_expires_at: user.ban_expires_at || null,
+        });
+      }
+    }
+
     return res.json({ user: normalizeUserRow(user), session: buildSession(user, res), isNew });
   } catch (err) {
     if (conn) { try { await conn.rollback(); } catch {} }
@@ -3017,18 +3086,25 @@ app.post("/api/auth/login", rateLimitAuth, async (req, res) => {
       return res.status(401).json({ error: "Identifiants invalides." });
     }
 
-    // Ban check
+    // Ban check — auto-lift if expired
     if (user.is_banned) {
-      return res.status(403).json({
-        error: 'Compte suspendu.',
-        ban_reason: user.ban_reason || 'Violation des conditions d\'utilisation.',
-        banned: true,
-      });
+      if (user.ban_expires_at && new Date(user.ban_expires_at) <= new Date()) {
+        await pool.query('UPDATE users SET is_banned=0, ban_reason=NULL, banned_at=NULL, banned_by=NULL, ban_expires_at=NULL WHERE id=?', [user.id]).catch(() => {});
+        invalidateBanCache(user.id);
+      } else {
+        return res.status(403).json({
+          error: 'Compte suspendu.',
+          banned: true,
+          ban_reason: user.ban_reason || null,
+          ban_expires_at: user.ban_expires_at || null,
+        });
+      }
     }
 
     // If TOTP 2FA is enabled, don't return session yet — require TOTP code
     if (user.totp_enabled) {
-      return res.json({ requires2FA: true, method: 'totp', userId: user.id });
+      const challengeToken = jwt.sign({ sub: user.id, purpose: '2fa_challenge' }, jwtSecret, { expiresIn: '5m' });
+      return res.json({ requires2FA: true, method: 'totp', challengeToken });
     }
 
     // If Email 2FA is enabled, send code by email
@@ -3054,7 +3130,8 @@ app.post("/api/auth/login", rateLimitAuth, async (req, res) => {
         </div>
       `);
 
-      return res.json({ requires2FA: true, method: 'email', userId: user.id });
+      const challengeToken = jwt.sign({ sub: user.id, purpose: '2fa_challenge' }, jwtSecret, { expiresIn: '10m' });
+      return res.json({ requires2FA: true, method: 'email', challengeToken });
     }
 
     await pool.query("UPDATE users SET last_sign_in_at = NOW(), updated_at = NOW() WHERE id = ?", [user.id]);
@@ -4100,7 +4177,7 @@ app.post("/api/report-issue", authMiddleware, async (req, res) => {
 
 // ── Admin ticket management ────────────────────────────────────────────────
 
-app.get("/api/admin/tickets", authMiddleware, async (req, res) => {
+app.get("/api/admin/tickets", authMiddleware, ensureAdmin, async (req, res) => {
   try {
     let tickets;
     try {
@@ -4132,7 +4209,7 @@ app.get("/api/admin/tickets", authMiddleware, async (req, res) => {
   }
 });
 
-app.get("/api/admin/tickets/unread-count", authMiddleware, async (req, res) => {
+app.get("/api/admin/tickets/unread-count", authMiddleware, ensureAdmin, async (req, res) => {
   try {
     const [rows] = await pool.query(`
       SELECT COUNT(DISTINCT t.id) AS count FROM tickets t
@@ -4145,7 +4222,7 @@ app.get("/api/admin/tickets/unread-count", authMiddleware, async (req, res) => {
   } catch { return res.json({ count: 0 }); }
 });
 
-app.get("/api/admin/tickets/:id", authMiddleware, async (req, res) => {
+app.get("/api/admin/tickets/:id", authMiddleware, ensureAdmin, async (req, res) => {
   try {
     const [tickets] = await pool.query(`
       SELECT t.*, u.email AS user_email, p.full_name AS user_name
@@ -4164,7 +4241,7 @@ app.get("/api/admin/tickets/:id", authMiddleware, async (req, res) => {
   } catch (err) { return res.status(500).json({ error: err.message }); }
 });
 
-app.post("/api/admin/tickets/:id/reply", authMiddleware, async (req, res) => {
+app.post("/api/admin/tickets/:id/reply", authMiddleware, ensureAdmin, async (req, res) => {
   const { body: msgBody } = req.body || {};
   if (!msgBody) return res.status(400).json({ error: "Message requis." });
   try {
@@ -4180,7 +4257,7 @@ app.post("/api/admin/tickets/:id/reply", authMiddleware, async (req, res) => {
   } catch (err) { return res.status(500).json({ error: err.message }); }
 });
 
-app.post("/api/admin/tickets/:id/email", authMiddleware, async (req, res) => {
+app.post("/api/admin/tickets/:id/email", authMiddleware, ensureAdmin, async (req, res) => {
   try {
     const [tickets] = await pool.query(`SELECT t.*, u.email AS user_email, p.full_name AS user_name FROM tickets t LEFT JOIN users u ON u.id = t.user_id LEFT JOIN profiles p ON p.user_id = t.user_id WHERE t.id = ?`, [req.params.id]);
     if (!tickets.length) return res.status(404).json({ error: "Ticket not found" });
@@ -4205,7 +4282,7 @@ app.post("/api/admin/tickets/:id/email", authMiddleware, async (req, res) => {
   } catch (err) { return res.status(500).json({ error: err.message }); }
 });
 
-app.patch("/api/admin/tickets/:id/status", authMiddleware, async (req, res) => {
+app.patch("/api/admin/tickets/:id/status", authMiddleware, ensureAdmin, async (req, res) => {
   const { status } = req.body || {};
   if (!["open", "in_progress", "closed"].includes(status)) return res.status(400).json({ error: "Invalid status" });
   try {
@@ -4538,11 +4615,17 @@ app.post("/api/auth/2fa/email/verify", authMiddleware, async (req, res) => {
   }
 });
 
-// POST /api/auth/2fa/email/disable — disable email 2FA
+// POST /api/auth/2fa/email/disable — disable email 2FA (requires password confirmation)
 app.post("/api/auth/2fa/email/disable", authMiddleware, async (req, res) => {
+  const { password } = req.body || {};
+  if (!password) return res.status(400).json({ error: "Mot de passe requis pour désactiver la 2FA." });
+
   try {
-    const [rows] = await pool.query("SELECT email_2fa_enabled FROM users WHERE id = ? LIMIT 1", [req.user.id]);
+    const [rows] = await pool.query("SELECT email_2fa_enabled, password_hash FROM users WHERE id = ? LIMIT 1", [req.user.id]);
     if (!rows[0]?.email_2fa_enabled) return res.status(400).json({ error: "La 2FA par email n'est pas activée." });
+
+    const valid = rows[0].password_hash && await bcrypt.compare(String(password), rows[0].password_hash);
+    if (!valid) return res.status(401).json({ error: "Mot de passe incorrect." });
 
     await pool.query(
       "UPDATE users SET email_2fa_enabled = 0, email_2fa_code = NULL, email_2fa_expires_at = NULL, updated_at = NOW() WHERE id = ?",
@@ -4558,8 +4641,17 @@ app.post("/api/auth/2fa/email/disable", authMiddleware, async (req, res) => {
 
 // POST /api/auth/2fa/validate — validate TOTP or email code during login
 app.post("/api/auth/2fa/validate", rateLimitAuth, async (req, res) => {
-  const { userId, code } = req.body || {};
-  if (!userId || !code) return res.status(400).json({ error: "userId et code requis." });
+  const { challengeToken, code } = req.body || {};
+  if (!challengeToken || !code) return res.status(400).json({ error: "challengeToken et code requis." });
+
+  let userId;
+  try {
+    const payload = jwt.verify(challengeToken, jwtSecret);
+    if (payload.purpose !== '2fa_challenge') throw new Error('invalid purpose');
+    userId = payload.sub;
+  } catch {
+    return res.status(401).json({ error: "Challenge invalide ou expiré." });
+  }
 
   try {
     const [rows] = await pool.query(
@@ -5196,6 +5288,20 @@ app.post("/api/query", authMiddleware, async (req, res) => {
         row.user_id = req.user.id;
       }
 
+      // C-3/H-4: Strip moderation-only fields from community writes for non-admins
+      if ((table === "community_posts" || table === "community_replies") && !req.user.isAdmin) {
+        for (const f of COMMUNITY_MODERATION_FIELDS) delete row[f];
+      }
+
+      // Prevent mass-assignment of sensitive user fields
+      if (table === "profiles") {
+        delete row.referred_by;
+      }
+      if (table === "organization_members") {
+        // M-7: Force role to 'member' — only explicit admin endpoints may set owner/admin
+        if (row.role && !["member"].includes(row.role)) row.role = "member";
+      }
+
       // ── Anti-spam checks for community tables ──
       if (table === "community_posts" && op === "insert") {
         // Rate limit: 1 post per 5 minutes
@@ -5537,7 +5643,7 @@ app.post("/api/rpc/get_org_members", authMiddleware, async (req, res) => {
     if (!myMembership.length) return res.status(403).json({ error: "Not a member of this organization" });
 
     const [rows] = await pool.query(
-      `SELECT om.id, om.user_id, om.role, om.joined_at,
+      `SELECT om.id, om.user_id, om.role, om.joined_at, om.messaging_blocked,
               p.full_name, p.club, p.role AS profile_role, p.photo_url,
               p.social_x, p.social_instagram, p.social_linkedin, p.social_public,
               u.email
@@ -5555,6 +5661,7 @@ app.post("/api/rpc/get_org_members", authMiddleware, async (req, res) => {
       role: r.role,
       joined_at: r.joined_at,
       email: r.email,
+      messaging_blocked: !!r.messaging_blocked,
       profile: {
         full_name: r.full_name,
         club: r.club,
@@ -6908,8 +7015,7 @@ app.get('/api/wyscout/match-from-local/:playerId', authMiddleware, async (req, r
 });
 
 async function ensureAdmin(req, res, next) {
-  const [rows] = await pool.query("SELECT id FROM user_roles WHERE user_id = ? AND role = 'admin' LIMIT 1", [req.user.id]);
-  if (!rows.length) return res.status(403).json({ error: "Forbidden" });
+  if (!req.user.isAdmin) return res.status(403).json({ error: "Forbidden" });
   next();
 }
 
@@ -6931,7 +7037,7 @@ async function ensurePremiumOrAdmin(req, res, next) {
 
 app.get("/api/admin/users", authMiddleware, ensureAdmin, async (_req, res) => {
   const [users] = await pool.query(`
-    SELECT u.id, u.email, u.created_at, u.last_sign_in_at, u.oauth_provider, u.is_banned, u.suspicious_referral,
+    SELECT u.id, u.email, u.created_at, u.last_sign_in_at, u.oauth_provider, u.is_banned, u.ban_reason, u.ban_expires_at, u.suspicious_referral,
            p.first_name, p.last_name
     FROM users u
     LEFT JOIN profiles p ON p.user_id = u.id
@@ -6961,6 +7067,8 @@ app.get("/api/admin/users", authMiddleware, ensureAdmin, async (_req, res) => {
       last_sign_in_at: u.last_sign_in_at,
       oauth_provider: u.oauth_provider || null,
       is_banned: !!u.is_banned,
+      ban_reason: u.ban_reason || null,
+      ban_expires_at: u.ban_expires_at ? new Date(u.ban_expires_at).toISOString() : null,
       suspicious_referral: !!u.suspicious_referral,
       is_premium: !!sub?.is_premium,
       premium_since: sub?.premium_since || null,
@@ -6990,6 +7098,54 @@ app.post("/api/admin/users/toggle-premium", authMiddleware, ensureAdmin, async (
 
 app.post("/api/admin/users/reset-password", authMiddleware, ensureAdmin, async (_req, res) => {
   res.json({ ok: true, message: "Password reset email flow not configured in MySQL mode." });
+});
+
+// GET /api/admin/users/:userId/delete-preview — counts of data that will be deleted
+app.get("/api/admin/users/:userId/delete-preview", authMiddleware, ensureAdmin, async (req, res) => {
+  const targetId = req.params.userId;
+  try {
+    const [[userRow]] = await pool.query("SELECT email, created_at FROM users WHERE id = ? LIMIT 1", [targetId]);
+    if (!userRow) return res.status(404).json({ error: "Utilisateur introuvable." });
+
+    const [
+      [[{ player_count }]],
+      [[{ report_count }]],
+      [[{ org_count }]],
+      [[{ watchlist_count }]],
+      [[{ fixture_count }]],
+      [[{ community_count }]],
+      [[{ shadow_count }]],
+      [[{ championship_count }]],
+      subRows,
+    ] = await Promise.all([
+      pool.query("SELECT COUNT(*) AS player_count FROM players WHERE user_id = ?", [targetId]),
+      pool.query("SELECT COUNT(*) AS report_count FROM reports WHERE user_id = ?", [targetId]),
+      pool.query("SELECT COUNT(*) AS org_count FROM organizations WHERE created_by = ?", [targetId]),
+      pool.query("SELECT COUNT(*) AS watchlist_count FROM watchlists WHERE user_id = ?", [targetId]),
+      pool.query("SELECT COUNT(*) AS fixture_count FROM fixtures WHERE user_id = ?", [targetId]),
+      pool.query("SELECT COUNT(*) AS community_count FROM community_posts WHERE user_id = ?", [targetId]),
+      pool.query("SELECT COUNT(*) AS shadow_count FROM shadow_teams WHERE user_id = ?", [targetId]),
+      pool.query("SELECT COUNT(*) AS championship_count FROM custom_championships WHERE created_by = ?", [targetId]),
+      pool.query("SELECT stripe_subscription_id FROM user_subscriptions WHERE user_id = ? LIMIT 1", [targetId]),
+    ]);
+
+    return res.json({
+      email: userRow.email,
+      created_at: userRow.created_at,
+      player_count: Number(player_count),
+      report_count: Number(report_count),
+      org_count: Number(org_count),
+      watchlist_count: Number(watchlist_count),
+      fixture_count: Number(fixture_count),
+      community_count: Number(community_count),
+      shadow_count: Number(shadow_count),
+      championship_count: Number(championship_count),
+      has_subscription: !!(subRows[0]?.stripe_subscription_id),
+    });
+  } catch (err) {
+    console.error("[admin/delete-preview] Error:", err);
+    return res.status(500).json({ error: "Erreur lors de la récupération des données." });
+  }
 });
 
 // DELETE /api/admin/users/:userId — hard-delete a user and all their data
@@ -7486,45 +7642,63 @@ app.get("/api/admin/users/bans", authMiddleware, ensureAdmin, async (req, res) =
   }
 });
 
-// POST /api/admin/users/:id/ban
-app.post("/api/admin/users/:id/ban", authMiddleware, ensureAdmin, async (req, res) => {
+// GET /api/admin/users/:id/ban-status — check ban status of any user (admin/mod)
+app.get("/api/admin/users/:id/ban-status", authMiddleware, ensureAdminOrModerator, async (req, res) => {
+  try {
+    const [[row]] = await pool.query('SELECT is_banned, ban_reason, ban_expires_at FROM users WHERE id=? LIMIT 1', [req.params.id]);
+    if (!row) return res.status(404).json({ error: 'User not found' });
+    res.json({ is_banned: !!row.is_banned, ban_reason: row.ban_reason || null, ban_expires_at: row.ban_expires_at || null });
+  } catch (err) { res.status(500).json({ error: err?.message }); }
+});
+
+// GET /api/my-ban-status — check own ban status (no admin required)
+app.get("/api/my-ban-status", authMiddleware, async (req, res) => {
+  try {
+    const { isBanned, banReason, banExpiresAt } = await isUserBanned(req.user.id);
+    res.json({ isBanned, reason: banReason, expiresAt: banExpiresAt });
+  } catch { res.json({ isBanned: false }); }
+});
+
+// POST /api/admin/users/:id/ban — admin or moderator
+app.post("/api/admin/users/:id/ban", authMiddleware, ensureAdminOrModerator, async (req, res) => {
   try {
     const { id } = req.params;
-    const { reason = 'Décision administrative' } = req.body || {};
-    const adminId = req.user.id;
-    if (id === adminId) return res.status(400).json({ error: 'Vous ne pouvez pas vous bannir vous-même.' });
+    const { reason, duration_hours } = req.body || {};
+    const actorId = req.user.id;
+    if (id === actorId) return res.status(400).json({ error: 'Vous ne pouvez pas vous bannir vous-même.' });
+    // Moderators cannot ban admins
+    const [[target]] = await pool.query("SELECT id FROM user_roles WHERE user_id = ? AND role = 'admin' LIMIT 1", [id]);
+    const [[actor]] = await pool.query("SELECT id FROM user_roles WHERE user_id = ? AND role = 'admin' LIMIT 1", [actorId]);
+    if (target && !actor) return res.status(403).json({ error: 'Un modérateur ne peut pas bannir un administrateur.' });
+
+    const hours = Number(duration_hours);
+    const expiresAt = (hours > 0)
+      ? new Date(Date.now() + hours * 3600 * 1000).toISOString().slice(0, 19).replace('T', ' ')
+      : null;
     await pool.query(
-      `UPDATE users SET is_banned = 1, ban_reason = ?, banned_at = NOW(), banned_by = ?, updated_at = NOW() WHERE id = ?`,
-      [String(reason).slice(0, 500), adminId, id]
+      `UPDATE users SET is_banned=1, ban_reason=?, banned_at=NOW(), banned_by=?, ban_expires_at=?, updated_at=NOW() WHERE id=?`,
+      [String(reason || 'Décision administrative').slice(0, 500), actorId, expiresAt, id]
     );
     invalidateBanCache(id);
-    // Flag the IP in signup_ip_log
     pool.query(
-      `UPDATE signup_ip_log sil
-       INNER JOIN users u ON u.registration_ip_hash = sil.ip_hash
-       SET sil.is_flagged = 1
-       WHERE u.id = ?`,
+      `UPDATE signup_ip_log sil INNER JOIN users u ON u.registration_ip_hash=sil.ip_hash SET sil.is_flagged=1 WHERE u.id=?`,
       [id]
     ).catch(() => {});
     res.json({ ok: true });
-  } catch (err) {
-    res.status(500).json({ error: err?.message });
-  }
+  } catch (err) { res.status(500).json({ error: err?.message }); }
 });
 
-// POST /api/admin/users/:id/unban
-app.post("/api/admin/users/:id/unban", authMiddleware, ensureAdmin, async (req, res) => {
+// POST /api/admin/users/:id/unban — admin or moderator
+app.post("/api/admin/users/:id/unban", authMiddleware, ensureAdminOrModerator, async (req, res) => {
   try {
     const { id } = req.params;
     await pool.query(
-      `UPDATE users SET is_banned = 0, ban_reason = NULL, banned_at = NULL, banned_by = NULL, bot_score = 0, updated_at = NOW() WHERE id = ?`,
+      `UPDATE users SET is_banned=0, ban_reason=NULL, banned_at=NULL, banned_by=NULL, ban_expires_at=NULL, bot_score=0, updated_at=NOW() WHERE id=?`,
       [id]
     );
     invalidateBanCache(id);
     res.json({ ok: true });
-  } catch (err) {
-    res.status(500).json({ error: err?.message });
-  }
+  } catch (err) { res.status(500).json({ error: err?.message }); }
 });
 
 // POST /api/admin/users/:id/reset-bot-score
@@ -8198,6 +8372,79 @@ app.patch("/api/organizations/:id", authMiddleware, async (req, res) => {
   }
 });
 
+// PATCH /api/organizations/:id/settings — save org-level settings JSON (owner/admin)
+app.patch("/api/organizations/:id/settings", authMiddleware, async (req, res) => {
+  const { id } = req.params;
+  const userId = req.user.id;
+  const settings = req.body || {};
+  try {
+    const [memberRows] = await pool.query(
+      "SELECT role FROM organization_members WHERE organization_id = ? AND user_id = ? LIMIT 1",
+      [id, userId]
+    );
+    if (!memberRows.length || !['owner', 'admin'].includes(memberRows[0].role)) {
+      return res.status(403).json({ error: "Réservé au propriétaire et aux admins." });
+    }
+    const allowed = ['allow_messaging', 'allow_player_sharing', 'notify_new_members', 'allow_squad_viewing'];
+    const safe = {};
+    for (const k of allowed) { if (typeof settings[k] === 'boolean') safe[k] = settings[k]; }
+    await pool.query("UPDATE organizations SET settings = ?, updated_at = NOW() WHERE id = ?", [JSON.stringify(safe), id]);
+    return res.json({ ok: true, settings: safe });
+  } catch (err) { return res.status(500).json({ error: err?.message || "Erreur serveur" }); }
+});
+
+// PATCH /api/organizations/:id/members/:memberId/role — change a member's role (owner only for admin↔member, admin for member only)
+app.patch("/api/organizations/:id/members/:memberId/role", authMiddleware, async (req, res) => {
+  const { id, memberId } = req.params;
+  const userId = req.user.id;
+  const { role } = req.body || {};
+  if (!['member', 'admin'].includes(role)) {
+    return res.status(400).json({ error: "Rôle invalide. Valeurs acceptées : member, admin." });
+  }
+  try {
+    const [adminRows] = await pool.query(
+      "SELECT role FROM organization_members WHERE organization_id = ? AND user_id = ? LIMIT 1",
+      [id, userId]
+    );
+    if (!adminRows.length || !['owner', 'admin'].includes(adminRows[0].role)) {
+      return res.status(403).json({ error: "Réservé au propriétaire et aux admins." });
+    }
+    // Only owner can promote to / demote from admin
+    if (adminRows[0].role !== 'owner' && role === 'admin') {
+      return res.status(403).json({ error: "Seul le propriétaire peut nommer des admins." });
+    }
+    const [targetRows] = await pool.query(
+      "SELECT role FROM organization_members WHERE id = ? AND organization_id = ? LIMIT 1",
+      [memberId, id]
+    );
+    if (!targetRows.length) return res.status(404).json({ error: "Membre introuvable." });
+    if (targetRows[0].role === 'owner') return res.status(403).json({ error: "Impossible de modifier le rôle du propriétaire." });
+    await pool.query("UPDATE organization_members SET role = ? WHERE id = ? AND organization_id = ?", [role, memberId, id]);
+    return res.json({ ok: true });
+  } catch (err) { return res.status(500).json({ error: err?.message || "Erreur serveur" }); }
+});
+
+// PATCH /api/organizations/:id/members/:memberId/block-messaging — toggle message block for a member
+app.patch("/api/organizations/:id/members/:memberId/block-messaging", authMiddleware, async (req, res) => {
+  const { id, memberId } = req.params;
+  const userId = req.user.id;
+  const { blocked } = req.body || {};
+  try {
+    const [adminRows] = await pool.query(
+      "SELECT role FROM organization_members WHERE organization_id = ? AND user_id = ? LIMIT 1",
+      [id, userId]
+    );
+    if (!adminRows.length || !['owner', 'admin'].includes(adminRows[0].role)) {
+      return res.status(403).json({ error: "Réservé au propriétaire et aux admins." });
+    }
+    await pool.query(
+      "UPDATE organization_members SET messaging_blocked = ? WHERE id = ? AND organization_id = ?",
+      [blocked ? 1 : 0, memberId, id]
+    );
+    return res.json({ ok: true });
+  } catch (err) { return res.status(500).json({ error: err?.message || "Erreur serveur" }); }
+});
+
 // DELETE /api/organizations/:id — delete organization and all linked data (owner/admin)
 app.delete("/api/organizations/:id", authMiddleware, async (req, res) => {
   const { id } = req.params;
@@ -8327,9 +8574,15 @@ app.patch("/api/match-assignments/:id", authMiddleware, async (req, res) => {
     const { status, notes, assigned_to } = req.body || {};
     const [[existing]] = await pool.query('SELECT * FROM match_assignments WHERE id = ?', [id]);
     if (!existing) return res.status(404).json({ error: 'Affectation introuvable' });
-    // Auth: must be owner or the assigned scout
-    if (existing.user_id !== req.user.id && existing.assigned_to !== req.user.id) {
+
+    const isOwner    = existing.user_id     === req.user.id;
+    const isAssignee = existing.assigned_to === req.user.id;
+    if (!isOwner && !isAssignee) {
       return res.status(403).json({ error: 'Non autorisé' });
+    }
+    // Reassigning (changing assigned_to) is restricted to the owner
+    if (assigned_to !== undefined && !isOwner) {
+      return res.status(403).json({ error: 'Seul le créateur peut réaffecter un match' });
     }
 
     const setClauses = [];
@@ -8799,7 +9052,7 @@ app.delete("/api/admin/organizations/:id", authMiddleware, ensureAdmin, async (r
   const { message } = req.body || {};
 
   try {
-    const customMessage = String(message || "").trim();
+    const customMessage = String(message || "").trim().slice(0, 500);
     if (!customMessage) {
       return res.status(400).json({ error: "Un message de suppression est requis." });
     }
@@ -8812,7 +9065,8 @@ app.delete("/api/admin/organizations/:id", authMiddleware, ensureAdmin, async (r
     await deleteImageFromDb(logoUrl);
     await deleteStoredFile(logoUrl);
 
-    const [usersToNotify] = await pool.query("SELECT id FROM users");
+    // Notify only members of the organization, not all users
+    const [usersToNotify] = await pool.query("SELECT user_id AS id FROM organization_members WHERE organization_id = ?", [id]);
     for (const targetUser of usersToNotify) {
       await createNotification(targetUser.id, {
         type: "organization",
@@ -8931,7 +9185,7 @@ app.post("/api/admin/purge", authMiddleware, ensureAdmin, async (req, res) => {
 });
 
 // Feature flags — get all
-app.get("/api/admin/feature-flags", authMiddleware, async (req, res) => {
+app.get("/api/admin/feature-flags", authMiddleware, ensureAdmin, async (req, res) => {
   try {
     const [rows] = await pool.query("SELECT setting_key, setting_value FROM app_settings WHERE setting_key LIKE 'feature_%'");
     const flags = {};
@@ -9963,7 +10217,7 @@ app.get("/api/club-tm-history/:clubId", async (req, res) => {
 });
 
 // ── Transfermarkt player injuries scraping ─────────────────────────────────
-app.get("/api/player-tm-injuries/:tmId", async (req, res) => {
+app.get("/api/player-tm-injuries/:tmId", authMiddleware, async (req, res) => {
   const { tmId } = req.params;
   if (!tmId || !/^\d+$/.test(tmId)) return res.status(400).json({ error: "Invalid TM ID" });
 
@@ -10039,7 +10293,7 @@ app.get("/api/player-tm-injuries/:tmId", async (req, res) => {
 });
 
 // ── Transfermarkt player market value history scraping ──────────────────────
-app.get("/api/player-tm-market-value/:tmId", async (req, res) => {
+app.get("/api/player-tm-market-value/:tmId", authMiddleware, async (req, res) => {
   const { tmId } = req.params;
   if (!tmId || !/^\d+$/.test(tmId)) return res.status(400).json({ error: "Invalid TM ID" });
 
@@ -15776,7 +16030,10 @@ app.delete("/api/followed-leagues/:leagueId", authMiddleware, async (req, res) =
       await pool.query("ALTER TABLE news_articles CONVERT TO CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci");
     }
   } catch (err) {
-    console.warn('[warn] news_articles collation check:', err?.message);
+    // TiDB refuses CONVERT TO on indexed columns with a different collation — harmless, skip silently.
+    if (!err?.message?.includes('Unsupported converting collation')) {
+      console.warn('[warn] news_articles collation check:', err?.message);
+    }
   }
 
   // International press columns. Serialized to avoid DDL deadlocks.
@@ -16899,6 +17156,8 @@ pool.query('ALTER TABLE club_overrides ADD COLUMN coach_date_born DATE NULL').ca
 
 pool.query('ALTER TABLE tickets ADD COLUMN user_read_at DATETIME NULL').catch(err => { if (err.errno !== 1060) console.warn('[warn] tickets user_read_at:', err?.message); });
 pool.query('ALTER TABLE tickets ADD COLUMN admin_read_at DATETIME NULL').catch(err => { if (err.errno !== 1060) console.warn('[warn] tickets admin_read_at:', err?.message); });
+pool.query('ALTER TABLE organizations ADD COLUMN settings JSON NULL').catch(err => { if (err.errno !== 1060) console.warn('[warn] org settings:', err?.message); });
+pool.query("ALTER TABLE organization_members ADD COLUMN messaging_blocked TINYINT(1) NOT NULL DEFAULT 0").catch(err => { if (err.errno !== 1060) console.warn('[warn] org_members messaging_blocked:', err?.message); });
 
 // ── player_viewer_links: cross-user Wyscout import dedup ──────────────────────
 pool.query(`CREATE TABLE IF NOT EXISTS player_viewer_links (
@@ -19269,10 +19528,17 @@ app.get("/api/editorial/:id", authMiddleware, async (req, res) => {
       [req.params.id]
     );
     if (!rows[0]) return res.status(404).json({ error: "Article introuvable" });
-    if (rows[0].status === 'published') {
+
+    // Draft articles are only visible to their author or admins
+    const article = rows[0];
+    if (article.status !== 'published' && article.user_id !== req.user.id && !req.user.isAdmin) {
+      return res.status(403).json({ error: "Accès non autorisé" });
+    }
+
+    if (article.status === 'published') {
       pool.query("UPDATE editorial_articles SET views = views + 1 WHERE id = ?", [req.params.id]).catch(() => {});
     }
-    return res.json(rows[0]);
+    return res.json(article);
   } catch (err) {
     return res.status(500).json({ error: "Erreur serveur" });
   }

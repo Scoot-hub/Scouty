@@ -8,7 +8,7 @@ import { useIsPremium } from '@/hooks/use-admin';
 import { useIntegrations, useSaveIntegration, useDeleteIntegration, useTestIntegration } from '@/hooks/use-integrations';
 import { useNotificationPrefs, useSaveNotificationPrefs } from '@/hooks/use-notification-prefs';
 import {
-  Settings2, Globe, Pencil, Trash2, Eye, EyeOff, BellOff, MessageSquareOff,
+  Settings2, Globe, Pencil, Trash2, Eye, EyeOff, BellOff, MessageSquareOff, BookOpen,
   Type, Hash, ListOrdered, Link2, ToggleLeft, User, CalendarDays, Trophy,
   Plus, GripVertical, ShieldAlert, Plug, CheckCircle2, XCircle, Loader2,
   KeyRound, ExternalLink, Crown, Bell, Mail, BellRing, Clock, Ruler, X,
@@ -294,6 +294,7 @@ export default function Settings() {
     showNotifications,
     showChatbot,
     hideRestrictedElements,
+    autoShowGuide,
     weekStartDay,
     distanceUnit,
     timezone,
@@ -304,6 +305,7 @@ export default function Settings() {
     setShowNotifications,
     setShowChatbot,
     setHideRestrictedElements,
+    setAutoShowGuide,
     setWeekStartDay,
     setDistanceUnit,
     setTimezone,
@@ -605,6 +607,7 @@ export default function Settings() {
                   { key: 'vision',    icon: Eye,              title: t('settings.reduced_vision_title'),       desc: t('settings.reduced_vision_desc'),        checked: reducedVisionMode,      onCheckedChange: setReducedVisionMode },
                   { key: 'notif',     icon: BellOff,          title: t('settings.notifications_toggle_title'), desc: t('settings.notifications_toggle_desc'),  checked: showNotifications,      onCheckedChange: setShowNotifications },
                   { key: 'chatbot',   icon: MessageSquareOff, title: t('settings.chatbot_toggle_title'),       desc: t('settings.chatbot_toggle_desc'),        checked: showChatbot,            onCheckedChange: setShowChatbot },
+                  { key: 'guide',    icon: BookOpen,         title: t('settings.guide_auto_show_title'),      desc: t('settings.guide_auto_show_desc'),       checked: autoShowGuide,          onCheckedChange: setAutoShowGuide },
                   { key: 'hideperm', icon: EyeOff,           title: t('settings.hide_restricted_title'),      desc: t('settings.hide_restricted_desc'),       checked: hideRestrictedElements, onCheckedChange: setHideRestrictedElements },
                 ] as const).map(item => {
                   const ItemIcon = item.icon;

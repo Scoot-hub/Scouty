@@ -1,12 +1,12 @@
-import { lazy, Suspense, useEffect } from "react";
+import { lazy, Suspense, useEffect, useCallback, useRef } from "react";
 import { Toaster } from "@/components/ui/toaster";
 import { Toaster as Sonner } from "@/components/ui/sonner";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import VercelAnalytics from "@/components/VercelAnalytics";
-import { QueryClientProvider } from "@tanstack/react-query";
+import { QueryClientProvider, useQuery } from "@tanstack/react-query";
 import { queryClient } from "@/lib/query-client";
-import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
-import { AuthProvider } from "@/contexts/AuthContext";
+import { BrowserRouter, Routes, Route, Navigate, useLocation, useNavigate } from "react-router-dom";
+import { AuthProvider, useAuth } from "@/contexts/AuthContext";
 import { UiPreferencesProvider } from "@/contexts/UiPreferencesContext";
 import ProtectedRoute from "@/components/layout/ProtectedRoute";
 import AppLayout from "@/components/layout/AppLayout";
@@ -14,8 +14,53 @@ import PageLoader from "@/components/PageLoader";
 import CookieBanner from "@/components/CookieBanner";
 import { ThemeProvider } from "@/components/ThemeProvider";
 import ErrorBoundary from "@/components/ErrorBoundary";
+import TopProgressBar from "@/components/TopProgressBar";
 // Auth is eagerly imported — it must never suspend (users need it immediately when not logged in)
 import Auth from "@/pages/Auth";
+
+function BanGuard({ children }: { children: React.ReactNode }) {
+  const { user, loading, signOut } = useAuth();
+  const location = useLocation();
+  const navigate = useNavigate();
+  const enforcingRef = useRef(false);
+
+  // Poll every 10s to detect bans applied while the user is already logged in
+  const { data: runtimeBan } = useQuery({
+    queryKey: ['ban-status-runtime'],
+    queryFn: () => fetch('/api/my-ban-status', { credentials: 'include' }).then(r => r.json()),
+    enabled: !!user && !user.is_banned && !enforcingRef.current,
+    refetchInterval: 10_000,
+    refetchOnWindowFocus: true,
+    staleTime: 5_000,
+  });
+
+  const enforceBan = useCallback((reason: string | null, expiresAt: string | null) => {
+    if (enforcingRef.current) return;
+    enforcingRef.current = true;
+    // Store ban info before anything else so /banned can display it without a session
+    localStorage.setItem('scouthub_ban_info', JSON.stringify({ reason, expiresAt }));
+    // Navigate first — before signOut clears the user and ProtectedRoute could redirect elsewhere
+    navigate('/banned', { replace: true });
+    // Expire the session cookie in the background
+    signOut().catch(() => {});
+  }, [signOut, navigate]);
+
+  // Case 1: ban already set in session on page load
+  useEffect(() => {
+    if (loading || location.pathname === '/banned') return;
+    if (user?.is_banned) {
+      enforceBan(user.ban_reason ?? null, user.ban_expires_at ?? null);
+    }
+  }, [user?.is_banned, loading, enforceBan]);
+
+  // Case 2: ban applied while user is currently logged in
+  useEffect(() => {
+    if (!runtimeBan?.isBanned || location.pathname === '/banned') return;
+    enforceBan(runtimeBan.reason ?? null, runtimeBan.expiresAt ?? null);
+  }, [runtimeBan?.isBanned, enforceBan]);
+
+  return <>{children}</>;
+}
 
 const Landing = lazy(() => import("@/pages/Landing"));
 const Players = lazy(() => import("@/pages/Players"));
@@ -82,6 +127,7 @@ const EditorialView = lazy(() => import("@/pages/EditorialView"));
 const EditorialShare = lazy(() => import("@/pages/EditorialShare"));
 const PlayerCompare = lazy(() => import("@/pages/PlayerCompare"));
 const WyscoutPlayerData = lazy(() => import("@/pages/WyscoutPlayerData"));
+const Banned = lazy(() => import("@/pages/Banned"));
 const NotFound = lazy(() => import("@/pages/NotFound"));
 
 const App = () => {
@@ -99,14 +145,17 @@ const App = () => {
   <ErrorBoundary>
   <UiPreferencesProvider>
   <QueryClientProvider client={queryClient}>
+    <TopProgressBar />
     <TooltipProvider>
       <Toaster />
       <Sonner />
       <BrowserRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
         <AuthProvider>
+          <BanGuard>
           <Suspense fallback={<PageLoader />}>
           <Routes>
             {/* Public routes */}
+            <Route path="/banned" element={<Banned />} />
             <Route path="/" element={<Landing />} />
             <Route path="/auth" element={<Auth />} />
             <Route path="/forgot-password" element={<ForgotPassword />} />
@@ -190,6 +239,7 @@ const App = () => {
             <Route path="*" element={<NotFound />} />
           </Routes>
           </Suspense>
+          </BanGuard>
         </AuthProvider>
       <CookieBanner />
       </BrowserRouter>

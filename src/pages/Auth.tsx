@@ -36,7 +36,7 @@ export default function Auth() {
   const formLoadTime = useRef(Date.now()); // anti-bot timing
   const [requires2FA, setRequires2FA] = useState(false);
   const [twoFAMethod, setTwoFAMethod] = useState<'totp' | 'email'>('totp');
-  const [pending2FAUserId, setPending2FAUserId] = useState('');
+  const [pending2FAChallenge, setPending2FAChallenge] = useState('');
   const [otpCode, setOtpCode] = useState('');
   const { user } = useAuth();
   const navigate = useNavigate();
@@ -52,7 +52,16 @@ export default function Auth() {
           signInWithGoogle: (token: string) => Promise<{ data: { user: unknown; session: unknown; isNew?: boolean } | null; error: Error | null }>
         }).signInWithGoogle(tokenResponse.access_token);
 
-        if (error || !data?.session) throw error || new Error(t('auth.google_error'));
+        if (error) {
+          const banErr = error as Error & { banned?: boolean; ban_reason?: string | null; ban_expires_at?: string | null };
+          if (banErr.banned) {
+            localStorage.setItem('scouthub_ban_info', JSON.stringify({ reason: banErr.ban_reason, expiresAt: banErr.ban_expires_at }));
+            navigate('/banned');
+            return;
+          }
+          throw error;
+        }
+        if (!data?.session) throw new Error(t('auth.google_error'));
 
         if (data.isNew) localStorage.setItem('scouthub_onboarding_pending', 'new');
         navigate(data.isNew ? '/welcome' : '/players');
@@ -121,13 +130,21 @@ export default function Auth() {
         toast({ title: t('auth.toast_created'), description: t('auth.toast_created_desc') });
       } else {
         const { data, error } = await supabase.auth.signInWithPassword({ email, password });
-        if (error) throw error;
+        if (error) {
+          const banErr = error as Error & { banned?: boolean; ban_reason?: string | null; ban_expires_at?: string | null };
+          if (banErr.banned) {
+            localStorage.setItem('scouthub_ban_info', JSON.stringify({ reason: banErr.ban_reason, expiresAt: banErr.ban_expires_at }));
+            navigate('/banned');
+            return;
+          }
+          throw error;
+        }
         // Check if 2FA is required
-        const authData = data as { requires2FA?: boolean; method?: 'totp' | 'email'; userId?: string };
+        const authData = data as { requires2FA?: boolean; method?: 'totp' | 'email'; challengeToken?: string };
         if (authData?.requires2FA) {
           setRequires2FA(true);
           setTwoFAMethod(authData.method || 'totp');
-          setPending2FAUserId(authData.userId || '');
+          setPending2FAChallenge(authData.challengeToken || '');
           return;
         }
         navigate('/players');
@@ -147,7 +164,7 @@ export default function Auth() {
     e.preventDefault();
     setLoading(true);
     try {
-      const { data, error } = await (supabase.auth as unknown as { validate2FA: (userId: string, code: string) => Promise<{ data: unknown; error: Error | null }> }).validate2FA(pending2FAUserId, otpCode);
+      const { data, error } = await (supabase.auth as unknown as { validate2FA: (challengeToken: string, code: string) => Promise<{ data: unknown; error: Error | null }> }).validate2FA(pending2FAChallenge, otpCode);
       if (error) throw error;
       navigate('/players');
     } catch (error: unknown) {
@@ -216,7 +233,7 @@ export default function Auth() {
                 </Button>
                 <button
                   type="button"
-                  onClick={() => { setRequires2FA(false); setPending2FAUserId(''); setOtpCode(''); }}
+                  onClick={() => { setRequires2FA(false); setPending2FAChallenge(''); setOtpCode(''); }}
                   className="w-full text-sm text-muted-foreground hover:text-primary transition-colors"
                 >
                   {t('auth.2fa_back')}

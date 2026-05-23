@@ -1,9 +1,13 @@
+import { useState } from 'react';
 import { useParams, Link } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
 import { Card, CardContent } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
-import { ArrowLeft, User, Building2, Calendar, ExternalLink, X as XIcon } from 'lucide-react';
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from '@/components/ui/dialog';
+import { ArrowLeft, User, Building2, Calendar, ExternalLink, X as XIcon, ShieldBan, ShieldOff } from 'lucide-react';
+import { useIsAdmin, useMyPermissions } from '@/hooks/use-admin';
+import { toast } from 'sonner';
 
 const API_BASE = (import.meta.env.VITE_API_URL || '/api').replace(/\/$/, '');
 
@@ -27,8 +31,18 @@ interface UserProfileData {
   social_whatsapp: string | null;
 }
 
+const API_BASE2 = (import.meta.env.VITE_API_URL || '/api').replace(/\/$/, '');
+
 export default function UserProfile() {
   const { userId } = useParams<{ userId: string }>();
+  const { data: isAdmin } = useIsAdmin();
+  const { data: permsData } = useMyPermissions();
+  const isMod = isAdmin || permsData?.roles?.some((r: string) => r.toLowerCase() === 'moderator');
+
+  const [banOpen, setBanOpen] = useState(false);
+  const [banReason, setBanReason] = useState('');
+  const [banDuration, setBanDuration] = useState('24');
+  const [banLoading, setBanLoading] = useState(false);
 
   const { data: profile, isLoading, isError } = useQuery<UserProfileData>({
     queryKey: ['user-profile', userId],
@@ -60,6 +74,43 @@ export default function UserProfile() {
     );
   }
 
+  // Ban status (only loaded for admin/mods)
+  const { data: banStatus, refetch: refetchBan } = useQuery({
+    queryKey: ['user-ban-status', userId],
+    queryFn: async () => {
+      const res = await fetch(`${API_BASE2}/admin/users/${userId}/ban-status`, { credentials: 'include' });
+      if (!res.ok) return null;
+      return res.json() as Promise<{ is_banned: boolean; ban_reason: string | null; ban_expires_at: string | null }>;
+    },
+    enabled: !!isMod && !!userId,
+  });
+
+  const doBan = async () => {
+    setBanLoading(true);
+    try {
+      const body: Record<string, unknown> = { reason: banReason || undefined };
+      if (banDuration !== '0') body.duration_hours = Number(banDuration);
+      const res = await fetch(`${API_BASE2}/admin/users/${userId}/ban`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        credentials: 'include', body: JSON.stringify(body),
+      });
+      if (!res.ok) { const d = await res.json().catch(() => ({})); throw new Error(d.error || 'Erreur'); }
+      toast.success('Utilisateur banni.');
+      setBanOpen(false); setBanReason(''); setBanDuration('24');
+      refetchBan();
+    } catch (err: unknown) { toast.error(err instanceof Error ? err.message : 'Erreur'); }
+    finally { setBanLoading(false); }
+  };
+
+  const doUnban = async () => {
+    try {
+      const res = await fetch(`${API_BASE2}/admin/users/${userId}/unban`, { method: 'POST', credentials: 'include' });
+      if (!res.ok) throw new Error('Erreur');
+      toast.success('Utilisateur débanni.');
+      refetchBan();
+    } catch { toast.error('Erreur'); }
+  };
+
   const initials = profile.full_name
     ? profile.full_name.split(' ').map(w => w[0]).join('').slice(0, 2).toUpperCase()
     : '?';
@@ -76,10 +127,33 @@ export default function UserProfile() {
 
   return (
     <div className="max-w-2xl mx-auto p-4 sm:p-6 space-y-6">
-      {/* Back */}
-      <Button variant="ghost" size="sm" asChild className="-ml-2">
-        <Link to="/community"><ArrowLeft className="w-4 h-4 mr-1" />Retour à la communauté</Link>
-      </Button>
+      {/* Back + mod actions */}
+      <div className="flex items-center justify-between">
+        <Button variant="ghost" size="sm" asChild className="-ml-2">
+          <Link to="/community"><ArrowLeft className="w-4 h-4 mr-1" />Retour à la communauté</Link>
+        </Button>
+        {isMod && (
+          <div className="flex items-center gap-2">
+            {banStatus?.is_banned && (
+              <Badge variant="destructive" className="gap-1 text-[11px]">
+                <ShieldBan className="w-3 h-3" />
+                {banStatus.ban_expires_at
+                  ? `Banni jusqu'au ${new Date(banStatus.ban_expires_at).toLocaleDateString()}`
+                  : 'Banni (permanent)'}
+              </Badge>
+            )}
+            {banStatus?.is_banned ? (
+              <Button size="sm" variant="outline" className="gap-1.5 text-emerald-600 border-emerald-300 hover:bg-emerald-50" onClick={doUnban}>
+                <ShieldOff className="w-3.5 h-3.5" /> Débannir
+              </Button>
+            ) : (
+              <Button size="sm" variant="outline" className="gap-1.5 text-orange-600 border-orange-300 hover:bg-orange-50" onClick={() => setBanOpen(true)}>
+                <ShieldBan className="w-3.5 h-3.5" /> Bannir
+              </Button>
+            )}
+          </div>
+        )}
+      </div>
 
       {/* Profile card */}
       <Card>
@@ -262,6 +336,55 @@ export default function UserProfile() {
           </CardContent>
         </Card>
       )}
+      {/* Ban dialog */}
+      <Dialog open={banOpen} onOpenChange={o => !o && setBanOpen(false)}>
+        <DialogContent className="max-w-sm">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <ShieldBan className="w-4 h-4 text-orange-500" />
+              Bannir l'utilisateur
+            </DialogTitle>
+            <DialogDescription>{profile.full_name || userId}</DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4 py-1">
+            <div>
+              <label className="text-sm font-medium mb-1.5 block">Durée</label>
+              <div className="grid grid-cols-3 gap-1.5">
+                {[
+                  { label: '1h', value: '1' },
+                  { label: '24h', value: '24' },
+                  { label: '7 jours', value: '168' },
+                  { label: '30 jours', value: '720' },
+                  { label: '90 jours', value: '2160' },
+                  { label: 'Permanent', value: '0' },
+                ].map(d => (
+                  <button key={d.value} onClick={() => setBanDuration(d.value)}
+                    className={`rounded-lg border py-1.5 text-xs font-medium transition-colors ${
+                      banDuration === d.value ? 'bg-orange-500 text-white border-orange-500' : 'border-border hover:bg-muted'
+                    }`}>
+                    {d.label}
+                  </button>
+                ))}
+              </div>
+            </div>
+            <div>
+              <label className="text-sm font-medium mb-1.5 block">
+                Motif <span className="text-muted-foreground font-normal">(optionnel)</span>
+              </label>
+              <textarea value={banReason} onChange={e => setBanReason(e.target.value)} rows={3}
+                placeholder="Raison du bannissement…"
+                className="w-full text-sm border border-border rounded-lg px-3 py-2 bg-background resize-none focus:outline-none focus:ring-2 focus:ring-ring" />
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setBanOpen(false)}>Annuler</Button>
+            <Button onClick={doBan} disabled={banLoading} className="bg-orange-500 hover:bg-orange-600 text-white">
+              <ShieldBan className="w-3.5 h-3.5 mr-1.5" />
+              {banLoading ? 'En cours…' : 'Bannir'}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

@@ -8,9 +8,9 @@ import { Badge } from '@/components/ui/badge';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs';
 import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuCheckboxItem, DropdownMenuLabel, DropdownMenuSeparator } from '@/components/ui/dropdown-menu';
-import { Shield, Users, Lock, Check, X, Search, Plus, Trash2, ChevronDown, ChevronRight, Palette, Crown, User, ShieldAlert, SlidersHorizontal, Star, LogIn, Ban, CalendarDays, AlertTriangle } from 'lucide-react';
+import { Shield, Users, Lock, Check, X, Search, Plus, Trash2, ChevronDown, ChevronRight, Palette, Crown, User, ShieldAlert, SlidersHorizontal, Star, LogIn, Ban, CalendarDays, AlertTriangle, ArrowLeft } from 'lucide-react';
 import { toast } from 'sonner';
-import { Navigate } from 'react-router-dom';
+import { Navigate, Link } from 'react-router-dom';
 import { useAuth } from '@/contexts/AuthContext';
 import { cn } from '@/lib/utils';
 
@@ -18,32 +18,34 @@ const API_BASE = (import.meta.env.API_URL || '/api').replace(/\/$/, '');
 
 // Sub-actions per page — defines granular permissions beyond just "view"
 const PAGE_ACTIONS: Record<string, string[]> = {
-  players:        ['view', 'create', 'edit', 'delete', 'export', 'import', 'enrich', 'find_duplicates', 'bulk_actions'],
-  player_profile: ['view', 'edit', 'delete', 'enrich', 'add_report', 'edit_report', 'delete_report', 'add_note', 'delete_note', 'manage_fields'],
-  add_player:     ['view', 'create', 'add_report'],
-  watchlist:      ['view', 'create', 'edit', 'delete', 'add_player', 'remove_player'],
-  shadow_team:    ['view', 'create', 'edit', 'delete', 'assign_player', 'remove_player', 'download_image'],
-  fixtures:       ['view', 'save_match', 'assign_match', 'assign_scout'],
-  my_matches:     ['view', 'edit_status', 'delete'],
-  contacts:       ['view', 'create', 'edit', 'delete', 'share'],
-  settings:       ['view', 'edit_profile', 'manage_fields', 'change_language', 'change_theme'],
-  account:        ['view', 'edit', 'manage_security'],
-  organization:   ['view', 'create', 'manage_members', 'change_member_role', 'remove_member', 'manage_settings', 'share'],
-  booking:        ['view', 'book'],
-  checkout:       ['view'],
-  community:      ['view', 'post', 'reply', 'like', 'mention', 'moderate', 'delete_content'],
-  discover:       ['view', 'search', 'add_player', 'filter'],
-  map:            ['view', 'view_nearby'],
-  affiliate:      ['view', 'share'],
-  my_clubs:       ['view', 'follow', 'unfollow'],
-  club_profile:   ['view', 'follow', 'unfollow', 'view_squad'],
-  user_profile:   ['view', 'edit'],
-  admin:          ['view', 'manage_users', 'manage_roles', 'impersonate', 'toggle_premium', 'reset_password', 'delete_user', 'view_analytics', 'manage_tickets'],
-  data_import:      ['view', 'import'],
-  editorial:        ['view', 'create', 'edit', 'delete', 'publish'],
+  players:          ['view', 'create', 'edit', 'delete', 'export', 'import', 'enrich', 'find_duplicates', 'bulk_actions'],
+  player_profile:   ['view', 'edit', 'delete', 'enrich', 'add_report', 'edit_report', 'delete_report', 'add_note', 'delete_note', 'manage_fields'],
+  add_player:       ['view', 'create', 'add_report'],
+  watchlist:        ['view', 'create', 'edit', 'delete', 'add_player', 'remove_player'],
+  shadow_team:      ['view', 'create', 'edit', 'delete', 'assign_player', 'remove_player', 'download_image'],
+  fixtures:         ['view', 'save_match', 'assign_match', 'assign_scout', 'view_detail'],
+  my_matches:       ['view', 'edit_status', 'delete'],
+  contacts:         ['view', 'create', 'edit', 'delete', 'share'],
+  settings:         ['view', 'edit_profile', 'manage_fields', 'change_language', 'change_theme'],
+  account:          ['view', 'edit', 'manage_security'],
+  organization:     ['view', 'create', 'manage_members', 'change_member_role', 'remove_member', 'manage_settings', 'share', 'view_squad', 'manage_squad', 'view_roadmap', 'manage_roadmap', 'view_chat', 'send_message'],
+  booking:          ['view', 'book'],
+  checkout:         ['view'],
+  community:        ['view', 'post', 'reply', 'like', 'mention', 'moderate', 'delete_content'],
+  discover:         ['view', 'search', 'add_player', 'filter'],
+  map:              ['view', 'view_nearby'],
+  affiliate:        ['view', 'share'],
+  my_clubs:         ['view', 'follow', 'unfollow'],
+  club_profile:     ['view', 'follow', 'unfollow', 'view_squad'],
+  user_profile:     ['view', 'edit'],
+  admin:            ['view', 'manage_users', 'manage_roles', 'impersonate', 'toggle_premium', 'reset_password', 'delete_user', 'view_analytics', 'manage_tickets', 'manage_credits', 'manage_notifications', 'manage_admin_settings', 'manage_crons', 'view_errors'],
+  data_import:      ['view', 'import', 'import_statsbomb'],
+  editorial:        ['view', 'create', 'edit', 'delete', 'publish', 'view_drafts'],
   news:             ['view'],
   buzz:             ['view'],
   instagram:        ['view'],
+  x:                ['view'],
+  data:             ['view', 'compare', 'export'],
   championships:    ['view', 'follow', 'unfollow'],
   my_championships: ['view', 'unfollow'],
   my_tickets:       ['view', 'create'],
@@ -63,6 +65,7 @@ interface AdminUser {
   last_sign_in_at: string | null;
   oauth_provider: string | null;
   is_banned: boolean;
+  ban_expires_at: string | null;
   suspicious_referral: boolean;
 }
 
@@ -100,6 +103,17 @@ function getRoleIcon(role: string) {
 
 function authFetchInit(): RequestInit {
   return { credentials: 'include', headers: { 'Content-Type': 'application/json' } };
+}
+
+function banTimeLeft(expiresAt: string): string {
+  const diff = new Date(expiresAt).getTime() - Date.now();
+  if (diff <= 0) return '< 1min';
+  const totalMinutes = Math.floor(diff / 60_000);
+  const h = Math.floor(totalMinutes / 60);
+  const min = totalMinutes % 60;
+  if (h === 0) return `${min}min`;
+  if (min === 0) return `${h}h`;
+  return `${h}h ${min}min`;
 }
 
 export default function AdminRoles() {
@@ -320,6 +334,9 @@ export default function AdminRoles() {
     <div className="w-full max-w-6xl mx-auto space-y-6">
       {/* Header */}
       <div className="flex items-center gap-3">
+        <Link to="/admin" className="flex items-center justify-center w-8 h-8 rounded-lg hover:bg-muted transition-colors shrink-0">
+          <ArrowLeft className="w-4 h-4 text-muted-foreground" />
+        </Link>
         <div className="w-10 h-10 rounded-xl bg-primary/10 flex items-center justify-center">
           <Shield className="w-5 h-5 text-primary" />
         </div>
@@ -647,7 +664,12 @@ export default function AdminRoles() {
                                   <span className="text-muted-foreground/50 italic text-xs">{t('roles.no_name')}</span>
                                 )}
                                 {isCurrentUser && <Badge variant="secondary" className="text-[10px] shrink-0">{t('roles.you')}</Badge>}
-                                {u.is_banned && <Badge variant="destructive" className="text-[10px] shrink-0"><Ban className="w-2.5 h-2.5 mr-0.5" />{t('roles.banned')}</Badge>}
+                                {u.is_banned && (
+                                  <Badge variant="destructive" className="text-[10px] shrink-0 gap-0.5">
+                                    <Ban className="w-2.5 h-2.5" />
+                                    {u.ban_expires_at ? `Banni — ${banTimeLeft(u.ban_expires_at)}` : 'Banni'}
+                                  </Badge>
+                                )}
                                 {u.suspicious_referral && (
                                   <Badge variant="outline" className="text-[10px] border-amber-500/40 text-amber-600 dark:text-amber-400 gap-1 shrink-0" title={t('admin.suspicious_referral_hint')}>
                                     <AlertTriangle className="w-2.5 h-2.5" />
@@ -734,7 +756,7 @@ export default function AdminRoles() {
                           {visibleColumns.has('is_banned') && (
                             <TableCell className="text-center">
                               {u.is_banned
-                                ? <Badge variant="destructive" className="text-[10px]"><Ban className="w-2.5 h-2.5 mr-0.5" />{t('roles.banned')}</Badge>
+                                ? <Badge variant="destructive" className="text-[10px] gap-0.5"><Ban className="w-2.5 h-2.5" />{u.ban_expires_at ? `Banni — ${banTimeLeft(u.ban_expires_at)}` : 'Banni'}</Badge>
                                 : <span className="text-muted-foreground/40 text-xs">—</span>}
                             </TableCell>
                           )}

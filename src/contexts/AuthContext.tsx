@@ -10,6 +10,9 @@ interface User {
   last_sign_in_at?: string | null;
   oauth_provider?: string | null;
   has_password?: boolean;
+  is_banned?: boolean;
+  ban_reason?: string | null;
+  ban_expires_at?: string | null;
 }
 
 interface Session {

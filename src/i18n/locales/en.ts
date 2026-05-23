@@ -330,6 +330,8 @@ export default {
     notifications_toggle_desc: 'Shows or hides the bell and notification center in the interface.',
     chatbot_toggle_title: 'Show chatbot',
     chatbot_toggle_desc: 'Shows or hides the floating chatbot in the application.',
+    guide_auto_show_title: 'Automatic page guide',
+    guide_auto_show_desc: 'Automatically opens the guide on the first visit to each supported page.',
     hide_restricted_title: 'Hide restricted elements',
     hide_restricted_desc: 'Completely hides menus, buttons and blocks that your role cannot access, instead of greying them out.',
     ui_toggles_title: 'Interface',
@@ -1644,6 +1646,18 @@ export default {
     exchange_rates_updated: 'Last updated',
   },
 
+  ban: {
+    title: 'Account suspended',
+    subtitle: 'Your access to this platform has been temporarily suspended.',
+    reason: 'Reason',
+    duration: 'Duration',
+    permanent: 'Permanent suspension',
+    expires_in: 'Lifted in',
+    expiring_soon: 'Lifting soon',
+    sign_out: 'Sign out',
+    contact_support: 'If you believe this is an error, please contact support.',
+  },
+
   crons: {
     title: 'Scheduled tasks',
     subtitle: 'Manage and monitor automated server jobs.',
@@ -1775,6 +1789,7 @@ export default {
     email_2fa_disable: 'Disable email 2FA',
     email_2fa_active: 'Email 2FA enabled',
     email_2fa_active_desc: 'A verification code will be sent to your email on each login.',
+    email_2fa_confirm_password: 'Confirm your password to disable',
     email_2fa_code_sent: 'A verification code has been sent to your email.',
     email_2fa_code_sent_desc: 'Enter the 6-digit code received by email to confirm activation.',
     email_2fa_enabled_success: 'Email 2FA enabled successfully!',
@@ -2585,6 +2600,7 @@ export default {
   },
   guide: {
     got_it: 'Got it!',
+    disable_auto: 'Stop showing automatically on new pages',
     players: 'Find all your scouted players here. Search, filter and organise your database by position, league, potential, opinion and more. You can also import, export and enrich your profiles.',
     watchlist: 'Create themed lists to organise your tracking: summer window, U21 players, priority profiles... Structure your scouting the way you want.',
     shadow_team: 'Build your ideal XI from your scouted players. Pick a formation and assign your best profiles to each position.',

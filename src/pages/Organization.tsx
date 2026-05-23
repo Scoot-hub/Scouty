@@ -8,12 +8,14 @@ import { Input } from '@/components/ui/input';
 import { Textarea } from '@/components/ui/textarea';
 import { Separator } from '@/components/ui/separator';
 import { Badge } from '@/components/ui/badge';
+import { Switch } from '@/components/ui/switch';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { toast } from 'sonner';
 import {
   Building2, Users, Copy, LogOut, UserMinus, Share2,
   Shield, Loader2, Plus, KeyRound, ChevronRight,
   Calendar, Briefcase, Camera, Trash2, Pencil, Check, X,
+  MessageSquare, Bell, Eye, SlidersHorizontal, MessageSquareOff,
 } from 'lucide-react';
 import {
   useMyOrganizations,
@@ -26,6 +28,8 @@ import {
   useLeaveOrganization,
   useUpdateOrgLogo,
   useUpdateOrganization,
+  useUpdateOrgSettings,
+  useBlockMemberMessaging,
   slugify,
 } from '@/hooks/use-organization';
 import OrgTabBar from '@/components/OrgTabBar';
@@ -316,9 +320,39 @@ function OrganizationDashboard({ org, userId }: { org: Record<string, unknown>; 
   const updateOrg = useUpdateOrganization(org.id as string);
   const { upload: uploadLogo, remove: removeLogo } = useUpdateOrgLogo(org.id);
 
+  const updateOrgSettings = useUpdateOrgSettings(org.id as string);
+  const blockMessaging = useBlockMemberMessaging(org.id as string);
+
   const isOwner = org.myRole === 'owner';
   const isAdmin = org.myRole === 'owner' || org.myRole === 'admin';
   const [selectedMember, setSelectedMember] = useState<Record<string, unknown> | null>(null);
+
+  // Parse org-level settings with defaults
+  const DEFAULT_SETTINGS = { allow_messaging: true, allow_player_sharing: true, notify_new_members: true, allow_squad_viewing: true };
+  const orgSettings: Record<string, boolean> = (() => {
+    try {
+      const raw = org.settings;
+      if (!raw) return { ...DEFAULT_SETTINGS };
+      const parsed = typeof raw === 'string' ? JSON.parse(raw) : raw;
+      return { ...DEFAULT_SETTINGS, ...parsed };
+    } catch { return { ...DEFAULT_SETTINGS }; }
+  })();
+
+  const handleOrgSetting = async (key: string, value: boolean) => {
+    const next = { ...orgSettings, [key]: value };
+    try {
+      await updateOrgSettings.mutateAsync(next);
+      toast.success('Paramètre enregistré.');
+    } catch { toast.error('Erreur lors de la sauvegarde.'); }
+  };
+
+  const handleToggleBlockMessaging = async (member: Record<string, unknown>) => {
+    const blocked = !member.messaging_blocked;
+    try {
+      await blockMessaging.mutateAsync({ memberId: member.id as string, blocked });
+      toast.success(blocked ? 'Messagerie bloquée pour ce membre.' : 'Messagerie réactivée.');
+    } catch { toast.error('Erreur lors de la modification.'); }
+  };
 
   // Description inline edit state
   const [editingDesc, setEditingDesc] = useState(false);
@@ -408,7 +442,7 @@ function OrganizationDashboard({ org, userId }: { org: Record<string, unknown>; 
       {/* Tab bar (includes persistent org header) */}
       <OrgTabBar orgName={org.name as string} />
 
-      <div className="max-w-2xl space-y-4">
+      <div className="max-w-2xl mx-auto space-y-4">
         {isAdmin && (
         <Card>
           <CardHeader>
@@ -495,6 +529,66 @@ function OrganizationDashboard({ org, userId }: { org: Record<string, unknown>; 
         </Card>
       )}
 
+      {/* Paramètres avancés — admin only */}
+      {isAdmin && (
+        <Card>
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2 text-base">
+              <SlidersHorizontal className="w-4 h-4 text-primary" />
+              Paramètres avancés
+            </CardTitle>
+            <CardDescription>Contrôlez les droits et comportements de l'organisation.</CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-3">
+            {([
+              {
+                key: 'allow_messaging',
+                icon: MessageSquare,
+                title: 'Messagerie dans le chat',
+                desc: 'Autoriser les membres à envoyer des messages dans le chat de l\'organisation.',
+              },
+              {
+                key: 'allow_player_sharing',
+                icon: Share2,
+                title: 'Partage de fiches joueurs',
+                desc: 'Autoriser les membres à partager des fiches de joueurs au sein de l\'organisation.',
+              },
+              {
+                key: 'notify_new_members',
+                icon: Bell,
+                title: 'Notification d\'arrivée',
+                desc: 'Notifier tous les membres à l\'arrivée d\'un nouveau membre dans l\'organisation.',
+              },
+              {
+                key: 'allow_squad_viewing',
+                icon: Eye,
+                title: 'Visibilité de l\'effectif',
+                desc: 'Les membres peuvent consulter la liste complète des membres de l\'organisation.',
+              },
+            ] as const).map(item => {
+              const ItemIcon = item.icon;
+              return (
+                <div key={item.key} className="flex items-start justify-between gap-3 rounded-xl border border-border/60 bg-muted/20 p-3">
+                  <div className="min-w-0">
+                    <div className="flex items-center gap-2 text-sm font-medium">
+                      <ItemIcon className="w-4 h-4 text-primary shrink-0" />
+                      <span>{item.title}</span>
+                    </div>
+                    <p className="mt-0.5 text-xs text-muted-foreground leading-relaxed">{item.desc}</p>
+                  </div>
+                  <Switch
+                    checked={orgSettings[item.key]}
+                    onCheckedChange={v => handleOrgSetting(item.key, v)}
+                    disabled={updateOrgSettings.isPending}
+                    className="shrink-0 mt-0.5"
+                  />
+                </div>
+              );
+            })}
+          </CardContent>
+        </Card>
+      )}
+
       {/* Lien de parrainage */}
       <Card>
         <CardHeader>
@@ -574,18 +668,36 @@ function OrganizationDashboard({ org, userId }: { org: Record<string, unknown>; 
                         <p className="text-xs text-muted-foreground truncate">{subtitle}</p>
                       )}
                     </div>
-                    <span className={`text-xs font-medium px-2 py-0.5 rounded-full ${
-                      member.role === 'owner'
-                        ? 'bg-primary/10 text-primary'
-                        : member.role === 'admin'
-                          ? 'bg-amber-500/10 text-amber-600'
-                          : 'bg-muted text-muted-foreground'
-                    }`}>
-                      {member.role === 'owner' ? t('org.role_owner') : member.role === 'admin' ? t('org.role_admin') : t('org.role_member')}
-                    </span>
+                    <div className="flex items-center gap-1.5 shrink-0">
+                      {member.messaging_blocked && (
+                        <span className="flex items-center gap-0.5 text-[10px] font-medium px-1.5 py-0.5 rounded-full bg-amber-500/10 text-amber-600">
+                          <MessageSquareOff className="w-2.5 h-2.5" />
+                        </span>
+                      )}
+                      <span className={`text-xs font-medium px-2 py-0.5 rounded-full ${
+                        member.role === 'owner'
+                          ? 'bg-primary/10 text-primary'
+                          : member.role === 'admin'
+                            ? 'bg-amber-500/10 text-amber-600'
+                            : 'bg-muted text-muted-foreground'
+                      }`}>
+                        {member.role === 'owner' ? t('org.role_owner') : member.role === 'admin' ? t('org.role_admin') : t('org.role_member')}
+                      </span>
+                    </div>
                     {/* Actions for admins on non-owners */}
                     {isAdmin && !isMe && !memberIsOwner && (
                       <div className="flex gap-1" onClick={e => e.stopPropagation()}>
+                        {/* Block/unblock messaging */}
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          className={`h-8 w-8 ${member.messaging_blocked ? 'text-amber-500 hover:text-amber-600' : 'text-muted-foreground hover:text-amber-500'}`}
+                          onClick={() => handleToggleBlockMessaging(member)}
+                          title={member.messaging_blocked ? 'Réactiver la messagerie' : 'Bloquer la messagerie'}
+                          disabled={blockMessaging.isPending}
+                        >
+                          <MessageSquareOff className="w-3.5 h-3.5" />
+                        </Button>
                         {isOwner && (
                           <Button
                             variant="ghost"

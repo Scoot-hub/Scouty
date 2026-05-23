@@ -7,6 +7,7 @@ import {
   Users, Eye, Shirt, Search, Building2, CalendarDays, MapPinned, Settings,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import { useUiPreferences } from '@/contexts/UiPreferencesContext';
 
 // ---------------------------------------------------------------------------
 // PAGE GUIDES — titles & icons match the sidebar exactly
@@ -301,6 +302,7 @@ export default function HelpCenter() {
   const { t } = useTranslation();
   const navigate = useNavigate();
   const { pathname } = useLocation();
+  const { autoShowGuide, setAutoShowGuide } = useUiPreferences();
 
   // Current page guide
   const guide = findGuide(pathname);
@@ -320,13 +322,13 @@ export default function HelpCenter() {
   const scrollRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
 
-  // Auto-open on first visit to a page with a guide
+  // Auto-open on first visit to a page with a guide (only if preference is enabled)
   useEffect(() => {
-    if (guide && !getSeenPages().has(guide.key)) {
+    if (autoShowGuide && guide && !getSeenPages().has(guide.key)) {
       setOpen(true);
       setTab('guide');
     }
-  }, [guide]);
+  }, [guide, autoShowGuide]);
 
   // Focus chat input when switching to assistant tab — desktop only
   // (on mobile, auto-focus triggers the virtual keyboard before the user decides to type)
@@ -521,13 +523,21 @@ export default function HelpCenter() {
               <p className="text-sm text-muted-foreground leading-relaxed">{t(guide.descKey)}</p>
             </div>
 
-            <div className="px-5 pb-5">
+            <div className="px-5 pb-5 space-y-2">
               <button
                 onClick={handleDismissGuide}
                 className="w-full h-10 rounded-xl bg-primary text-primary-foreground text-sm font-semibold hover:bg-primary/90 transition-colors flex items-center justify-center gap-2"
               >
                 {t('guide.got_it')}
               </button>
+              {autoShowGuide && (
+                <button
+                  onClick={() => { setAutoShowGuide(false); handleDismissGuide(); }}
+                  className="w-full text-center text-[11px] text-muted-foreground/55 hover:text-muted-foreground transition-colors py-0.5"
+                >
+                  {t('guide.disable_auto')}
+                </button>
+              )}
             </div>
           </div>
         ) : (

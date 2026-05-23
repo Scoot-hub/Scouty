@@ -334,6 +334,8 @@ export default {
     notifications_toggle_desc: "Affiche ou masque la cloche et le centre de notifications dans l’interface.",
     chatbot_toggle_title: "Afficher le chatbot",
     chatbot_toggle_desc: "Affiche ou masque le chatbot flottant dans l’application.",
+    guide_auto_show_title: "Guide automatique par page",
+    guide_auto_show_desc: "Ouvre automatiquement le guide à la première visite de chaque page concernée.",
     hide_restricted_title: "Masquer les éléments restreints",
     hide_restricted_desc: "Masque complètement les menus, boutons et blocs que votre rôle ne permet pas d’utiliser, au lieu de les griser.",
     ui_toggles_title: "Interface",
@@ -1658,6 +1660,18 @@ export default {
     exchange_rates_updated: 'Dernière mise à jour',
   },
 
+  ban: {
+    title: 'Compte suspendu',
+    subtitle: 'Votre accès à cette plateforme a été temporairement suspendu.',
+    reason: 'Motif',
+    duration: 'Durée',
+    permanent: 'Suspension permanente',
+    expires_in: 'Levée dans',
+    expiring_soon: 'Levée imminente',
+    sign_out: 'Se déconnecter',
+    contact_support: 'Si vous pensez qu\'il s\'agit d\'une erreur, contactez le support.',
+  },
+
   crons: {
     title: 'Tâches planifiées',
     subtitle: 'Gestion et historique des tâches automatiques du serveur.',
@@ -1789,6 +1803,7 @@ export default {
     email_2fa_disable: 'Désactiver la 2FA par email',
     email_2fa_active: '2FA par email activée',
     email_2fa_active_desc: 'Un code de vérification vous sera envoyé par email à chaque connexion.',
+    email_2fa_confirm_password: 'Confirmez votre mot de passe pour désactiver',
     email_2fa_code_sent: 'Un code de vérification a été envoyé à votre adresse email.',
     email_2fa_code_sent_desc: 'Entrez le code à 6 chiffres reçu par email pour confirmer l\'activation.',
     email_2fa_enabled_success: '2FA par email activée avec succès !',
@@ -2602,6 +2617,7 @@ export default {
   },
   guide: {
     got_it: 'Compris !',
+    disable_auto: 'Ne plus afficher automatiquement sur les nouvelles pages',
     players: 'Retrouvez ici tous vos joueurs observés. Recherchez, filtrez et organisez votre base selon vos critères : poste, ligue, potentiel, avis... Vous pouvez aussi importer, exporter et enrichir vos fiches.',
     watchlist: 'Créez des listes thématiques pour organiser votre suivi : mercato été, joueurs U21, profils prioritaires... À vous de structurer votre veille comme vous le souhaitez.',
     shadow_team: 'Composez votre onze idéal à partir de vos joueurs scoutés. Choisissez une formation et assignez vos meilleurs profils à chaque poste.',

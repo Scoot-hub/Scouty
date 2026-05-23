@@ -1424,7 +1424,7 @@ export default function Players() {
 
       <div className="flex flex-col gap-3">
         {/* Search + Sort + Filter bar */}
-        <Card className="card-warm">
+        <Card className="card-warm relative z-10">
           <CardContent className="p-4 space-y-3">
             {/* Top row: search full-width on mobile */}
             <div className="flex items-center gap-3">

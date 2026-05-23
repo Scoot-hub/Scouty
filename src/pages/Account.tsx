@@ -190,6 +190,7 @@ export default function Account() {
   // Email 2FA state
   const [email2FACodeSent, setEmail2FACodeSent] = useState(false);
   const [email2FACode, setEmail2FACode] = useState('');
+  const [disableEmail2FAPassword, setDisableEmail2FAPassword] = useState('');
 
   useEffect(() => {
     if (profile) {
@@ -433,13 +434,16 @@ export default function Account() {
       const res = await fetch(`${apiBase}/auth/2fa/email/disable`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' }, credentials: 'include' as const,
+        body: JSON.stringify({ password: disableEmail2FAPassword }),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error);
       toast.success(t('account.email_2fa_disabled_success'));
+      setDisableEmail2FAPassword('');
       refetch2FA();
     } catch (err: unknown) {
       toast.error(err instanceof Error ? err.message : String(err));
+      setDisableEmail2FAPassword('');
     } finally {
       setTwoFALoading(false);
     }
@@ -882,7 +886,17 @@ export default function Account() {
                   {t('account.email_2fa_active')}
                 </div>
                 <p className="text-xs text-muted-foreground">{t('account.email_2fa_active_desc')}</p>
-                <Button variant="destructive" size="sm" onClick={handleDisableEmail2FA} disabled={twoFALoading}>
+                <div className="space-y-2">
+                  <label className="text-sm font-medium text-muted-foreground">{t('account.email_2fa_confirm_password')}</label>
+                  <Input
+                    type="password"
+                    value={disableEmail2FAPassword}
+                    onChange={e => setDisableEmail2FAPassword(e.target.value)}
+                    className="max-w-xs"
+                    autoComplete="current-password"
+                  />
+                </div>
+                <Button variant="destructive" size="sm" onClick={handleDisableEmail2FA} disabled={twoFALoading || !disableEmail2FAPassword}>
                   {twoFALoading ? <Loader2 className="w-4 h-4 animate-spin mr-2" /> : <ShieldOff className="w-4 h-4 mr-2" />}
                   {t('account.email_2fa_disable')}
                 </Button>

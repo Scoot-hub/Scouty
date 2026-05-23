@@ -69,7 +69,7 @@ type LoginResponse = {
   user: AuthUser;
   session: AuthSession;
   requires2FA?: boolean;
-  userId?: string;
+  challengeToken?: string;
 };
 
 type SessionResponse = { session: AuthSession | null };
@@ -97,7 +97,13 @@ async function apiRequest<T = unknown>(path: string, init: RequestInit = {}, _au
 
     if (!response.ok) {
       const message = payload?.error || `HTTP ${response.status}`;
-      return { data: null, error: new Error(String(message)) };
+      const err = new Error(String(message)) as Error & { banned?: boolean; ban_reason?: string | null; ban_expires_at?: string | null };
+      if (payload?.banned) {
+        err.banned = true;
+        err.ban_reason = payload.ban_reason ?? null;
+        err.ban_expires_at = payload.ban_expires_at ?? null;
+      }
+      return { data: null, error: err };
     }
 
     return { data: payload as T, error: null };
@@ -271,7 +277,7 @@ export const supabase = {
 
       // 2FA required — return special payload without setting session
       if (data?.requires2FA) {
-        return { data: { requires2FA: true, userId: data.userId, user: null, session: null }, error: null };
+        return { data: { requires2FA: true, challengeToken: data.challengeToken, user: null, session: null }, error: null };
       }
 
       if (!data?.session) return { data: { user: null, session: null }, error };
@@ -281,10 +287,10 @@ export const supabase = {
       return { data: { user: data.user, session: data.session }, error: null };
     },
 
-    async validate2FA(userId: string, code: string) {
+    async validate2FA(challengeToken: string, code: string) {
       const { data, error } = await apiRequest<LoginResponse>('/auth/2fa/validate', {
         method: 'POST',
-        body: JSON.stringify({ userId, code }),
+        body: JSON.stringify({ challengeToken, code }),
       }, false);
 
       if (error || !data?.session) return { data: null, error: error || new Error('Validation failed') };

@@ -17,6 +17,9 @@ interface UiPreferences {
    *  the active UI language (uses cached translations in the listing and
    *  fires a fresh translation when an article is opened). */
   autoTranslateNews: boolean;
+  /** When true, the page guide pop-up opens automatically on first visit to
+   *  each page that has a guide. Set to false to disable autonomous opening. */
+  autoShowGuide: boolean;
 }
 
 interface UiPreferencesContextType extends UiPreferences {
@@ -31,6 +34,7 @@ interface UiPreferencesContextType extends UiPreferences {
   setDateFormat: (value: DateFormat) => void;
   setTimeFormat: (value: TimeFormat) => void;
   setAutoTranslateNews: (value: boolean) => void;
+  setAutoShowGuide: (value: boolean) => void;
 }
 
 const STORAGE_KEY = 'scouthub-ui-preferences';
@@ -51,6 +55,7 @@ const defaultPreferences: UiPreferences = {
   dateFormat: 'DD/MM/YYYY',
   timeFormat: '24h',
   autoTranslateNews: true,
+  autoShowGuide: true,
 };
 
 const UiPreferencesContext = createContext<UiPreferencesContextType>({
@@ -66,6 +71,7 @@ const UiPreferencesContext = createContext<UiPreferencesContextType>({
   setDateFormat: () => {},
   setTimeFormat: () => {},
   setAutoTranslateNews: () => {},
+  setAutoShowGuide: () => {},
 });
 
 export function UiPreferencesProvider({ children }: { children: ReactNode }) {
@@ -104,6 +110,7 @@ export function UiPreferencesProvider({ children }: { children: ReactNode }) {
     setDateFormat: (value) => setPreferences((prev) => ({ ...prev, dateFormat: value })),
     setTimeFormat: (value) => setPreferences((prev) => ({ ...prev, timeFormat: value })),
     setAutoTranslateNews: (value) => setPreferences((prev) => ({ ...prev, autoTranslateNews: value })),
+    setAutoShowGuide: (value) => setPreferences((prev) => ({ ...prev, autoShowGuide: value })),
   }), [preferences]);
 
   return <UiPreferencesContext.Provider value={value}>{children}</UiPreferencesContext.Provider>;

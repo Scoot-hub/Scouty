@@ -190,17 +190,24 @@ export function useJoinOrganization() {
   });
 }
 
-// Update member role
+// Update member role — dedicated endpoint (shim generic update lacks org-level auth)
 export function useUpdateMemberRole() {
   const queryClient = useQueryClient();
+  const currentOrg = useCurrentOrg();
 
   return useMutation({
     mutationFn: async ({ memberId, role }: { memberId: string; role: string }) => {
-      const { error } = await supabase
-        .from('organization_members')
-        .update({ role })
-        .eq('id', memberId);
-      if (error) throw error;
+      const orgId = currentOrg.data?.id;
+      if (!orgId) throw new Error('Organisation introuvable');
+      const res = await fetch(`${API_BASE}/organizations/${orgId}/members/${memberId}/role`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify({ role }),
+      });
+      const json = await res.json();
+      if (!res.ok) throw new Error(json.error || 'Erreur');
+      return json;
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['organization-members'] });
@@ -313,6 +320,50 @@ export function useUpdateOrgLogo(orgId: string | undefined) {
   });
 
   return { upload, remove };
+}
+
+// Save org-level settings JSON (owner/admin)
+export function useUpdateOrgSettings(orgId: string | undefined) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async (settings: Record<string, boolean>) => {
+      if (!orgId) throw new Error('No org id');
+      const res = await fetch(`${API_BASE}/organizations/${orgId}/settings`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify(settings),
+      });
+      const json = await res.json();
+      if (!res.ok) throw new Error(json.error || 'Erreur');
+      return json;
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['my-organizations'] });
+    },
+  });
+}
+
+// Toggle messaging block for a specific member (owner/admin)
+export function useBlockMemberMessaging(orgId: string | undefined) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async ({ memberId, blocked }: { memberId: string; blocked: boolean }) => {
+      if (!orgId) throw new Error('No org id');
+      const res = await fetch(`${API_BASE}/organizations/${orgId}/members/${memberId}/block-messaging`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify({ blocked }),
+      });
+      const json = await res.json();
+      if (!res.ok) throw new Error(json.error || 'Erreur');
+      return json;
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['organization-members', orgId] });
+    },
+  });
 }
 
 // Fetch all shared players for a specific organization

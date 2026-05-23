@@ -41,7 +41,9 @@ const ROUTE_TO_PAGE_KEY: Record<string, string> = {
   '/my-championships': 'my_championships',
   '/my-tickets': 'my_tickets',
   '/editorial': 'editorial',
-  '/match': 'my_matches',
+  '/match': 'fixtures',
+  '/data': 'data',
+  '/x': 'x',
 };
 
 function getPageKey(pathname: string): string | null {

@@ -12,7 +12,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, Di
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs';
-import { Shield, Crown, Users, Mail, UserCheck, BarChart3, Lock, Check, X, Search, Plus, Trash2, ShieldCheck, ChevronDown, ChevronRight, Building2, UserPlus, UserMinus, Palette, User, ShieldAlert, Bell, Zap, Clock, AlertTriangle, Coins } from 'lucide-react';
+import { Shield, Crown, Users, Mail, UserCheck, BarChart3, Lock, Check, X, Search, Plus, Trash2, ShieldCheck, ChevronDown, ChevronRight, Building2, UserPlus, UserMinus, Palette, User, ShieldAlert, Bell, Zap, Clock, AlertTriangle, Coins, ShieldOff, ShieldBan } from 'lucide-react';
 import { toast } from 'sonner';
 import { Navigate, Link } from 'react-router-dom';
 import { useAuth } from '@/contexts/AuthContext';
@@ -32,32 +32,34 @@ const API_BASE = (import.meta.env.API_URL || '/api').replace(/\/$/, '');
 
 // Sub-actions per page — defines granular permissions beyond just "view"
 const PAGE_ACTIONS: Record<string, string[]> = {
-  players:        ['view', 'create', 'edit', 'delete', 'export', 'import', 'enrich', 'find_duplicates', 'bulk_actions'],
-  player_profile: ['view', 'edit', 'delete', 'enrich', 'add_report', 'edit_report', 'delete_report', 'add_note', 'delete_note', 'manage_fields'],
-  add_player:     ['view', 'create', 'add_report'],
-  watchlist:      ['view', 'create', 'edit', 'delete', 'add_player', 'remove_player'],
-  shadow_team:    ['view', 'create', 'edit', 'delete', 'assign_player', 'remove_player', 'download_image'],
-  fixtures:       ['view', 'save_match', 'assign_match', 'assign_scout'],
-  my_matches:     ['view', 'edit_status', 'delete'],
-  contacts:       ['view', 'create', 'edit', 'delete', 'share'],
-  settings:       ['view', 'edit_profile', 'manage_fields', 'change_language', 'change_theme'],
-  account:        ['view', 'edit', 'manage_security'],
-  organization:   ['view', 'create', 'manage_members', 'change_member_role', 'remove_member', 'manage_settings', 'share'],
-  booking:        ['view', 'book'],
-  checkout:       ['view'],
-  community:      ['view', 'post', 'reply', 'like', 'mention', 'moderate', 'delete_content'],
-  discover:       ['view', 'search', 'add_player', 'filter'],
-  map:            ['view', 'view_nearby'],
-  affiliate:      ['view', 'share'],
-  my_clubs:       ['view', 'follow', 'unfollow'],
-  club_profile:   ['view', 'follow', 'unfollow', 'view_squad'],
-  user_profile:   ['view', 'edit'],
-  admin:          ['view', 'manage_users', 'manage_roles', 'impersonate', 'toggle_premium', 'reset_password', 'delete_user', 'view_analytics', 'manage_tickets'],
-  data_import:      ['view', 'import'],
-  editorial:        ['view', 'create', 'edit', 'delete', 'publish'],
+  players:          ['view', 'create', 'edit', 'delete', 'export', 'import', 'enrich', 'find_duplicates', 'bulk_actions'],
+  player_profile:   ['view', 'edit', 'delete', 'enrich', 'add_report', 'edit_report', 'delete_report', 'add_note', 'delete_note', 'manage_fields'],
+  add_player:       ['view', 'create', 'add_report'],
+  watchlist:        ['view', 'create', 'edit', 'delete', 'add_player', 'remove_player'],
+  shadow_team:      ['view', 'create', 'edit', 'delete', 'assign_player', 'remove_player', 'download_image'],
+  fixtures:         ['view', 'save_match', 'assign_match', 'assign_scout', 'view_detail'],
+  my_matches:       ['view', 'edit_status', 'delete'],
+  contacts:         ['view', 'create', 'edit', 'delete', 'share'],
+  settings:         ['view', 'edit_profile', 'manage_fields', 'change_language', 'change_theme'],
+  account:          ['view', 'edit', 'manage_security'],
+  organization:     ['view', 'create', 'manage_members', 'change_member_role', 'remove_member', 'manage_settings', 'share', 'view_squad', 'manage_squad', 'view_roadmap', 'manage_roadmap', 'view_chat', 'send_message'],
+  booking:          ['view', 'book'],
+  checkout:         ['view'],
+  community:        ['view', 'post', 'reply', 'like', 'mention', 'moderate', 'delete_content'],
+  discover:         ['view', 'search', 'add_player', 'filter'],
+  map:              ['view', 'view_nearby'],
+  affiliate:        ['view', 'share'],
+  my_clubs:         ['view', 'follow', 'unfollow'],
+  club_profile:     ['view', 'follow', 'unfollow', 'view_squad'],
+  user_profile:     ['view', 'edit'],
+  admin:            ['view', 'manage_users', 'manage_roles', 'impersonate', 'toggle_premium', 'reset_password', 'delete_user', 'view_analytics', 'manage_tickets', 'manage_credits', 'manage_notifications', 'manage_admin_settings', 'manage_crons', 'view_errors'],
+  data_import:      ['view', 'import', 'import_statsbomb'],
+  editorial:        ['view', 'create', 'edit', 'delete', 'publish', 'view_drafts'],
   news:             ['view'],
   buzz:             ['view'],
   instagram:        ['view'],
+  x:                ['view'],
+  data:             ['view', 'compare', 'export'],
   championships:    ['view', 'follow', 'unfollow'],
   my_championships: ['view', 'unfollow'],
   my_tickets:       ['view', 'create'],
@@ -75,6 +77,9 @@ interface AdminUser {
   roles: string[];
   player_count: number;
   suspicious_referral: boolean;
+  is_banned: boolean;
+  ban_reason: string | null;
+  ban_expires_at: string | null;
 }
 
 interface PagePermission {
@@ -105,6 +110,17 @@ function authFetchInit(): RequestInit {
   return { credentials: 'include', headers: { 'Content-Type': 'application/json' } };
 }
 
+function banTimeLeft(expiresAt: string): string {
+  const diff = new Date(expiresAt).getTime() - Date.now();
+  if (diff <= 0) return '< 1min';
+  const totalMinutes = Math.floor(diff / 60_000);
+  const h = Math.floor(totalMinutes / 60);
+  const min = totalMinutes % 60;
+  if (h === 0) return `${min}min`;
+  if (min === 0) return `${h}h`;
+  return `${h}h ${min}min`;
+}
+
 export default function Admin() {
   const { t } = useTranslation();
   const { data: isAdmin, isLoading: adminLoading } = useIsAdmin();
@@ -117,6 +133,13 @@ export default function Admin() {
   const [impersonatingId, setImpersonatingId] = useState<string | null>(null);
   const [deletingUser, setDeletingUser] = useState<AdminUser | null>(null);
   const [deletingId, setDeletingId] = useState<string | null>(null);
+  const [deleteConfirmText, setDeleteConfirmText] = useState('');
+  const [deletePreview, setDeletePreview] = useState<{
+    player_count: number; report_count: number; org_count: number;
+    watchlist_count: number; fixture_count: number; community_count: number;
+    shadow_count: number; championship_count: number; has_subscription: boolean;
+  } | null>(null);
+  const [deletePreviewLoading, setDeletePreviewLoading] = useState(false);
 
   // ── Credits grant dialog ──
   const [grantTarget, setGrantTarget] = useState<AdminUser | null>(null);
@@ -299,8 +322,26 @@ export default function Admin() {
     }
   };
 
+  const openDeleteDialog = async (user: AdminUser) => {
+    setDeletingUser(user);
+    setDeleteConfirmText('');
+    setDeletePreview(null);
+    setDeletePreviewLoading(true);
+    try {
+      const res = await fetch(`${API_BASE}/admin/users/${user.id}/delete-preview`, { credentials: 'include' });
+      if (res.ok) setDeletePreview(await res.json());
+    } catch { /* show dialog anyway */ }
+    finally { setDeletePreviewLoading(false); }
+  };
+
+  const closeDeleteDialog = () => {
+    setDeletingUser(null);
+    setDeleteConfirmText('');
+    setDeletePreview(null);
+  };
+
   const deleteUser = async () => {
-    if (!deletingUser) return;
+    if (!deletingUser || deleteConfirmText !== 'CONFIRMER') return;
     setDeletingId(deletingUser.id);
     try {
       const response = await fetch(`${API_BASE}/admin/users/${deletingUser.id}`, {
@@ -313,6 +354,7 @@ export default function Admin() {
       }
       toast.success(t('admin.delete_user_success', { email: deletingUser.email }));
       queryClient.invalidateQueries({ queryKey: ['admin-users'] });
+      closeDeleteDialog();
     } catch (err: unknown) {
       const errMsg = err instanceof Error ? err.message : String(err);
       const msg = errMsg.includes('administrateur')
@@ -321,8 +363,54 @@ export default function Admin() {
       toast.error(msg);
     } finally {
       setDeletingId(null);
-      setDeletingUser(null);
     }
+  };
+
+  // ── Ban / Unban ──
+  const [banTarget, setBanTarget] = useState<AdminUser | null>(null);
+  const [banReason, setBanReason] = useState('');
+  const [banDuration, setBanDuration] = useState<string>('24');
+  const [banLoading, setBanLoading] = useState(false);
+
+  const BAN_DURATIONS = [
+    { label: '1 heure', value: '1' },
+    { label: '24 heures', value: '24' },
+    { label: '7 jours', value: '168' },
+    { label: '30 jours', value: '720' },
+    { label: '90 jours', value: '2160' },
+    { label: 'Permanent', value: '0' },
+  ];
+
+  const banUser = async () => {
+    if (!banTarget) return;
+    setBanLoading(true);
+    try {
+      const body: Record<string, unknown> = { reason: banReason || undefined };
+      if (banDuration !== '0') body.duration_hours = Number(banDuration);
+      const res = await fetch(`${API_BASE}/admin/users/${banTarget.id}/ban`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify(body),
+      });
+      if (!res.ok) { const d = await res.json().catch(() => ({})); throw new Error(d.error || 'Failed'); }
+      toast.success(`${banTarget.email} banni.`);
+      queryClient.invalidateQueries({ queryKey: ['admin-users'] });
+      setBanTarget(null);
+      setBanReason('');
+      setBanDuration('24');
+    } catch (err: unknown) {
+      toast.error(err instanceof Error ? err.message : 'Erreur');
+    } finally { setBanLoading(false); }
+  };
+
+  const unbanUser = async (userId: string, email: string) => {
+    try {
+      const res = await fetch(`${API_BASE}/admin/users/${userId}/unban`, { method: 'POST', credentials: 'include' });
+      if (!res.ok) throw new Error('Failed');
+      toast.success(`${email} débanni.`);
+      queryClient.invalidateQueries({ queryKey: ['admin-users'] });
+    } catch { toast.error('Erreur'); }
   };
 
   const impersonate = async (userId: string, email: string) => {
@@ -705,13 +793,23 @@ export default function Admin() {
                         </TableCell>
                         <TableCell className="text-sm font-medium whitespace-nowrap">{u.player_count}</TableCell>
                         <TableCell>
-                          {u.is_premium ? (
-                            <Badge className="bg-amber-500/10 text-amber-600 border-amber-500/20">
-                              <Crown className="w-3 h-3 mr-1" /> {t('admin.premium')}
-                            </Badge>
-                          ) : (
-                            <Badge variant="secondary">{t('admin.free')}</Badge>
-                          )}
+                          <div className="flex flex-col gap-1">
+                            {u.is_premium ? (
+                              <Badge className="bg-amber-500/10 text-amber-600 border-amber-500/20">
+                                <Crown className="w-3 h-3 mr-1" /> {t('admin.premium')}
+                              </Badge>
+                            ) : (
+                              <Badge variant="secondary">{t('admin.free')}</Badge>
+                            )}
+                            {u.is_banned && (
+                              <Badge variant="destructive" className="text-[10px] gap-1">
+                                <ShieldBan className="w-2.5 h-2.5" />
+                                {u.ban_expires_at
+                                  ? `Banni — ${banTimeLeft(u.ban_expires_at)}`
+                                  : 'Banni'}
+                              </Badge>
+                            )}
+                          </div>
                         </TableCell>
                         <TableCell>
                           <div className="flex items-center gap-1">
@@ -757,11 +855,34 @@ export default function Admin() {
                               </Button>
                             )}
                             {u.id !== currentUser?.id && !u.roles.includes('admin') && (
+                              u.is_banned ? (
+                                <Button
+                                  variant="ghost"
+                                  size="icon"
+                                  className="rounded-lg h-7 w-7 text-emerald-600 hover:text-emerald-700 hover:bg-emerald-50"
+                                  onClick={() => unbanUser(u.id, u.email)}
+                                  title="Débannir"
+                                >
+                                  <ShieldOff className="w-3.5 h-3.5" />
+                                </Button>
+                              ) : (
+                                <Button
+                                  variant="ghost"
+                                  size="icon"
+                                  className="rounded-lg h-7 w-7 text-orange-600 hover:text-orange-700 hover:bg-orange-50"
+                                  onClick={() => { setBanTarget(u); setBanReason(''); setBanDuration('24'); }}
+                                  title="Bannir"
+                                >
+                                  <ShieldBan className="w-3.5 h-3.5" />
+                                </Button>
+                              )
+                            )}
+                            {u.id !== currentUser?.id && !u.roles.includes('admin') && (
                           <Button
                             variant="ghost"
                             size="icon"
                             className="rounded-lg h-7 w-7 text-destructive hover:text-destructive hover:bg-destructive/10"
-                            onClick={() => setDeletingUser(u)}
+                            onClick={() => openDeleteDialog(u)}
                             disabled={deletingId === u.id}
                             title={t('admin.delete_user')}
                           >
@@ -1065,25 +1186,123 @@ export default function Admin() {
         </DialogContent>
       </Dialog>
 
-      <AlertDialog open={!!deletingUser} onOpenChange={open => { if (!open) setDeletingUser(null); }}>
-        <AlertDialogContent>
-          <AlertDialogHeader>
-            <AlertDialogTitle>{t('admin.delete_user_title')}</AlertDialogTitle>
-            <AlertDialogDescription asChild>
-              <span dangerouslySetInnerHTML={{ __html: t('admin.delete_user_desc', { email: deletingUser?.email ?? '' }) }} />
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          <AlertDialogFooter>
-            <AlertDialogCancel>{t('admin.delete_user_cancel')}</AlertDialogCancel>
-            <AlertDialogAction
-              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+      {/* ── Delete user dialog ── */}
+      <Dialog open={!!deletingUser} onOpenChange={open => { if (!open) closeDeleteDialog(); }}>
+        <DialogContent className="max-w-lg">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2 text-destructive">
+              <Trash2 className="w-5 h-5" />
+              Suppression définitive du compte
+            </DialogTitle>
+            <DialogDescription>
+              Cette action est <strong>irréversible</strong>. Toutes les données de{' '}
+              <strong>{deletingUser?.email}</strong> seront définitivement supprimées.
+            </DialogDescription>
+          </DialogHeader>
+
+          {/* What will be deleted */}
+          <div className="rounded-xl border border-destructive/20 bg-destructive/5 p-4 space-y-3">
+            <p className="text-sm font-semibold text-destructive">Ce qui sera supprimé :</p>
+            {deletePreviewLoading ? (
+              <p className="text-xs text-muted-foreground">{t('common.loading')}</p>
+            ) : (
+              <ul className="space-y-1.5 text-sm text-foreground">
+                <li className="flex items-center gap-2">
+                  <span className="w-1.5 h-1.5 rounded-full bg-destructive shrink-0" />
+                  <span>Compte utilisateur & informations personnelles (email, profil, mot de passe)</span>
+                </li>
+                <li className="flex items-center gap-2">
+                  <span className="w-1.5 h-1.5 rounded-full bg-destructive shrink-0" />
+                  <span>
+                    <strong>{deletePreview?.player_count ?? deletingUser?.player_count ?? '?'}</strong> joueur(s) et toutes leurs données associées (vidéos, statistiques, recherches)
+                  </span>
+                </li>
+                <li className="flex items-center gap-2">
+                  <span className="w-1.5 h-1.5 rounded-full bg-destructive shrink-0" />
+                  <span>
+                    <strong>{deletePreview?.report_count ?? '?'}</strong> rapport(s) de scouting
+                  </span>
+                </li>
+                {(deletePreview?.org_count ?? 0) > 0 && (
+                  <li className="flex items-center gap-2">
+                    <span className="w-1.5 h-1.5 rounded-full bg-destructive shrink-0" />
+                    <span>
+                      <strong>{deletePreview!.org_count}</strong> organisation(s) créée(s) (et tous leurs membres en seront exclus)
+                    </span>
+                  </li>
+                )}
+                {(deletePreview?.fixture_count ?? 0) > 0 && (
+                  <li className="flex items-center gap-2">
+                    <span className="w-1.5 h-1.5 rounded-full bg-destructive shrink-0" />
+                    <span><strong>{deletePreview!.fixture_count}</strong> match(s) planifié(s)</span>
+                  </li>
+                )}
+                {(deletePreview?.watchlist_count ?? 0) > 0 && (
+                  <li className="flex items-center gap-2">
+                    <span className="w-1.5 h-1.5 rounded-full bg-destructive shrink-0" />
+                    <span><strong>{deletePreview!.watchlist_count}</strong> liste(s) de suivi</span>
+                  </li>
+                )}
+                {(deletePreview?.shadow_count ?? 0) > 0 && (
+                  <li className="flex items-center gap-2">
+                    <span className="w-1.5 h-1.5 rounded-full bg-destructive shrink-0" />
+                    <span><strong>{deletePreview!.shadow_count}</strong> équipe(s) fantôme(s)</span>
+                  </li>
+                )}
+                {(deletePreview?.championship_count ?? 0) > 0 && (
+                  <li className="flex items-center gap-2">
+                    <span className="w-1.5 h-1.5 rounded-full bg-destructive shrink-0" />
+                    <span><strong>{deletePreview!.championship_count}</strong> championnat(s) personnalisé(s)</span>
+                  </li>
+                )}
+                {(deletePreview?.community_count ?? 0) > 0 && (
+                  <li className="flex items-center gap-2">
+                    <span className="w-1.5 h-1.5 rounded-full bg-destructive shrink-0" />
+                    <span><strong>{deletePreview!.community_count}</strong> publication(s) communautaire(s)</span>
+                  </li>
+                )}
+                {deletePreview?.has_subscription && (
+                  <li className="flex items-center gap-2">
+                    <span className="w-1.5 h-1.5 rounded-full bg-destructive shrink-0" />
+                    <span>Abonnement Stripe (sera annulé automatiquement)</span>
+                  </li>
+                )}
+                <li className="flex items-center gap-2">
+                  <span className="w-1.5 h-1.5 rounded-full bg-destructive shrink-0" />
+                  <span>Notifications, crédits, historique de connexion, tickets de support</span>
+                </li>
+              </ul>
+            )}
+          </div>
+
+          {/* Confirm input */}
+          <div className="space-y-2">
+            <label className="text-sm font-medium">
+              Pour confirmer, saisissez <span className="font-mono font-bold tracking-widest text-destructive">CONFIRMER</span>
+            </label>
+            <Input
+              value={deleteConfirmText}
+              onChange={e => setDeleteConfirmText(e.target.value)}
+              placeholder="CONFIRMER"
+              className="font-mono border-destructive/30 focus-visible:ring-destructive/30"
+              onKeyDown={e => { if (e.key === 'Enter' && deleteConfirmText === 'CONFIRMER') deleteUser(); }}
+            />
+          </div>
+
+          <DialogFooter>
+            <Button variant="outline" onClick={closeDeleteDialog} disabled={!!deletingId}>
+              Annuler
+            </Button>
+            <Button
+              variant="destructive"
               onClick={deleteUser}
+              disabled={deleteConfirmText !== 'CONFIRMER' || !!deletingId}
             >
-              {t('admin.delete_user_confirm')}
-            </AlertDialogAction>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
+              {deletingId ? 'Suppression...' : 'Supprimer définitivement'}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
       <AlertDialog
         open={!!deletingOrg}
         onOpenChange={open => {
@@ -1130,6 +1349,69 @@ export default function Admin() {
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
+
+      {/* ── Ban dialog ── */}
+      <Dialog open={!!banTarget} onOpenChange={o => !o && setBanTarget(null)}>
+        <DialogContent className="max-w-sm">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <ShieldBan className="w-4 h-4 text-orange-500" />
+              Bannir l'utilisateur
+            </DialogTitle>
+            <DialogDescription className="truncate">{banTarget?.email}</DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4 py-1">
+            <div>
+              <label className="text-sm font-medium mb-1.5 block">Durée du bannissement</label>
+              <div className="grid grid-cols-3 gap-1.5">
+                {[
+                  { label: '1h', value: '1' },
+                  { label: '24h', value: '24' },
+                  { label: '7 jours', value: '168' },
+                  { label: '30 jours', value: '720' },
+                  { label: '90 jours', value: '2160' },
+                  { label: 'Permanent', value: '0' },
+                ].map(d => (
+                  <button
+                    key={d.value}
+                    onClick={() => setBanDuration(d.value)}
+                    className={`rounded-lg border py-1.5 text-xs font-medium transition-colors ${
+                      banDuration === d.value
+                        ? 'bg-orange-500 text-white border-orange-500'
+                        : 'border-border hover:bg-muted'
+                    }`}
+                  >
+                    {d.label}
+                  </button>
+                ))}
+              </div>
+            </div>
+            <div>
+              <label className="text-sm font-medium mb-1.5 block">
+                Motif <span className="text-muted-foreground font-normal">(optionnel)</span>
+              </label>
+              <textarea
+                value={banReason}
+                onChange={e => setBanReason(e.target.value)}
+                rows={3}
+                placeholder="Raison du bannissement…"
+                className="w-full text-sm border border-border rounded-lg px-3 py-2 bg-background resize-none focus:outline-none focus:ring-2 focus:ring-ring"
+              />
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setBanTarget(null)}>{t('common.cancel')}</Button>
+            <Button
+              onClick={banUser}
+              disabled={banLoading}
+              className="bg-orange-500 hover:bg-orange-600 text-white"
+            >
+              <ShieldBan className="w-3.5 h-3.5 mr-1.5" />
+              {banLoading ? 'En cours…' : 'Bannir'}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
