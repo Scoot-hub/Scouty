@@ -14,6 +14,7 @@ import {
   KeyRound, ExternalLink, Crown, Bell, Mail, BellRing, Clock, Ruler, X,
   Euro, FileText, AlertTriangle,
   AlignLeft, ListChecks, Banknote, Phone, Lock, Minus, Info,
+  Image, Building2, TrendingUp, BarChart3, LayoutGrid, Sparkles,
 } from 'lucide-react';
 import {
   Tooltip, TooltipContent, TooltipTrigger,
@@ -301,6 +302,14 @@ export default function Settings() {
     currency,
     dateFormat,
     timeFormat,
+    showPlayerPhotos,
+    showPlayerClub,
+    showPlayerLeague,
+    showPlayerLevel,
+    showPlayerPotential,
+    showPlayerCompletion,
+    animationsEnabled,
+    setAnimationsEnabled,
     setReducedVisionMode,
     setShowNotifications,
     setShowChatbot,
@@ -312,6 +321,12 @@ export default function Settings() {
     setCurrency,
     setDateFormat,
     setTimeFormat,
+    setShowPlayerPhotos,
+    setShowPlayerClub,
+    setShowPlayerLeague,
+    setShowPlayerLevel,
+    setShowPlayerPotential,
+    setShowPlayerCompletion,
   } = useUiPreferences();
 
   const { data: isPremium } = useIsPremium();
@@ -607,8 +622,44 @@ export default function Settings() {
                   { key: 'vision',    icon: Eye,              title: t('settings.reduced_vision_title'),       desc: t('settings.reduced_vision_desc'),        checked: reducedVisionMode,      onCheckedChange: setReducedVisionMode },
                   { key: 'notif',     icon: BellOff,          title: t('settings.notifications_toggle_title'), desc: t('settings.notifications_toggle_desc'),  checked: showNotifications,      onCheckedChange: setShowNotifications },
                   { key: 'chatbot',   icon: MessageSquareOff, title: t('settings.chatbot_toggle_title'),       desc: t('settings.chatbot_toggle_desc'),        checked: showChatbot,            onCheckedChange: setShowChatbot },
-                  { key: 'guide',    icon: BookOpen,         title: t('settings.guide_auto_show_title'),      desc: t('settings.guide_auto_show_desc'),       checked: autoShowGuide,          onCheckedChange: setAutoShowGuide },
-                  { key: 'hideperm', icon: EyeOff,           title: t('settings.hide_restricted_title'),      desc: t('settings.hide_restricted_desc'),       checked: hideRestrictedElements, onCheckedChange: setHideRestrictedElements },
+                  { key: 'guide',     icon: BookOpen,         title: t('settings.guide_auto_show_title'),      desc: t('settings.guide_auto_show_desc'),       checked: autoShowGuide,          onCheckedChange: setAutoShowGuide },
+                  { key: 'hideperm',  icon: EyeOff,           title: t('settings.hide_restricted_title'),      desc: t('settings.hide_restricted_desc'),       checked: hideRestrictedElements, onCheckedChange: setHideRestrictedElements },
+                  { key: 'animations', icon: Sparkles,         title: t('settings.animations_enabled', 'Animations'), desc: t('settings.animations_enabled_desc', 'Active les animations visuelles (clignotement, apparition des cartes…). Désactivez pour une interface épurée.'), checked: animationsEnabled, onCheckedChange: setAnimationsEnabled },
+                ] as const).map(item => {
+                  const ItemIcon = item.icon;
+                  return (
+                    <div key={item.key} className="flex items-start justify-between gap-3 rounded-xl border border-border/60 bg-muted/20 p-3">
+                      <div className="min-w-0">
+                        <div className="flex items-center gap-2 text-sm font-medium">
+                          <ItemIcon className="w-4 h-4 text-primary shrink-0" />
+                          <span className="truncate">{item.title}</span>
+                        </div>
+                        <p className="mt-0.5 text-xs text-muted-foreground leading-relaxed">{item.desc}</p>
+                      </div>
+                      <Switch checked={item.checked} onCheckedChange={item.onCheckedChange} className="shrink-0 mt-0.5" />
+                    </div>
+                  );
+                })}
+              </CardContent>
+            </Card>
+
+            {/* Player card display */}
+            <Card>
+              <CardHeader>
+                <CardTitle className="flex items-center gap-2 text-base">
+                  <LayoutGrid className="w-4 h-4 text-primary" />
+                  {t('settings.player_display_title', 'Affichage des joueurs')}
+                </CardTitle>
+                <CardDescription>{t('settings.player_display_desc', 'Choisissez les informations affichées sur chaque carte joueur.')}</CardDescription>
+              </CardHeader>
+              <CardContent className="space-y-3">
+                {([
+                  { key: 'photos',     icon: Image,       title: t('settings.player_show_photos',     'Photos des joueurs'),     desc: t('settings.player_show_photos_desc',     'Affiche la photo ou l\'avatar de chaque joueur.'),    checked: showPlayerPhotos,     onCheckedChange: setShowPlayerPhotos },
+                  { key: 'club',       icon: Building2,   title: t('settings.player_show_club',       'Club'),                   desc: t('settings.player_show_club_desc',       'Affiche le nom et le logo du club.'),                 checked: showPlayerClub,       onCheckedChange: setShowPlayerClub },
+                  { key: 'league',     icon: Trophy,      title: t('settings.player_show_league',     'Division / Championnat'), desc: t('settings.player_show_league_desc',     'Affiche le championnat du joueur.'),                  checked: showPlayerLeague,     onCheckedChange: setShowPlayerLeague },
+                  { key: 'level',      icon: Hash,        title: t('settings.player_show_level',      'Niveau'),                 desc: t('settings.player_show_level_desc',      'Affiche le niveau actuel et sa barre de progression.'),checked: showPlayerLevel,      onCheckedChange: setShowPlayerLevel },
+                  { key: 'potential',  icon: TrendingUp,  title: t('settings.player_show_potential',  'Potentiel'),              desc: t('settings.player_show_potential_desc',  'Affiche le potentiel et sa barre de progression.'),  checked: showPlayerPotential,  onCheckedChange: setShowPlayerPotential },
+                  { key: 'completion', icon: BarChart3,   title: t('settings.player_show_completion', 'Évaluation de la fiche'), desc: t('settings.player_show_completion_desc', 'Affiche le pourcentage de complétion de la fiche.'),  checked: showPlayerCompletion, onCheckedChange: setShowPlayerCompletion },
                 ] as const).map(item => {
                   const ItemIcon = item.icon;
                   return (

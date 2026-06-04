@@ -1,5 +1,6 @@
 import { lazy, Suspense, useMemo, useState, useCallback, useRef, useEffect } from 'react';
 import { CreditLimitDialog } from '@/components/CreditLimitDialog';
+import EnrichmentResultPanel, { type EnrichChange } from '@/components/EnrichmentResultPanel';
 import { useParams, Link, useNavigate } from 'react-router-dom';
 import { useIsPremium, useIsAdmin } from '@/hooks/use-admin';
 import { useStatsBombPlayer } from '@/hooks/use-statsbomb';
@@ -134,6 +135,7 @@ export default function PlayerProfile() {
   const [deleteConfirm, setDeleteConfirm] = useState('');
   const [deleting, setDeleting] = useState(false);
   const [enriching, setEnriching] = useState(false);
+  const [enrichResult, setEnrichResult] = useState<EnrichChange[] | null>(null);
   const { data: userIntegrations = [] } = useIntegrations();
   const enrichWithModules = useEnrichWithModules();
   const [modulesOpen, setModulesOpen] = useState(false);
@@ -219,27 +221,14 @@ export default function PlayerProfile() {
         if (tmUrl && data?.tmNotFound) {
           toast.error(t('profile.enrich_tm_url_invalid'));
         } else {
-          const changes: Array<{ field: string; old: string | null; new: string | null }> = data?.changes || [];
+          const changes: EnrichChange[] = data?.changes || [];
+          // Refresh player data without full page reload
+          await queryClient.invalidateQueries({ queryKey: ['player', id] });
           if (changes.length === 0) {
             toast.success(t('profile.enrich_no_changes'));
           } else {
-            const fieldLabels: Record<string, string> = {
-              club: t('profile.field_club'),
-              contract: t('profile.field_contract'),
-              agent: t('profile.field_agent'),
-              date_of_birth: t('profile.field_dob'),
-            };
-            const summary = changes
-              .map(c => {
-                const label = fieldLabels[c.field] || c.field;
-                if (c.old && c.new) return `${label}: ${c.old} → ${c.new}`;
-                if (c.new) return `${label}: ${c.new}`;
-                return label;
-              })
-              .join(' · ');
-            toast.success(t('profile.enrich_success_with_changes', { summary }), { duration: 6000 });
+            setEnrichResult(changes);
           }
-          window.location.reload();
         }
       } else {
         toast.error(data?.error || t('profile.enrich_error'));
@@ -1017,7 +1006,7 @@ export default function PlayerProfile() {
                     toast.success(willArchive ? t('players.archived_success', { count: 1 }) : t('players.unarchived_success', { count: 1 }));
                     if (willArchive) navigate('/players');
                   }}
-                  className="flex items-center gap-2.5"
+                  className="flex items-center gap-2.5 text-destructive focus:text-destructive focus:bg-destructive/10"
                 >
                   <X className="w-4 h-4" />
                   {player.is_archived ? t('players.unarchive') : t('players.archive')}
@@ -1028,7 +1017,16 @@ export default function PlayerProfile() {
                   className="flex items-center gap-2.5"
                 >
                   <RefreshCw className={`w-4 h-4 ${enriching ? 'animate-spin' : ''}`} />
-                  {enriching ? t('profile.enriching') : t('profile.enrich')}
+                  <span className="flex-1">{enriching ? t('profile.enriching') : t('profile.enrich')}</span>
+                  {!enriching && (
+                    isAdmin
+                      ? <span className="flex items-center gap-0.5 text-[10px] font-semibold px-1.5 py-0.5 rounded-md bg-violet-500/15 text-violet-600 dark:text-violet-400 border border-violet-500/20 shrink-0">
+                          <Zap className="w-2.5 h-2.5" />∞
+                        </span>
+                      : <span className="flex items-center gap-0.5 text-[10px] font-semibold px-1.5 py-0.5 rounded-md bg-amber-500/15 text-amber-600 dark:text-amber-400 border border-amber-500/20 shrink-0">
+                          <Zap className="w-2.5 h-2.5" />1
+                        </span>
+                  )}
                 </DropdownMenuItem>
               </DropdownMenuContent>
             </DropdownMenu>
@@ -2270,6 +2268,13 @@ export default function PlayerProfile() {
       </Dialog>
 
       <CreditLimitDialog open={showCreditLimit} onClose={() => setShowCreditLimit(false)} />
+
+      {enrichResult && (
+        <EnrichmentResultPanel
+          changes={enrichResult}
+          onClose={() => setEnrichResult(null)}
+        />
+      )}
     </div>
   );
 }

@@ -184,6 +184,157 @@ const apiLimiter = rateLimit({
 });
 app.use("/api", apiLimiter);
 
+// ══════════════════════════════════════════════════════════════════════════
+// ── Anti-scraping & bot hardening ────────────────────────────────────────
+// ══════════════════════════════════════════════════════════════════════════
+
+// 1. Security headers — strip server fingerprint, prevent framing & sniffing
+app.use((req, res, next) => {
+  res.removeHeader('X-Powered-By');
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.setHeader('X-Frame-Options', 'DENY');
+  res.setHeader('X-XSS-Protection', '0'); // modern browsers ignore it; CSP handles this
+  res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
+  res.setHeader('Permissions-Policy', 'camera=(), microphone=(), geolocation=(), payment=()');
+  res.setHeader(
+    'Content-Security-Policy',
+    "default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval' https://www.googletagmanager.com; " +
+    "style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https:; " +
+    "connect-src 'self' https:; frame-ancestors 'none'; base-uri 'self';"
+  );
+  next();
+});
+
+// 2. Per-user data-endpoint rate limiting — prevents bulk scraping by authenticated accounts
+// Tracks request counts AND unique player IDs accessed per rolling window.
+const _userScrapeTracker = new Map(); // userId → {count, resetAt, playerIds: Set, flagged: bool}
+const SCRAPE_WINDOW_MS    = 10 * 60 * 1000; // 10-minute rolling window
+const SCRAPE_REQ_LIMIT    = 400;             // max API calls to data endpoints per window
+const SCRAPE_PLAYER_LIMIT = 80;              // max unique player profiles per window
+
+function trackUserDataRequest(userId, playerId = null) {
+  const now = Date.now();
+  let slot = _userScrapeTracker.get(userId);
+  if (!slot || now > slot.resetAt) {
+    slot = { count: 0, resetAt: now + SCRAPE_WINDOW_MS, playerIds: new Set(), flagged: false };
+    _userScrapeTracker.set(userId, slot);
+  }
+  slot.count++;
+  if (playerId) slot.playerIds.add(String(playerId));
+  const tooManyReqs    = slot.count        > SCRAPE_REQ_LIMIT;
+  const tooManyPlayers = slot.playerIds.size > SCRAPE_PLAYER_LIMIT;
+  return { blocked: tooManyReqs || tooManyPlayers, reason: tooManyReqs ? 'rate' : 'bulk' };
+}
+
+// Cleanup stale tracker entries every 15 minutes
+setInterval(() => {
+  const now = Date.now();
+  for (const [k, v] of _userScrapeTracker) { if (now > v.resetAt) _userScrapeTracker.delete(k); }
+}, 15 * 60 * 1000);
+
+// Middleware: apply to all authenticated data endpoints
+function antiScrapeMiddleware(req, res, next) {
+  const userId = req.user?.id;
+  if (!userId) return next();
+  const playerId = req.params?.playerId || req.params?.id || req.query?.playerId || null;
+  const { blocked, reason } = trackUserDataRequest(userId, playerId);
+  if (blocked) {
+    // Auto-increment bot_score for persistent scrapers (fire-and-forget)
+    pool.query(
+      'UPDATE users SET bot_score = LEAST(bot_score + 15, 100) WHERE id = ?', [userId]
+    ).then(async () => {
+      const [[row]] = await pool.query('SELECT bot_score FROM users WHERE id = ? LIMIT 1', [userId]);
+      if (row?.bot_score >= 85) {
+        await pool.query(
+          "UPDATE users SET is_banned=1, ban_reason=?, banned_at=NOW() WHERE id=?",
+          ['Activité de scraping automatique détectée.', userId]
+        );
+        invalidateBanCache(userId);
+      }
+    }).catch(() => {});
+    return res.status(429).json({ error: reason === 'bulk' ? 'Trop de profils consultés rapidement.' : 'Limite de requêtes atteinte.' });
+  }
+  // 3. Tarpit — progressively slow responses for suspicious users (bot_score > 30)
+  const botScore = req.user?.bot_score || 0;
+  if (botScore > 60) {
+    const delay = Math.min((botScore - 60) * 80, 4000); // up to 4s for score=110
+    return setTimeout(next, delay);
+  }
+  if (botScore > 30) {
+    return setTimeout(next, 300 + Math.random() * 200);
+  }
+  next();
+}
+
+// 4. Honeypot API endpoints — scrapers/crawlers often probe these; accessing them is an instant flag
+const HONEYPOT_PATHS = [
+  '/api/export', '/api/export-all', '/api/dump', '/api/data-export',
+  '/api/players/all', '/api/users/list', '/api/database', '/api/backup',
+  '/api/admin/export', '/api/bulk', '/api/scrape',
+];
+for (const p of HONEYPOT_PATHS) {
+  app.all(p, (req, res) => {
+    const userId = req.user?.id;
+    const ip     = req.ip || req.headers['x-forwarded-for']?.split(',')[0]?.trim();
+    // Silently log and flag — return a plausible 404 so the scraper doesn't know it's a trap
+    if (userId) {
+      pool.query(
+        "UPDATE users SET bot_score = LEAST(bot_score + 50, 100), ban_reason = COALESCE(ban_reason, ?) WHERE id = ?",
+        ['Accès endpoint honeypot détecté.', userId]
+      ).then(async () => {
+        const [[row]] = await pool.query('SELECT bot_score FROM users WHERE id = ? LIMIT 1', [userId]);
+        if (row?.bot_score >= 70) {
+          await pool.query(
+            "UPDATE users SET is_banned=1, ban_reason=?, banned_at=NOW() WHERE id=?",
+            ['Comportement de scraping détecté (honeypot).', userId]
+          );
+          invalidateBanCache(userId);
+        }
+      }).catch(() => {});
+    }
+    console.warn(`[honeypot] ${req.method} ${p} — userId=${userId ?? 'anon'} ip=${ip} ua="${req.headers['user-agent']}"`);
+    res.status(404).json({ error: 'Not found' });
+  });
+}
+
+// 5. SQL injection & XSS detection on API routes — flag + 403 with event type
+const _SQLI_API = /(\bunion\b[\s\S]{0,60}\bselect\b|\bselect\b[\s\S]{0,60}\bfrom\b|\bdrop\b[\s\S]{0,30}\btable\b|\binsert\b[\s\S]{0,30}\binto\b|\bdelete\b[\s\S]{0,30}\bfrom\b|'[\s\S]{0,10}(or|and)[\s\S]{0,10}[=\s]|xp_\w|\bexec\s*\(|\bsleep\s*\(|\bbenchmark\s*\(|\bwaitfor\b)/i;
+const _XSS_API  = /<script[\s>]|javascript\s*:|on\w{2,20}\s*=|document\.(cookie|write)|<iframe[\s>]|\balert\s*\(|<svg[\s>].*on\w/i;
+const _SCOUTHUB_TOKEN_KEY = "scouthub_token"; // forward-declared for the middleware below
+
+// Safely decode JWT payload without verifying signature (only for logging/flagging)
+function _jwtPayloadDecode(token) {
+  try { return JSON.parse(Buffer.from(token.split('.')[1], 'base64url').toString()); }
+  catch { try { return JSON.parse(Buffer.from(token.split('.')[1], 'base64').toString()); } catch { return null; } }
+}
+
+app.use('/api', (req, res, next) => {
+  const probe = (() => {
+    try {
+      return decodeURIComponent(
+        (req.path || '') + '?' + Object.entries(req.query || {}).map(([k, v]) => `${k}=${v}`).join('&')
+      );
+    } catch { return (req.path || '') + '?' + req.url; }
+  })();
+
+  let eventType = null;
+  if (_SQLI_API.test(probe)) eventType = 'sqli';
+  else if (_XSS_API.test(probe)) eventType = 'xss';
+  if (!eventType) return next();
+
+  const ip = req.headers['x-forwarded-for']?.split(',')[0]?.trim() || req.ip;
+  const token = req.cookies?.[_SCOUTHUB_TOKEN_KEY];
+  const userId = token ? (_jwtPayloadDecode(token)?.sub ?? null) : null;
+
+  console.warn(`[security/${eventType}] ${req.method} ${req.path} — ip=${ip} userId=${userId ?? 'anon'} ua="${req.headers['user-agent']}"`);
+
+  if (userId) {
+    pool.query('UPDATE users SET bot_score = LEAST(bot_score + 30, 100) WHERE id = ?', [userId]).catch(() => {});
+  }
+
+  return res.status(403).json({ error: 'Requête bloquée par le système de sécurité.', event: eventType });
+});
+
 // ── Cookie-based JWT helpers ─────────────────────────────────────────────
 const AUTH_COOKIE = "scouthub_token";
 const ADMIN_COOKIE = "scouthub_admin_token"; // used during impersonation
@@ -501,6 +652,7 @@ const ALLOWED_TABLES = {
   contacts: ["id", "user_id", "first_name", "last_name", "photo_url", "organization", "role_title", "phone", "email", "linkedin_url", "notes", "created_at", "updated_at"],
   organizations: ["id", "name", "type", "invite_code", "logo_url", "description", "settings", "created_by", "created_at", "updated_at"],
   organization_members: ["id", "organization_id", "user_id", "role", "joined_at", "messaging_blocked"],
+  followed_clubs: ["id", "user_id", "club_name", "notes", "display_order", "created_at"],
   player_org_shares: ["id", "player_id", "organization_id", "user_id", "created_at"],
   match_assignments: ["id", "user_id", "organization_id", "assigned_to", "assigned_by", "home_team", "away_team", "match_date", "match_time", "competition", "venue", "home_badge", "away_badge", "notes", "status", "created_at", "updated_at"],
   community_posts: ["id", "user_id", "author_name", "category", "title", "content", "likes", "replies_count", "is_archived", "views", "is_pinned", "display_order", "is_closed", "accepted_reply_id", "closed_by", "closed_at", "created_at", "lang", "country"],
@@ -689,6 +841,46 @@ async function isUserBanned(userId) {
 
 function invalidateBanCache(userId) { _banCache.delete(userId); }
 
+// ── Referral login-IP check — called after every successful login ──────────
+// Flags a referral relationship as suspicious when the referred user logs in
+// from the same IP as their referrer (registration OR last known login).
+// Fire-and-forget: never blocks the login itself.
+async function checkReferralOnLogin(userId, loginIpHash) {
+  if (!userId || !loginIpHash) return;
+  try {
+    // Find referrer for this user
+    const [[profile]] = await pool.query(
+      'SELECT referred_by FROM profiles WHERE user_id = ? LIMIT 1', [userId]
+    );
+    if (!profile?.referred_by) return;
+    const referrerId = profile.referred_by;
+
+    // Get referrer's known IP hashes
+    const [[referrer]] = await pool.query(
+      'SELECT registration_ip_hash, last_login_ip_hash, suspicious_referral FROM users WHERE id = ? LIMIT 1',
+      [referrerId]
+    );
+    if (!referrer) return;
+
+    const sameAsRegIp   = referrer.registration_ip_hash && referrer.registration_ip_hash === loginIpHash;
+    const sameAsLoginIp = referrer.last_login_ip_hash   && referrer.last_login_ip_hash   === loginIpHash;
+
+    if (!sameAsRegIp && !sameAsLoginIp) return;
+
+    // Same IP detected — flag both accounts
+    console.warn(
+      `[referral/login-ip] Suspicious referral: referrer=${referrerId} referred=${userId} ` +
+      `(match: ${sameAsRegIp ? 'reg_ip' : 'login_ip'})`
+    );
+    await Promise.all([
+      pool.query('UPDATE users SET suspicious_referral = 1 WHERE id = ?', [userId]),
+      pool.query('UPDATE users SET suspicious_referral = 1 WHERE id = ?', [referrerId]),
+    ]);
+  } catch (err) {
+    console.error('[referral/login-ip] check failed:', err?.message);
+  }
+}
+
 // ── Password strength validation ──────────────────────────────────────────
 function validatePasswordStrength(password) {
   const pwd = String(password || "");
@@ -731,6 +923,7 @@ function normalizeUserRow(userRow) {
     is_banned: !!userRow.is_banned && (!userRow.ban_expires_at || new Date(userRow.ban_expires_at) > new Date()),
     ban_reason: (!!userRow.is_banned && (!userRow.ban_expires_at || new Date(userRow.ban_expires_at) > new Date())) ? (userRow.ban_reason || null) : null,
     ban_expires_at: (!!userRow.is_banned && (!userRow.ban_expires_at || new Date(userRow.ban_expires_at) > new Date())) ? new Date(userRow.ban_expires_at).toISOString() : null,
+    bot_score: userRow.bot_score || 0,
   };
 }
 
@@ -805,6 +998,22 @@ function sanitizeColumns(table, select) {
   return cols.map((col) => `\`${col}\``).join(", ");
 }
 
+/**
+ * Sanitize a player name: keep Unicode letters/marks, spaces, hyphens and
+ * apostrophes — everything else (dots, underscores, digits, symbols…) is
+ * replaced by a space, then collapsed and trimmed.
+ */
+function sanitizePlayerName(raw) {
+  if (!raw) return '';
+  return String(raw)
+    // Keep: Unicode letters (\p{L}), combining marks (\p{M}), space, hyphen, apostrophe variants
+    .replace(/[^\p{L}\p{M} '’ʼ\-]/gu, ' ')
+    .replace(/\s+/g, ' ')          // collapse multiple spaces
+    .replace(/-{2,}/g, '-')        // collapse multiple hyphens
+    .replace(/^[\s\-']+|[\s\-']+$/g, '') // strip leading/trailing junk
+    .trim();
+}
+
 function sanitizeValueByColumn(col, value) {
   if (col === "field_options" || col === "external_data") {
     if (value == null) return null;
@@ -812,6 +1021,9 @@ function sanitizeValueByColumn(col, value) {
   }
   if (col === "ts_report_published" || col === "is_premium" || col === "is_favorite" || col === "is_archived" || col === "applies_to_all") {
     return value ? 1 : 0;
+  }
+  if (col === "name") {
+    return sanitizePlayerName(value);
   }
   return value;
 }
@@ -1008,7 +1220,12 @@ async function _legacyRunMigrations() {
     "ALTER TABLE `users` ADD COLUMN `bot_score`        INT          NOT NULL DEFAULT 0",
     "ALTER TABLE `users` ADD COLUMN `registration_ip`  VARCHAR(45)  NULL",
     "ALTER TABLE `users` ADD COLUMN `registration_ip_hash` CHAR(64) NULL",
+    "ALTER TABLE `users` ADD COLUMN `last_login_ip_hash`   CHAR(64) NULL",
     "ALTER TABLE `users` ADD COLUMN `suspicious_referral` TINYINT(1) NOT NULL DEFAULT 0",
+    "ALTER TABLE `users` ADD COLUMN `credit_quota_daily`   INT NULL",
+    "ALTER TABLE `users` ADD COLUMN `credit_quota_weekly`  INT NULL",
+    "ALTER TABLE `users` ADD COLUMN `credit_quota_monthly` INT NULL",
+    "ALTER TABLE `users` ADD COLUMN `ui_prefs`             TEXT NULL",
   ]) {
     try { await pool.query(col); } catch (e) { if (e?.errno !== 1060) console.warn('[migration] users ban cols:', e?.message); }
   }
@@ -2289,16 +2506,11 @@ async function _legacyRunMigrations() {
   } catch (err) { if (err?.errno !== 1060) console.warn("[warn] notification_prefs migration:", err?.message); }
 
   // ── Org chat tables ────────────────────────────────────────────────────────
-  // Ensure referenced tables are InnoDB AND share the same collation (utf8mb4_unicode_ci)
-  // as the org_message tables. Without matching engine+collation the FK constraints fail:
-  //   - MyISAM doesn't support FKs at all
-  //   - Mixed collations (e.g. utf8mb4_general_ci vs utf8mb4_unicode_ci) make FKs incompatible
-  // CONVERT TO CHARACTER SET is idempotent: if the table already uses utf8mb4_unicode_ci it
-  // performs a fast metadata-only operation.
-  try { await pool.query(`ALTER TABLE organizations ENGINE=InnoDB, CONVERT TO CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci`); }
-  catch (err) { console.warn('[warn] organizations → InnoDB+unicode_ci:', err?.message); }
-  try { await pool.query(`ALTER TABLE users ENGINE=InnoDB, CONVERT TO CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci`); }
-  catch (err) { console.warn('[warn] users → InnoDB+unicode_ci:', err?.message); }
+  // Ensure organizations and users use InnoDB. We skip CONVERT TO CHARACTER SET
+  // because TiDB refuses collation changes on indexed columns (utf8mb4_bin → unicode_ci).
+  // The org_message tables below use INDEX instead of FK to avoid the collation mismatch.
+  try { await pool.query(`ALTER TABLE organizations ENGINE=InnoDB`); } catch { /* already InnoDB */ }
+  try { await pool.query(`ALTER TABLE users ENGINE=InnoDB`); } catch { /* already InnoDB */ }
 
   try {
     await pool.query(`
@@ -2311,18 +2523,17 @@ async function _legacyRunMigrations() {
         edited_at    DATETIME      NULL,
         deleted_at   DATETIME      NULL,
         created_at   DATETIME      NOT NULL DEFAULT CURRENT_TIMESTAMP,
-        INDEX idx_org_msg      (org_id, created_at),
-        FOREIGN KEY (org_id)       REFERENCES organizations(id) ON DELETE CASCADE,
-        FOREIGN KEY (user_id)      REFERENCES users(id)         ON DELETE CASCADE,
-        FOREIGN KEY (reply_to_id)  REFERENCES org_messages(id)  ON DELETE SET NULL
-      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+        INDEX idx_org_msg        (org_id, created_at),
+        INDEX idx_org_msg_user   (user_id),
+        INDEX idx_org_msg_reply  (reply_to_id)
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
     `);
   } catch (err) { if (!err?.message?.includes('already exists')) console.warn('[warn] org_messages:', err?.message); }
 
   // Upgrade org_messages.content VARCHAR(512) → TEXT (if already created with old type)
   try {
     await pool.query(`ALTER TABLE org_messages MODIFY COLUMN content TEXT NOT NULL`);
-  } catch (err) {
+  } catch {
     // Ignore if type already correct or table doesn't exist yet
   }
 
@@ -2334,22 +2545,20 @@ async function _legacyRunMigrations() {
         emoji      VARCHAR(10) NOT NULL,
         created_at DATETIME    NOT NULL DEFAULT CURRENT_TIMESTAMP,
         PRIMARY KEY (message_id, user_id, emoji),
-        FOREIGN KEY (message_id) REFERENCES org_messages(id) ON DELETE CASCADE,
-        FOREIGN KEY (user_id)    REFERENCES users(id)         ON DELETE CASCADE
-      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+        INDEX idx_omr_user (user_id)
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
     `);
   } catch (err) { if (!err?.message?.includes('already exists')) console.warn('[warn] org_message_reactions:', err?.message); }
 
   try {
     await pool.query(`
       CREATE TABLE IF NOT EXISTS org_message_reads (
-        org_id      CHAR(36) NOT NULL,
-        user_id     CHAR(36) NOT NULL,
+        org_id       CHAR(36) NOT NULL,
+        user_id      CHAR(36) NOT NULL,
         last_read_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
         PRIMARY KEY (org_id, user_id),
-        FOREIGN KEY (org_id)  REFERENCES organizations(id) ON DELETE CASCADE,
-        FOREIGN KEY (user_id) REFERENCES users(id)          ON DELETE CASCADE
-      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+        INDEX idx_omrd_user (user_id)
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
     `);
   } catch (err) { if (!err?.message?.includes('already exists')) console.warn('[warn] org_message_reads:', err?.message); }
 
@@ -2810,14 +3019,19 @@ app.post("/api/auth/signup", rateLimitAuth, async (req, res) => {
       const prefix = codeUpper.startsWith('SCOUTY-') ? codeUpper.slice(7) : codeUpper;
       if (prefix.length === 8) {
         const [refRows] = await conn.query(
-          "SELECT id, registration_ip_hash FROM users WHERE UPPER(SUBSTRING(id, 1, 8)) = ? LIMIT 1",
+          "SELECT id, registration_ip_hash, last_login_ip_hash FROM users WHERE UPPER(SUBSTRING(id, 1, 8)) = ? LIMIT 1",
           [prefix]
         );
         if (refRows.length && refRows[0].id !== userId) {
-          // Block referral if referrer and new user share the same IP
-          if (ipHash && refRows[0].registration_ip_hash && ipHash === refRows[0].registration_ip_hash) {
+          // Block referral if new user's IP matches referrer's registration OR last login IP
+          const sameAsRegIp   = ipHash && refRows[0].registration_ip_hash && ipHash === refRows[0].registration_ip_hash;
+          const sameAsLoginIp = ipHash && refRows[0].last_login_ip_hash   && ipHash === refRows[0].last_login_ip_hash;
+          if (sameAsRegIp || sameAsLoginIp) {
             referralBlockedSameIp = true;
-            console.warn(`[signup/referral] Same-IP referral blocked: referrer=${refRows[0].id} newUser=${userId} ip=${ip}`);
+            console.warn(
+              `[signup/referral] Same-IP referral blocked: referrer=${refRows[0].id} newUser=${userId} ` +
+              `ip=${ip} (match: ${sameAsRegIp ? 'reg_ip' : 'login_ip'})`
+            );
           } else {
             referrerId = refRows[0].id;
           }
@@ -2967,6 +3181,8 @@ app.post("/api/auth/signup", rateLimitAuth, async (req, res) => {
 app.post("/api/auth/google", rateLimitAuth, async (req, res) => {
   const { access_token } = req.body || {};
   if (!access_token) return res.status(400).json({ error: "Token Google manquant." });
+  const loginIpGoogle = req.headers['x-forwarded-for']?.split(',')[0]?.trim() || req.ip;
+  const loginIpHashGoogle = loginIpGoogle ? hashIp(loginIpGoogle) : null;
 
   // Verify access token by calling Google's userinfo endpoint
   let tokenData;
@@ -3016,8 +3232,8 @@ app.post("/api/auth/google", rateLimitAuth, async (req, res) => {
     if (existing.length) {
       userId = existing[0].id;
       await conn.query(
-        "UPDATE users SET oauth_provider = 'google', oauth_sub = ?, last_sign_in_at = NOW(), updated_at = NOW() WHERE id = ?",
-        [oauthSub, userId]
+        "UPDATE users SET oauth_provider = 'google', oauth_sub = ?, last_sign_in_at = NOW(), last_login_ip_hash = ?, updated_at = NOW() WHERE id = ?",
+        [oauthSub, loginIpHashGoogle, userId]
       );
       // Update profile with Google name/photo if fields are empty
       await conn.query(
@@ -3068,6 +3284,7 @@ app.post("/api/auth/google", rateLimitAuth, async (req, res) => {
       }
     }
 
+    if (!isNew) checkReferralOnLogin(user.id, loginIpHashGoogle).catch(() => {});
     return res.json({ user: normalizeUserRow(user), session: buildSession(user, res), isNew });
   } catch (err) {
     if (conn) { try { await conn.rollback(); } catch {} }
@@ -3083,6 +3300,8 @@ app.post("/api/auth/login", rateLimitAuth, async (req, res) => {
   if (!email || !password) {
     return res.status(400).json({ error: "Email et mot de passe requis." });
   }
+  const loginIp = req.headers['x-forwarded-for']?.split(',')[0]?.trim() || req.ip;
+  const loginIpHash = loginIp ? hashIp(loginIp) : null;
 
   try {
     const [rows] = await pool.query("SELECT * FROM users WHERE email = ? LIMIT 1", [email.trim().toLowerCase()]);
@@ -3144,8 +3363,13 @@ app.post("/api/auth/login", rateLimitAuth, async (req, res) => {
       return res.json({ requires2FA: true, method: 'email', challengeToken });
     }
 
-    await pool.query("UPDATE users SET last_sign_in_at = NOW(), updated_at = NOW() WHERE id = ?", [user.id]);
+    await pool.query(
+      "UPDATE users SET last_sign_in_at = NOW(), last_login_ip_hash = ?, updated_at = NOW() WHERE id = ?",
+      [loginIpHash, user.id]
+    );
     const refreshed = await getUserById(user.id);
+    // Fire-and-forget: check if this login IP matches the referrer's IP
+    checkReferralOnLogin(user.id, loginIpHash).catch(() => {});
 
     return res.json({ session: buildSession(refreshed, res), user: normalizeUserRow(refreshed) });
   } catch (err) {
@@ -3909,7 +4133,7 @@ app.post("/api/community/posts/:id/reopen", authMiddleware, ensureAdminOrModerat
 });
 
 // ── Player Research CRUD ──────────────────────────────────────────────────
-app.get("/api/player-research/:playerId", authMiddleware, async (req, res) => {
+app.get("/api/player-research/:playerId", authMiddleware, antiScrapeMiddleware, async (req, res) => {
   try {
     const [rows] = await pool.query(
       "SELECT * FROM player_research WHERE user_id = ? AND player_id = ? ORDER BY created_at DESC",
@@ -3969,7 +4193,7 @@ app.get("/api/player-wyscout-stats/:playerId", authMiddleware, async (req, res) 
 });
 
 // ── All players Wyscout summaries (latest season per player) ──────────────
-app.get("/api/players-wyscout-summary", authMiddleware, async (req, res) => {
+app.get("/api/players-wyscout-summary", authMiddleware, antiScrapeMiddleware, async (req, res) => {
   try {
     const [rows] = await pool.query(
       `SELECT * FROM player_wyscout_stats
@@ -3993,7 +4217,7 @@ app.get("/api/players-wyscout-summary", authMiddleware, async (req, res) => {
 });
 
 // ── Player Videos CRUD ───────────────────────────────────────────────────
-app.get("/api/player-videos/:playerId", authMiddleware, async (req, res) => {
+app.get("/api/player-videos/:playerId", authMiddleware, antiScrapeMiddleware, async (req, res) => {
   try {
     const [rows] = await pool.query(
       "SELECT * FROM player_videos WHERE user_id = ? AND player_id = ? ORDER BY created_at DESC",
@@ -4037,7 +4261,7 @@ app.delete("/api/player-videos/:id", authMiddleware, async (req, res) => {
 app.get("/api/followed-clubs", authMiddleware, async (req, res) => {
   try {
     const [rows] = await pool.query(
-      "SELECT * FROM followed_clubs WHERE user_id = ? ORDER BY created_at DESC",
+      "SELECT * FROM followed_clubs WHERE user_id = ? ORDER BY display_order ASC, created_at DESC",
       [req.user.id]
     );
     return res.json(rows);
@@ -4082,6 +4306,24 @@ app.delete("/api/followed-clubs/:id", authMiddleware, async (req, res) => {
   } catch (err) {
     console.error("[followed-clubs] DELETE error:", err);
     return res.status(500).json({ error: "Erreur serveur" });
+  }
+});
+
+// PATCH /api/followed-clubs/reorder — persist drag-and-drop order
+app.patch("/api/followed-clubs/reorder", authMiddleware, async (req, res) => {
+  const { order } = req.body || {};
+  if (!Array.isArray(order)) return res.status(400).json({ error: 'order array required' });
+  try {
+    for (const item of order) {
+      if (!item.id || typeof item.display_order !== 'number') continue;
+      await pool.query(
+        'UPDATE followed_clubs SET display_order = ? WHERE id = ? AND user_id = ?',
+        [item.display_order, item.id, req.user.id]
+      );
+    }
+    return res.json({ ok: true });
+  } catch (err) {
+    return res.status(500).json({ error: err?.message });
   }
 });
 
@@ -4653,6 +4895,8 @@ app.post("/api/auth/2fa/email/disable", authMiddleware, async (req, res) => {
 app.post("/api/auth/2fa/validate", rateLimitAuth, async (req, res) => {
   const { challengeToken, code } = req.body || {};
   if (!challengeToken || !code) return res.status(400).json({ error: "challengeToken et code requis." });
+  const loginIp2fa = req.headers['x-forwarded-for']?.split(',')[0]?.trim() || req.ip;
+  const loginIpHash2fa = loginIp2fa ? hashIp(loginIp2fa) : null;
 
   let userId;
   try {
@@ -4695,8 +4939,12 @@ app.post("/api/auth/2fa/validate", rateLimitAuth, async (req, res) => {
 
     if (!valid) return res.status(401).json({ error: "Code 2FA invalide." });
 
-    await pool.query("UPDATE users SET last_sign_in_at = NOW(), updated_at = NOW() WHERE id = ?", [user.id]);
+    await pool.query(
+      "UPDATE users SET last_sign_in_at = NOW(), last_login_ip_hash = ?, updated_at = NOW() WHERE id = ?",
+      [loginIpHash2fa, user.id]
+    );
     const refreshed = await getUserById(user.id);
+    checkReferralOnLogin(user.id, loginIpHash2fa).catch(() => {});
     return res.json({ session: buildSession(refreshed, res), user: normalizeUserRow(refreshed) });
   } catch (err) {
     console.error("2fa validate error:", err);
@@ -4737,7 +4985,7 @@ async function playerUserRatingExists() {
 // ── Paginated players endpoint ──────────────────────────────────────────────
 // Replaces the "fetch all in 1000-row batches" pattern with server-side
 // filtering, sorting, and offset-based pagination.
-app.get("/api/players", authMiddleware, async (req, res) => {
+app.get("/api/players", authMiddleware, antiScrapeMiddleware, async (req, res) => {
   try {
     const userId = req.user.id;
     const limit = Math.min(Math.max(parseInt(req.query.limit) || 24, 1), 100);
@@ -4774,7 +5022,7 @@ app.get("/api/players", authMiddleware, async (req, res) => {
     const minutesMin = numOrNull(req.query.minutesMin, parseInt);
     const updatedSince = numOrNull(req.query.updatedSince, parseInt);
     const enrichment = req.query.enrichment || ""; // '', 'enriched', 'not_enriched'
-    const sort = req.query.sort || "name";
+    const sort = req.query.sort || "smart";
 
     const hasTaskCol = await playersHasColumn("task");
     const hasNewsCol = await playersHasColumn("has_news");
@@ -4789,6 +5037,15 @@ app.get("/api/players", authMiddleware, async (req, res) => {
     const OPN = useOverlay ? "COALESCE(pur.general_opinion, 'À revoir')" : "p.`general_opinion`";
     const joinSql = useOverlay ? "LEFT JOIN `player_user_rating` pur ON pur.player_id = p.id AND pur.user_id = ?" : "";
     const joinParams = useOverlay ? [userId] : [];
+
+    // Fetch user's country for the smart sort (country-match priority)
+    let userCountry = null;
+    try {
+      const [[profileRow]] = await pool.query(
+        "SELECT country FROM profiles WHERE user_id = ? LIMIT 1", [userId]
+      );
+      userCountry = profileRow?.country || null;
+    } catch { /* non-blocking — smart sort degrades gracefully without country */ }
 
     const clauses = ["(p.`user_id` = ? OR p.`id` IN (SELECT `player_id` FROM `player_viewer_links` WHERE `viewer_user_id` = ?))"];
     const params = [userId, userId];
@@ -4933,11 +5190,26 @@ app.get("/api/players", authMiddleware, async (req, res) => {
       CASE WHEN ${LVL}                  > 0 AND ${LVL} != 5.0                      THEN 1 ELSE 0 END
     ) DESC`;
 
+    // Country-match expression: 0 = player shares user's country, 1 = no match
+    // Matches on passport_country (primary) or nationality field if it exists.
+    // Used as the first criterion in the smart sort.
+    const COUNTRY_MATCH = userCountry
+      ? `CASE WHEN p.\`passport_country\` IS NOT NULL AND LOWER(p.\`passport_country\`) = LOWER(${pool.escape(userCountry)}) THEN 0 ELSE 1 END`
+      : "1";
+
     const orderParts = [];
     if (hasNewsCol) {
       orderParts.push("CASE WHEN p.`has_news` IS NOT NULL AND p.`has_news` != '' THEN 0 ELSE 1 END ASC");
     }
     switch (sort) {
+      case "smart":
+        // Default intelligent sort:
+        //   1. Players from the user's country first
+        //   2. Most recently modified
+        //   3. Most enriched (richness score)
+        orderParts.push(`${COUNTRY_MATCH} ASC`);
+        orderParts.push("p.`updated_at` DESC");
+        break;
       case "name": orderParts.push("p.`name` ASC"); break;
       case "age-asc": orderParts.push("p.`generation` DESC"); break;
       case "age-desc": orderParts.push("p.`generation` ASC"); break;
@@ -4951,7 +5223,7 @@ app.get("/api/players", authMiddleware, async (req, res) => {
       case "minutes": orderParts.push("CAST(JSON_EXTRACT(p.`external_data`, '$.performance_stats.stats.minutes') AS UNSIGNED) DESC"); break;
       case "xg": orderParts.push("CAST(JSON_EXTRACT(p.`external_data`, '$.performance_stats.stats.expected_goals') AS DECIMAL(5,2)) DESC"); break;
       case "pass-accuracy": orderParts.push("CAST(JSON_EXTRACT(p.`external_data`, '$.performance_stats.stats.passes_accuracy') AS DECIMAL(5,2)) DESC"); break;
-      default: orderParts.push("p.`name` ASC");
+      default: orderParts.push(`${COUNTRY_MATCH} ASC`, "p.`updated_at` DESC");
     }
     orderParts.push(DATA_RICHNESS_SCORE);
     const orderSql = `ORDER BY ${orderParts.join(", ")}`;
@@ -5136,7 +5408,7 @@ function srvIsSamePlayer(a, b) {
   return false;
 }
 
-app.get("/api/players/duplicates", authMiddleware, async (req, res) => {
+app.get("/api/players/duplicates", authMiddleware, antiScrapeMiddleware, async (req, res) => {
   try {
     const userId = req.user.id;
     const hasArchivedCol = await playersHasIsArchived();
@@ -5174,7 +5446,7 @@ app.get("/api/players/duplicates", authMiddleware, async (req, res) => {
   }
 });
 
-app.get("/api/players/facets", authMiddleware, async (req, res) => {
+app.get("/api/players/facets", authMiddleware, antiScrapeMiddleware, async (req, res) => {
   try {
     const userId = req.user.id;
     const archived = req.query.archived === "1";
@@ -5216,6 +5488,47 @@ app.get("/api/players/facets", authMiddleware, async (req, res) => {
     });
   } catch (err) {
     console.error("[GET /api/players/facets]", err);
+    return res.status(500).json({ error: err?.message || "Server error" });
+  }
+});
+
+// ── POST /api/custom-field-values — atomic upsert (avoids ER_DUP_ENTRY race) ──
+app.post("/api/custom-field-values", authMiddleware, async (req, res) => {
+  const { customFieldId, playerId, value } = req.body || {};
+  if (!customFieldId || !playerId) return res.status(400).json({ error: "customFieldId and playerId required" });
+  try {
+    // Verify the custom field belongs to this user
+    const [fieldRows] = await pool.query(
+      "SELECT id FROM custom_fields WHERE id = ? AND user_id = ? LIMIT 1",
+      [customFieldId, req.user.id]
+    );
+    if (!fieldRows.length) return res.status(403).json({ error: "Forbidden" });
+
+    // Verify the player belongs to this user
+    const [playerRows] = await pool.query(
+      "SELECT id FROM players WHERE id = ? AND user_id = ? LIMIT 1",
+      [playerId, req.user.id]
+    );
+    if (!playerRows.length) return res.status(403).json({ error: "Forbidden" });
+
+    if (value === null || value === undefined || value === '') {
+      // Delete — empty value means "unset"
+      await pool.query(
+        "DELETE FROM custom_field_values WHERE custom_field_id = ? AND player_id = ? AND user_id = ?",
+        [customFieldId, playerId, req.user.id]
+      );
+    } else {
+      // Single atomic upsert — eliminates SELECT→INSERT race condition
+      await pool.query(
+        `INSERT INTO custom_field_values (id, custom_field_id, player_id, value, user_id)
+         VALUES (?, ?, ?, ?, ?)
+         ON DUPLICATE KEY UPDATE value = VALUES(value)`,
+        [uuidv4(), customFieldId, playerId, String(value), req.user.id]
+      );
+    }
+    return res.json({ ok: true });
+  } catch (err) {
+    console.error("[POST /api/custom-field-values]", err);
     return res.status(500).json({ error: err?.message || "Server error" });
   }
 });
@@ -6434,7 +6747,7 @@ const WYSCOUT_STATS_MAP = [
 // Accepts multipart file upload (xlsx/xls/csv) to avoid JSON payload size limits
 const wyscoutUpload = multer({
   storage: multer.memoryStorage(),
-  limits: { fileSize: 25 * 1024 * 1024 }, // 25 MB file limit
+  limits: { fileSize: 30 * 1024 * 1024 }, // 30 MB file limit
   fileFilter: (_req, file, cb) => {
     if (/\.(xlsx|xls|csv)$/i.test(file.originalname)) cb(null, true);
     else cb(new Error('Format de fichier non supporté. Utilisez .xlsx, .xls ou .csv'));
@@ -6446,7 +6759,7 @@ function wyscoutUploadMiddleware(req, res, next) {
   wyscoutUpload.single('file')(req, res, (err) => {
     if (!err) return next();
     const msg = err.code === 'LIMIT_FILE_SIZE'
-      ? `Fichier trop volumineux (limite : 25 Mo). Découpez le fichier en plusieurs parties.`
+      ? `Fichier trop volumineux (limite : 30 Mo). Découpez le fichier en plusieurs parties.`
       : err.message || 'Erreur lors de la réception du fichier.';
     return res.status(400).json({ error: msg });
   });
@@ -6500,7 +6813,7 @@ app.post("/api/import/wyscout", authMiddleware, wyscoutUploadMiddleware, async (
   const statsRecs  = []; // one per (player, season, division) row from the file
 
   for (const row of rows) {
-    const playerName = String(row['Player'] || '').trim();
+    const playerName = sanitizePlayerName(String(row['Player'] || ''));
     if (!playerName) continue;
 
     const club           = String(row['Team'] || '').trim();
@@ -8097,6 +8410,152 @@ app.get("/api/admin/analytics", authMiddleware, ensureAdmin, async (req, res) =>
   }
 });
 
+// GET /api/admin/analytics/advanced — deep-dive analytics (funnel, heatmap, cohort, pages, features)
+app.get("/api/admin/analytics/advanced", authMiddleware, ensureAdmin, async (req, res) => {
+  try {
+    const range = req.query.range || "30d";
+    const rangeMap = { "7d": 7, "30d": 30, "90d": 90, "1y": 365 };
+    const days = rangeMap[range] || 30;
+    const since = `DATE_SUB(NOW(), INTERVAL ${days} DAY)`;
+    const sinceVal = new Date(Date.now() - days * 86400000);
+
+    // ── 1. Funnel d'activation ────────────────────────────────────────────────
+    const [[funnelRow]] = await pool.query(`
+      SELECT
+        COUNT(DISTINCT u.id) AS total_users,
+        COUNT(DISTINCT CASE WHEN p1.cnt >= 1  THEN u.id END) AS with_player,
+        COUNT(DISTINCT CASE WHEN p1.cnt >= 5  THEN u.id END) AS with_5players,
+        COUNT(DISTINCT CASE WHEN p1.cnt >= 10 THEN u.id END) AS with_10players,
+        COUNT(DISTINCT CASE WHEN us.is_premium = 1 THEN u.id END) AS premium_users
+      FROM users u
+      LEFT JOIN (SELECT user_id, COUNT(*) AS cnt FROM players GROUP BY user_id) p1 ON p1.user_id = u.id
+      LEFT JOIN user_subscriptions us ON us.user_id = u.id
+    `);
+    const [[activationRow]] = await pool.query(`
+      SELECT
+        ROUND(AVG(DATEDIFF(fp.first_at, u.created_at)), 1) AS avg_days_to_player,
+        ROUND(AVG(DATEDIFF(us.premium_since, u.created_at)), 1) AS avg_days_to_premium
+      FROM users u
+      LEFT JOIN (SELECT user_id, MIN(created_at) AS first_at FROM players GROUP BY user_id) fp ON fp.user_id = u.id
+      LEFT JOIN user_subscriptions us ON us.user_id = u.id AND us.is_premium = 1 AND us.premium_since IS NOT NULL
+      WHERE u.created_at >= ${since}
+    `);
+
+    // ── 2. Heatmap activité (7 jours × 24h) ─────────────────────────────────
+    const [heatmap] = await pool.query(`
+      SELECT
+        CASE DAYOFWEEK(started_at)
+          WHEN 1 THEN 6 WHEN 2 THEN 0 WHEN 3 THEN 1
+          WHEN 4 THEN 2 WHEN 5 THEN 3 WHEN 6 THEN 4 WHEN 7 THEN 5
+        END AS dow,
+        HOUR(started_at) AS hour,
+        COUNT(*) AS count
+      FROM user_sessions
+      WHERE started_at >= DATE_SUB(NOW(), INTERVAL 30 DAY)
+      GROUP BY dow, hour
+    `);
+
+    // ── 3. Rétention par cohorte (8 semaines) ────────────────────────────────
+    const [cohortSizes] = await pool.query(`
+      SELECT
+        YEARWEEK(created_at, 1) AS yw,
+        DATE_FORMAT(MIN(DATE(created_at)), '%d/%m') AS label,
+        COUNT(*) AS total
+      FROM users
+      WHERE created_at >= DATE_SUB(NOW(), INTERVAL 8 WEEK)
+      GROUP BY yw ORDER BY yw
+    `);
+    const [cohortActivity] = await pool.query(`
+      SELECT
+        YEARWEEK(u.created_at, 1) AS yw,
+        FLOOR(DATEDIFF(DATE(s.started_at), DATE(u.created_at)) / 7) AS week_num,
+        COUNT(DISTINCT s.user_id) AS active
+      FROM users u
+      JOIN user_sessions s ON s.user_id = u.id
+      WHERE u.created_at >= DATE_SUB(NOW(), INTERVAL 8 WEEK)
+        AND FLOOR(DATEDIFF(DATE(s.started_at), DATE(u.created_at)) / 7) BETWEEN 0 AND 7
+      GROUP BY yw, week_num
+      ORDER BY yw, week_num
+    `);
+    // Merge cohort data
+    const cohorts = cohortSizes.map(c => {
+      const weeks = Array.from({ length: 8 }, (_, i) => {
+        const row = cohortActivity.find(r => r.yw === c.yw && r.week_num === i);
+        const active = row ? Number(row.active) : 0;
+        return c.total > 0 ? Math.round((active / Number(c.total)) * 100) : 0;
+      });
+      return { label: c.label, total: Number(c.total), weeks };
+    });
+
+    // ── 4. Top pages visitées ─────────────────────────────────────────────────
+    const [topPages] = await pool.query(`
+      SELECT
+        COALESCE(page_category, 'other') AS category,
+        COUNT(*) AS sessions,
+        COUNT(DISTINCT user_id) AS unique_users
+      FROM user_sessions
+      WHERE started_at >= ${since} AND page_category IS NOT NULL
+      GROUP BY page_category
+      ORDER BY sessions DESC
+      LIMIT 12
+    `);
+
+    // ── 5. Utilisation des fonctionnalités ────────────────────────────────────
+    const [creditFeatures] = await pool.query(
+      `SELECT action_type AS feature, COUNT(*) AS count
+       FROM user_credit_events WHERE created_at >= ? AND direction = 'spend'
+       GROUP BY action_type ORDER BY count DESC`, [sinceVal]
+    );
+    const [[{ reports_count }]] = await pool.query(
+      `SELECT COUNT(*) AS reports_count FROM reports WHERE created_at >= ?`, [sinceVal]
+    );
+    const [[{ watchlist_count }]] = await pool.query(
+      `SELECT COUNT(*) AS watchlist_count FROM watchlist_players WHERE added_at >= ?`, [sinceVal]
+    ).catch(() => [[{ watchlist_count: 0 }]]);
+    const [[{ shadow_count }]] = await pool.query(
+      `SELECT COUNT(*) AS shadow_count FROM shadow_team_players WHERE added_at >= ?`, [sinceVal]
+    ).catch(() => [[{ shadow_count: 0 }]]);
+    const [[{ shares_count }]] = await pool.query(
+      `SELECT COUNT(*) AS shares_count FROM player_org_shares WHERE created_at >= ?`, [sinceVal]
+    ).catch(() => [[{ shares_count: 0 }]]);
+    const [[{ tickets_count }]] = await pool.query(
+      `SELECT COUNT(*) AS tickets_count FROM tickets WHERE created_at >= ?`, [sinceVal]
+    ).catch(() => [[{ tickets_count: 0 }]]);
+
+    // Merge feature usage
+    const featureMap = {};
+    for (const r of creditFeatures) featureMap[r.feature] = Number(r.count);
+    const features = [
+      { feature: 'enrichissement',  label: 'Enrichissements',   count: featureMap['enrichment'] || 0 },
+      { feature: 'comparaison',     label: 'Comparaisons',      count: featureMap['statsbomb_compare'] || 0 },
+      { feature: 'rapports',        label: 'Rapports créés',    count: Number(reports_count) },
+      { feature: 'watchlist',       label: 'Ajouts watchlist',  count: Number(watchlist_count) },
+      { feature: 'shadow_team',     label: 'Shadow team',       count: Number(shadow_count) },
+      { feature: 'partages_org',    label: 'Partages org',      count: Number(shares_count) },
+      { feature: 'tickets',         label: 'Tickets ouverts',   count: Number(tickets_count) },
+    ].sort((a, b) => b.count - a.count);
+
+    return res.json({
+      funnel: {
+        total_users: Number(funnelRow.total_users),
+        with_player: Number(funnelRow.with_player),
+        with_5players: Number(funnelRow.with_5players),
+        with_10players: Number(funnelRow.with_10players),
+        premium_users: Number(funnelRow.premium_users),
+        avg_days_to_player: activationRow.avg_days_to_player !== null ? Number(activationRow.avg_days_to_player) : null,
+        avg_days_to_premium: activationRow.avg_days_to_premium !== null ? Number(activationRow.avg_days_to_premium) : null,
+      },
+      activityHeatmap: heatmap.map(r => ({ dow: Number(r.dow), hour: Number(r.hour), count: Number(r.count) })),
+      cohortRetention: cohorts,
+      topPages: topPages.map(r => ({ category: r.category, sessions: Number(r.sessions), unique_users: Number(r.unique_users) })),
+      featureUsage: features,
+    });
+  } catch (err) {
+    console.error("[admin/analytics/advanced]", err?.message);
+    res.status(500).json({ error: "Erreur serveur." });
+  }
+});
+
 // GET /api/admin/analytics/ticket-words — word frequency from ticket subjects + messages
 app.get("/api/admin/analytics/ticket-words", authMiddleware, ensureAdmin, async (req, res) => {
   try {
@@ -9306,6 +9765,24 @@ async function getUserPlanType(userId) {
   } catch { return 'starter'; }
 }
 
+/** Returns effective quotas for a user: per-user overrides take priority over plan defaults. */
+async function getUserQuotas(userId) {
+  const planType = await getUserPlanType(userId);
+  const planQ = PLAN_QUOTAS[planType] || PLAN_QUOTAS.starter;
+  try {
+    const [[row]] = await pool.query(
+      'SELECT credit_quota_daily, credit_quota_weekly, credit_quota_monthly FROM users WHERE id = ? LIMIT 1',
+      [userId]
+    );
+    return {
+      daily:   row?.credit_quota_daily   != null ? Number(row.credit_quota_daily)   : planQ.daily,
+      weekly:  row?.credit_quota_weekly  != null ? Number(row.credit_quota_weekly)  : planQ.weekly,
+      monthly: row?.credit_quota_monthly != null ? Number(row.credit_quota_monthly) : planQ.monthly,
+      _overridden: row?.credit_quota_daily != null || row?.credit_quota_weekly != null || row?.credit_quota_monthly != null,
+    };
+  } catch { return planQ; }
+}
+
 async function getUserCreditUsage(userId) {
   await ensureCreditTable();
   const [[dayRow], [weekRow], [monthRow], [earnRow]] = await Promise.all([
@@ -9339,8 +9816,7 @@ async function getUserCreditUsage(userId) {
 /** Read-only check: can this user consume 1 enrichment credit? */
 async function canUseCredit(userId) {
   await ensureCreditTable();
-  const planType = await getUserPlanType(userId);
-  const quotas = PLAN_QUOTAS[planType] || PLAN_QUOTAS.starter;
+  const quotas = await getUserQuotas(userId);
   if (quotas.daily === -1) return { ok: true }; // unlimited (elite)
   const usage = await getUserCreditUsage(userId);
   const earned = usage.earned_total || 0;
@@ -9365,9 +9841,9 @@ async function spendCredit(userId, description) {
 app.get("/api/credits/me", authMiddleware, async (req, res) => {
   try {
     const planType = await getUserPlanType(req.user.id);
-    const quotas = PLAN_QUOTAS[planType] || PLAN_QUOTAS.starter;
+    const quotas = await getUserQuotas(req.user.id);
     const usage = await getUserCreditUsage(req.user.id);
-    // Effective quotas = plan quota + all-time earned bonus (applies to all periods)
+    // Effective quotas = user/plan quota + all-time earned bonus
     const earned = usage.earned_total || 0;
     const effectiveQuotas = quotas.monthly === -1 ? quotas : {
       daily:   quotas.daily   + earned,
@@ -9387,16 +9863,18 @@ app.post("/api/credits/consume", authMiddleware, async (req, res) => {
 
   try {
     await ensureCreditTable();
-    const planType = await getUserPlanType(req.user.id);
-    const quotas = PLAN_QUOTAS[planType] || PLAN_QUOTAS.starter;
+    const quotas = await getUserQuotas(req.user.id);
 
     if (quotas.daily !== -1) {
       const usage = await getUserCreditUsage(req.user.id);
-      const effectiveMonthly = quotas.monthly + (usage.earned_total || 0);
-      if (usage.daily + amount > quotas.daily)
-        return res.status(429).json({ error: "daily_limit", quota: quotas.daily, used: usage.daily });
-      if (usage.weekly + amount > quotas.weekly)
-        return res.status(429).json({ error: "weekly_limit", quota: quotas.weekly, used: usage.weekly });
+      const earned = usage.earned_total || 0;
+      const effectiveDaily   = quotas.daily   + earned;
+      const effectiveWeekly  = quotas.weekly  + earned;
+      const effectiveMonthly = quotas.monthly + earned;
+      if (usage.daily + amount > effectiveDaily)
+        return res.status(429).json({ error: "daily_limit", quota: effectiveDaily, used: usage.daily });
+      if (usage.weekly + amount > effectiveWeekly)
+        return res.status(429).json({ error: "weekly_limit", quota: effectiveWeekly, used: usage.weekly });
       if (usage.monthly + amount > effectiveMonthly)
         return res.status(429).json({ error: "monthly_limit", quota: effectiveMonthly, used: usage.monthly });
     }
@@ -9452,12 +9930,196 @@ app.post("/api/admin/credits/grant", authMiddleware, ensureAdmin, async (req, re
     const [[user]] = await pool.query('SELECT id, email FROM users WHERE id = ? LIMIT 1', [userId]);
     if (!user) return res.status(404).json({ error: 'Utilisateur introuvable' });
 
+    const finalAmount = Math.round(Number(amount));
+    const finalDesc = description.trim() || (direction === 'earn' ? 'Attribution manuelle par admin' : 'Déduction manuelle par admin');
+
     await pool.query(
       `INSERT INTO user_credit_events (id, user_id, action_type, direction, amount, description)
        VALUES (?, ?, 'admin_grant', ?, ?, ?)`,
-      [uuidv4(), userId, direction, Math.round(Number(amount)), description.trim() || `Attribution manuelle par admin`]
+      [uuidv4(), userId, direction, finalAmount, finalDesc]
     );
-    return res.json({ ok: true, userId, amount: Math.round(Number(amount)), direction });
+
+    // Notify the user when credits are granted
+    if (direction === 'earn') {
+      await createNotification(userId, {
+        type: 'system',
+        title: 'Crédits ajoutés',
+        message: `Un administrateur vous a attribué ${finalAmount} crédit${finalAmount > 1 ? 's' : ''}${finalDesc !== 'Attribution manuelle par admin' ? ` — ${finalDesc}` : ''}.`,
+        icon: 'zap',
+        link: '/account',
+      });
+    }
+
+    return res.json({ ok: true, userId, amount: finalAmount, direction });
+  } catch (err) {
+    return res.status(500).json({ error: err?.message });
+  }
+});
+
+// GET /api/admin/credits/history/:userId — last 50 credit events for a user
+app.get("/api/admin/credits/history/:userId", authMiddleware, ensureAdmin, async (req, res) => {
+  try {
+    await ensureCreditTable();
+    const { userId } = req.params;
+    const [[user]] = await pool.query('SELECT id, email FROM users WHERE id = ? LIMIT 1', [userId]);
+    if (!user) return res.status(404).json({ error: 'Utilisateur introuvable' });
+    const [rows] = await pool.query(
+      `SELECT action_type, direction, amount, description, created_at
+       FROM user_credit_events WHERE user_id = ?
+       ORDER BY created_at DESC LIMIT 50`,
+      [userId]
+    );
+    return res.json({ email: user.email, events: rows });
+  } catch (err) {
+    return res.status(500).json({ error: err?.message });
+  }
+});
+
+// POST /api/admin/credits/set-period — overwrite usage for a specific time window
+// Deletes all spend events in the window, then optionally reinserts a single clean event = target.
+app.post("/api/admin/credits/set-period", authMiddleware, ensureAdmin, async (req, res) => {
+  try {
+    await ensureCreditTable();
+    const { userId, period, target = 0 } = req.body || {};
+    if (!userId || !['daily', 'weekly', 'monthly', 'earned'].includes(period)) {
+      return res.status(400).json({ error: 'userId et period (daily|weekly|monthly|earned) requis' });
+    }
+    if (!Number.isFinite(Number(target)) || Number(target) < 0) {
+      return res.status(400).json({ error: 'target doit être >= 0' });
+    }
+    const [[user]] = await pool.query('SELECT id, email FROM users WHERE id = ? LIMIT 1', [userId]);
+    if (!user) return res.status(404).json({ error: 'Utilisateur introuvable' });
+
+    const finalTarget = Math.round(Number(target));
+
+    // Bonus (earned) reset — all-time earn events
+    if (period === 'earned') {
+      const [del] = await pool.query(
+        `DELETE FROM user_credit_events WHERE user_id = ? AND direction = 'earn'`,
+        [userId]
+      );
+      if (finalTarget > 0) {
+        await pool.query(
+          `INSERT INTO user_credit_events (id, user_id, action_type, direction, amount, description)
+           VALUES (?, ?, 'admin_reset', 'earn', ?, ?)`,
+          [uuidv4(), userId, finalTarget,
+            `Réinitialisation bonus par admin (${del.affectedRows} événement${del.affectedRows > 1 ? 's' : ''} supprimé${del.affectedRows > 1 ? 's' : ''})`]
+        );
+      }
+      return res.json({ ok: true, period, target: finalTarget, deleted: del.affectedRows });
+    }
+
+    const windowSql = {
+      daily:   "created_at >= DATE(NOW())",
+      weekly:  "created_at >= DATE_SUB(NOW(), INTERVAL 7 DAY)",
+      monthly: "created_at >= DATE_FORMAT(NOW(),'%Y-%m-01')",
+    }[period];
+
+    // 1. Delete all spend events in the window for this user
+    const [del] = await pool.query(
+      `DELETE FROM user_credit_events WHERE user_id = ? AND direction = 'spend' AND ${windowSql}`,
+      [userId]
+    );
+
+    // 2. If target > 0, reinsert a single clean spend event at the target value
+    if (finalTarget > 0) {
+      const periodLabels = { daily: 'journalier', weekly: 'hebdomadaire', monthly: 'mensuel' };
+      await pool.query(
+        `INSERT INTO user_credit_events (id, user_id, action_type, direction, amount, description)
+         VALUES (?, ?, 'admin_reset', 'spend', ?, ?)`,
+        [uuidv4(), userId, finalTarget,
+          `Réinitialisation ${periodLabels[period]} par admin (${del.affectedRows} événement${del.affectedRows > 1 ? 's' : ''} supprimé${del.affectedRows > 1 ? 's' : ''})`]
+      );
+    }
+
+    return res.json({ ok: true, period, target: finalTarget, deleted: del.affectedRows });
+  } catch (err) {
+    return res.status(500).json({ error: err?.message });
+  }
+});
+
+// POST /api/admin/credits/set-quotas — set per-user quota overrides (null = revert to plan default)
+app.post("/api/admin/credits/set-quotas", authMiddleware, ensureAdmin, async (req, res) => {
+  try {
+    const { userId, daily, weekly, monthly } = req.body || {};
+    if (!userId) return res.status(400).json({ error: 'userId requis' });
+
+    // Validate: each value must be null (clear override) or a positive integer or -1 (unlimited)
+    function parseQuota(v) {
+      if (v === null || v === undefined || v === '') return null; // clear override
+      const n = Number(v);
+      if (!Number.isFinite(n) || n < -1) throw new Error(`Valeur invalide: ${v}`);
+      return Math.round(n);
+    }
+
+    let qDaily, qWeekly, qMonthly;
+    try {
+      qDaily   = parseQuota(daily);
+      qWeekly  = parseQuota(weekly);
+      qMonthly = parseQuota(monthly);
+    } catch (e) {
+      return res.status(400).json({ error: e.message });
+    }
+
+    const [[user]] = await pool.query('SELECT id, email FROM users WHERE id = ? LIMIT 1', [userId]);
+    if (!user) return res.status(404).json({ error: 'Utilisateur introuvable' });
+
+    await pool.query(
+      `UPDATE users SET credit_quota_daily = ?, credit_quota_weekly = ?, credit_quota_monthly = ? WHERE id = ?`,
+      [qDaily, qWeekly, qMonthly, userId]
+    );
+
+    return res.json({ ok: true, userId, daily: qDaily, weekly: qWeekly, monthly: qMonthly });
+  } catch (err) {
+    return res.status(500).json({ error: err?.message });
+  }
+});
+
+// GET /api/admin/credits/quotas/:userId — get current quota overrides for a user
+app.get("/api/admin/credits/quotas/:userId", authMiddleware, ensureAdmin, async (req, res) => {
+  try {
+    const { userId } = req.params;
+    const [[row]] = await pool.query(
+      'SELECT credit_quota_daily, credit_quota_weekly, credit_quota_monthly FROM users WHERE id = ? LIMIT 1',
+      [userId]
+    );
+    if (!row) return res.status(404).json({ error: 'Utilisateur introuvable' });
+    return res.json({
+      daily:   row.credit_quota_daily   != null ? Number(row.credit_quota_daily)   : null,
+      weekly:  row.credit_quota_weekly  != null ? Number(row.credit_quota_weekly)  : null,
+      monthly: row.credit_quota_monthly != null ? Number(row.credit_quota_monthly) : null,
+    });
+  } catch (err) {
+    return res.status(500).json({ error: err?.message });
+  }
+});
+
+// ── UI preferences (animations, etc.) — persisted per user in DB ─────────────
+
+const UI_PREFS_ALLOWED = ['animationsEnabled'];
+
+app.get("/api/my-ui-prefs", authMiddleware, async (req, res) => {
+  try {
+    const [[row]] = await pool.query('SELECT ui_prefs FROM users WHERE id = ? LIMIT 1', [req.user.id]);
+    const stored = row?.ui_prefs ? JSON.parse(row.ui_prefs) : {};
+    return res.json({ animationsEnabled: true, ...stored });
+  } catch (err) {
+    return res.status(500).json({ error: err?.message });
+  }
+});
+
+app.patch("/api/my-ui-prefs", authMiddleware, async (req, res) => {
+  try {
+    const [[row]] = await pool.query('SELECT ui_prefs FROM users WHERE id = ? LIMIT 1', [req.user.id]);
+    const existing = row?.ui_prefs ? JSON.parse(row.ui_prefs) : {};
+    const patch = req.body || {};
+    // Only allow known keys
+    const merged = { ...existing };
+    for (const key of UI_PREFS_ALLOWED) {
+      if (key in patch) merged[key] = patch[key];
+    }
+    await pool.query('UPDATE users SET ui_prefs = ? WHERE id = ?', [JSON.stringify(merged), req.user.id]);
+    return res.json({ ok: true, prefs: merged });
   } catch (err) {
     return res.status(500).json({ error: err?.message });
   }
@@ -9662,54 +10324,74 @@ app.patch("/api/club-geocode-manual", authMiddleware, async (req, res) => {
 
 // ── Search clubs in local DB (autocomplete) ──────────────────────────────────
 app.get("/api/club-search", async (req, res) => {
-  const q       = String(req.query.q       || "").trim();
-  const country = String(req.query.country || "").trim();
+  const q           = String(req.query.q           || "").trim();
+  const country     = String(req.query.country     || "").trim();
+  const competition = String(req.query.competition || "").trim();
 
   // At least one search criterion required
-  if (q.length < 2 && !country) return res.json([]);
+  if (q.length < 2 && !country && !competition) return res.json([]);
 
   try {
-    if (country && !q) {
-      // Country-only filter: return all clubs from that country
-      const like = `%${country}%`;
+    if ((country || competition) && !q) {
+      // Filter-only: return clubs matching country and/or competition
+      const conditions = [];
+      const params = [];
+      if (country)     { conditions.push('(country LIKE ? OR country_code LIKE ?)'); params.push(`%${country}%`, `%${country}%`); }
+      if (competition) { conditions.push('competition LIKE ?'); params.push(`%${competition}%`); }
       const [rows] = await pool.query(
         `SELECT club_name, logo_url, competition, country, country_code
          FROM club_directory
-         WHERE country LIKE ? OR country_code LIKE ?
+         WHERE ${conditions.join(' AND ')}
          ORDER BY competition, club_name
-         LIMIT 60`,
-        [like, like]
+         LIMIT 80`,
+        params
       );
       return res.json(rows);
     }
 
     const like = `%${q}%`;
-    // When a country filter is also applied, restrict to that country
-    const countryClause = country ? `AND (cd.country LIKE ? OR cd.country_code LIKE ?)` : '';
-    const countryParams = country ? [`%${country}%`, `%${country}%`] : [];
+    const countryClause     = country     ? `AND (cd.country LIKE ? OR cd.country_code LIKE ?)` : '';
+    const competitionClause = competition ? `AND cd.competition LIKE ?` : '';
+    const countryParams     = country     ? [`%${country}%`, `%${country}%`] : [];
+    const competitionParams = competition ? [`%${competition}%`] : [];
 
     const [rows] = await pool.query(`
       SELECT DISTINCT club_name, logo_url, competition, country, country_code
       FROM (
         SELECT cd.club_name, cd.logo_url, cd.competition, cd.country, cd.country_code
         FROM club_directory cd
-        WHERE cd.club_name LIKE ? ${countryClause}
+        WHERE cd.club_name LIKE ? ${countryClause} ${competitionClause}
         UNION
         SELECT cl.club_name, cl.logo_url, '' AS competition, '' AS country, '' AS country_code
         FROM club_logos cl
         WHERE cl.club_name LIKE ?
           AND cl.club_name NOT IN (SELECT club_name FROM club_directory WHERE club_name LIKE ?)
-          ${country ? 'AND 0' : ''}
+          ${(country || competition) ? 'AND 0' : ''}
       ) combined
       ORDER BY
         CASE WHEN club_name LIKE ? THEN 0 ELSE 1 END,
         club_name
       LIMIT 20
-    `, [like, ...countryParams, like, like, `${q}%`]);
+    `, [like, ...countryParams, ...competitionParams, like, like, `${q}%`]);
     return res.json(rows);
   } catch (err) {
     return res.json([]);
   }
+});
+
+// GET /api/club-divisions — distinct competitions, optionally filtered by country
+app.get("/api/club-divisions", async (req, res) => {
+  const country = String(req.query.country || "").trim();
+  try {
+    const where = country ? 'WHERE (country LIKE ? OR country_code LIKE ?) AND competition IS NOT NULL AND competition != \'\'' : 'WHERE competition IS NOT NULL AND competition != \'\'';
+    const params = country ? [`%${country}%`, `%${country}%`] : [];
+    const [rows] = await pool.query(
+      `SELECT competition, COUNT(*) AS club_count FROM club_directory ${where} GROUP BY competition ORDER BY club_count DESC, competition LIMIT 100`,
+      params
+    );
+    res.set('Cache-Control', 'public, max-age=1800');
+    return res.json(rows);
+  } catch { return res.json([]); }
 });
 
 // ── List distinct countries from club_directory ──────────────────────────────
@@ -10626,13 +11308,15 @@ function agentsEquivalent(a, b) {
 // won't match in TSDB/Wikidata indexes — fall back to last-name-only so we get
 // candidates like "Andrea Albertini", then disambiguate via strict DOB match.
 function buildNameSearchQueries(playerName) {
-  const queries = [playerName];
-  const parts = String(playerName || '').trim().split(/\s+/).filter(Boolean);
+  // Strip leading/trailing punctuation and dots (e.g. ". Balinsa" → "Balinsa")
+  const cleanName = String(playerName || '').replace(/^[\s.]+/, '').replace(/[\s.]+$/, '').trim();
+  const queries = cleanName ? [cleanName] : [];
+  const parts = cleanName.split(/\s+/).filter(Boolean);
   if (parts.length >= 2) {
     const firstStripped = parts[0].replace(/\./g, '');
     const lastName = parts.slice(1).join(' ');
-    if (firstStripped.length === 1) {
-      // Initial-only first name: search by last name(s) alone
+    if (firstStripped.length <= 1) {
+      // Initial-only or empty first name: search by last name(s) alone
       queries.push(lastName);
     } else if (parts.length > 2) {
       // Compound name: also try first+last only (drops middle names)
@@ -10640,7 +11324,7 @@ function buildNameSearchQueries(playerName) {
       queries.push(parts[parts.length - 1]);
     }
   }
-  return queries;
+  return queries.length ? queries : [String(playerName || '').trim()];
 }
 
 function namesMatch(playerName, candidateName) {
@@ -11837,12 +12521,18 @@ const SOFA_HEADERS = {
 const SOFA_BASE = 'https://api.sofascore.com/api/v1';
 
 async function sofaFetch(path, timeoutMs = 10000) {
-  const resp = await fetch(`${SOFA_BASE}${path}`, {
-    headers: SOFA_HEADERS,
-    signal: AbortSignal.timeout(timeoutMs),
-  });
-  if (!resp.ok) return null;
-  return resp.json();
+  try {
+    const resp = await fetch(`${SOFA_BASE}${path}`, {
+      headers: SOFA_HEADERS,
+      signal: AbortSignal.timeout(timeoutMs),
+    });
+    if (!resp.ok) return null;
+    return resp.json();
+  } catch (err) {
+    // ECONNRESET, ETIMEDOUT, AbortError — treat as a soft failure (no data, no crash)
+    console.warn(`[sofascore] fetch error for ${path}: ${err.code || err.name || err.message}`);
+    return null;
+  }
 }
 
 async function fetchPlayerStatsFromSofaScore(playerInfo) {
@@ -11863,7 +12553,8 @@ async function fetchPlayerStatsFromSofaScore(playerInfo) {
     } catch { /* cache miss */ }
 
     // ── 1. Search player on SofaScore ──
-    const searchName = playerInfo.name.trim();
+    // Strip leading/trailing dots and punctuation (e.g. ". Balinsa" → "Balinsa")
+    const searchName = playerInfo.name.replace(/^[\s.]+/, '').replace(/[\s.]+$/, '').trim();
     const searchQueries = buildNameSearchQueries(searchName);
     const playerResults = [];
     const seenSofaIds = new Set();
@@ -12761,11 +13452,11 @@ app.post("/api/functions/:name", authMiddleware, async (req, res) => {
           const quotas = PLAN_QUOTAS[planType] || PLAN_QUOTAS.starter;
           const usage = await getUserCreditUsage(req.user.id);
           if (quotas.daily !== -1) {
-            const effectiveMonthly = quotas.monthly + (usage.earned_total || 0);
+            const earned = usage.earned_total || 0;
             creditsRemaining = {
-              daily: quotas.daily - usage.daily,
-              weekly: quotas.weekly - usage.weekly,
-              monthly: effectiveMonthly - usage.monthly,
+              daily:   (quotas.daily   + earned) - usage.daily,
+              weekly:  (quotas.weekly  + earned) - usage.weekly,
+              monthly: (quotas.monthly + earned) - usage.monthly,
             };
           }
         } catch {}
@@ -12780,6 +13471,11 @@ app.post("/api/functions/:name", authMiddleware, async (req, res) => {
       });
     } catch (err) {
       console.error('[enrich-player] Error:', err);
+      // Still stamp the date so the UI shows the attempt was made today
+      pool.query(
+        'UPDATE players SET external_data_fetched_at = NOW(), updated_at = NOW() WHERE id = ? AND user_id = ?',
+        [playerId, req.user.id]
+      ).catch(() => {});
       return res.status(500).json({ error: 'Enrichment failed', detail: err.message });
     }
   }
@@ -13467,6 +14163,11 @@ app.post("/api/functions/:name", authMiddleware, async (req, res) => {
         } catch (e) {
           errors++;
           console.error(`[enrich-all] Error for ${p.name}:`, e.message);
+          // Still stamp the date even on error — shows the attempt was made today
+          pool.query(
+            'UPDATE players SET external_data_fetched_at = NOW(), updated_at = NOW() WHERE id = ?',
+            [p.id]
+          ).catch(() => {});
         }
         // Include current credit balance in progress for real-time client display
         let creditInfo = null;
@@ -13476,11 +14177,11 @@ app.post("/api/functions/:name", authMiddleware, async (req, res) => {
             const quotas = PLAN_QUOTAS[planType] || PLAN_QUOTAS.starter;
             if (quotas.daily !== -1) {
               const usage = await getUserCreditUsage(req.user.id);
-              const effectiveMonthly = quotas.monthly + (usage.earned_total || 0);
+              const earned = usage.earned_total || 0;
               creditInfo = {
-                daily: quotas.daily - usage.daily,
-                weekly: quotas.weekly - usage.weekly,
-                monthly: effectiveMonthly - usage.monthly,
+                daily:   (quotas.daily   + earned) - usage.daily,
+                weekly:  (quotas.weekly  + earned) - usage.weekly,
+                monthly: (quotas.monthly + earned) - usage.monthly,
               };
             }
           } catch {}
@@ -17164,6 +17865,7 @@ pool.query('ALTER TABLE club_overrides ADD COLUMN coach_photo_url TEXT NULL').ca
 pool.query('ALTER TABLE club_overrides ADD COLUMN coach_nationality VARCHAR(100) NULL').catch(err => { if (err.errno !== 1060) console.warn('[warn] club_overrides:', err?.message); });
 pool.query('ALTER TABLE club_overrides ADD COLUMN coach_date_born DATE NULL').catch(err => { if (err.errno !== 1060) console.warn('[warn] club_overrides:', err?.message); });
 
+pool.query("ALTER TABLE followed_clubs ADD COLUMN display_order INT NOT NULL DEFAULT 0").catch(err => { if (err.errno !== 1060) console.warn('[warn] followed_clubs display_order:', err?.message); });
 pool.query('ALTER TABLE tickets ADD COLUMN user_read_at DATETIME NULL').catch(err => { if (err.errno !== 1060) console.warn('[warn] tickets user_read_at:', err?.message); });
 pool.query('ALTER TABLE tickets ADD COLUMN admin_read_at DATETIME NULL').catch(err => { if (err.errno !== 1060) console.warn('[warn] tickets admin_read_at:', err?.message); });
 pool.query('ALTER TABLE organizations ADD COLUMN settings JSON NULL').catch(err => { if (err.errno !== 1060) console.warn('[warn] org settings:', err?.message); });

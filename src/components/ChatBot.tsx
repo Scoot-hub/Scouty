@@ -1,5 +1,6 @@
 import { useState, useRef, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
+import { useEscapeKey } from '@/hooks/use-escape-key';
 import { useTranslation } from 'react-i18next';
 import { MessageCircle, X, Send, Bot, User } from 'lucide-react';
 import { cn } from '@/lib/utils';
@@ -295,6 +296,7 @@ function matchQuery(input: string): MatchResult {
 
 export default function ChatBot() {
   const [open, setOpen] = useState(false);
+  useEscapeKey(() => setOpen(false), open);
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState('');
   const [idCounter, setIdCounter] = useState(1);

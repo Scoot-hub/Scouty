@@ -1,4 +1,4 @@
-import { useState, useMemo, useRef, useEffect } from 'react';
+import { useState, useMemo, useRef, useEffect, useCallback } from 'react';
 import { Link } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { useCustomFields, useCustomFieldValues, useUpsertCustomFieldValue, useDeleteCustomFieldValue, type CustomField } from '@/hooks/use-custom-fields';
@@ -10,7 +10,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Checkbox } from '@/components/ui/checkbox';
 import { Badge } from '@/components/ui/badge';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
-import { ExternalLink, Users, CalendarDays, Search, X, Trophy, Phone, Mail, Info, Check, CheckCircle2, Pencil, Eye, EyeOff, PlusCircle } from 'lucide-react';
+import { ExternalLink, Users, CalendarDays, Search, X, Trophy, Phone, Mail, Info, Check, CheckCircle2, Pencil, Eye, EyeOff, PlusCircle, Loader2 } from 'lucide-react';
 import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem } from '@/components/ui/dropdown-menu';
 import { Button } from '@/components/ui/button';
 import { cn } from '@/lib/utils';
@@ -582,18 +582,33 @@ function EditableField({ field, value, onChange, fullWidth, dateFormat, timeForm
 // ---------------------------------------------------------------------------
 
 function MultiSelectPicker({ field, value, onChange }: { field: CustomField; value: string; onChange: (v: string) => void }) {
-  const selected = useMemo(() => parseMultiselect(value), [value]);
+  // Local state for instant UI feedback — avoids stale-closure race when clicking quickly
+  const [local, setLocal] = useState(() => parseMultiselect(value));
+  const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  const toggle = (opt: string) => {
-    const next = selected.includes(opt) ? selected.filter(s => s !== opt) : [...selected, opt];
-    onChange(serializeMultiselect(next));
-  };
+  // Sync from server when value prop changes AND we have no pending debounce
+  useEffect(() => {
+    if (!debounceRef.current) setLocal(parseMultiselect(value));
+  }, [value]);
+
+  const toggle = useCallback((opt: string) => {
+    setLocal(prev => {
+      const next = prev.includes(opt) ? prev.filter(s => s !== opt) : [...prev, opt];
+      // Debounce: cancel any in-flight save and wait for more clicks
+      if (debounceRef.current) clearTimeout(debounceRef.current);
+      debounceRef.current = setTimeout(() => {
+        debounceRef.current = null;
+        onChange(serializeMultiselect(next));
+      }, 120);
+      return next;
+    });
+  }, [onChange]);
 
   return (
     <div className="flex flex-wrap gap-2 mt-1">
       {(field.field_options ?? []).map(opt => (
         <label key={opt} className="flex items-center gap-1.5 cursor-pointer text-sm select-none">
-          <Checkbox checked={selected.includes(opt)} onCheckedChange={() => toggle(opt)} />
+          <Checkbox checked={local.includes(opt)} onCheckedChange={() => toggle(opt)} />
           {opt}
         </label>
       ))}
@@ -668,17 +683,20 @@ function PlayerRefPicker({ value, onChange }: { value: string; onChange: (v: str
         <>
           <div className="fixed inset-0 z-40" onClick={() => setPickerOpen(false)} />
           <div className="absolute z-50 top-9 left-0 w-full max-h-48 overflow-y-auto bg-popover border border-border rounded-lg shadow-lg">
-            {filtered.length === 0
-              ? <p className="p-3 text-xs text-muted-foreground text-center">{t('custom_fields.no_results')}</p>
-              : filtered.map(p => (
-                <button key={p.id} onClick={() => { onChange(p.id); setSearch(''); setPickerOpen(false); }}
-                  className={cn('w-full text-left px-3 py-2 text-sm hover:bg-muted flex items-center gap-2 transition-colors', p.id === value && 'bg-primary/10')}>
-                  <Users className="w-3.5 h-3.5 text-muted-foreground shrink-0" />
-                  <span className="truncate font-medium">{p.name}</span>
-                  {p.club && <span className="text-xs text-muted-foreground truncate ml-auto">{p.club}</span>}
-                </button>
-              ))
-            }
+            {isLoading ? (
+              <p className="p-3 text-xs text-muted-foreground text-center flex items-center justify-center gap-2">
+                <Loader2 className="w-3 h-3 animate-spin" />{t('common.loading')}
+              </p>
+            ) : filtered.length === 0 ? (
+              <p className="p-3 text-xs text-muted-foreground text-center">{t('custom_fields.no_results')}</p>
+            ) : filtered.map(p => (
+              <button key={p.id} onClick={() => { onChange(p.id); setSearch(''); setPickerOpen(false); }}
+                className={cn('w-full text-left px-3 py-2 text-sm hover:bg-muted flex items-center gap-2 transition-colors', p.id === value && 'bg-primary/10')}>
+                <Users className="w-3.5 h-3.5 text-muted-foreground shrink-0" />
+                <span className="truncate font-medium">{p.name}</span>
+                {p.club && <span className="text-xs text-muted-foreground truncate ml-auto">{p.club}</span>}
+              </button>
+            ))}
           </div>
         </>
       )}

@@ -62,6 +62,22 @@ function BanGuard({ children }: { children: React.ReactNode }) {
   return <>{children}</>;
 }
 
+// ── URL security guard — detects SQLi / XSS patterns in the current URL ──────
+const SQLI_RE = /(\bunion\b[\s\S]{0,40}\bselect\b|\bselect\b[\s\S]{0,40}\bfrom\b|\bdrop\b[\s\S]{0,20}\btable\b|\binsert\b[\s\S]{0,20}\binto\b|\bdelete\b[\s\S]{0,20}\bfrom\b|--|'[\s\S]{0,10}(or|and)[\s\S]{0,10}'|xp_|\bexec\b\s*\(|\bsleep\s*\(|\bbenchmark\s*\()/i;
+const XSS_RE  = /<script[\s>]|javascript\s*:|on\w{2,20}\s*=|document\.(cookie|write)|<iframe[\s>]|\balert\s*\(|%3cscript|%3e.*%3c/i;
+
+function useUrlSecurityGuard() {
+  const location = useLocation();
+  const navigate  = useNavigate();
+  useEffect(() => {
+    if (location.pathname === '/blocked') return;
+    const raw = location.pathname + location.search + location.hash;
+    const decoded = (() => { try { return decodeURIComponent(raw); } catch { return raw; } })();
+    if (SQLI_RE.test(decoded)) { navigate('/blocked?type=sqli', { replace: true }); return; }
+    if (XSS_RE.test(decoded))  { navigate('/blocked?type=xss',  { replace: true }); return; }
+  }, [location.pathname, location.search, location.hash, navigate]);
+}
+
 const Landing = lazy(() => import("@/pages/Landing"));
 const Players = lazy(() => import("@/pages/Players"));
 const PlayerProfile = lazy(() => import("@/pages/PlayerProfile"));
@@ -129,6 +145,13 @@ const PlayerCompare = lazy(() => import("@/pages/PlayerCompare"));
 const WyscoutPlayerData = lazy(() => import("@/pages/WyscoutPlayerData"));
 const Banned = lazy(() => import("@/pages/Banned"));
 const NotFound = lazy(() => import("@/pages/NotFound"));
+const SecurityBlock = lazy(() => import("@/pages/SecurityBlock"));
+
+// Inner wrapper — lives inside BrowserRouter so hooks can call useLocation/useNavigate
+function AppInner() {
+  useUrlSecurityGuard();
+  return null;
+}
 
 const App = () => {
   // The static-loader (index.html) is a fixed z-9999 overlay shown until the
@@ -150,11 +173,13 @@ const App = () => {
       <Toaster />
       <Sonner />
       <BrowserRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
+        <AppInner />
         <AuthProvider>
           <BanGuard>
           <Suspense fallback={<PageLoader />}>
           <Routes>
             {/* Public routes */}
+            <Route path="/blocked" element={<SecurityBlock />} />
             <Route path="/banned" element={<Banned />} />
             <Route path="/" element={<Landing />} />
             <Route path="/auth" element={<Auth />} />

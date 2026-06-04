@@ -1,4 +1,4 @@
-import { useState, useRef } from 'react';
+import { useState, useRef, useEffect } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 import { useIsAdmin, useMyPermissions } from '@/hooks/use-admin';
 import { type Player, type CoachCareerEntry, COACHING_LICENSES, NATIONALITIES, getFlag } from '@/types/player';
@@ -127,6 +127,11 @@ function CareerEditor({ career, onSave, onCancel }: {
 // ── TM search modal ───────────────────────────────────────────────────────────
 
 function TmSearchModal({ player, onClose, onImported }: { player: Player; onClose: () => void; onImported: () => void }) {
+  useEffect(() => {
+    const h = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose(); };
+    window.addEventListener('keydown', h);
+    return () => window.removeEventListener('keydown', h);
+  }, [onClose]);
   const [query, setQuery] = useState(player.name);
   const [searching, setSearching] = useState(false);
   const [results, setResults] = useState<TmCoachResult[]>([]);
@@ -237,6 +242,11 @@ interface EditProfileModalProps {
 }
 
 function EditProfileModal({ player, onClose, onSaved }: EditProfileModalProps) {
+  useEffect(() => {
+    const h = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose(); };
+    window.addEventListener('keydown', h);
+    return () => window.removeEventListener('keydown', h);
+  }, [onClose]);
   const [photoUrl, setPhotoUrl] = useState(player.photo_url ?? '');
   const [name, setName] = useState(player.name);
   const [nationality, setNationality] = useState(player.nationality ?? '');

@@ -16,7 +16,7 @@ import { Crown, Mail, Lock, Building2, User, CalendarDays, ExternalLink, Loader2
 import { COUNTRY_LIST } from '@/data/country-names';
 import { getFlag } from '@/types/player';
 import { useCredits } from '@/hooks/use-credits';
-import { Progress } from '@/components/ui/progress';
+import { creditStyle } from '@/components/CreditWidget';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from '@/components/ui/dialog';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import PasswordStrengthIndicator, { validatePassword } from '@/components/PasswordStrengthIndicator';
@@ -87,6 +87,17 @@ function CountrySelect({ value, onChange, placeholder }: { value: string; onChan
     </div>
   );
 }
+
+// Traductions des rôles système intégrés (les rôles personnalisés s'affichent tels quels)
+const BUILTIN_ROLE_LABELS: Record<string, string> = {
+  user:         'Utilisateur',
+  admin:        'Administrateur',
+  moderator:    'Modérateur',
+  moderateur:   'Modérateur',
+  importateur:  'Importateur',
+  scout:        'Scout',
+  scout_pro:    'Scout Pro',
+};
 
 export default function Account() {
   const { t } = useTranslation();
@@ -589,9 +600,8 @@ export default function Account() {
                 <Badge
                   key={role}
                   variant={role === 'admin' ? 'default' : 'secondary'}
-                  className="capitalize"
                 >
-                  {role}
+                  {BUILTIN_ROLE_LABELS[role] ?? role}
                 </Badge>
               ))}
             </div>
@@ -1118,13 +1128,17 @@ export default function Account() {
                   const used = creditsData.usage[period];
                   const quota = creditsData.quotas[period];
                   const pct = Math.min(100, Math.round((used / quota) * 100));
+                  const hasEarned = (creditsData.usage.earned_total ?? 0) > 0;
+                  const { textClass, hex } = creditStyle(pct, hasEarned);
                   return (
                     <div key={period} className="space-y-1">
                       <div className="flex justify-between text-sm">
                         <span className="text-muted-foreground">{t(`credits.${period}`)}</span>
-                        <span className="font-medium tabular-nums">{used} / {quota}</span>
+                        <span className={`font-medium tabular-nums ${textClass}`}>{used} / {quota}</span>
                       </div>
-                      <Progress value={pct} className="h-2" />
+                      <div className="h-2 w-full overflow-hidden rounded-full bg-secondary">
+                        <div className="h-full rounded-full transition-all" style={{ width: `${pct}%`, backgroundColor: hex }} />
+                      </div>
                     </div>
                   );
                 })}

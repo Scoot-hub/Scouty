@@ -18,6 +18,7 @@ import { Upload, FileSpreadsheet, Check, AlertTriangle, X, ArrowRight, Columns, 
 import { Checkbox } from '@/components/ui/checkbox';
 import { useOperationBanner } from '@/contexts/OperationBannerContext';
 import { supabase } from '@/integrations/supabase/client';
+import { sanitizePlayerName } from '@/lib/format-utils';
 import { useQueryClient } from '@tanstack/react-query';
 
 interface RawRow {
@@ -306,7 +307,7 @@ function parseDate(val: string | number | undefined): string | undefined {
 
 function parseRow(row: Record<string, string | number | undefined>, customValues?: Record<string, string>): ParsedPlayer {
   const errors: string[] = [];
-  const name = String(row.name ?? '').trim();
+  const name = sanitizePlayerName(String(row.name ?? ''));
   if (!name) errors.push('import.name_missing');
   const position = parsePosition(row.position);
   const generalOpinion = parseOpinion(row.general_opinion) ?? parseOpinion(row.opinion_1) ?? 'À revoir';

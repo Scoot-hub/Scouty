@@ -127,31 +127,15 @@ export function useUpsertCustomFieldValue() {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: async ({ customFieldId, playerId, value }: { customFieldId: string; playerId: string; value: string | null }) => {
-      const userId = await getCurrentUserId();
-      // Try update first, then insert
-      const { data: existing } = await supabase
-        .from('custom_field_values')
-        .select('id')
-        .eq('custom_field_id', customFieldId)
-        .eq('player_id', playerId)
-        .maybeSingle();
-
-      if (existing) {
-        const { error } = await supabase
-          .from('custom_field_values')
-          .update({ value })
-          .eq('id', existing.id);
-        if (error) throw error;
-      } else {
-        const { error } = await supabase
-          .from('custom_field_values')
-          .insert({
-            custom_field_id: customFieldId,
-            player_id: playerId,
-            value,
-            user_id: userId,
-          });
-        if (error) throw error;
+      const res = await fetch('/api/custom-field-values', {
+        method: 'POST',
+        credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ customFieldId, playerId, value }),
+      });
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        throw new Error(body.error || `HTTP ${res.status}`);
       }
     },
     onSuccess: () => {

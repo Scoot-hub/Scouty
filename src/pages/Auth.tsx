@@ -180,13 +180,25 @@ export default function Auth() {
   };
 
   return (
-    <div className="min-h-screen bg-background flex items-center justify-center px-4">
+    <div className="min-h-screen bg-background flex items-center justify-center px-4 relative overflow-hidden">
       <PageSEO
         path="/auth"
         title="Connexion & Inscription | Scouty"
         description="Connectez-vous ou créez votre compte Scouty pour accéder à la plateforme de scouting footballistique. Inscription gratuite pour scouts, recruteurs et coachs."
         noIndex
       />
+
+      {/* ── Background ambient orbs ─────────────────────────────────────── */}
+      <div className="fixed inset-0 pointer-events-none overflow-hidden" aria-hidden="true">
+        <div className="absolute w-[600px] h-[600px] rounded-full blur-[140px] opacity-40"
+          style={{ background: 'rgba(99,102,241,0.12)', top: '-180px', left: '-160px', animation: 'auth-orb-a 14s ease-in-out infinite' }} />
+        <div className="absolute w-[500px] h-[500px] rounded-full blur-[120px] opacity-35"
+          style={{ background: 'rgba(139,92,246,0.10)', bottom: '-120px', right: '-140px', animation: 'auth-orb-b 18s ease-in-out infinite' }} />
+        <div className="absolute w-[300px] h-[300px] rounded-full blur-[90px] opacity-25"
+          style={{ background: 'rgba(14,165,233,0.09)', top: '40%', right: '5%', animation: 'auth-orb-c 11s ease-in-out infinite' }} />
+        <div className="absolute w-[200px] h-[200px] rounded-full blur-[70px] opacity-20"
+          style={{ background: 'rgba(99,102,241,0.15)', bottom: '20%', left: '8%', animation: 'auth-orb-d 9s ease-in-out infinite' }} />
+      </div>
 
       {/* Country/language switcher — fixed top-right */}
       <div className="fixed top-4 right-4 z-50">
@@ -196,14 +208,61 @@ export default function Auth() {
         />
       </div>
 
-      <div className="w-full max-w-sm">
-        {/* Logo */}
+      <div className="w-full max-w-sm relative z-10">
+        {/* Logo — scintillement identique au PageLoader */}
         <div className="text-center mb-8">
-          <Link to="/" className="inline-flex flex-col items-center gap-2">
-            <img src={logo} alt="Scouty" className="w-14 h-14 rounded-2xl shadow-lg shadow-primary/25" />
-            <span className="text-xl font-black tracking-tight">Scouty</span>
+          <Link to="/" className="inline-flex flex-col items-center gap-3">
+            <div className="relative">
+              <div className="absolute inset-0 rounded-2xl"
+                style={{ animation: 'auth-ring 2.4s ease-out infinite' }} />
+              <img
+                src={logo}
+                alt="Scouty"
+                className="w-16 h-16 rounded-2xl shadow-xl shadow-primary/30 relative z-10"
+                style={{ animation: 'auth-logo 2.4s ease-in-out infinite' }}
+              />
+            </div>
+            <span className="text-2xl font-black tracking-tight"
+              style={{ animation: 'auth-name 2.4s ease-in-out infinite' }}>
+              Scouty
+            </span>
           </Link>
         </div>
+
+        {/* Keyframes */}
+        <style>{`
+          @keyframes auth-ring {
+            0%   { box-shadow: 0 0 0 0 rgba(99,102,241,.40); }
+            70%  { box-shadow: 0 0 0 16px rgba(99,102,241,0); }
+            100% { box-shadow: 0 0 0 0 rgba(99,102,241,0); }
+          }
+          @keyframes auth-logo {
+            0%, 100% { transform: scale(1);    filter: drop-shadow(0 0 0px rgba(99,102,241,0)); }
+            50%       { transform: scale(1.05); filter: drop-shadow(0 0 14px rgba(99,102,241,.50)); }
+          }
+          @keyframes auth-name {
+            0%, 100% { opacity: 0.7; }
+            50%       { opacity: 1; }
+          }
+          @keyframes auth-orb-a {
+            0%,100% { transform: translate(0,0) scale(1); }
+            33%     { transform: translate(50px,40px) scale(1.06); }
+            66%     { transform: translate(-25px,60px) scale(.96); }
+          }
+          @keyframes auth-orb-b {
+            0%,100% { transform: translate(0,0) scale(1); }
+            40%     { transform: translate(-60px,-35px) scale(1.08); }
+            75%     { transform: translate(30px,-70px) scale(.94); }
+          }
+          @keyframes auth-orb-c {
+            0%,100% { transform: translate(0,0) scale(1); }
+            50%     { transform: translate(-35px,50px) scale(1.12); }
+          }
+          @keyframes auth-orb-d {
+            0%,100% { transform: translate(0,0) scale(1); }
+            50%     { transform: translate(40px,-30px) scale(1.15); }
+          }
+        `}</style>
 
         {/* Card */}
         <div className="bg-card border border-border rounded-2xl p-8 shadow-xl">
@@ -276,10 +335,12 @@ export default function Auth() {
                 {t('auth.continue_with_google')}
               </button>
 
-              <div className="relative">
-                <div className="absolute inset-0 flex items-center"><span className="w-full border-t border-border" /></div>
+              <div className="relative my-6">
+                <div className="absolute inset-0 flex items-center">
+                  <span className="w-full border-t border-border" />
+                </div>
                 <div className="relative flex justify-center text-xs uppercase">
-                  <span className="bg-card px-2 text-muted-foreground">{t('auth.or')}</span>
+                  <span className="bg-card px-4 text-muted-foreground tracking-widest font-medium">{t('auth.or')}</span>
                 </div>
               </div>
             </>

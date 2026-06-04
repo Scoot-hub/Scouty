@@ -11,8 +11,13 @@ import { useImportPlayers, usePlayers } from '@/hooks/use-players';
 import { useOperationBanner } from '@/contexts/OperationBannerContext';
 import { supabase } from '@/integrations/supabase/client';
 import { NATIONALITIES, type Position, type Zone, type Foot } from '@/types/player';
-import { Building2, Loader2, Sparkles, Search } from 'lucide-react';
+import { Building2, Loader2, Sparkles, Search, Zap } from 'lucide-react';
 import { useToast } from '@/hooks/use-toast';
+import { useCredits } from '@/hooks/use-credits';
+import { useIsAdmin } from '@/hooks/use-admin';
+
+const isCreditLimitCode = (code: unknown) =>
+  code === 'daily_limit' || code === 'weekly_limit' || code === 'monthly_limit';
 
 interface TmClubPlayer {
   tmId: string;
@@ -63,6 +68,8 @@ export function ImportTmClubDialog({ externalOpen, onExternalOpenChange }: { ext
   const queryClient = useQueryClient();
   const importPlayers = useImportPlayers();
   const { addOperation, updateOperation, completeOperation } = useOperationBanner();
+  const { data: creditsData } = useCredits();
+  const { data: isAdmin } = useIsAdmin();
 
   const controlled = externalOpen !== undefined;
   const [internalOpen, setInternalOpen] = useState(false);
@@ -95,6 +102,32 @@ export function ImportTmClubDialog({ externalOpen, onExternalOpenChange }: { ext
     const s = search.toLowerCase();
     return players.filter(p => p.name.toLowerCase().includes(s) || (p.position && p.position.toLowerCase().includes(s)));
   }, [players, search]);
+
+  // Number of selected players that are NEW (will consume 1 credit each for enrichment)
+  const newSelectedCount = useMemo(() =>
+    [...selected].filter(tmId => {
+      const p = players.find(q => q.tmId === tmId);
+      return p && !existingNames.has(p.name.toLowerCase().trim());
+    }).length,
+  [selected, players, existingNames]);
+
+  // Available daily credits (Infinity for admin or unlimited plan)
+  const availableCredits = useMemo(() => {
+    if (isAdmin) return Infinity;
+    if (!creditsData) return 0;
+    if (creditsData.quotas.daily === -1) return Infinity;
+    return Math.max(0, creditsData.quotas.daily - creditsData.usage.daily);
+  }, [isAdmin, creditsData]);
+
+  const hasEnoughCredits = availableCredits >= newSelectedCount;
+
+  // Checkbox state: true=all, false=none, 'indeterminate'=some
+  const selectAllState: boolean | 'indeterminate' = useMemo(() => {
+    if (filteredPlayers.length === 0) return false;
+    const allSel = filteredPlayers.every(p => selected.has(p.tmId));
+    const noneSel = filteredPlayers.every(p => !selected.has(p.tmId));
+    return allSel ? true : noneSel ? false : 'indeterminate';
+  }, [filteredPlayers, selected]);
 
   const reset = () => {
     setTmUrl('');
@@ -222,11 +255,16 @@ export function ImportTmClubDialog({ externalOpen, onExternalOpenChange }: { ext
           let errors = 0;
           for (const p of queue) {
             const tmPlayer = toImport.find(tp => tp.name === p.name);
-            const tmUrl = tmPlayer ? `https://www.transfermarkt.fr${tmPlayer.tmProfilePath}` : undefined;
+            const playerTmUrl = tmPlayer ? `https://www.transfermarkt.fr${tmPlayer.tmProfilePath}` : undefined;
             try {
-              await supabase.functions.invoke('enrich-player', {
-                body: { playerName: p.name, club: p.club, playerId: p.id, nationality: p.nationality, generation: p.generation, tmUrl },
+              const { data: enrichData, error: enrichErr } = await supabase.functions.invoke('enrich-player', {
+                body: { playerName: p.name, club: p.club, playerId: p.id, nationality: p.nationality, generation: p.generation, tmUrl: playerTmUrl },
               });
+              const errCode = (enrichData as Record<string, unknown>)?.error ?? enrichErr?.message;
+              if (isCreditLimitCode(errCode)) {
+                // Credits exhausted — stop enriching remaining players
+                break;
+              }
               success++;
             } catch (e) {
               console.error('Background enrich failed for', p.name, e);
@@ -236,6 +274,7 @@ export function ImportTmClubDialog({ externalOpen, onExternalOpenChange }: { ext
           }
           completeOperation(enrichOpId, { newCount: success, errorCount: errors > 0 ? errors : undefined });
           queryClient.invalidateQueries({ queryKey: ['players'] });
+          queryClient.invalidateQueries({ queryKey: ['credits-me'] });
         })();
       }
 
@@ -308,8 +347,19 @@ export function ImportTmClubDialog({ externalOpen, onExternalOpenChange }: { ext
               </Badge>
             </div>
 
-            {/* Search + select all */}
+            {/* Search + select all checkbox */}
             <div className="flex items-center gap-2">
+              <label className="flex items-center gap-2 cursor-pointer shrink-0 px-1">
+                <Checkbox
+                  checked={selectAllState}
+                  onCheckedChange={v => v ? selectAll() : deselectAll()}
+                />
+                <span className="text-xs text-muted-foreground select-none">
+                  {selectAllState === true
+                    ? t('player_form.tm_club_deselect_all')
+                    : t('player_form.tm_club_select_all')}
+                </span>
+              </label>
               <div className="relative flex-1">
                 <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-muted-foreground" />
                 <Input
@@ -319,9 +369,6 @@ export function ImportTmClubDialog({ externalOpen, onExternalOpenChange }: { ext
                   className="pl-8 h-8 text-sm"
                 />
               </div>
-              <Button variant="ghost" size="sm" onClick={selected.size === filteredPlayers.length ? deselectAll : selectAll}>
-                {selected.size === filteredPlayers.length ? t('player_form.tm_club_deselect_all') : t('player_form.tm_club_select_all')}
-              </Button>
             </div>
 
             {/* Player list */}
@@ -367,10 +414,18 @@ export function ImportTmClubDialog({ externalOpen, onExternalOpenChange }: { ext
               </div>
             </ScrollArea>
 
+            {/* Credit warning */}
+            {!isAdmin && selected.size > 0 && newSelectedCount > 0 && !hasEnoughCredits && (
+              <p className="text-xs text-destructive flex items-center gap-1.5 bg-destructive/8 border border-destructive/20 rounded-lg px-3 py-2">
+                <Zap className="w-3.5 h-3.5 shrink-0" />
+                Crédits insuffisants — {availableCredits} disponible{availableCredits > 1 ? 's' : ''} aujourd'hui, {newSelectedCount} requis. Décochez des joueurs pour rester dans la limite.
+              </p>
+            )}
+
             {/* Import button */}
             <Button
               onClick={handleImport}
-              disabled={selected.size === 0 || importing}
+              disabled={selected.size === 0 || importing || (!isAdmin && !hasEnoughCredits)}
               className="w-full gap-2"
             >
               {importing ? <Loader2 className="w-4 h-4 animate-spin" /> : <Sparkles className="w-4 h-4" />}
@@ -378,6 +433,13 @@ export function ImportTmClubDialog({ externalOpen, onExternalOpenChange }: { ext
                 ? t('player_form.tm_club_importing')
                 : t('player_form.tm_club_import_selected', { count: selected.size })
               }
+              {!importing && newSelectedCount > 0 && (
+                isAdmin
+                  ? <span className="ml-auto flex items-center gap-0.5 text-[10px] font-bold text-violet-300"><Zap className="w-2.5 h-2.5" />∞</span>
+                  : <span className={`ml-auto flex items-center gap-0.5 text-[10px] font-bold ${hasEnoughCredits ? 'text-amber-300' : 'text-red-300'}`}>
+                      <Zap className="w-2.5 h-2.5" />{newSelectedCount}
+                    </span>
+              )}
             </Button>
           </div>
         )}

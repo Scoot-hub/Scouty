@@ -1,5 +1,6 @@
 import { useState, useRef, useEffect, useCallback } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
+import { useEscapeKey } from '@/hooks/use-escape-key';
 import { useTranslation } from 'react-i18next';
 import {
   HelpCircle, X, Send, Bot, User, MessageCircle, BookOpen,
@@ -311,6 +312,7 @@ export default function HelpCenter() {
   // Panel state
   const [open, setOpen] = useState(false);
   const [tab, setTab] = useState<Tab>('assistant');
+  useEscapeKey(() => setOpen(false), open);
   const [seenPages, setSeenPages] = useState<Set<string>>(getSeenPages);
   const isCurrentPageSeen = guide ? seenPages.has(guide.key) : true;
 

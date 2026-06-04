@@ -231,3 +231,18 @@ export function formatDateTime(
   if (timePart === '—') return datePart;
   return `${datePart} ${timePart}`;
 }
+
+/**
+ * Sanitize a player name: keep Unicode letters, combining marks, spaces,
+ * hyphens and apostrophes. Everything else (dots, digits, symbols…) is
+ * replaced by a space, then collapsed and trimmed.
+ */
+export function sanitizePlayerName(raw: string | null | undefined): string {
+  if (!raw) return '';
+  return String(raw)
+    .replace(/[^\p{L}\p{M} ''ʼ\-]/gu, ' ')
+    .replace(/\s+/g, ' ')
+    .replace(/-{2,}/g, '-')
+    .replace(/^[\s\-']+|[\s\-']+$/g, '')
+    .trim();
+}

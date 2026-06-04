@@ -29,6 +29,7 @@ export interface VirtualizedPlayerGridProps {
   players: Player[];
   viewMode: 'compact' | 'detailed';
   selectedIds: Set<string>;
+  enrichingIds?: Set<string>;
   hasOrg: boolean;
   onToggleSelect: (id: string) => void;
   onDismissNews: (id: string) => void;
@@ -38,6 +39,7 @@ export function VirtualizedPlayerGrid({
   players,
   viewMode,
   selectedIds,
+  enrichingIds,
   hasOrg,
   onToggleSelect,
   onDismissNews,
@@ -102,6 +104,7 @@ export function VirtualizedPlayerGrid({
                 player={player}
                 viewMode={viewMode}
                 selected={selectedIds.has(player.id)}
+                isEnriching={enrichingIds?.has(player.id) ?? false}
                 hasOrg={hasOrg}
                 index={start + colIdx}
                 onToggleSelect={onToggleSelect}

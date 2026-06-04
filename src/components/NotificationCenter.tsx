@@ -1,4 +1,5 @@
 import { useState, useRef, useCallback } from 'react';
+import { useEscapeKey } from '@/hooks/use-escape-key';
 import { useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { Bell, CheckCheck, Crown, FileSearch, Inbox, Sparkles, Trash2, Users, Zap, X, Heart, MessageCircle, AtSign, TrendingUp, Calendar, CheckCircle2, Building2, Shield, Settings, Trophy } from 'lucide-react';
@@ -53,6 +54,7 @@ export default function NotificationCenter() {
   const [open, setOpen] = useState(false);
   const [panelPos, setPanelPos] = useState<{ top: number; right: number } | null>(null);
   const buttonRef = useRef<HTMLButtonElement>(null);
+  useEscapeKey(() => setOpen(false), open);
   const { data: notifications = [] } = useNotifications();
   const unreadCount = useUnreadCount();
   const markAsRead = useMarkAsRead();

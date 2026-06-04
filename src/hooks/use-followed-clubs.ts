@@ -8,6 +8,7 @@ export interface FollowedClub {
   club_name: string;
   notes: string | null;
   created_at: string;
+  display_order: number;
 }
 
 export function useFollowedClubs() {
@@ -57,4 +58,21 @@ export function useUnfollowClub() {
 export function useIsFollowingClub(clubName: string) {
   const { data: clubs = [] } = useFollowedClubs();
   return clubs.find(c => c.club_name.toLowerCase() === clubName.toLowerCase());
+}
+
+export function useReorderFollowedClubs() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async (order: { id: string; display_order: number }[]) => {
+      const res = await fetch(`${API_BASE}/followed-clubs/reorder`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify({ order }),
+      });
+      if (!res.ok) throw new Error('Failed to reorder');
+      return res.json();
+    },
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['followed-clubs'] }),
+  });
 }

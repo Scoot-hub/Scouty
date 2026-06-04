@@ -53,8 +53,26 @@ export default defineConfig(({ mode }) => ({
         changeOrigin: true,
         timeout: 600_000,       // 10 min — for long imports (31k rows)
         proxyTimeout: 600_000,
+        configure(proxy) {
+          proxy.on("error", (err, _req, res) => {
+            // ECONNRESET / ECONNREFUSED = server restarting via nodemon — not a real error
+            if (err.code === "ECONNRESET" || err.code === "ECONNREFUSED") {
+              if (res && !res.headersSent && typeof (res as { writeHead?: unknown }).writeHead === "function") {
+                (res as import("http").ServerResponse).writeHead(503, { "Content-Type": "application/json" });
+                (res as import("http").ServerResponse).end(JSON.stringify({ error: "Serveur en cours de redémarrage, réessayez dans un instant." }));
+              }
+              return; // suppress console noise
+            }
+            console.error("[vite/proxy] unexpected error:", err.message);
+          });
+        },
       },
-      "/uploads": "http://localhost:3001",
+      "/uploads": {
+        target: "http://localhost:3001",
+        configure(proxy) {
+          proxy.on("error", (_err, _req, _res) => { /* ignore upload proxy noise on restart */ });
+        },
+      },
     },
     hmr: {
       overlay: false,

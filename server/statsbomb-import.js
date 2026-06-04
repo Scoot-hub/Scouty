@@ -311,10 +311,11 @@ export async function runStatsBombImport({ force = false, onProgress = null } = 
   log(`New data detected: ${latestSha.slice(0, 8)} (was: ${lastSha?.slice(0, 8) || 'none'})`);
 
   // Create import log entry
-  const [[{ insertId: logId }]] = await pool.query(
+  const [insertResult] = await pool.query(
     "INSERT INTO sb_import_log (commit_sha, status) VALUES (?, 'running')",
     [latestSha]
   );
+  const logId = insertResult.insertId;
 
   const importedMatchIds = await getImportedMatchIds();
   let competitionsImported = 0;
@@ -380,7 +381,8 @@ export async function runStatsBombImport({ force = false, onProgress = null } = 
       }
 
       // Count players imported
-      const [[{ cnt }]] = await conn.query('SELECT COUNT(*) as cnt FROM sb_players');
+      const [[cntRow]] = await conn.query('SELECT COUNT(*) as cnt FROM sb_players');
+      const { cnt } = cntRow;
       playersImported = cnt;
 
     } finally {

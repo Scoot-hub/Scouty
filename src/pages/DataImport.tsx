@@ -170,7 +170,7 @@ export default function DataImport() {
   const [showErrors, setShowErrors] = useState(false);
   const [showMapping, setShowMapping] = useState(false);
 
-  const SIZE_HARD_LIMIT_MB = 20;  // block before even reading
+  const SIZE_HARD_LIMIT_MB = 30;  // block before even reading
   const SIZE_WARN_MB = 2;
   const ROW_WARN = 10_000;
   const formatMB = (bytes: number) => (bytes / 1024 / 1024).toFixed(1);
@@ -483,6 +483,7 @@ export default function DataImport() {
               <div className="text-center">
                 <p className="font-medium">{t('data_import.drop_label')}</p>
                 <p className="text-sm text-muted-foreground mt-1">{t('data_import.drop_hint')}</p>
+                <p className="text-xs text-muted-foreground/70 mt-1">{t('data_import.size_limit', { mb: SIZE_HARD_LIMIT_MB })}</p>
               </div>
               <Button type="button" variant="outline" size="sm" asChild>
                 <span>{t('data_import.browse')}</span>

@@ -47,7 +47,7 @@ import { VirtualizedPlayerTable } from '@/components/VirtualizedPlayerTable';
 import { toast } from 'sonner';
 import { useOperationBanner } from '@/contexts/OperationBannerContext';
 
-type SortOption = 'name' | 'age-asc' | 'age-desc' | 'level' | 'potential' | 'recent' | 'contract' | 'rating' | 'goals' | 'assists' | 'minutes' | 'xg' | 'pass-accuracy';
+type SortOption = 'smart' | 'name' | 'age-asc' | 'age-desc' | 'level' | 'potential' | 'recent' | 'contract' | 'rating' | 'goals' | 'assists' | 'minutes' | 'xg' | 'pass-accuracy';
 
 function computeCompletionPct(player: Player): number {
   const ext = (player.external_data ?? {}) as Record<string, unknown>;
@@ -180,7 +180,7 @@ export default function Players() {
   const [sortDropdownOpen, setSortDropdownOpen] = useState(false);
   const sortRef = useRef<HTMLDivElement>(null);
   const [extraFiltersOpen] = useState<boolean>(() => loadFilters().extraFiltersOpen ?? false);
-  const [sort, setSort] = useState<SortOption>(() => loadFilters().sort ?? 'name');
+  const [sort, setSort] = useState<SortOption>(() => loadFilters().sort ?? 'smart');
   const [tableSortKey, setTableSortKey] = useState<string>('name');
   const [tableSortDir, setTableSortDir] = useState<'asc' | 'desc'>('asc');
 
@@ -189,6 +189,7 @@ export default function Players() {
   // server's ORDER BY, so the dropdown looks broken in table mode.
   useEffect(() => {
     const map: Record<SortOption, [string, 'asc' | 'desc'] | undefined> = {
+      'smart':          undefined, // server-side smart sort, no table column equivalent
       'name':           ['name',          'asc'],
       'age-asc':        ['age',           'asc'],
       'age-desc':       ['age',           'desc'],
@@ -200,7 +201,7 @@ export default function Players() {
       'minutes':        ['minutes',       'desc'],
       'xg':             ['xg',            'desc'],
       'pass-accuracy':  ['pass_accuracy', 'desc'],
-      // recent / contract have no table column — leave the table sort alone;
+      // recent / contract / smart have no table column — leave the table sort alone;
       // the server still returns rows in the dropdown's order.
       'recent':   undefined,
       'contract': undefined,
@@ -214,6 +215,7 @@ export default function Players() {
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [enriching, setEnriching] = useState(false);
   const [enrichProgress, setEnrichProgress] = useState({ current: 0, total: 0 });
+  const [enrichingIds, setEnrichingIds] = useState<Set<string>>(new Set());
   const [reEnrichDialog, setReEnrichDialog] = useState<{
     open: boolean;
     recentCount: number;
@@ -247,7 +249,7 @@ export default function Players() {
 
   // Debounce search to avoid filtering on every keystroke
   useEffect(() => {
-    const timer = setTimeout(() => setDebouncedSearch(search), 250);
+    const timer = setTimeout(() => setDebouncedSearch(search), 500);
     return () => clearTimeout(timer);
   }, [search]);
 
@@ -493,13 +495,30 @@ export default function Players() {
     setCompareDialogOpen(true);
   };
 
+  const DEDUP_COOLDOWN_MS = 24 * 60 * 60 * 1000; // 24 h
+
   const handleDeleteDuplicates = async () => {
+    // Cooldown: block if last deletion was < 24h ago
+    const { data: { user: authUser } } = await supabase.auth.getUser().catch(() => ({ data: { user: null } }));
+    const storageKey = `scouthub_last_dedup_${authUser?.id ?? 'anon'}`;
+    const lastDedup = Number(localStorage.getItem(storageKey) ?? 0);
+    const elapsed = Date.now() - lastDedup;
+    if (elapsed < DEDUP_COOLDOWN_MS) {
+      const remaining = DEDUP_COOLDOWN_MS - elapsed;
+      const h = Math.floor(remaining / 3_600_000);
+      const m = Math.floor((remaining % 3_600_000) / 60_000);
+      const timeStr = h > 0 ? `${h}h ${m}min` : `${m} min`;
+      toast.error(t('players.dedup_cooldown', { time: timeStr }));
+      return;
+    }
+
     setDeletingDuplicates(true);
     try {
       const idsToDelete = duplicateGroups.flatMap(g => g.duplicates.map(d => d.id));
       for (const id of idsToDelete) {
         await supabase.from('players').delete().eq('id', id);
       }
+      localStorage.setItem(storageKey, String(Date.now()));
       toast.success(t('players.duplicates_deleted', { count: idsToDelete.length }));
       setDuplicateDialogOpen(false);
       setDuplicateGroups([]);
@@ -536,7 +555,7 @@ export default function Players() {
     }
   };
 
-  const handleBulkEnrich = async (mode: 'all' | 'selected', forceReEnrich = false) => {
+  const handleBulkEnrich = async (mode: 'all' | 'selected', forceReEnrich = false, skipReEnrichDialog = false) => {
     if (mode === 'all') {
       // Fresh credit check before launching (bypass React Query cache)
       try {
@@ -546,22 +565,24 @@ export default function Players() {
           const q = cred.quotas;
           const u = cred.usage;
           if (q?.daily !== -1) {
-            const remaining = Math.min(q.daily - u.daily, q.weekly - u.weekly, (q.monthly + (u.earned_total || 0)) - u.monthly);
+            // q.daily/weekly/monthly already include earned_total (server adds it before sending)
+            const remaining = Math.min(q.daily - u.daily, q.weekly - u.weekly, q.monthly - u.monthly);
             if (remaining <= 0) { setShowCreditLimit(true); return; }
           }
         }
       } catch { /* proceed anyway — server will enforce */ }
 
-      // Check if most players are recently enriched (< 6 months) — show confirmation if so
-      if (!forceReEnrich) {
+      // Check if most players are recently enriched (< 6 months) — show confirmation if so.
+      // skipReEnrichDialog bypasses this when the user already answered the dialog.
+      if (!forceReEnrich && !skipReEnrichDialog) {
         try {
           const statsRes = await supabase.functions.invoke('enrich-all-stats');
           const stats = statsRes.data as { total: number; recentlyEnriched: number; oldOrNever: number } | null;
           if (stats && stats.total > 0) {
             const recentPct = stats.recentlyEnriched / stats.total;
-            if (recentPct > 0.5 && stats.oldOrNever === 0) {
-              // All players recently enriched — ask if they want to re-enrich
-              setReEnrichDialog({ open: true, recentCount: stats.recentlyEnriched, total: stats.total });
+            if (stats.oldOrNever === 0) {
+              // All players recently enriched — no dialog needed, just inform directly
+              toast(t('players.enrichment_all_recent', { count: stats.recentlyEnriched }));
               return;
             } else if (recentPct > 0.5) {
               // Most recently enriched but some old/never — show dialog
@@ -599,10 +620,8 @@ export default function Players() {
           if (!progress) return;
           const current = (progress.done ?? 0) + (progress.errors ?? 0);
           updateOperation(opId, { current });
-          // Refresh credit widget whenever server reports an updated balance
-          if (progress.credits) {
-            queryClient.invalidateQueries({ queryKey: ['credits-me'] });
-          }
+          // Refresh credit widget on every poll tick — keeps the odometer animation live
+          queryClient.invalidateQueries({ queryKey: ['credits-me'] });
           if (!progress.running) {
             clearInterval(pollInterval);
             completeOperation(opId, { newCount: progress.done ?? 0, errorCount: progress.errors > 0 ? progress.errors : undefined });
@@ -660,6 +679,8 @@ export default function Players() {
     let errors = 0;
     let hitCreditLimit = false;
     for (const p of targets) {
+      // Mark this player as actively enriching so its card shows the animation
+      setEnrichingIds(prev => { const next = new Set(prev); next.add(p.id); return next; });
       try {
         const { data: ed, error: invokeErr } = await supabase.functions.invoke('enrich-player', {
           body: { playerName: p.name, club: p.club, playerId: p.id, nationality: p.nationality, generation: p.generation, position: p.position },
@@ -670,27 +691,37 @@ export default function Players() {
           setShowCreditLimit(true);
           queryClient.invalidateQueries({ queryKey: ['credits-me'] });
           hitCreditLimit = true;
+          setEnrichingIds(new Set());
           break;
         }
         success++;
 
-        // Update credit cache immediately with server-returned balance
+        // Always refresh the credit widget after each enrichment so the animation
+        // fires in real-time regardless of plan type (unlimited returns null)
+        queryClient.invalidateQueries({ queryKey: ['credits-me'] });
+
+        // Stop loop if a hard quota boundary was reached
         const cr = (ed as any)?.credits_remaining;
-        if (cr) {
-          queryClient.invalidateQueries({ queryKey: ['credits-me'] });
-          // Stop immediately if any limit hits 0 or below
-          if (cr.daily <= 0 || cr.weekly <= 0 || cr.monthly <= 0) {
-            setShowCreditLimit(true);
-            hitCreditLimit = true;
-            break;
-          }
+        if (cr && (cr.daily <= 0 || cr.weekly <= 0 || cr.monthly <= 0)) {
+          setShowCreditLimit(true);
+          hitCreditLimit = true;
+          setEnrichingIds(new Set());
+          break;
         }
-      } catch (e) { console.error('Enrich failed for', p.name, e); errors++; }
+      } catch (e) {
+        console.error('Enrich failed for', p.name, e);
+        errors++;
+        // Still refresh credits in case the error came after the server charged a credit
+        queryClient.invalidateQueries({ queryKey: ['credits-me'] });
+      }
+      // Unmark this player — enrichment done (success or error)
+      setEnrichingIds(prev => { const next = new Set(prev); next.delete(p.id); return next; });
       setEnrichProgress(prev => ({ ...prev, current: prev.current + 1 }));
       updateOperation(opId, { current: success + errors });
     }
     completeOperation(opId, { newCount: success, errorCount: (errors > 0 && !hitCreditLimit) ? errors : undefined });
     setEnriching(false);
+    setEnrichingIds(new Set());
     setSelectedIds(new Set());
     refetch();
     queryClient.invalidateQueries({ queryKey: ['credits-me'] });
@@ -952,7 +983,7 @@ export default function Players() {
     setAgeMin(''); setAgeMax('');
     setLevelMin(''); setLevelMax('');
     setPotMin(''); setPotMax('');
-    setSelectedContractRanges([]); setSelectedTasks([]); setSort('name');
+    setSelectedContractRanges([]); setSelectedTasks([]); setSort('smart');
     setRatingMin(''); setRatingMax('');
     setGoalsMin(''); setAssistsMin(''); setMinutesMin('');
     setXgMin(''); setXaMin(''); setDuelsWonPctMin('');
@@ -1163,10 +1194,14 @@ export default function Players() {
                         {enriching
                           ? t('players.enriching_progress', { current: enrichProgress.current, total: enrichProgress.total })
                           : t('players.enrich_all')}
-                        {!enriching && rem !== null && rem > 0 && (
-                          <span className="ml-auto flex items-center gap-0.5 text-[10px] text-amber-500 font-bold">
-                            <Zap className="w-2.5 h-2.5" />{t('players.enrich_all_credits', { count: rem })}
-                          </span>
+                        {!enriching && (
+                          isAdmin
+                            ? <span className="ml-auto flex items-center gap-0.5 text-[10px] text-violet-500 font-bold"><Zap className="w-2.5 h-2.5" />∞</span>
+                            : rem !== null && rem > 0 && (
+                              <span className="ml-auto flex items-center gap-0.5 text-[10px] text-amber-500 font-bold">
+                                <Zap className="w-2.5 h-2.5" />{t('players.enrich_all_credits', { count: rem })}
+                              </span>
+                            )
                         )}
                       </DropdownMenuItem>
                     </TooltipTrigger>
@@ -1176,7 +1211,10 @@ export default function Players() {
                         <li>• <span className="text-foreground font-medium">{allPrimaryCount} {t('players.enrich_tooltip_primary')}</span> — {t('players.enrich_tooltip_primary_desc')}</li>
                         {allSecondaryCount > 0 && <li>• <span className="text-muted-foreground">{allSecondaryCount} {t('players.enrich_tooltip_secondary')}</span> — {t('players.enrich_tooltip_secondary_desc')}</li>}
                         <li>• {t('players.enrich_tooltip_order')}</li>
-                        {rem !== null && <li className="pt-0.5 border-t border-border/40 text-amber-600 dark:text-amber-400">• {t('players.enrich_tooltip_credits', { count: rem })}</li>}
+                        {isAdmin
+                          ? <li className="pt-0.5 border-t border-border/40 text-violet-600 dark:text-violet-400">• Profil administrateur — enrichissement illimité, aucun crédit consommé</li>
+                          : rem !== null && <li className="pt-0.5 border-t border-border/40 text-amber-600 dark:text-amber-400">• {t('players.enrich_tooltip_credits', { count: rem })}</li>
+                        }
                       </ul>
                     </TooltipContent>
                   </Tooltip>
@@ -1442,12 +1480,22 @@ export default function Players() {
                   className="flex items-center justify-between w-36 sm:w-44 h-9 sm:h-10 px-2.5 sm:px-3 py-2 rounded-xl text-xs sm:text-sm border border-input bg-background hover:bg-muted transition-colors"
                 >
                   <span className="truncate">
-                    {{ name: t('players.sort_name'), 'age-asc': t('players.sort_age_asc'), 'age-desc': t('players.sort_age_desc'), level: t('players.sort_level'), potential: t('players.sort_potential'), contract: t('players.sort_contract'), recent: t('players.sort_recent'), rating: t('players.sort_rating'), goals: t('players.sort_goals'), assists: t('players.sort_assists'), minutes: t('players.sort_minutes'), xg: t('players.sort_xg'), 'pass-accuracy': t('players.sort_pass_accuracy') }[sort]}
+                    {{ smart: t('players.sort_smart'), name: t('players.sort_name'), 'age-asc': t('players.sort_age_asc'), 'age-desc': t('players.sort_age_desc'), level: t('players.sort_level'), potential: t('players.sort_potential'), contract: t('players.sort_contract'), recent: t('players.sort_recent'), rating: t('players.sort_rating'), goals: t('players.sort_goals'), assists: t('players.sort_assists'), minutes: t('players.sort_minutes'), xg: t('players.sort_xg'), 'pass-accuracy': t('players.sort_pass_accuracy') }[sort]}
                   </span>
                   <ChevronDown className={`w-4 h-4 opacity-50 shrink-0 ml-1 transition-transform ${sortDropdownOpen ? 'rotate-180' : ''}`} />
                 </button>
                 {sortDropdownOpen && (
                   <div className="absolute top-full left-0 mt-1 z-50 bg-popover border border-border rounded-lg shadow-lg w-44 sm:w-52 p-1 max-h-80 overflow-y-auto">
+                    {/* Smart sort — default recommended option */}
+                    <button
+                      type="button"
+                      onClick={() => { setSort('smart'); setSortDropdownOpen(false); }}
+                      className={`flex items-center gap-1.5 w-full px-2 py-1.5 rounded-md text-xs transition-colors ${sort === 'smart' ? 'bg-primary/10 text-primary font-semibold' : 'text-foreground hover:bg-muted'}`}
+                    >
+                      <span>✨</span>
+                      {t('players.sort_smart')}
+                    </button>
+                    <div className="border-t border-border/40 my-1" />
                     <p className="text-[9px] font-black uppercase tracking-wider text-muted-foreground px-2 py-1">{t('players.sort_general')}</p>
                     {([
                       { value: 'name', label: t('players.sort_name') },
@@ -2091,6 +2139,7 @@ export default function Players() {
               players={filtered}
               viewMode={viewMode === 'detailed' ? 'detailed' : 'compact'}
               selectedIds={selectedIds}
+              enrichingIds={enrichingIds}
               hasOrg={hasOrg}
               onToggleSelect={toggleSelect}
               onDismissNews={dismissNews}
@@ -2203,8 +2252,8 @@ export default function Players() {
               variant="outline"
               onClick={() => {
                 setReEnrichDialog(d => ({ ...d, open: false }));
-                // Enrich only old / never enriched (forceReEnrich = false already applied by server filter)
-                handleBulkEnrich('all', false);
+                // skipReEnrichDialog=true prevents the dialog from re-opening since the user already answered
+                handleBulkEnrich('all', false, true);
               }}
             >
               {t('players.reenrich_new_only')}

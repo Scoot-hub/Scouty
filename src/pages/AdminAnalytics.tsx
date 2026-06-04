@@ -2,7 +2,7 @@ import { useState, useEffect, useMemo, useRef, useCallback } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useIsAdmin } from '@/hooks/use-admin';
 import { useQuery } from '@tanstack/react-query';
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
+import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Navigate, Link } from 'react-router-dom';
@@ -11,7 +11,7 @@ import {
   CalendarDays, Eye, FileText, MessageSquare, Shield, ArrowLeft,
   Activity, UserPlus, CreditCard, Sparkles, Target, Contact,
   Monitor, Smartphone, Tablet, Globe, Clock, Radio, RefreshCw,
-  ChevronRight, X as XIcon,
+  ChevronRight, X as XIcon, Layers, Repeat2,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { getOpinionTranslationKey, type Opinion } from '@/types/player';
@@ -760,12 +760,243 @@ function TicketWordCloud() {
   );
 }
 
+// ── Advanced analytics types & hook ──────────────────────────────────────────
+
+interface AdvancedAnalytics {
+  funnel: {
+    total_users: number; with_player: number; with_5players: number;
+    with_10players: number; premium_users: number;
+    avg_days_to_player: number | null; avg_days_to_premium: number | null;
+  };
+  activityHeatmap: { dow: number; hour: number; count: number }[];
+  cohortRetention: { label: string; total: number; weeks: number[] }[];
+  topPages: { category: string; sessions: number; unique_users: number }[];
+  featureUsage: { feature: string; label: string; count: number }[];
+}
+
+function useAdvancedAnalytics(range: Range) {
+  return useQuery<AdvancedAnalytics>({
+    queryKey: ['admin-analytics-advanced', range],
+    queryFn: async () => {
+      const res = await fetch(`${API_BASE}/admin/analytics/advanced?range=${range}`, { credentials: 'include' });
+      if (!res.ok) throw new Error('Failed');
+      return res.json();
+    },
+    staleTime: 120_000,
+  });
+}
+
+// ── Funnel d'activation ───────────────────────────────────────────────────────
+
+function FunnelSection({ data }: { data: AdvancedAnalytics['funnel'] }) {
+  const steps = [
+    { label: 'Inscrits',       count: data.total_users,   color: 'bg-primary' },
+    { label: 'Premier joueur', count: data.with_player,    color: 'bg-sky-500' },
+    { label: '5+ joueurs',     count: data.with_5players,  color: 'bg-emerald-500' },
+    { label: '10+ joueurs',    count: data.with_10players, color: 'bg-amber-500' },
+    { label: 'Premium',        count: data.premium_users,  color: 'bg-yellow-500' },
+  ];
+  const max = steps[0].count || 1;
+  return (
+    <div className="space-y-3">
+      {steps.map((s, i) => {
+        const pct = Math.round((s.count / max) * 100);
+        return (
+          <div key={i} className="flex items-center gap-3">
+            <span className="text-xs w-28 shrink-0 text-muted-foreground">{s.label}</span>
+            <div className="flex-1 h-7 bg-muted/50 rounded-lg overflow-hidden relative">
+              <div className={cn('h-full rounded-lg transition-all', s.color)} style={{ width: `${pct}%`, opacity: 0.85 }} />
+              <span className="absolute inset-0 flex items-center px-2.5 text-xs font-bold">
+                {s.count.toLocaleString()}
+              </span>
+            </div>
+            <span className="text-xs w-10 text-right text-muted-foreground tabular-nums">{pct}%</span>
+          </div>
+        );
+      })}
+      <div className="grid grid-cols-2 gap-3 pt-2">
+        <div className="rounded-xl bg-muted/40 p-3 text-center">
+          <p className="text-xl font-extrabold font-mono">
+            {data.avg_days_to_player !== null ? `${data.avg_days_to_player}j` : '—'}
+          </p>
+          <p className="text-[11px] text-muted-foreground">Inscription → 1er joueur</p>
+        </div>
+        <div className="rounded-xl bg-muted/40 p-3 text-center">
+          <p className="text-xl font-extrabold font-mono">
+            {data.avg_days_to_premium !== null ? `${data.avg_days_to_premium}j` : '—'}
+          </p>
+          <p className="text-[11px] text-muted-foreground">Inscription → Premium</p>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ── Heatmap d'activité ────────────────────────────────────────────────────────
+
+const DOW_LABELS = ['Lun', 'Mar', 'Mer', 'Jeu', 'Ven', 'Sam', 'Dim'];
+
+function ActivityHeatmap({ data }: { data: AdvancedAnalytics['activityHeatmap'] }) {
+  const grid: number[][] = Array.from({ length: 7 }, () => Array(24).fill(0));
+  for (const r of data) { if (r.dow >= 0 && r.dow < 7) grid[r.dow][r.hour] = r.count; }
+  const maxVal = Math.max(...data.map(r => r.count), 1);
+
+  return (
+    <div className="overflow-x-auto">
+      <div style={{ minWidth: 560 }}>
+        {/* Hour labels */}
+        <div className="flex mb-1 ml-10">
+          {[0, 3, 6, 9, 12, 15, 18, 21].map(h => (
+            <div key={h} className="text-[10px] text-muted-foreground" style={{ width: `${(3 / 24) * 100}%` }}>
+              {h}h
+            </div>
+          ))}
+        </div>
+        {/* Grid */}
+        {grid.map((row, dow) => (
+          <div key={dow} className="flex items-center gap-1 mb-0.5">
+            <span className="text-[10px] text-muted-foreground w-9 shrink-0 text-right pr-1">{DOW_LABELS[dow]}</span>
+            <div className="flex gap-0.5 flex-1">
+              {row.map((count, h) => {
+                const intensity = count > 0 ? 0.12 + (count / maxVal) * 0.88 : 0;
+                return (
+                  <div key={h} title={`${DOW_LABELS[dow]} ${h}h : ${count} session${count > 1 ? 's' : ''}`}
+                    className="flex-1 rounded-sm"
+                    style={{ height: 18, backgroundColor: count > 0 ? `rgba(99,102,241,${intensity.toFixed(2)})` : 'transparent', border: '1px solid rgba(0,0,0,0.05)' }}
+                  />
+                );
+              })}
+            </div>
+          </div>
+        ))}
+        {/* Legend */}
+        <div className="flex items-center gap-2 mt-2 ml-10">
+          <span className="text-[10px] text-muted-foreground">Faible</span>
+          {[0.15, 0.3, 0.5, 0.7, 0.9].map(v => (
+            <div key={v} className="w-5 h-3 rounded-sm" style={{ backgroundColor: `rgba(99,102,241,${v})` }} />
+          ))}
+          <span className="text-[10px] text-muted-foreground">Élevé</span>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ── Rétention par cohorte ─────────────────────────────────────────────────────
+
+function CohortTable({ data }: { data: AdvancedAnalytics['cohortRetention'] }) {
+  if (!data.length) return <p className="text-sm text-muted-foreground text-center py-8">Pas encore assez de données.</p>;
+
+  function retentionColor(pct: number) {
+    if (pct >= 60) return 'bg-emerald-500/80 text-white';
+    if (pct >= 40) return 'bg-emerald-500/40 text-emerald-900 dark:text-emerald-100';
+    if (pct >= 20) return 'bg-amber-500/30 text-amber-900 dark:text-amber-100';
+    if (pct >= 5)  return 'bg-orange-500/20 text-orange-900 dark:text-orange-200';
+    if (pct === 0) return 'bg-transparent text-muted-foreground/30';
+    return 'bg-muted/40 text-muted-foreground';
+  }
+
+  return (
+    <div className="overflow-x-auto">
+      <table className="w-full text-xs">
+        <thead>
+          <tr>
+            <th className="text-left pb-2 pr-3 font-medium text-muted-foreground w-16">Cohorte</th>
+            <th className="text-right pb-2 pr-3 font-medium text-muted-foreground w-14">Total</th>
+            {Array.from({ length: 8 }, (_, i) => (
+              <th key={i} className="text-center pb-2 font-medium text-muted-foreground w-10">S+{i}</th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {data.map((c, i) => (
+            <tr key={i}>
+              <td className="py-1 pr-3 font-mono text-muted-foreground">{c.label}</td>
+              <td className="py-1 pr-3 text-right font-medium">{c.total}</td>
+              {c.weeks.map((pct, w) => (
+                <td key={w} className="py-1 px-0.5">
+                  <div className={cn('rounded text-center py-1 font-medium tabular-nums', retentionColor(pct))}>
+                    {pct > 0 ? `${pct}%` : ''}
+                  </div>
+                </td>
+              ))}
+            </tr>
+          ))}
+        </tbody>
+      </table>
+      <p className="text-[10px] text-muted-foreground/50 mt-2">S+0 = semaine d'inscription · S+1 = semaine suivante · etc.</p>
+    </div>
+  );
+}
+
+// ── Top pages & fonctionnalités ───────────────────────────────────────────────
+
+function TopPagesChart({ data, sectionMeta }: { data: AdvancedAnalytics['topPages']; sectionMeta: typeof SECTION_META }) {
+  const maxSessions = Math.max(...data.map(d => d.sessions), 1);
+  return (
+    <div className="space-y-2">
+      {data.map(p => {
+        const meta = sectionMeta[p.category] ?? sectionMeta.other;
+        const pct = Math.round((p.sessions / maxSessions) * 100);
+        return (
+          <div key={p.category} className="flex items-center gap-3">
+            <span className="text-sm w-5 text-center shrink-0">{meta.emoji}</span>
+            <span className="text-xs w-24 shrink-0 truncate">{meta.label}</span>
+            <div className="flex-1 h-5 bg-muted/50 rounded-md overflow-hidden relative">
+              <div className={cn('h-full rounded-md', meta.color)} style={{ width: `${pct}%`, opacity: 0.75 }} />
+              <span className="absolute inset-0 flex items-center justify-end px-2 text-[11px] font-medium tabular-nums">
+                {p.sessions}
+              </span>
+            </div>
+            <span className="text-[11px] text-muted-foreground w-14 text-right tabular-nums shrink-0">
+              {p.unique_users} user{p.unique_users > 1 ? 's' : ''}
+            </span>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+function FeatureUsageChart({ data }: { data: AdvancedAnalytics['featureUsage'] }) {
+  const maxCount = Math.max(...data.map(d => d.count), 1);
+  const FEATURE_COLORS: Record<string, string> = {
+    enrichissement: 'bg-primary', comparaison: 'bg-violet-500', rapports: 'bg-sky-500',
+    watchlist: 'bg-amber-500', shadow_team: 'bg-emerald-500', partages_org: 'bg-teal-500', tickets: 'bg-rose-500',
+  };
+  return (
+    <div className="space-y-2">
+      {data.filter(d => d.count > 0).map(d => {
+        const pct = Math.round((d.count / maxCount) * 100);
+        const color = FEATURE_COLORS[d.feature] || 'bg-muted-foreground';
+        return (
+          <div key={d.feature} className="flex items-center gap-3">
+            <span className="text-xs w-32 shrink-0 text-muted-foreground truncate">{d.label}</span>
+            <div className="flex-1 h-5 bg-muted/50 rounded-md overflow-hidden relative">
+              <div className={cn('h-full rounded-md', color)} style={{ width: `${pct}%`, opacity: 0.75 }} />
+              <span className="absolute inset-0 flex items-center justify-end px-2 text-[11px] font-medium tabular-nums">
+                {d.count.toLocaleString()}
+              </span>
+            </div>
+          </div>
+        );
+      })}
+      {data.every(d => d.count === 0) && (
+        <p className="text-sm text-muted-foreground text-center py-4">Aucune activité sur la période.</p>
+      )}
+    </div>
+  );
+}
+
+// ── Main ──────────────────────────────────────────────────────────────────────
+
 export default function AdminAnalytics() {
   const { t, i18n } = useTranslation();
   const { data: isAdmin, isLoading: adminLoading } = useIsAdmin();
   const [range, setRange] = useState<Range>('30d');
-  const [activeTab, setActiveTab] = useState<'live' | 'stats'>('live');
+  const [activeTab, setActiveTab] = useState<'live' | 'stats' | 'advanced'>('live');
   const { data, isLoading } = useAnalytics(range);
+  const { data: adv, isLoading: advLoading } = useAdvancedAnalytics(range);
 
   if (adminLoading) return null;
   if (!isAdmin) return <Navigate to="/players" replace />;
@@ -797,7 +1028,7 @@ export default function AdminAnalytics() {
           </div>
         </div>
 
-        {activeTab === 'stats' && (
+        {(activeTab === 'stats' || activeTab === 'advanced') && (
           <div className="flex items-center gap-1 bg-muted/50 rounded-xl p-1">
             {RANGES.map(r => (
               <button key={r.value} onClick={() => setRange(r.value)}
@@ -824,10 +1055,99 @@ export default function AdminAnalytics() {
           <BarChart3 className="w-4 h-4 text-primary" />
           Statistiques
         </button>
+        <button onClick={() => setActiveTab('advanced')}
+          className={cn('flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-all',
+            activeTab === 'advanced' ? 'bg-card shadow-sm text-foreground' : 'text-muted-foreground hover:text-foreground')}>
+          <Layers className="w-4 h-4 text-violet-500" />
+          Avancé
+        </button>
       </div>
 
       {/* Live tab */}
       {activeTab === 'live' && <LiveDashboard />}
+
+      {/* Advanced tab */}
+      {activeTab === 'advanced' && (advLoading || !adv ? (
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+          {Array.from({ length: 4 }).map((_, i) => (
+            <Card key={i} className="border-none"><CardContent className="p-5"><div className="h-48 bg-muted/50 rounded-xl animate-pulse" /></CardContent></Card>
+          ))}
+        </div>
+      ) : (
+        <div className="space-y-6">
+          {/* Row 1: Funnel + Feature usage */}
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <Card className="border-none card-warm">
+              <CardHeader className="pb-2">
+                <CardTitle className="text-sm font-bold flex items-center gap-2">
+                  <TrendingUp className="w-4 h-4 text-primary" />
+                  Funnel d'activation
+                </CardTitle>
+                <CardDescription className="text-xs">De l'inscription à la conversion premium.</CardDescription>
+              </CardHeader>
+              <CardContent><FunnelSection data={adv.funnel} /></CardContent>
+            </Card>
+
+            <Card className="border-none card-warm">
+              <CardHeader className="pb-2">
+                <CardTitle className="text-sm font-bold flex items-center gap-2">
+                  <Zap className="w-4 h-4 text-amber-500" />
+                  Utilisation des fonctionnalités
+                </CardTitle>
+                <CardDescription className="text-xs">Actions effectuées sur la période sélectionnée.</CardDescription>
+              </CardHeader>
+              <CardContent><FeatureUsageChart data={adv.featureUsage} /></CardContent>
+            </Card>
+          </div>
+
+          {/* Row 2: Heatmap */}
+          <Card className="border-none card-warm">
+            <CardHeader className="pb-2">
+              <CardTitle className="text-sm font-bold flex items-center gap-2">
+                <Clock className="w-4 h-4 text-primary" />
+                Heatmap d'activité — 30 derniers jours
+              </CardTitle>
+              <CardDescription className="text-xs">Densité des sessions par heure et jour de la semaine.</CardDescription>
+            </CardHeader>
+            <CardContent>
+              {adv.activityHeatmap.length > 0
+                ? <ActivityHeatmap data={adv.activityHeatmap} />
+                : <p className="text-sm text-muted-foreground text-center py-8">Pas encore assez de données de session.</p>
+              }
+            </CardContent>
+          </Card>
+
+          {/* Row 3: Cohort retention + Top pages */}
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <Card className="border-none card-warm">
+              <CardHeader className="pb-2">
+                <CardTitle className="text-sm font-bold flex items-center gap-2">
+                  <Repeat2 className="w-4 h-4 text-emerald-500" />
+                  Rétention par cohorte
+                </CardTitle>
+                <CardDescription className="text-xs">% d'utilisateurs toujours actifs semaine après semaine.</CardDescription>
+              </CardHeader>
+              <CardContent><CohortTable data={adv.cohortRetention} /></CardContent>
+            </Card>
+
+            <Card className="border-none card-warm">
+              <CardHeader className="pb-2">
+                <CardTitle className="text-sm font-bold flex items-center gap-2">
+                  <Eye className="w-4 h-4 text-sky-500" />
+                  Pages les plus visitées
+                </CardTitle>
+                <CardDescription className="text-xs">Sessions par section sur la période sélectionnée.</CardDescription>
+              </CardHeader>
+              <CardContent>
+                {adv.topPages.length > 0
+                  ? <TopPagesChart data={adv.topPages} sectionMeta={SECTION_META} />
+                  : <p className="text-sm text-muted-foreground text-center py-8">Pas encore assez de données.</p>
+                }
+              </CardContent>
+            </Card>
+          </div>
+        </div>
+      ))}
 
       {/* Stats tab */}
       {activeTab === 'stats' && (isLoading || !data ? (

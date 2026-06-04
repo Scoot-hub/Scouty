@@ -1,7 +1,4 @@
 User-agent: *
-Allow: /
-
-# Pages publiques indexables
 Allow: /$
 Allow: /pricing
 Allow: /about
@@ -29,5 +26,19 @@ Disallow: /reset-password
 Disallow: /forgot-password
 Disallow: /checkout
 Disallow: /premium-success
+
+# API — interdite à tous les robots
+Disallow: /api/
+
+# Les bots bien intentionnés s'arrêtent ici.
+# Honeypots pour bots malveillants (ne pas visiter) :
+Disallow: /api/export
+Disallow: /api/export-all
+Disallow: /api/dump
+Disallow: /api/data-export
+Disallow: /api/players/all
+Disallow: /api/bulk
+Disallow: /api/database
+Disallow: /api/backup
 
 Sitemap: https://scouty.app/sitemap.xml
