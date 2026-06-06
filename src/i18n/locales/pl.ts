@@ -213,7 +213,7 @@ export default {
     iso27001_content: "TLS 1.3 · hasła bcrypt · 2FA (TOTP/e-mail) · izolacja danych · codzienne kopie zapasowe · zgłoszenie naruszenia w ciągu 72h (RODO art. 33)",
     enrichment_title: 'Automatyczne wzbogacanie i aktualności',
     enrichment_content: "Publiczne źródła: Transfermarkt, TheSportsDB, API-Football. Aktualności przez Apify co 3h (publiczne informacje sportowe, bez danych użytkowników).",
-    import_title: 'Import statystyk (Wyscout / Hudl)',
+    import_title: 'Import statystyk',
     import_content: "Do 130+ kolumn statystyk na zawodnika/sezon. Zapisywane w przestrzeni osobistej. Użytkownik odpowiada za zawartość pliku.",
     payment_title: 'Płatności i subskrypcje',
     payment_content: "Wyłącznie przez Stripe Inc. (PCI-DSS poziom 1). Dane bankowe nigdy nie trafiają na serwery Scouty. Zarządzanie: Moje konto → Subskrypcja.",

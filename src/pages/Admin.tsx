@@ -36,6 +36,7 @@ const PAGE_ACTIONS: Record<string, string[]> = {
   player_profile:   ['view', 'edit', 'delete', 'enrich', 'add_report', 'edit_report', 'delete_report', 'add_note', 'delete_note', 'manage_fields'],
   add_player:       ['view', 'create', 'add_report'],
   watchlist:        ['view', 'create', 'edit', 'delete', 'add_player', 'remove_player'],
+  transfers:        ['view'],
   shadow_team:      ['view', 'create', 'edit', 'delete', 'assign_player', 'remove_player', 'download_image'],
   fixtures:         ['view', 'save_match', 'assign_match', 'assign_scout', 'view_detail'],
   my_matches:       ['view', 'edit_status', 'delete'],

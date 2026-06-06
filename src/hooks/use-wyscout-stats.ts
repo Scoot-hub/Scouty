@@ -153,6 +153,25 @@ export function useWyscoutStats(playerId: string | undefined) {
   });
 }
 
+// Stats for a player from the SHARED WyScout catalogue (wyscout_players),
+// keyed on wyscout_players.id — NOT the user-scoped player_wyscout_stats.
+// Returns every (season, division) row; the endpoint aliases
+// wyscout_player_id AS player_id so the shape stays WyscoutStatRow-compatible.
+export function useWyscoutCatalogStats(wyscoutId: string | undefined) {
+  return useQuery<WyscoutStatRow[]>({
+    queryKey: ['wyscout-catalog-stats', wyscoutId],
+    queryFn: async () => {
+      if (!wyscoutId) return [];
+      const res = await fetch(`${API_BASE}/wyscout/players/${wyscoutId}/stats?all=1`, { credentials: 'include' });
+      if (!res.ok) return [];
+      const json = await res.json();
+      return (json.rows ?? []) as WyscoutStatRow[];
+    },
+    enabled: !!wyscoutId,
+    staleTime: 5 * 60 * 1000,
+  });
+}
+
 export function useAllWyscoutSummaries() {
   return useQuery<WyscoutStatRow[]>({
     queryKey: ['wyscout-summaries'],

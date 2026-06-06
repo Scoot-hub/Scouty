@@ -344,8 +344,9 @@ export function useEventsForDay(date: string, limit = 20, offset = 0) {
   });
 }
 
-// Fetches all events for a day (no pagination) — used only for "my players" matching
-export function useAllEventsForDay(date: string) {
+// Fetches all events for a day (no pagination) — used for "my players" matching
+// and the Discover "by match" mode.
+export function useAllEventsForDay(date: string, enabled = true) {
   return useQuery({
     queryKey: ['livescore-events-day-all', date],
     queryFn: async (): Promise<LivescoreDayResponse> => {
@@ -355,6 +356,7 @@ export function useAllEventsForDay(date: string) {
       if (error) throw error;
       return data as LivescoreDayResponse;
     },
+    enabled: enabled && !!date,
     staleTime: 5 * 60 * 1000,
     retry: 1,
   });

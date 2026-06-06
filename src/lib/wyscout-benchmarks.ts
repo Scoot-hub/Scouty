@@ -48,7 +48,7 @@ export function suggestBenchmarkGroups(
     groups.push({
       key: `pos:${player.position}`,
       label: `Tous les ${player.position}`,
-      description: `Tous les ${player.position} de votre base WyScout`,
+      description: `Tous les ${player.position} de votre base`,
       rows: samePos.map(j => j.row),
       count: samePos.length,
       facet: 'all',

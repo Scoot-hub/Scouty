@@ -1,16 +1,17 @@
-import { useState } from 'react';
-import { useNavigate, Link } from 'react-router-dom';
+import { useMemo, useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { useMutation } from '@tanstack/react-query';
 import { supabase } from '@/integrations/supabase/client';
-import { useIsPremium } from '@/hooks/use-admin';
+import { useAllEventsForDay } from '@/hooks/use-api-football';
+import { MatchSquadScout, MatchPickerCard, type DayMatch } from '@/components/match/MatchSquadScout';
 import { Card, CardContent } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Badge } from '@/components/ui/badge';
 import { toast } from 'sonner';
-import { Search, Loader2, Crown, UserPlus, ExternalLink, Sparkles, Filter, Globe, Euro, Calendar, Crosshair, Users } from 'lucide-react';
+import { Search, Loader2, UserPlus, ExternalLink, Filter, Globe, Euro, Calendar, Crosshair, Users, FilePlus, Swords } from 'lucide-react';
 import { translateCountry } from '@/types/player';
 import { useAuth } from '@/contexts/AuthContext';
 
@@ -25,6 +26,9 @@ interface DiscoveredPlayer {
   club: string;
   clubLogo: string;
   marketValue: string;
+  // Present only for "by match" results
+  team?: string;
+  isHome?: boolean;
 }
 
 interface CommunityPlayer {
@@ -56,13 +60,25 @@ const POSITIONS_FILTER = [
 
 const API_BASE = (import.meta.env.API_URL || '/api').replace(/\/$/, '');
 
+type SearchMode = 'player' | 'club' | 'community' | 'match';
+
+// How many fixtures to show in the picker before asking the user to refine
+const MATCH_PICK_LIMIT = 24;
+
+const normalizeStr = (s: string) =>
+  (s || '').normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase().trim();
+
+// Stable identity for a discovered player (TM id when known, else team+name so two
+// same-named players from opposite squads don't collide in "by match" mode).
+const playerKey = (p: DiscoveredPlayer) =>
+  p.tmId || `${p.team || ''}-${p.name}`;
+
 export default function Discover() {
   const { t, i18n } = useTranslation();
   const navigate = useNavigate();
-  const { data: isPremium } = useIsPremium();
   const { user } = useAuth();
 
-  const [searchMode, setSearchMode] = useState<'player' | 'club' | 'community'>('player');
+  const [searchMode, setSearchMode] = useState<SearchMode>('player');
   const [firstName, setFirstName] = useState('');
   const [lastName, setLastName] = useState('');
   const [clubSearch, setClubSearch] = useState('');
@@ -79,7 +95,31 @@ export default function Discover() {
   const [filtersOpen, setFiltersOpen] = useState(true);
   const [addingPlayer, setAddingPlayer] = useState<string | null>(null);
 
+  // ── "By match" mode state ── (results are handled by the shared MatchSquadScout)
+  const [matchDate, setMatchDate] = useState(() => new Date().toISOString().slice(0, 10));
+  const [matchTeamFilter, setMatchTeamFilter] = useState('');
+  const [selectedMatch, setSelectedMatch] = useState<DayMatch | null>(null);
+
   const query = [firstName.trim(), lastName.trim()].filter(Boolean).join(' ');
+
+  // Fetch the day's fixtures only while the match tab is active
+  const { data: dayEventsData, isLoading: dayEventsLoading } = useAllEventsForDay(
+    matchDate,
+    searchMode === 'match',
+  );
+
+  // Flatten + filter the day's matches by team name
+  const dayMatches = useMemo<DayMatch[]>(() => {
+    const all: DayMatch[] = (dayEventsData?.competitions || []).flatMap((c) =>
+      c.events.map((e) => ({ ...e, competition: c.name, country: c.country })),
+    );
+    const f = matchTeamFilter.trim();
+    if (!f) return all;
+    const nf = normalizeStr(f);
+    return all.filter(
+      (e) => normalizeStr(e.home_team).includes(nf) || normalizeStr(e.away_team).includes(nf),
+    );
+  }, [dayEventsData, matchTeamFilter]);
 
   // Cache discover results in sessionStorage to avoid redundant scraping calls
   const buildCacheKey = () => {
@@ -151,8 +191,17 @@ export default function Discover() {
     onError: (err: unknown) => { toast.error(err instanceof Error ? err.message : t('common.error')); },
   });
 
+  const switchMode = (mode: SearchMode) => {
+    setSearchMode(mode);
+    setResults([]);
+    setCommunityResults([]);
+    setFoundClubName('');
+    setSelectedMatch(null);
+  };
+
   const handleSearch = (e: React.FormEvent) => {
     e.preventDefault();
+    if (searchMode === 'match') return; // match mode is driven by selecting a fixture
     if (searchMode === 'community') {
       if (!communitySearch.trim()) return;
       communityMutation.mutate();
@@ -162,8 +211,10 @@ export default function Discover() {
     searchMutation.mutate();
   };
 
+  const handleSelectMatch = (m: DayMatch) => setSelectedMatch(m);
+
   const handleAddPlayer = async (player: DiscoveredPlayer) => {
-    setAddingPlayer(player.tmId || player.name);
+    setAddingPlayer(playerKey(player));
     try {
       const { error } = await supabase.from('players').insert({
         name: player.name,
@@ -211,24 +262,27 @@ export default function Discover() {
     }
   };
 
-  // Premium gate
-  if (isPremium === false) {
-    return (
-      <div className="max-w-3xl mx-auto py-16 px-4 text-center space-y-6">
-        <div className="w-16 h-16 rounded-2xl bg-primary/10 flex items-center justify-center mx-auto">
-          <Crown className="w-8 h-8 text-primary" />
-        </div>
-        <h1 className="text-2xl font-bold">{t('discover.premium_title')}</h1>
-        <p className="text-muted-foreground max-w-md mx-auto">{t('discover.premium_desc')}</p>
-        <Link to="/pricing">
-          <Button>
-            <Sparkles className="w-4 h-4 mr-2" />
-            {t('discover.see_plans')}
-          </Button>
-        </Link>
-      </div>
-    );
-  }
+  // Fallback CTA shown after a search so the user can always create the player
+  // manually when they don't find them in the results (TM / club / community).
+  const renderAddManually = (variant: 'footer' | 'empty') => (
+    <div
+      className={
+        variant === 'empty'
+          ? 'flex flex-col items-center gap-3 mt-5'
+          : 'flex flex-col sm:flex-row items-center justify-center gap-3 pt-4 mt-4 border-t border-border'
+      }
+    >
+      <p className="text-sm text-muted-foreground">{t('discover.not_found_question')}</p>
+      <Button
+        variant={variant === 'empty' ? 'default' : 'outline'}
+        size="sm"
+        onClick={() => navigate('/player/new')}
+      >
+        <FilePlus className="w-3.5 h-3.5 mr-1.5" />
+        {t('discover.add_manually')}
+      </Button>
+    </div>
+  );
 
   return (
     <div className="max-w-6xl mx-auto space-y-6">
@@ -237,10 +291,6 @@ export default function Discover() {
         <h1 className="text-2xl font-bold tracking-tight flex items-center gap-3">
           <Search className="w-6 h-6 text-primary" />
           {t('discover.title')}
-          <Badge variant="secondary" className="text-[10px] gap-1">
-            <Crown className="w-3 h-3" />
-            Premium
-          </Badge>
         </h1>
         <p className="text-muted-foreground text-sm mt-1">{t('discover.subtitle')}</p>
       </div>
@@ -250,10 +300,10 @@ export default function Discover() {
         <CardContent className="p-4">
           <form onSubmit={handleSearch} className="space-y-4">
             {/* Mode toggle */}
-            <div className="flex items-center gap-1 p-1 rounded-lg bg-muted w-fit">
+            <div className="flex flex-wrap items-center gap-1 p-1 rounded-lg bg-muted w-fit">
               <button
                 type="button"
-                onClick={() => { setSearchMode('player'); setResults([]); setCommunityResults([]); setFoundClubName(''); }}
+                onClick={() => switchMode('player')}
                 className={`px-3 py-1.5 rounded-md text-xs font-medium transition-all ${searchMode === 'player' ? 'bg-background shadow-sm text-foreground' : 'text-muted-foreground'}`}
               >
                 <UserPlus className="w-3.5 h-3.5 inline mr-1.5" />
@@ -261,7 +311,7 @@ export default function Discover() {
               </button>
               <button
                 type="button"
-                onClick={() => { setSearchMode('club'); setResults([]); setCommunityResults([]); setFoundClubName(''); }}
+                onClick={() => switchMode('club')}
                 className={`px-3 py-1.5 rounded-md text-xs font-medium transition-all ${searchMode === 'club' ? 'bg-background shadow-sm text-foreground' : 'text-muted-foreground'}`}
               >
                 <Search className="w-3.5 h-3.5 inline mr-1.5" />
@@ -269,7 +319,15 @@ export default function Discover() {
               </button>
               <button
                 type="button"
-                onClick={() => { setSearchMode('community'); setResults([]); setCommunityResults([]); setFoundClubName(''); }}
+                onClick={() => switchMode('match')}
+                className={`px-3 py-1.5 rounded-md text-xs font-medium transition-all ${searchMode === 'match' ? 'bg-background shadow-sm text-foreground' : 'text-muted-foreground'}`}
+              >
+                <Swords className="w-3.5 h-3.5 inline mr-1.5" />
+                {t('discover.mode_match')}
+              </button>
+              <button
+                type="button"
+                onClick={() => switchMode('community')}
                 className={`px-3 py-1.5 rounded-md text-xs font-medium transition-all ${searchMode === 'community' ? 'bg-background shadow-sm text-foreground' : 'text-muted-foreground'}`}
               >
                 <Users className="w-3.5 h-3.5 inline mr-1.5" />
@@ -304,6 +362,23 @@ export default function Discover() {
                     placeholder={t('discover.community_placeholder')}
                   />
                 </div>
+              ) : searchMode === 'match' ? (
+                <>
+                  <div className="w-40 shrink-0">
+                    <Input
+                      type="date"
+                      value={matchDate}
+                      onChange={e => { setMatchDate(e.target.value); setSelectedMatch(null); }}
+                    />
+                  </div>
+                  <div className="flex-1">
+                    <Input
+                      value={matchTeamFilter}
+                      onChange={e => setMatchTeamFilter(e.target.value)}
+                      placeholder={t('discover.match_team_filter')}
+                    />
+                  </div>
+                </>
               ) : (
                 <div className="flex-1">
                   <Input
@@ -313,22 +388,57 @@ export default function Discover() {
                   />
                 </div>
               )}
-              <Button type="submit" disabled={
-                (searchMode === 'community' ? communityMutation.isPending : searchMutation.isPending) ||
-                (searchMode === 'club' ? !clubSearch.trim() : searchMode === 'community' ? !communitySearch.trim() : !query.trim())
-              }>
-                {(searchMode === 'community' ? communityMutation.isPending : searchMutation.isPending)
-                  ? <Loader2 className="w-4 h-4 animate-spin mr-2" />
-                  : <Search className="w-4 h-4 mr-2" />}
-                {t('discover.search_btn')}
-              </Button>
-              <Button type="button" variant="outline" size="icon" onClick={() => setFiltersOpen(!filtersOpen)}>
-                <Filter className="w-4 h-4" />
-              </Button>
+              {searchMode !== 'match' && (
+                <>
+                  <Button type="submit" disabled={
+                    (searchMode === 'community' ? communityMutation.isPending : searchMutation.isPending) ||
+                    (searchMode === 'club' ? !clubSearch.trim() : searchMode === 'community' ? !communitySearch.trim() : !query.trim())
+                  }>
+                    {(searchMode === 'community' ? communityMutation.isPending : searchMutation.isPending)
+                      ? <Loader2 className="w-4 h-4 animate-spin mr-2" />
+                      : <Search className="w-4 h-4 mr-2" />}
+                    {t('discover.search_btn')}
+                  </Button>
+                  <Button type="button" variant="outline" size="icon" onClick={() => setFiltersOpen(!filtersOpen)}>
+                    <Filter className="w-4 h-4" />
+                  </Button>
+                </>
+              )}
             </div>
 
-            {/* Filters */}
-            {filtersOpen && (
+            {/* Match picker — fixtures for the chosen day, styled like the Match tab */}
+            {searchMode === 'match' && (
+              <div className="pt-3 border-t border-border">
+                {dayEventsLoading ? (
+                  <div className="flex items-center justify-center py-6">
+                    <Loader2 className="w-5 h-5 animate-spin text-muted-foreground" />
+                  </div>
+                ) : dayMatches.length === 0 ? (
+                  <p className="text-xs text-muted-foreground text-center py-6">{t('discover.match_no_matches')}</p>
+                ) : (
+                  <>
+                    <div className="grid gap-2.5 grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 max-h-[26rem] overflow-y-auto pr-1">
+                      {dayMatches.slice(0, MATCH_PICK_LIMIT).map((m) => (
+                        <MatchPickerCard
+                          key={m.id}
+                          match={m}
+                          selected={selectedMatch?.id === m.id}
+                          onSelect={() => handleSelectMatch(m)}
+                        />
+                      ))}
+                    </div>
+                    {dayMatches.length > MATCH_PICK_LIMIT && (
+                      <p className="text-[11px] text-muted-foreground text-center pt-2.5">
+                        {t('discover.match_more', { count: dayMatches.length - MATCH_PICK_LIMIT })}
+                      </p>
+                    )}
+                  </>
+                )}
+              </div>
+            )}
+
+            {/* Filters (not applicable to match mode) */}
+            {filtersOpen && searchMode !== 'match' && (
               <div className="grid grid-cols-2 md:grid-cols-5 gap-3 pt-3 border-t border-border">
                 <div className="space-y-1">
                   <label className="text-[10px] font-medium text-muted-foreground flex items-center gap-1">
@@ -444,17 +554,33 @@ export default function Discover() {
                 </Card>
               ))}
             </div>
+            {renderAddManually('footer')}
           </div>
         ) : communityMutation.isSuccess ? (
           <div className="text-center py-16">
             <Search className="w-10 h-10 text-muted-foreground/30 mx-auto mb-3" />
             <p className="text-sm text-muted-foreground">{t('discover.no_results')}</p>
+            {renderAddManually('empty')}
           </div>
         ) : (
           <div className="text-center py-16">
             <Users className="w-10 h-10 text-muted-foreground/20 mx-auto mb-3" />
             <p className="text-sm font-medium text-muted-foreground">{t('discover.community_empty_title')}</p>
             <p className="text-xs text-muted-foreground/60 mt-1">{t('discover.community_empty_desc')}</p>
+          </div>
+        )
+      ) : searchMode === 'match' ? (
+        /* Results — Match mode (handled by the shared MatchSquadScout) */
+        selectedMatch ? (
+          <div className="space-y-5">
+            <MatchSquadScout match={selectedMatch} />
+            {renderAddManually('footer')}
+          </div>
+        ) : (
+          <div className="text-center py-16">
+            <Swords className="w-10 h-10 text-muted-foreground/20 mx-auto mb-3" />
+            <p className="text-sm font-medium text-muted-foreground">{t('discover.match_empty_title')}</p>
+            <p className="text-xs text-muted-foreground/60 mt-1">{t('discover.match_empty_desc')}</p>
           </div>
         )
       ) : (
@@ -508,8 +634,8 @@ export default function Discover() {
                           <ExternalLink className="w-4 h-4 text-muted-foreground" />
                         </a>
                       )}
-                      <Button size="sm" variant="outline" onClick={() => handleAddPlayer(player)} disabled={addingPlayer === (player.tmId || player.name)}>
-                        {addingPlayer === (player.tmId || player.name) ? <Loader2 className="w-3.5 h-3.5 animate-spin mr-1" /> : <UserPlus className="w-3.5 h-3.5 mr-1" />}
+                      <Button size="sm" variant="outline" onClick={() => handleAddPlayer(player)} disabled={addingPlayer === playerKey(player)}>
+                        {addingPlayer === playerKey(player) ? <Loader2 className="w-3.5 h-3.5 animate-spin mr-1" /> : <UserPlus className="w-3.5 h-3.5 mr-1" />}
                         {t('discover.add')}
                       </Button>
                     </div>
@@ -517,11 +643,13 @@ export default function Discover() {
                 </Card>
               ))}
             </div>
+            {renderAddManually('footer')}
           </div>
         ) : searchMutation.isSuccess ? (
           <div className="text-center py-16">
             <Search className="w-10 h-10 text-muted-foreground/30 mx-auto mb-3" />
             <p className="text-sm text-muted-foreground">{t('discover.no_results')}</p>
+            {renderAddManually('empty')}
           </div>
         ) : (
           <div className="text-center py-16">

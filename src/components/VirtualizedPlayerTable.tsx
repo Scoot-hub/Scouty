@@ -4,26 +4,33 @@ import { useTranslation } from 'react-i18next';
 import { useWindowVirtualizer } from '@tanstack/react-virtual';
 import { Checkbox } from '@/components/ui/checkbox';
 import { PlayerAvatar } from '@/components/ui/player-avatar';
+import { FlagIcon } from '@/components/ui/flag-icon';
+import { ClubBadge } from '@/components/ui/club-badge';
 import { usePositions } from '@/hooks/use-positions';
-import { getPlayerAge, type Player } from '@/types/player';
+import { useUiPreferences } from '@/contexts/UiPreferencesContext';
+import { useRatesMap } from '@/hooks/use-exchange-rates';
+import { convertMV, formatDateShort } from '@/lib/format-utils';
+import { getPlayerAge, translateFoot, type Player } from '@/types/player';
 import { getPlayerPerfStats, type PerfStats } from '@/lib/player-stats';
 
-const COLUMNS = [
-  { key: 'name', labelKey: 'players.col_name', align: 'left' },
-  { key: 'age', labelKey: 'players.age', align: 'center' },
-  { key: 'position', labelKey: 'players.col_position', align: 'center' },
-  { key: 'club', labelKey: 'players.col_club', align: 'left' },
-  { key: 'rating', labelKey: null, label: 'Rating', align: 'center' },
-  { key: 'goals', labelKey: 'players.stat_goals', align: 'center' },
-  { key: 'assists', labelKey: 'players.stat_assists', align: 'center' },
-  { key: 'xg', labelKey: null, label: 'xG', align: 'center' },
-  { key: 'xa', labelKey: null, label: 'xA', align: 'center' },
-  { key: 'minutes', labelKey: null, label: 'Min', align: 'center' },
-  { key: 'pass_accuracy', labelKey: null, label: 'Pass%', align: 'center' },
-  { key: 'duels_won_pct', labelKey: null, label: 'Duels%', align: 'center' },
-  { key: 'level', labelKey: 'players.level', align: 'center' },
-  { key: 'potential', labelKey: 'players.potential', align: 'center' },
-] as const;
+// Each cell carries the SAME width + responsive-visibility classes in the header
+// and in every row, so columns stay aligned. Every fixed cell is `truncate`
+// (overflow-hidden + ellipsis) so a long value/label can never spill over its
+// neighbour. Less-critical columns collapse at smaller widths (`hidden lg/xl`)
+// so the line never overflows the screen — no horizontal scroll.
+const CELL = {
+  select:   'w-7 shrink-0 flex items-center justify-center',
+  name:     'flex-1 min-w-0 flex items-center gap-2',
+  age:      'w-9 shrink-0 text-center truncate',
+  pos:      'w-12 shrink-0 text-center truncate',
+  level:    'w-10 shrink-0 text-center truncate',
+  pot:      'w-10 shrink-0 text-center truncate',
+  club:     'w-28 xl:w-36 shrink-0 min-w-0 hidden md:flex items-center gap-1.5',
+  foot:     'w-16 shrink-0 text-center truncate hidden lg:block',
+  height:   'w-14 shrink-0 text-center truncate hidden xl:block',
+  value:    'w-24 shrink-0 text-center truncate hidden lg:block',
+  contract: 'w-24 shrink-0 text-center truncate hidden xl:block',
+} as const;
 
 export interface VirtualizedPlayerTableProps {
   players: Player[];
@@ -38,57 +45,61 @@ export interface VirtualizedPlayerTableProps {
 
 type Row = Player & { perf: PerfStats };
 
-function TableRowImpl({ row, selected, index, onToggleSelect }: {
+function RowImpl({ row, selected, index, onToggleSelect }: {
   row: Row;
   selected: boolean;
   index: number;
   onToggleSelect: (id: string) => void;
 }) {
   const navigate = useNavigate();
+  const { t } = useTranslation();
   const { positionShort: posShort } = usePositions();
-  const ratingColor = (row.perf.rating ?? 0) >= 7.5
-    ? 'text-emerald-600 dark:text-emerald-400'
-    : (row.perf.rating ?? 0) >= 7.0
-      ? 'text-blue-600 dark:text-blue-400'
-      : (row.perf.rating ?? 0) >= 6.5
-        ? 'text-amber-600 dark:text-amber-400'
-        : '';
-  // Cap reveal animation to the first viewport — beyond that it's just dead paint.
+  const { currency, dateFormat } = useUiPreferences();
+  const rates = useRatesMap();
+
+  const ext = (row.external_data ?? {}) as Record<string, unknown>;
+
+  // Reveal only the first viewport's rows — beyond that it's just dead paint.
   const animation = index < 24
-    ? { animation: 'reveal-up 0.4s ease both', animationDelay: `${Math.min(index * 30, 300)}ms` }
+    ? { animation: 'reveal-up 0.4s ease both', animationDelay: `${Math.min(index * 25, 300)}ms` }
     : undefined;
+
   return (
-    <tr
-      className="border-t border-border/30 hover:bg-muted/30 transition-colors cursor-pointer"
+    <div
+      className="flex items-center gap-2 px-3 h-[52px] border-t border-border/30 hover:bg-muted/30 transition-colors cursor-pointer text-xs"
       style={animation}
       onClick={() => navigate(`/player/${row.id}`)}
     >
-      <td className="px-2 py-2" onClick={e => { e.stopPropagation(); onToggleSelect(row.id); }}>
+      <div className={CELL.select} onClick={e => { e.stopPropagation(); onToggleSelect(row.id); }}>
         <Checkbox checked={selected} />
-      </td>
-      <td className="px-2 py-2 font-medium">
-        <div className="flex items-center gap-2">
-          <PlayerAvatar name={row.name} photoUrl={row.photo_url} size="sm" />
-          <span className="truncate max-w-[140px]">{row.name}</span>
+      </div>
+      <div className={CELL.name}>
+        <PlayerAvatar name={row.name} photoUrl={row.photo_url} size="sm" />
+        <div className="min-w-0 flex items-center gap-1.5">
+          <FlagIcon nationality={row.nationality} size="sm" />
+          <span className="truncate font-medium">{row.name}</span>
         </div>
-      </td>
-      <td className="text-center px-2 py-2">{getPlayerAge(row.generation, row.date_of_birth)}</td>
-      <td className="text-center px-2 py-2">{posShort[row.position]}</td>
-      <td className="px-2 py-2"><span className="truncate block max-w-[120px]">{row.club}</span></td>
-      <td className={`text-center px-2 py-2 font-bold ${ratingColor}`}>{row.perf.rating?.toFixed(2) ?? '—'}</td>
-      <td className="text-center px-2 py-2 font-bold">{row.perf.goals ?? '—'}</td>
-      <td className="text-center px-2 py-2 font-bold">{row.perf.assists ?? '—'}</td>
-      <td className="text-center px-2 py-2">{row.perf.xg?.toFixed(1) ?? '—'}</td>
-      <td className="text-center px-2 py-2">{row.perf.xa?.toFixed(1) ?? '—'}</td>
-      <td className="text-center px-2 py-2">{row.perf.minutes ?? '—'}</td>
-      <td className="text-center px-2 py-2">{row.perf.pass_accuracy != null ? `${Math.round(row.perf.pass_accuracy)}%` : '—'}</td>
-      <td className="text-center px-2 py-2">{row.perf.duels_won_pct != null ? `${row.perf.duels_won_pct}%` : '—'}</td>
-      <td className="text-center px-2 py-2 font-bold">{row.current_level > 0 ? row.current_level : <span className="text-muted-foreground font-normal">NA</span>}</td>
-      <td className="text-center px-2 py-2 font-bold text-primary">{row.potential > 0 ? row.potential : <span className="text-muted-foreground font-normal">NA</span>}</td>
-    </tr>
+      </div>
+      <div className={CELL.age}>{getPlayerAge(row.generation, row.date_of_birth)}</div>
+      <div className={CELL.pos}>{posShort[row.position]}</div>
+      <div className={CELL.level}>
+        {row.current_level > 0 ? <span className="font-bold">{row.current_level}</span> : <span className="text-muted-foreground">NA</span>}
+      </div>
+      <div className={CELL.pot}>
+        {row.potential > 0 ? <span className="font-bold text-primary">{row.potential}</span> : <span className="text-muted-foreground">NA</span>}
+      </div>
+      <div className={CELL.club}>
+        <ClubBadge club={row.club} size="xs" />
+        <span className="truncate text-muted-foreground">{row.club}</span>
+      </div>
+      <div className={CELL.foot}>{translateFoot(row.foot, t)}</div>
+      <div className={CELL.height}>{(ext.height as string) || '—'}</div>
+      <div className={CELL.value}>{convertMV((ext.market_value as string) || row.market_value, currency, rates)}</div>
+      <div className={CELL.contract}>{formatDateShort(row.contract_end, dateFormat) || '—'}</div>
+    </div>
   );
 }
-const TableRow = memo(TableRowImpl);
+const TableRow = memo(RowImpl);
 
 export function VirtualizedPlayerTable({
   players,
@@ -104,7 +115,7 @@ export function VirtualizedPlayerTable({
   const containerRef = useRef<HTMLDivElement | null>(null);
 
   // Memoize the enriched + sorted rows so we don't recompute on every keystroke
-  // outside the table (e.g. a search-bar change that doesn't affect this list).
+  // outside the list (e.g. a search-bar change that doesn't affect this view).
   const sortedRows: Row[] = useMemo(() => {
     const rows: Row[] = players.map(p => Object.assign({}, p, { perf: getPlayerPerfStats(p) }));
     const dir = sortDir === 'asc' ? 1 : -1;
@@ -132,7 +143,7 @@ export function VirtualizedPlayerTable({
     return () => window.removeEventListener('resize', update);
   }, []);
 
-  const estimateSize = useCallback(() => 44, []);
+  const estimateSize = useCallback(() => 52, []);
   const rowVirtualizer = useWindowVirtualizer({
     count: sortedRows.length,
     estimateSize,
@@ -147,46 +158,42 @@ export function VirtualizedPlayerTable({
     ? totalSize - (virtualItems[virtualItems.length - 1].end - scrollMargin)
     : 0;
 
+  const arrow = (key: string) => sortKey === key ? (sortDir === 'desc' ? ' ↓' : ' ↑') : '';
+
   return (
-    <div ref={containerRef} className="overflow-x-auto rounded-xl border border-border bg-card">
-      <table className="w-full text-xs">
-        <thead>
-          <tr className="bg-muted/50 text-muted-foreground">
-            <th className="px-2 py-2 w-8">
-              <Checkbox checked={allSelected} onCheckedChange={onToggleSelectAll} />
-            </th>
-            {COLUMNS.map(col => {
-              const label = col.labelKey ? t(col.labelKey) : col.label;
-              return (
-                <th
-                  key={col.key}
-                  className={`px-2 py-2 font-semibold cursor-pointer hover:text-foreground select-none whitespace-nowrap ${col.align === 'left' ? 'text-left' : 'text-center'}`}
-                  onClick={() => onSortChange(col.key)}
-                >
-                  {label} {sortKey === col.key ? (sortDir === 'desc' ? '↓' : '↑') : ''}
-                </th>
-              );
-            })}
-          </tr>
-        </thead>
-        <tbody>
-          {paddingTop > 0 && <tr style={{ height: paddingTop }} aria-hidden />}
-          {virtualItems.map((vi) => {
-            const row = sortedRows[vi.index];
-            if (!row) return null;
-            return (
-              <TableRow
-                key={row.id}
-                row={row}
-                index={vi.index}
-                selected={selectedIds.has(row.id)}
-                onToggleSelect={onToggleSelect}
-              />
-            );
-          })}
-          {paddingBottom > 0 && <tr style={{ height: paddingBottom }} aria-hidden />}
-        </tbody>
-      </table>
+    <div ref={containerRef} className="rounded-xl border border-border bg-card overflow-hidden">
+      {/* Header — labels only, sortable on the primary columns. No horizontal scroll. */}
+      <div className="flex items-center gap-2 px-3 py-2 bg-muted/50 text-muted-foreground text-[11px] font-semibold select-none">
+        <div className={CELL.select}>
+          <Checkbox checked={allSelected} onCheckedChange={onToggleSelectAll} />
+        </div>
+        <button className={`${CELL.name} text-left hover:text-foreground`} onClick={() => onSortChange('name')}>{t('players.col_name')}{arrow('name')}</button>
+        <button className={`${CELL.age} hover:text-foreground`} onClick={() => onSortChange('age')}>{t('players.age')}{arrow('age')}</button>
+        <button className={`${CELL.pos} hover:text-foreground`} onClick={() => onSortChange('position')}>{t('players.col_position')}{arrow('position')}</button>
+        <button className={`${CELL.level} hover:text-foreground`} onClick={() => onSortChange('level')}>{t('players.col_lvl')}{arrow('level')}</button>
+        <button className={`${CELL.pot} hover:text-foreground`} onClick={() => onSortChange('potential')}>{t('players.col_pot')}{arrow('potential')}</button>
+        <button className={`${CELL.club} text-left hover:text-foreground`} onClick={() => onSortChange('club')}>{t('players.col_club')}{arrow('club')}</button>
+        <div className={CELL.foot}>{t('players.foot')}</div>
+        <div className={CELL.height}>{t('players.height')}</div>
+        <div className={CELL.value}>{t('players.value')}</div>
+        <div className={CELL.contract}>{t('players.contract')}</div>
+      </div>
+
+      {paddingTop > 0 && <div style={{ height: paddingTop }} aria-hidden />}
+      {virtualItems.map((vi) => {
+        const row = sortedRows[vi.index];
+        if (!row) return null;
+        return (
+          <TableRow
+            key={row.id}
+            row={row}
+            index={vi.index}
+            selected={selectedIds.has(row.id)}
+            onToggleSelect={onToggleSelect}
+          />
+        );
+      })}
+      {paddingBottom > 0 && <div style={{ height: paddingBottom }} aria-hidden />}
     </div>
   );
 }

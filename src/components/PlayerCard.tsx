@@ -1,7 +1,7 @@
 import { memo, useMemo } from 'react';
 import { Link } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
-import { Sparkles, Zap, Clock, RefreshCw } from 'lucide-react';
+import { Sparkles, Zap, CalendarPlus, RefreshCw } from 'lucide-react';
 import { Card } from '@/components/ui/card';
 import { Checkbox } from '@/components/ui/checkbox';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
@@ -14,7 +14,6 @@ import { useUiPreferences } from '@/contexts/UiPreferencesContext';
 import { useRatesMap } from '@/hooks/use-exchange-rates';
 import { convertMV, formatDate, formatDateShort, type DateFormat } from '@/lib/format-utils';
 import { getPlayerAge, getTaskBgClass, getTaskEmoji, getTaskTranslationKey, translateFoot, type PlayerTask, type Player } from '@/types/player';
-import { getPlayerPerfStats } from '@/lib/player-stats';
 
 // ── Lightweight tooltip wrapper — shows after 700ms hover (feels intentional) ──
 function Tip({ label, children, side = 'top' }: {
@@ -86,19 +85,6 @@ function formatEnrichDate(
   return formatDate(d, dateFormat);
 }
 
-function formatUpdatedAt(
-  isoDate: string,
-  dateFormat: DateFormat,
-  t: (key: string, opts?: Record<string, unknown>) => string,
-): string {
-  const d = new Date(isoDate);
-  const days = Math.floor((Date.now() - d.getTime()) / 86_400_000);
-  if (days === 0) return t('common.today');
-  if (days === 1) return t('common.yesterday');
-  if (days < 7) return t('common.days_ago', { count: days });
-  return formatDate(d, dateFormat);
-}
-
 export interface PlayerCardProps {
   player: Player;
   viewMode: 'compact' | 'detailed';
@@ -120,10 +106,6 @@ function PlayerCardImpl({ player, viewMode, selected, isEnriching = false, hasOr
 
   const ext = (player.external_data ?? {}) as Record<string, unknown>;
   const completionPct = useMemo(() => computeCompletionPct(player), [player]);
-  const perf = useMemo(
-    () => viewMode === 'detailed' ? getPlayerPerfStats(player) : null,
-    [player, viewMode],
-  );
   const colorClass = completionColor(completionPct);
 
   // Tooltip labels derived once per render
@@ -150,8 +132,8 @@ function PlayerCardImpl({ player, viewMode, selected, isEnriching = false, hasOr
   const tipEnrich = player.external_data_fetched_at
     ? `${t('players.tip_last_sync')} : ${formatDate(new Date(player.external_data_fetched_at), dateFormat)}`
     : t('players.tip_not_synced');
-  const tipUpdated = player.updated_at
-    ? `${t('players.tip_last_modified')} : ${formatDate(new Date(player.updated_at), dateFormat)}`
+  const tipCreated = player.created_at
+    ? `${t('players.tip_added')} : ${formatDate(new Date(player.created_at), dateFormat)}`
     : '';
   const tipCompletion = completionMissingList(player, t);
 
@@ -278,62 +260,6 @@ function PlayerCardImpl({ player, viewMode, selected, isEnriching = false, hasOr
               )}
             </div>
 
-            {/* ── Barres + enrichi/modifié sur la même ligne ── */}
-            {/* Layout : [barre flex-1] [info fixe w-14] */}
-            {(showPlayerLevel || showPlayerPotential || showPlayerCompletion) && (
-            <div className="mt-1.5 space-y-0.5">
-              {/* Barre niveau + date enrichissement */}
-              {showPlayerLevel && (
-                <div className="flex items-center gap-1.5">
-                  <Tip label={tipLevel} side="left">
-                    <div className="flex-1 h-1 rounded-full bg-muted overflow-hidden cursor-default">
-                      <div className="h-full rounded-full bg-primary/70 transition-all duration-700 ease-out group-hover:bg-primary" style={{ width: `${(player.current_level / 10) * 100}%` }} />
-                    </div>
-                  </Tip>
-                  <Tip label={tipEnrich} side="top">
-                    <span className="flex items-center gap-0.5 w-14 shrink-0 cursor-default">
-                      <Zap className={`w-2.5 h-2.5 shrink-0 ${player.external_data_fetched_at ? 'text-sky-500' : 'text-muted-foreground/25'}`} />
-                      <span className={`text-[9px] tabular-nums truncate ${player.external_data_fetched_at ? 'text-sky-600 dark:text-sky-400' : 'text-muted-foreground/35'}`}>
-                        {player.external_data_fetched_at ? formatEnrichDate(player.external_data_fetched_at, dateFormat, t) : '—'}
-                      </span>
-                    </span>
-                  </Tip>
-                </div>
-              )}
-
-              {/* Barre potentiel + date modification */}
-              {showPlayerPotential && (
-                <div className="flex items-center gap-1.5">
-                  <Tip label={tipPotential} side="left">
-                    <div className="flex-1 h-1 rounded-full bg-muted overflow-hidden cursor-default">
-                      <div className="h-full rounded-full bg-emerald-500/60 transition-all duration-700 ease-out delay-75 group-hover:bg-emerald-500" style={{ width: `${(player.potential / 10) * 100}%` }} />
-                    </div>
-                  </Tip>
-                  <Tip label={tipUpdated} side="bottom">
-                    <span className="flex items-center gap-0.5 w-14 shrink-0 cursor-default">
-                      <Clock className="w-2.5 h-2.5 text-muted-foreground/35 shrink-0" />
-                      <span className="text-[9px] text-muted-foreground/50 tabular-nums truncate">
-                        {player.updated_at ? formatUpdatedAt(player.updated_at, dateFormat, t) : '—'}
-                      </span>
-                    </span>
-                  </Tip>
-                </div>
-              )}
-
-              {/* Barre complétion + % */}
-              {showPlayerCompletion && (
-                <Tip label={tipCompletion} side="right">
-                  <div className="flex items-center gap-1.5 cursor-default">
-                    <div className="flex-1 h-1 rounded-full bg-muted overflow-hidden">
-                      <div className={`h-full rounded-full transition-all duration-700 ease-out delay-100 ${completionPct >= 80 ? 'bg-emerald-500' : completionPct >= 50 ? 'bg-amber-500' : 'bg-rose-500'}`} style={{ width: `${completionPct}%` }} />
-                    </div>
-                    <span className={`text-[9px] font-bold tabular-nums rounded px-1 py-0.5 w-14 text-center shrink-0 ${colorClass}`}>{completionPct}%</span>
-                  </div>
-                </Tip>
-              )}
-            </div>
-            )}
-
             {/* ── Detailed mode: stats grid ── */}
             {viewMode === 'detailed' && (
               <>
@@ -357,54 +283,36 @@ function PlayerCardImpl({ player, viewMode, selected, isEnriching = false, hasOr
                     </div>
                   </Tip>
                   <Tip label={tipContract} side="top">
-                    <div className={`rounded-lg py-2 px-1 text-center cursor-default ${ext.on_loan ? 'bg-amber-50 dark:bg-amber-950/30 ring-1 ring-amber-200 dark:ring-amber-800' : 'bg-muted/50'}`}>
+                    <div className="rounded-lg bg-muted/50 py-2 px-1 text-center cursor-default">
                       <p className="text-[10px] text-muted-foreground mb-0.5">{t('players.contract')}</p>
                       <p className={`text-xs font-semibold ${player.contract_end && (new Date(player.contract_end).getTime() - Date.now()) / (1000 * 60 * 60 * 24) < 180 ? 'text-destructive' : ''}`}>
                         {formatDateShort(player.contract_end, dateFormat)}
                       </p>
-                      {ext.on_loan ? (
-                        <p className="text-[9px] text-amber-600 dark:text-amber-400 mt-0.5">{t('profile.on_loan_short')}</p>
-                      ) : null}
                     </div>
                   </Tip>
                 </div>
-                {perf && (perf.rating != null || perf.goals != null) ? (() => {
-                  const ratingColor = (perf.rating ?? 0) >= 7.5 ? 'text-emerald-600 dark:text-emerald-400' : (perf.rating ?? 0) >= 7.0 ? 'text-blue-600 dark:text-blue-400' : (perf.rating ?? 0) >= 6.5 ? 'text-amber-600 dark:text-amber-400' : 'text-muted-foreground';
-                  return (
-                    <div className="grid grid-cols-5 gap-1.5 mt-2">
-                      <Tip label={t('players.tip_stat_rating')} side="top">
-                        <div className="rounded-lg bg-muted/50 py-1.5 px-1 text-center cursor-default">
-                          <p className="text-[9px] text-muted-foreground mb-0.5">Rating</p>
-                          <p className={`text-xs font-bold ${ratingColor}`}>{perf.rating != null ? perf.rating.toFixed(1) : '—'}</p>
-                        </div>
-                      </Tip>
-                      <Tip label={t('players.tip_stat_goals')} side="top">
-                        <div className="rounded-lg bg-muted/50 py-1.5 px-1 text-center cursor-default">
-                          <p className="text-[9px] text-muted-foreground mb-0.5">{t('players.stat_goals')}</p>
-                          <p className="text-xs font-bold">{perf.goals ?? '—'}</p>
-                        </div>
-                      </Tip>
-                      <Tip label={t('players.tip_stat_assists')} side="top">
-                        <div className="rounded-lg bg-muted/50 py-1.5 px-1 text-center cursor-default">
-                          <p className="text-[9px] text-muted-foreground mb-0.5">{t('players.stat_assists')}</p>
-                          <p className="text-xs font-bold">{perf.assists ?? '—'}</p>
-                        </div>
-                      </Tip>
-                      <Tip label={t('players.tip_stat_apps')} side="top">
-                        <div className="rounded-lg bg-muted/50 py-1.5 px-1 text-center cursor-default">
-                          <p className="text-[9px] text-muted-foreground mb-0.5">{t('players.stat_apps')}</p>
-                          <p className="text-xs font-bold">{perf.appearances ?? '—'}</p>
-                        </div>
-                      </Tip>
-                      <Tip label={t('players.tip_stat_minutes')} side="top">
-                        <div className="rounded-lg bg-muted/50 py-1.5 px-1 text-center cursor-default">
-                          <p className="text-[9px] text-muted-foreground mb-0.5">Min.</p>
-                          <p className="text-xs font-bold">{perf.minutes != null ? (perf.minutes > 999 ? `${(perf.minutes / 1000).toFixed(1)}k` : perf.minutes) : '—'}</p>
-                        </div>
-                      </Tip>
-                    </div>
-                  );
-                })() : null}
+                {/* ── Méta uniforme : complétion + dernier enrichissement + date de création ── */}
+                <div className="mt-3 pt-2.5 border-t border-border/30 flex items-center justify-between gap-2 text-[10px] text-muted-foreground">
+                  {showPlayerCompletion ? (
+                    <Tip label={tipCompletion} side="top">
+                      <span className={`flex items-center gap-1 font-bold tabular-nums rounded px-1.5 py-0.5 cursor-default ${colorClass}`}>{completionPct}%</span>
+                    </Tip>
+                  ) : <span />}
+                  <div className="flex items-center gap-3">
+                    <Tip label={tipEnrich} side="top">
+                      <span className="flex items-center gap-1 cursor-default">
+                        <Zap className={`w-3 h-3 shrink-0 ${player.external_data_fetched_at ? 'text-sky-500' : 'text-muted-foreground/30'}`} />
+                        <span className="tabular-nums">{player.external_data_fetched_at ? formatEnrichDate(player.external_data_fetched_at, dateFormat, t) : '—'}</span>
+                      </span>
+                    </Tip>
+                    <Tip label={tipCreated} side="top">
+                      <span className="flex items-center gap-1 cursor-default">
+                        <CalendarPlus className="w-3 h-3 shrink-0 text-muted-foreground/40" />
+                        <span className="tabular-nums">{player.created_at ? formatDate(new Date(player.created_at), dateFormat) : '—'}</span>
+                      </span>
+                    </Tip>
+                  </div>
+                </div>
               </>
             )}
           </div>

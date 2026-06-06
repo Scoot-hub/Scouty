@@ -6,8 +6,10 @@ import { useTranslation } from 'react-i18next';
 // in eagerly added a half-second to every page navigation.
 import { usePlayers, usePlayersPaginated, usePlayerFacets, useToggleArchive, fetchAllPlayerIds, type PlayersFilters, type PaginatedResponse } from '@/hooks/use-players';
 import { useMyOrganizations } from '@/hooks/use-organization';
+import { useIsMobile } from '@/hooks/use-mobile';
 import { useIsPremium, useIsAdmin } from '@/hooks/use-admin';
 import { PermGate } from '@/components/PermGate';
+import { PlayerExampleCard } from '@/components/PlayerExampleCard';
 import { getPlayerAge, getOpinionBgClass, getOpinionEmoji, getOpinionTranslationKey, ALL_OPINIONS, getTaskBgClass, getTaskEmoji, getTaskTranslationKey, translateFoot, PLAYER_TASKS, resolveLeagueName, translateCountry, type Opinion, type Position, type Foot, type PlayerTask, type Player } from '@/types/player';
 import type { PerfStats } from '@/lib/player-stats';
 import { convertMV, formatDate, formatDateShort, type DateFormat } from '@/lib/format-utils';
@@ -31,13 +33,11 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, Di
 // Heavy dialogs (~30-100 KB each, with deep imports of xlsx, supabase, etc) —
 // React.lazy + only mounted when open keeps them out of the navigation path.
 const LazyImportPlayersDialog = lazy(() => import('@/components/ImportPlayersDialog').then(m => ({ default: m.ImportPlayersDialog })));
-const LazyImportTmClubDialog = lazy(() => import('@/components/ImportTmClubDialog').then(m => ({ default: m.ImportTmClubDialog })));
-const LazyImportTmMatchDialog = lazy(() => import('@/components/ImportTmMatchDialog').then(m => ({ default: m.ImportTmMatchDialog })));
 const LazyAddToWatchlistDialog = lazy(() => import('@/components/AddToWatchlistDialog').then(m => ({ default: m.AddToWatchlistDialog })));
 const LazyBulkShareDialog = lazy(() => import('@/components/ShareWithOrgPopover').then(m => ({ default: m.BulkShareDialog })));
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from '@/components/ui/dropdown-menu';
 import { supabase } from '@/integrations/supabase/client';
-import { Search, RotateCcw, Users, RefreshCw, ChevronDown, ChevronUp, SlidersHorizontal, Download, X, LayoutGrid, List, Table2, Building2, Swords, Eye, Zap, Check, Sparkles, Copy, Trash2, FileText, Upload, FilePlus, ClipboardList, Trophy, TrendingUp, BarChart3, CalendarDays, Info, FileSpreadsheet } from 'lucide-react';
+import { Search, RotateCcw, Users, RefreshCw, ChevronDown, ChevronUp, SlidersHorizontal, Download, X, LayoutGrid, List, Rows3, Building2, Eye, Zap, Check, Sparkles, Copy, Trash2, FileText, Upload, FilePlus, ClipboardList, Trophy, TrendingUp, BarChart3, CalendarDays, Info, FileSpreadsheet } from 'lucide-react';
 import { useRemainingCredits } from '@/hooks/use-credits';
 import { CreditLimitDialog } from '@/components/CreditLimitDialog';
 import { getPlayerPerfStats, CHART_COLORS } from '@/lib/player-stats';
@@ -227,6 +227,12 @@ export default function Players() {
   const [deletingDuplicates, setDeletingDuplicates] = useState(false);
   const [filtersOpen, setFiltersOpen] = useState<boolean>(() => loadFilters().filtersOpen ?? false);
   const [viewMode, setViewMode] = useState<'compact' | 'detailed' | 'table'>(() => loadFilters().viewMode ?? 'compact');
+  const isMobile = useIsMobile();
+  // Row view is desktop-only — it lays the detailed info across one wide line.
+  // On mobile we fall back to the detailed cards (same info, stacked).
+  useEffect(() => {
+    if (isMobile && viewMode === 'table') setViewMode('detailed');
+  }, [isMobile, viewMode]);
   const [updatedSince, setUpdatedSince] = useState<string>(() => loadFilters().updatedSince ?? '');
   const [enrichment, setEnrichment] = useState<'' | 'enriched' | 'not_enriched'>(() => loadFilters().enrichment ?? '');
   const [debouncedSearch, setDebouncedSearch] = useState(search);
@@ -395,8 +401,6 @@ export default function Players() {
 
   const [exporting, setExporting] = useState(false);
   const [watchlistDialogOpen, setWatchlistDialogOpen] = useState(false);
-  const [importClubOpen, setImportClubOpen] = useState(false);
-  const [importMatchOpen, setImportMatchOpen] = useState(false);
   const [importExcelOpen, setImportExcelOpen] = useState(false);
   const [orgDialogOpen, setOrgDialogOpen] = useState(false);
   const [bulkReportOpen, setBulkReportOpen] = useState(false);
@@ -860,6 +864,10 @@ export default function Players() {
   // Counts from server-side facets
   const archivedCount = facets?.archivedCount ?? 0;
   const activeCount = facets?.activeCount ?? 0;
+  // True only when the account has zero players at all (active + archived). Drives the
+  // welcome empty-state and hides the search / sort / filters / stats chrome entirely.
+  // Guarded on `facets` so we don't flash the empty screen before counts have loaded.
+  const accountIsEmpty = !!facets && activeCount === 0 && archivedCount === 0;
 
   const newsCount = useMemo(() => filtered.filter(p => p.has_news).length, [filtered]);
 
@@ -1031,6 +1039,55 @@ export default function Players() {
     </div>
   );
 
+  // No players yet: focused welcome screen — no search / sort / filters / stats / toolbar.
+  if (accountIsEmpty) return (
+    <div className="max-w-7xl mx-auto">
+      <div className="mb-3 flex items-center gap-3">
+        <div className="w-10 h-10 rounded-xl bg-primary/10 flex items-center justify-center shrink-0">
+          <Users className="w-5 h-5 text-primary" />
+        </div>
+        <h1 className="text-2xl font-extrabold tracking-tight">{t('players.title')}</h1>
+      </div>
+
+      <div className="flex flex-col items-center text-center py-12 sm:py-16 px-4">
+        <h2 className="text-xl sm:text-2xl font-bold text-foreground">{t('players.empty_title')}</h2>
+        <p className="text-sm text-muted-foreground mt-2 max-w-md">{t('players.empty_subtitle')}</p>
+
+        {/* Illustrative sample card — non-interactive */}
+        <div className="relative mt-8 pointer-events-none select-none opacity-90">
+          <span className="absolute -top-2.5 left-1/2 -translate-x-1/2 z-10 px-2.5 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wide bg-muted text-muted-foreground border border-border">
+            {t('players.empty_example')}
+          </span>
+          <PlayerExampleCard />
+        </div>
+
+        {/* Actions */}
+        <div className="flex flex-col items-center gap-3 mt-8">
+          <PermGate pageKey="add_player" action="create">
+            <Button onClick={() => navigate('/discover')} className="rounded-xl gap-2">
+              <FilePlus className="w-4 h-4" />
+              {t('players.empty_cta_add')}
+            </Button>
+          </PermGate>
+          <button
+            onClick={() => setImportExcelOpen(true)}
+            className="inline-flex items-center gap-1.5 text-sm text-muted-foreground hover:text-foreground underline-offset-4 hover:underline"
+          >
+            <FileSpreadsheet className="w-3.5 h-3.5" />
+            {t('players.empty_cta_import')}
+          </button>
+        </div>
+      </div>
+
+      {/* Excel/CSV import dialog — mounted lazily when the import CTA is clicked */}
+      {importExcelOpen && (
+        <Suspense fallback={null}>
+          <LazyImportPlayersDialog externalOpen={importExcelOpen} onExternalOpenChange={setImportExcelOpen} />
+        </Suspense>
+      )}
+    </div>
+  );
+
   return (
     <div className="max-w-7xl mx-auto">
       <div className="mb-3 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
@@ -1062,31 +1119,12 @@ export default function Players() {
             )}
           </Button>
           <PermGate pageKey="add_player" action="create">
-            <DropdownMenu modal={false}>
-              <DropdownMenuTrigger asChild>
-                <Button size="sm" className="rounded-xl">
-                  <Users className="w-4 h-4 sm:mr-1.5" />
-                  <span className="hidden sm:inline">{t('players.add_player')}</span>
-                  <ChevronDown className="w-3.5 h-3.5 ml-1" />
-                </Button>
-              </DropdownMenuTrigger>
-              <DropdownMenuContent align="end">
-                <DropdownMenuItem asChild>
-                  <Link to="/player/new">
-                    <Users className="w-4 h-4 mr-2" />
-                    {t('players.add_player')}
-                  </Link>
-                </DropdownMenuItem>
-                <DropdownMenuItem onClick={() => setImportClubOpen(true)}>
-                  <Building2 className="w-4 h-4 mr-2" />
-                  {t('players.add_club')}
-                </DropdownMenuItem>
-                <DropdownMenuItem onClick={() => setImportMatchOpen(true)}>
-                  <Swords className="w-4 h-4 mr-2" />
-                  {t('players.add_match')}
-                </DropdownMenuItem>
-              </DropdownMenuContent>
-            </DropdownMenu>
+            <Button size="sm" className="rounded-xl" asChild>
+              <Link to="/discover">
+                <Users className="w-4 h-4 sm:mr-1.5" />
+                <span className="hidden sm:inline">{t('players.add_player')}</span>
+              </Link>
+            </Button>
           </PermGate>
           <DropdownMenu modal={false}>
             <DropdownMenuTrigger asChild>
@@ -1409,16 +1447,6 @@ export default function Players() {
             <FileSpreadsheet className="w-4 h-4 sm:mr-1.5" />
             <span className="hidden sm:inline">{t('players.import_excel')}</span>
           </Button>
-          {importClubOpen && (
-            <Suspense fallback={null}>
-              <LazyImportTmClubDialog externalOpen={importClubOpen} onExternalOpenChange={setImportClubOpen} />
-            </Suspense>
-          )}
-          {importMatchOpen && (
-            <Suspense fallback={null}>
-              <LazyImportTmMatchDialog externalOpen={importMatchOpen} onExternalOpenChange={setImportMatchOpen} />
-            </Suspense>
-          )}
           {importExcelOpen && (
             <Suspense fallback={null}>
               <LazyImportPlayersDialog externalOpen={importExcelOpen} onExternalOpenChange={setImportExcelOpen} />
@@ -1442,18 +1470,16 @@ export default function Players() {
           ...(expiring > 0 ? [{ label: t('players.contract'), value: expiring, icon: '⚠️', color: 'text-red-400' }] : []),
         ];
         return (
-          <div ref={statsBarRef} className="reveal-up grid gap-2 mb-2" style={{ gridTemplateColumns: `repeat(${Math.min(stats.length, 5)}, 1fr)` }}>
+          <div ref={statsBarRef} className="reveal-up flex flex-wrap gap-1.5 mb-2">
             {stats.map((s, i) => (
               <div
                 key={s.label}
-                className="rounded-xl bg-card border border-border/60 px-3 py-2.5 flex items-center gap-2.5 hover:border-primary/30 hover:shadow-sm transition-all duration-200 reveal-scale"
+                className="rounded-lg bg-card border border-border/60 px-2.5 py-1.5 flex items-center gap-1.5 hover:border-primary/30 transition-colors duration-200 reveal-scale"
                 style={{ transitionDelay: `${i * 60}ms` }}
               >
-                <span className="text-lg leading-none">{s.icon}</span>
-                <div className="min-w-0">
-                  <p className={`text-base font-black tabular-nums leading-none ${s.color}`}>{s.value}</p>
-                  <p className="text-[10px] text-muted-foreground mt-0.5 truncate">{s.label}</p>
-                </div>
+                <span className="text-sm leading-none">{s.icon}</span>
+                <span className={`text-sm font-black tabular-nums leading-none ${s.color}`}>{s.value}</span>
+                <span className="text-[11px] text-muted-foreground leading-none">{s.label}</span>
               </div>
             ))}
           </div>
@@ -1569,13 +1595,15 @@ export default function Players() {
                   >
                     <List className="w-4 h-4" />
                   </button>
-                  <button
-                    onClick={() => setViewMode('table')}
-                    className={`p-1.5 transition-colors ${viewMode === 'table' ? 'bg-primary text-primary-foreground' : 'hover:bg-muted text-muted-foreground'}`}
-                    title={t('players.view_table')}
-                  >
-                    <Table2 className="w-4 h-4" />
-                  </button>
+                  {!isMobile && (
+                    <button
+                      onClick={() => setViewMode('table')}
+                      className={`p-1.5 transition-colors ${viewMode === 'table' ? 'bg-primary text-primary-foreground' : 'hover:bg-muted text-muted-foreground'}`}
+                      title={t('players.view_table')}
+                    >
+                      <Rows3 className="w-4 h-4" />
+                    </button>
+                  )}
                 </div>
                 <label className="flex items-center gap-1.5 sm:gap-2.5 cursor-pointer">
                   <Checkbox checked={totalFiltered > 0 && selectedIds.size >= totalFiltered} onCheckedChange={toggleSelectAll} />
@@ -2159,6 +2187,8 @@ export default function Players() {
             </div>
           )}
 
+          {/* No-results state: players exist but the current filters/search exclude them all.
+              The zero-players-at-all case is handled earlier by the accountIsEmpty branch. */}
           {filtered.length === 0 && (
             <div className="text-center py-20">
               <p className="text-5xl mb-4">🔍</p>

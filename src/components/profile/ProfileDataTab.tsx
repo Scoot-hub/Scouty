@@ -42,9 +42,9 @@ export default function ProfileDataTab({ player }: ProfileDataTabProps) {
           <Database className="w-6 h-6 text-emerald-500" />
         </div>
         <div className="space-y-1">
-          <h3 className="text-lg font-semibold">Data WyScout</h3>
+          <h3 className="text-lg font-semibold">Données avancées</h3>
           <p className="text-sm text-muted-foreground max-w-md">
-            Toute la data WyScout est centralisée sur la page <strong>Data</strong>.
+            Toutes les données avancées sont centralisées sur la page <strong>Data</strong>.
             {match.isLoading
               ? ' Recherche du joueur dans la base partagée...'
               : match.data?.matched
@@ -54,7 +54,7 @@ export default function ProfileDataTab({ player }: ProfileDataTabProps) {
         </div>
         <Button asChild className="gap-2" disabled={match.isLoading}>
           <Link to={targetUrl}>
-            {match.isLoading ? <Loader2 className="w-4 h-4 animate-spin" /> : <>Voir la data WyScout <ArrowRight className="w-4 h-4" /></>}
+            {match.isLoading ? <Loader2 className="w-4 h-4 animate-spin" /> : <>Voir les données avancées <ArrowRight className="w-4 h-4" /></>}
           </Link>
         </Button>
       </CardContent>

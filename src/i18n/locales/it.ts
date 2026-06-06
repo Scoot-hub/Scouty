@@ -213,7 +213,7 @@ export default {
     iso27001_content: "TLS 1.3 · Password bcrypt · 2FA (TOTP/e-mail) · Isolamento dei dati · Backup giornalieri · Notifica violazione entro 72h (GDPR art. 33)",
     enrichment_title: 'Arricchimento automatico e news',
     enrichment_content: "Fonti pubbliche: Transfermarkt, TheSportsDB, API-Football. News via Apify ogni 3h (notizie sportive pubbliche, nessun dato utente).",
-    import_title: 'Importazione statistiche (Wyscout / Hudl)',
+    import_title: 'Importazione statistiche',
     import_content: "Fino a 130+ colonne statistiche per giocatore/stagione. Salvate nello spazio personale. L'utente è responsabile del contenuto del file.",
     payment_title: 'Pagamenti e abbonamenti',
     payment_content: "Esclusivamente tramite Stripe Inc. (PCI-DSS Livello 1). I dati bancari non raggiungono mai i server di Scouty. Gestione: Il mio account → Abbonamento.",

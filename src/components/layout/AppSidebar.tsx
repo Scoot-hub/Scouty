@@ -1,8 +1,8 @@
-import { useState } from 'react';
+import { useState, Fragment } from 'react';
 import { Link, useLocation, useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import {
-  Users, Menu, X, LogOut, Settings, Shield, UserCircle, Eye, Sparkles, Building2, CalendarDays, CalendarCheck, Shirt, ClipboardList, ChevronLeft, ChevronRight, ChevronDown, Route, MapPinned, Gift, Search, Globe, Heart, MessageSquare, Info, Trophy, FileSpreadsheet, Newspaper, PenLine, Plus, Zap, Twitter, Star, Lock, GitCompareArrows, Home,
+  Users, Menu, X, LogOut, Settings, Shield, UserCircle, Eye, Sparkles, Building2, CalendarDays, CalendarCheck, Shirt, ClipboardList, ChevronLeft, ChevronRight, ChevronDown, Route, MapPinned, Gift, Search, Globe, Heart, MessageSquare, Info, Trophy, FileSpreadsheet, Newspaper, PenLine, Plus, Zap, Twitter, Star, Lock, GitCompareArrows, ArrowLeftRight, Home, type LucideIcon,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { useAuth } from '@/contexts/AuthContext';
@@ -18,6 +18,190 @@ import logo from '@/assets/logo.png';
 interface AppSidebarProps {
   collapsed: boolean;
   onToggle: () => void;
+}
+
+// ── Nav structure as data (rendered by renderTopItem / renderSubItem) ──
+// Adding a link = adding an object here. pageKey gates it (RestrictedWrapper +
+// canView), featureKey gates it (FeatureGate). Omit both for an ungated link.
+interface NavLeaf {
+  key: string;            // → t(`sidebar.${key}`)
+  to: string;
+  icon: LucideIcon;
+  iconClass?: string;
+  pageKey?: string;
+  featureKey?: string;
+  matchPaths?: string[];  // extra paths that also mark this item active
+}
+interface NavParent extends NavLeaf {
+  children?: NavLeaf[];
+}
+interface NavSection {
+  label: string;          // → t(`sidebar.${label}`)
+  items: NavParent[];
+}
+
+const BASE_SECTIONS: NavSection[] = [
+  {
+    label: 'section_scouting',
+    items: [
+      {
+        key: 'players', to: '/players', icon: Users, pageKey: 'players', featureKey: 'feature_players',
+        children: [
+          { key: 'discover', to: '/discover', icon: Search, pageKey: 'discover', featureKey: 'feature_discover' },
+          { key: 'watchlist', to: '/watchlist', icon: Eye, pageKey: 'watchlist', featureKey: 'feature_watchlist' },
+          { key: 'transfers', to: '/transfers', icon: ArrowLeftRight, pageKey: 'transfers', featureKey: 'feature_transfers' },
+          { key: 'shadow_team', to: '/shadow-team', icon: Shirt, pageKey: 'shadow_team', featureKey: 'feature_shadow_team' },
+          { key: 'compare', to: '/data', icon: GitCompareArrows, iconClass: 'text-violet-500' },
+        ],
+      },
+      {
+        key: 'fixtures', to: '/fixtures', icon: CalendarDays, pageKey: 'fixtures', featureKey: 'feature_fixtures',
+        children: [
+          { key: 'my_matches', to: '/my-matches', icon: MapPinned, pageKey: 'my_matches', featureKey: 'feature_my_matches' },
+          { key: 'map', to: '/map', icon: Globe, pageKey: 'map', featureKey: 'feature_map' },
+        ],
+      },
+    ],
+  },
+  {
+    label: 'section_competitions',
+    items: [
+      {
+        key: 'championships', to: '/championships', icon: Trophy, pageKey: 'championships', featureKey: 'feature_championships',
+        children: [
+          { key: 'my_championships', to: '/my-championships', icon: Star, iconClass: 'text-yellow-500', pageKey: 'my_championships', featureKey: 'feature_my_championships' },
+        ],
+      },
+      {
+        key: 'clubs', to: '/club-search', icon: Building2, matchPaths: ['/club'], pageKey: 'club_profile', featureKey: 'feature_club_profile',
+        children: [
+          { key: 'my_clubs', to: '/my-clubs', icon: Heart, pageKey: 'my_clubs', featureKey: 'feature_my_clubs' },
+        ],
+      },
+    ],
+  },
+  {
+    label: 'section_social',
+    items: [
+      { key: 'news', to: '/news', icon: Newspaper, pageKey: 'news', featureKey: 'feature_news' },
+      { key: 'community', to: '/community', icon: MessageSquare, pageKey: 'community', featureKey: 'feature_community' },
+    ],
+  },
+];
+
+// Collapsed-mode flyout: hovering a parent icon reveals its children in a
+// floating panel (CSS-only, the pl-2 bridges the gap so hover doesn't drop).
+function CollapsedFlyout({
+  label, trigger, children,
+}: {
+  label: string;
+  trigger: React.ReactNode;
+  children: React.ReactNode;
+}) {
+  return (
+    <div className="relative group/fly">
+      {trigger}
+      <div className="absolute left-full top-0 pl-2 z-50 opacity-0 pointer-events-none group-hover/fly:opacity-100 group-hover/fly:pointer-events-auto transition-opacity duration-150">
+        <div className="min-w-[180px] rounded-xl bg-sidebar border border-sidebar-border shadow-xl p-1.5">
+          <p className="px-2 py-1 text-[10px] font-bold uppercase tracking-wider text-sidebar-foreground/40 whitespace-nowrap">{label}</p>
+          <div className="space-y-0.5">{children}</div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// Single contextual promo slot above the footer. One CTA at a time, never two:
+// free users → Premium upsell, Premium users → Affiliation. Dismissible (persisted).
+function SidebarPromo({
+  collapsed, isPremium, canViewAffiliate, onNav,
+}: {
+  collapsed: boolean;
+  isPremium: boolean;
+  canViewAffiliate: boolean;
+  onNav: () => void;
+}) {
+  const { t } = useTranslation();
+  const variant: 'premium' | 'affiliate' | null =
+    !isPremium ? 'premium' : (canViewAffiliate ? 'affiliate' : null);
+
+  // Only the affiliation card can be dismissed. The Premium upsell stays put.
+  const dismissible = variant === 'affiliate';
+  const storageKey = 'scouty_promo_dismissed_affiliate';
+  const [dismissed, setDismissed] = useState<boolean>(() => {
+    if (typeof window === 'undefined') return false;
+    return window.localStorage.getItem(storageKey) === 'true';
+  });
+
+  if (!variant || (dismissible && dismissed)) return null;
+
+  const dismiss = () => {
+    setDismissed(true);
+    try { window.localStorage.setItem(storageKey, 'true'); } catch { /* ignore */ }
+  };
+
+  const cfg = variant === 'premium'
+    ? {
+        to: '/pricing', icon: Sparkles,
+        title: t('sidebar.promo_premium_title'),
+        desc: t('sidebar.promo_premium_desc'),
+        cta: t('sidebar.promo_premium_cta'),
+        cardCls: 'bg-gradient-to-br from-sidebar-primary to-accent text-sidebar-primary-foreground shadow-lg shadow-sidebar-primary/20',
+        btnCls: 'bg-white/20 hover:bg-white/30 text-sidebar-primary-foreground',
+      }
+    : {
+        to: '/affiliate', icon: Gift,
+        title: t('sidebar.promo_affiliate_title'),
+        desc: t('sidebar.promo_affiliate_desc'),
+        cta: t('sidebar.promo_affiliate_cta'),
+        cardCls: 'bg-amber-500/10 border border-amber-500/30 text-amber-700 dark:text-amber-300',
+        btnCls: 'bg-amber-500/20 hover:bg-amber-500/30 text-amber-700 dark:text-amber-300',
+      };
+  const Icon = cfg.icon;
+
+  // Collapsed: a single icon button (no card / no dismiss — too narrow)
+  if (collapsed) {
+    const mini = (
+      <div className="px-2 pb-3">
+        <SidebarTooltip label={cfg.title} collapsed={true}>
+          <Link to={cfg.to} onClick={onNav} className={cn('flex items-center justify-center px-2 py-3 rounded-xl transition-all', cfg.cardCls)}>
+            <Icon className="w-4 h-4" />
+          </Link>
+        </SidebarTooltip>
+      </div>
+    );
+    return variant === 'affiliate'
+      ? <FeatureGate featureKey="feature_affiliate" inline>{mini}</FeatureGate>
+      : mini;
+  }
+
+  const card = (
+    <div className="px-3 pb-3">
+      <div className={cn('relative rounded-xl p-3', cfg.cardCls)}>
+        {dismissible && (
+          <button
+            onClick={dismiss}
+            aria-label={t('sidebar.promo_dismiss')}
+            className="absolute top-1.5 right-1.5 p-0.5 rounded-md opacity-60 hover:opacity-100 transition-opacity"
+          >
+            <X className="w-3.5 h-3.5" />
+          </button>
+        )}
+        <div className={cn('flex items-center gap-2 mb-1', dismissible && 'pr-5')}>
+          <Icon className="w-4 h-4 shrink-0" />
+          <span className="text-sm font-bold">{cfg.title}</span>
+        </div>
+        <p className="text-[11px] opacity-80 leading-snug mb-2.5">{cfg.desc}</p>
+        <Link to={cfg.to} onClick={onNav} className={cn('block text-center text-xs font-bold px-3 py-1.5 rounded-lg transition-colors', cfg.btnCls)}>
+          {cfg.cta}
+        </Link>
+      </div>
+    </div>
+  );
+
+  return variant === 'affiliate'
+    ? <FeatureGate featureKey="feature_affiliate" inline>{card}</FeatureGate>
+    : card;
 }
 
 function SidebarTooltip({
@@ -255,9 +439,9 @@ export default function AppSidebar({ collapsed, onToggle }: AppSidebarProps) {
   const [mobileOpen, setMobileOpen] = useState(false);
   const [legalOpen, setLegalOpen] = useState(false);
   const [footerMenuOpen, setFooterMenuOpen] = useState<boolean>(() => {
-    if (typeof window === 'undefined') return true;
+    if (typeof window === 'undefined') return false;
     const stored = window.localStorage.getItem('scouty_footer_menu_open');
-    return stored === null ? true : stored === 'true';
+    return stored === null ? false : stored === 'true';
   });
   const toggleFooterMenu = () => {
     setFooterMenuOpen(prev => {
@@ -267,18 +451,25 @@ export default function AppSidebar({ collapsed, onToggle }: AppSidebarProps) {
     });
   };
 
-  // null = auto (based on active child route), true/false = user override
-  const [playersOpenOverride, setPlayersOpenOverride] = useState<boolean | null>(null);
-  const [fixturesOpenOverride, setFixturesOpenOverride] = useState<boolean | null>(null);
+  // Per-parent open state, keyed by item.key. undefined = auto (follows the active child route).
+  const [openOverrides, setOpenOverrides] = useState<Record<string, boolean>>({});
 
   const hasActiveChild = (paths: string[]) =>
     paths.some(p => location.pathname === p || location.pathname.startsWith(p + '/') || location.pathname.startsWith(p + '?'));
 
-  const playersChildPaths = ['/discover', '/watchlist', '/shadow-team'];
+  const childPathsOf = (item: NavParent) => (item.children ?? []).map(c => c.to);
+  const isOpen = (item: NavParent) => openOverrides[item.key] ?? hasActiveChild(childPathsOf(item));
+  const toggleOpen = (item: NavParent) =>
+    setOpenOverrides(prev => ({ ...prev, [item.key]: !(prev[item.key] ?? hasActiveChild(childPathsOf(item))) }));
+
+  // Per-section open state (null = auto, follows active child route; true/false = user override)
+  const [playersOpenOverride, setPlayersOpenOverride] = useState<boolean | null>(null);
+  const [fixturesOpenOverride, setFixturesOpenOverride] = useState<boolean | null>(null);
+  const [champOpenOverride, setChampOpenOverride] = useState<boolean | null>(null);
+
+  const playersChildPaths = ['/discover', '/watchlist', '/transfers', '/shadow-team'];
   const fixturesChildPaths = ['/my-matches', '/map'];
   const champChildPaths = ['/my-championships', '/my-clubs', '/club', '/club-search'];
-
-  const [champOpenOverride, setChampOpenOverride] = useState<boolean | null>(null);
 
   const playersOpen = playersOpenOverride ?? hasActiveChild(playersChildPaths);
   const fixturesOpen = fixturesOpenOverride ?? hasActiveChild(fixturesChildPaths);
@@ -358,6 +549,96 @@ export default function AppSidebar({ collapsed, onToggle }: AppSidebarProps) {
     );
   }
 
+  // ── Data-driven nav rendering ──
+  const itemIsActive = (it: NavLeaf) => [it.to, ...(it.matchPaths ?? [])].some(isActive);
+  const itemVisible = (it: NavLeaf) => !it.pageKey || shouldShow(it.pageKey);
+
+  // Wrap a node with the gates declared in its config (skipped when absent).
+  const withGates = (it: NavLeaf, node: React.ReactNode): React.ReactNode => {
+    let el = node;
+    if (it.featureKey) el = <FeatureGate featureKey={it.featureKey} inline>{el}</FeatureGate>;
+    if (it.pageKey) {
+      el = (
+        <RestrictedWrapper pageKey={it.pageKey} canView={canView(it.pageKey)} requiredRoles={pageAccessInfo?.[it.pageKey] ?? []}>
+          {el}
+        </RestrictedWrapper>
+      );
+    }
+    return el;
+  };
+
+  const topClass = (item: NavParent, hasKids: boolean) => {
+    const selfActive = itemIsActive(item);
+    const active = hasKids ? selfActive && !(item.children ?? []).some(itemIsActive) : selfActive;
+    return cn(
+      'flex items-center gap-3 rounded-xl text-sm font-medium transition-all duration-200',
+      collapsed ? 'justify-center px-2 py-2' : 'px-4 py-2',
+      active
+        ? 'bg-sidebar-accent text-sidebar-accent-foreground shadow-sm'
+        : 'text-sidebar-foreground/70 hover:text-sidebar-foreground hover:bg-sidebar-accent/50'
+    );
+  };
+
+  const renderSubItem = (sub: NavLeaf) => {
+    if (!itemVisible(sub)) return null;
+    const Icon = sub.icon;
+    const active = itemIsActive(sub);
+    const link = (
+      <Link
+        to={sub.to}
+        className={subLinkClass(active)}
+        aria-current={active ? 'page' : undefined}
+        onClick={() => setMobileOpen(false)}
+      >
+        <Icon className={cn('w-3.5 h-3.5 shrink-0', sub.iconClass)} />
+        {t(`sidebar.${sub.key}`)}
+      </Link>
+    );
+    return <Fragment key={sub.key}>{withGates(sub, link)}</Fragment>;
+  };
+
+  const renderTopItem = (item: NavParent) => {
+    if (!itemVisible(item)) return null;
+    const Icon = item.icon;
+    const hasKids = !!item.children?.length;
+    const label = t(`sidebar.${item.key}`);
+    const active = itemIsActive(item);
+
+    const link = (
+      <Link
+        to={item.to}
+        className={topClass(item, hasKids)}
+        aria-current={active ? 'page' : undefined}
+        onClick={() => { setMobileOpen(false); if (hasKids) setOpenOverrides(prev => ({ ...prev, [item.key]: true })); }}
+      >
+        <Icon className={cn('w-4 h-4 shrink-0', item.iconClass)} />
+        {!collapsed && label}
+      </Link>
+    );
+
+    let row: React.ReactNode;
+    if (collapsed) {
+      row = hasKids
+        ? <CollapsedFlyout label={label} trigger={link}>{item.children!.map(renderSubItem)}</CollapsedFlyout>
+        : <SidebarTooltip label={label} collapsed={true}>{link}</SidebarTooltip>;
+    } else {
+      row = hasKids
+        ? <CollapsibleParent open={isOpen(item)} onToggleOpen={() => toggleOpen(item)}>{link}</CollapsibleParent>
+        : link;
+    }
+
+    return (
+      <Fragment key={item.key}>
+        {withGates(item, row)}
+        {!collapsed && hasKids && isOpen(item) && (!item.pageKey || canView(item.pageKey)) && (
+          <div className="pl-7 space-y-0.5">
+            {item.children!.map(renderSubItem)}
+          </div>
+        )}
+      </Fragment>
+    );
+  };
+
   const sidebar = (
     <div className="flex flex-col h-full" style={{ paddingTop: 'env(safe-area-inset-top)', paddingBottom: 'env(safe-area-inset-bottom)' }}>
       {/* Logo + collapse toggle */}
@@ -390,7 +671,7 @@ export default function AppSidebar({ collapsed, onToggle }: AppSidebarProps) {
       )}
 
       {/* Nav */}
-      <nav className={cn('flex-1 space-y-0.5', collapsed ? 'px-2 overflow-hidden' : 'px-3 overflow-y-auto sidebar-scroll')}>
+      <nav className={cn('flex-1 space-y-0.5', collapsed ? 'px-2 overflow-visible' : 'px-3 overflow-y-auto sidebar-scroll')}>
 
         {/* ── Tab switcher (Ma base / Organisation) ── */}
         {shouldShow('organization') && (collapsed ? (
@@ -458,206 +739,20 @@ export default function AppSidebar({ collapsed, onToggle }: AppSidebarProps) {
         ))}
 
         {/* ── Base tab content ── */}
-        {!isOrgTab && (<>
-
-        {/* ── Joueurs ── */}
-        {shouldShow('players') && (
-          <RestrictedWrapper pageKey="players" canView={canView('players')} requiredRoles={pageAccessInfo?.['players'] ?? []}>
-            <FeatureGate featureKey="feature_players" inline>
-              <CollapsibleParent open={playersOpen} onToggleOpen={() => setPlayersOpenOverride(v => v === null ? !hasActiveChild(playersChildPaths) : !v)}>
-                <SidebarTooltip label={t('sidebar.players')} collapsed={collapsed}>
-                  <Link to="/players" className={linkClass('/players', playersChildPaths)} onClick={() => { setMobileOpen(false); setPlayersOpenOverride(true); }}>
-                    <Users className="w-4 h-4 shrink-0" />
-                    {!collapsed && t('sidebar.players')}
-                  </Link>
-                </SidebarTooltip>
-              </CollapsibleParent>
-            </FeatureGate>
-          </RestrictedWrapper>
-        )}
-
-        {!collapsed && shouldShow('players') && canView('players') && playersOpen && (
-          <div className="pl-7 space-y-0.5">
-            {shouldShow('discover') && (
-              <RestrictedWrapper pageKey="discover" canView={canView('discover')} requiredRoles={pageAccessInfo?.['discover'] ?? []}>
-                <FeatureGate featureKey="feature_discover" inline>
-                  <Link to="/discover" className={subLinkClass(isActive('/discover'))} onClick={() => setMobileOpen(false)}>
-                    <Search className="w-3.5 h-3.5" />
-                    <span className="flex items-center gap-2">
-                      {t('sidebar.discover')}
-                      <span className="text-[9px] px-1.5 py-0.5 rounded-full bg-primary/15 text-primary font-bold">PRO</span>
-                    </span>
-                  </Link>
-                </FeatureGate>
-              </RestrictedWrapper>
-            )}
-            {shouldShow('watchlist') && (
-              <RestrictedWrapper pageKey="watchlist" canView={canView('watchlist')} requiredRoles={pageAccessInfo?.['watchlist'] ?? []}>
-                <FeatureGate featureKey="feature_watchlist" inline>
-                  <Link to="/watchlist" className={subLinkClass(isActive('/watchlist'))} onClick={() => setMobileOpen(false)}>
-                    <Eye className="w-3.5 h-3.5" />
-                    {t('sidebar.watchlist')}
-                  </Link>
-                </FeatureGate>
-              </RestrictedWrapper>
-            )}
-            {shouldShow('shadow_team') && (
-              <RestrictedWrapper pageKey="shadow_team" canView={canView('shadow_team')} requiredRoles={pageAccessInfo?.['shadow_team'] ?? []}>
-                <FeatureGate featureKey="feature_shadow_team" inline>
-                  <Link to="/shadow-team" className={subLinkClass(isActive('/shadow-team'))} onClick={() => setMobileOpen(false)}>
-                    <Shirt className="w-3.5 h-3.5" />
-                    {t('sidebar.shadow_team')}
-                  </Link>
-                </FeatureGate>
-              </RestrictedWrapper>
-            )}
-            <Link to="/data" className={subLinkClass(isActive('/data'))} onClick={() => setMobileOpen(false)}>
-              <GitCompareArrows className="w-3.5 h-3.5 text-violet-500" />
-              {t('sidebar.compare')}
-            </Link>
-          </div>
-        )}
-
-        {/* ── Calendrier / Fixtures ── */}
-        {shouldShow('fixtures') && (
-          <RestrictedWrapper pageKey="fixtures" canView={canView('fixtures')} requiredRoles={pageAccessInfo?.['fixtures'] ?? []}>
-            <FeatureGate featureKey="feature_fixtures" inline>
-              <CollapsibleParent open={fixturesOpen} onToggleOpen={() => setFixturesOpenOverride(v => v === null ? !hasActiveChild(fixturesChildPaths) : !v)}>
-                <SidebarTooltip label={t('sidebar.fixtures')} collapsed={collapsed}>
-                  <Link to="/fixtures" className={linkClass('/fixtures', fixturesChildPaths)} onClick={() => { setMobileOpen(false); setFixturesOpenOverride(true); }}>
-                    <CalendarDays className="w-4 h-4 shrink-0" />
-                    {!collapsed && t('sidebar.fixtures')}
-                  </Link>
-                </SidebarTooltip>
-              </CollapsibleParent>
-            </FeatureGate>
-          </RestrictedWrapper>
-        )}
-
-        {!collapsed && shouldShow('fixtures') && canView('fixtures') && fixturesOpen && (
-          <div className="pl-7 space-y-0.5">
-            {shouldShow('my_matches') && (
-              <RestrictedWrapper pageKey="my_matches" canView={canView('my_matches')} requiredRoles={pageAccessInfo?.['my_matches'] ?? []}>
-                <FeatureGate featureKey="feature_my_matches" inline>
-                  <Link to="/my-matches" className={subLinkClass(isActive('/my-matches'))} onClick={() => setMobileOpen(false)}>
-                    <MapPinned className="w-3.5 h-3.5" />
-                    {t('sidebar.my_matches')}
-                  </Link>
-                </FeatureGate>
-              </RestrictedWrapper>
-            )}
-            {shouldShow('map') && (
-              <RestrictedWrapper pageKey="map" canView={canView('map')} requiredRoles={pageAccessInfo?.['map'] ?? []}>
-                <FeatureGate featureKey="feature_map" inline>
-                  <Link to="/map" className={subLinkClass(isActive('/map'))} onClick={() => setMobileOpen(false)}>
-                    <Globe className="w-3.5 h-3.5" />
-                    {t('sidebar.map')}
-                  </Link>
-                </FeatureGate>
-              </RestrictedWrapper>
-            )}
-          </div>
-        )}
-
-        {/* ── Championnats ── */}
-        {shouldShow('championships') && (
-          <RestrictedWrapper pageKey="championships" canView={canView('championships')} requiredRoles={pageAccessInfo?.['championships'] ?? []}>
-            <FeatureGate featureKey="feature_championships" inline>
-              <CollapsibleParent open={champOpen} onToggleOpen={() => setChampOpenOverride(v => v === null ? !hasActiveChild(champChildPaths) : !v)}>
-                <SidebarTooltip label={t('sidebar.championships')} collapsed={collapsed}>
-                  <Link to="/championships" className={linkClass('/championships', champChildPaths)} onClick={() => { setMobileOpen(false); setChampOpenOverride(true); }}>
-                    <Trophy className="w-4 h-4 shrink-0" />
-                    {!collapsed && t('sidebar.championships')}
-                  </Link>
-                </SidebarTooltip>
-              </CollapsibleParent>
-            </FeatureGate>
-          </RestrictedWrapper>
-        )}
-
-        {!collapsed && shouldShow('championships') && canView('championships') && champOpen && (
-          <div className="pl-7 space-y-0.5">
-            {shouldShow('my_championships') && (
-              <RestrictedWrapper pageKey="my_championships" canView={canView('my_championships')} requiredRoles={pageAccessInfo?.['my_championships'] ?? []}>
-                <FeatureGate featureKey="feature_my_championships" inline>
-                  <Link to="/my-championships" className={subLinkClass(isActive('/my-championships'))} onClick={() => setMobileOpen(false)}>
-                    <Star className="w-3.5 h-3.5 text-yellow-500" />
-                    {t('sidebar.my_championships')}
-                  </Link>
-                </FeatureGate>
-              </RestrictedWrapper>
-            )}
-            {shouldShow('club_profile') && (
-              <RestrictedWrapper pageKey="club_profile" canView={canView('club_profile')} requiredRoles={pageAccessInfo?.['club_profile'] ?? []}>
-                <FeatureGate featureKey="feature_club_profile" inline>
-                  <Link to="/club-search" className={subLinkClass(isActive('/club-search') || isActive('/club'))} onClick={() => setMobileOpen(false)}>
-                    <Building2 className="w-3.5 h-3.5" />
-                    {t('sidebar.club')}
-                  </Link>
-                </FeatureGate>
-              </RestrictedWrapper>
-            )}
-            {shouldShow('my_clubs') && (
-              <RestrictedWrapper pageKey="my_clubs" canView={canView('my_clubs')} requiredRoles={pageAccessInfo?.['my_clubs'] ?? []}>
-                <FeatureGate featureKey="feature_my_clubs" inline>
-                  <Link to="/my-clubs" className={subLinkClass(isActive('/my-clubs'))} onClick={() => setMobileOpen(false)}>
-                    <Heart className="w-3.5 h-3.5" />
-                    {t('sidebar.my_clubs')}
-                  </Link>
-                </FeatureGate>
-              </RestrictedWrapper>
-            )}
-          </div>
-        )}
-
-        {/* ── Actualités ── */}
-        {shouldShow('news') && (
-          <RestrictedWrapper pageKey="news" canView={canView('news')} requiredRoles={pageAccessInfo?.['news'] ?? []}>
-            <FeatureGate featureKey="feature_news" inline>
-              <SidebarTooltip label={t('sidebar.news')} collapsed={collapsed}>
-                <Link to="/news" className={linkClass('/news')} onClick={() => setMobileOpen(false)}>
-                  <Newspaper className="w-4 h-4 shrink-0" />
-                  {!collapsed && t('sidebar.news')}
-                </Link>
-              </SidebarTooltip>
-            </FeatureGate>
-          </RestrictedWrapper>
-        )}
-
-        {/* ── Communauté ── */}
-        {shouldShow('community') && (
-          <RestrictedWrapper pageKey="community" canView={canView('community')} requiredRoles={pageAccessInfo?.['community'] ?? []}>
-            <FeatureGate featureKey="feature_community" inline>
-              <SidebarTooltip label={t('sidebar.community')} collapsed={collapsed}>
-                <Link to="/community" className={linkClass('/community')} onClick={() => setMobileOpen(false)}>
-                  <MessageSquare className="w-4 h-4 shrink-0" />
-                  {!collapsed && (
-                    <span className="flex items-center gap-2">
-                      {t('sidebar.community')}
-                      <span className="text-[9px] px-1.5 py-0.5 rounded-full bg-primary/15 text-primary font-bold">PRO</span>
-                    </span>
-                  )}
-                </Link>
-              </SidebarTooltip>
-            </FeatureGate>
-          </RestrictedWrapper>
-        )}
-
-        {/* ── Import de données ── */}
-        {shouldShow('data_import') && (
-          <RestrictedWrapper pageKey="data_import" canView={canView('data_import')} requiredRoles={pageAccessInfo?.['data_import'] ?? []}>
-            <FeatureGate featureKey="feature_data_import" inline>
-              <SidebarTooltip label={t('sidebar.data_import')} collapsed={collapsed}>
-                <Link to="/data-import" className={linkClass('/data-import')} onClick={() => setMobileOpen(false)}>
-                  <FileSpreadsheet className="w-4 h-4 shrink-0" />
-                  {!collapsed && t('sidebar.data_import')}
-                </Link>
-              </SidebarTooltip>
-            </FeatureGate>
-          </RestrictedWrapper>
-        )}
-
-        </>)}
+        {!isOrgTab && BASE_SECTIONS.map((section) => {
+          const items = section.items.filter(itemVisible);
+          if (items.length === 0) return null;
+          return (
+            <div key={section.label} className="pt-2 space-y-0.5">
+              {!collapsed && (
+                <p className="px-4 pb-1 text-[10px] uppercase tracking-wider font-bold text-sidebar-foreground/40">
+                  {t(`sidebar.${section.label}`)}
+                </p>
+              )}
+              {items.map(renderTopItem)}
+            </div>
+          );
+        })}
 
         {/* ── Organisation tab content ── */}
         {isOrgTab && (
@@ -745,24 +840,13 @@ export default function AppSidebar({ collapsed, onToggle }: AppSidebarProps) {
         )}
       </nav>
 
-      {/* Upgrade CTA — free users only */}
-      {!isPremium && (
-        <div className={cn('pb-3', collapsed ? 'px-2' : 'px-3')}>
-          <SidebarTooltip label={t('sidebar.upgrade')} collapsed={collapsed}>
-            <Link
-              to="/pricing"
-              className={cn(
-                'flex items-center gap-3 rounded-xl text-sm font-bold bg-gradient-to-r from-sidebar-primary to-accent text-sidebar-primary-foreground hover:opacity-90 transition-all shadow-lg shadow-sidebar-primary/20',
-                collapsed ? 'justify-center px-2 py-3' : 'px-4 py-3'
-              )}
-              onClick={() => setMobileOpen(false)}
-            >
-              <Sparkles className="w-4 h-4 shrink-0" />
-              {!collapsed && t('sidebar.upgrade')}
-            </Link>
-          </SidebarTooltip>
-        </div>
-      )}
+      {/* Encart promo contextuel : Premium (gratuits) ou Affiliation (Premium), masquable */}
+      <SidebarPromo
+        collapsed={collapsed}
+        isPremium={!!isPremium}
+        canViewAffiliate={canView('affiliate')}
+        onNav={() => setMobileOpen(false)}
+      />
 
       {/* Footer */}
       <div className={cn('py-3 border-t border-sidebar-border shrink-0', collapsed ? 'px-2' : 'px-3')}>
@@ -821,6 +905,18 @@ export default function AppSidebar({ collapsed, onToggle }: AppSidebarProps) {
                   </Link>
                 </SidebarTooltip>
               </RestrictedWrapper>
+            )}
+
+            {/* ── Import de données — réservé aux rôles admin & importateur ── */}
+            {(isAdmin || (permsData?.roles ?? []).includes('importateur')) && (
+              <FeatureGate featureKey="feature_data_import" inline>
+                <SidebarTooltip label={t('sidebar.data_import')} collapsed={collapsed}>
+                  <Link to="/data-import" className={footerLinkClass('/data-import')} onClick={() => setMobileOpen(false)}>
+                    <FileSpreadsheet className="w-3.5 h-3.5 shrink-0" />
+                    {!collapsed && t('sidebar.data_import')}
+                  </Link>
+                </SidebarTooltip>
+              </FeatureGate>
             )}
 
             {shouldShow('booking') && (

@@ -14,6 +14,7 @@ const ROUTE_TO_PAGE_KEY: Record<string, string> = {
   '/player/new': 'add_player',
   '/player': 'player_profile', // catches /player/:id and /player/:id/edit
   '/watchlist': 'watchlist',
+  '/transfers': 'transfers',
   '/shadow-team': 'shadow_team',
   '/fixtures': 'fixtures',
   '/my-matches': 'my_matches',

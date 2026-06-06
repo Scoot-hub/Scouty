@@ -1258,10 +1258,25 @@ async function _legacyRunMigrations() {
         INDEX idx_referrals_referrer (referrer_id),
         FOREIGN KEY (referrer_id) REFERENCES users(id) ON DELETE CASCADE,
         FOREIGN KEY (referred_id) REFERENCES users(id) ON DELETE CASCADE
-      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
     `);
   } catch (err) {
     if (!err?.message?.includes('already exists')) console.warn('[migration] referrals:', err?.message);
+  }
+
+  // editorial_reactions FKs to editorial_articles, so that table must be InnoDB.
+  // Some installs created editorial_articles as MyISAM (no FK support), which made
+  // the editorial_reactions FK fail with errno 1824 "Failed to open the referenced
+  // table". Convert it first (idempotent — only runs when not already InnoDB).
+  try {
+    const [[ea]] = await pool.query(
+      "SELECT ENGINE FROM information_schema.TABLES WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'editorial_articles'"
+    );
+    if (ea && String(ea.ENGINE).toUpperCase() !== 'INNODB') {
+      await pool.query("ALTER TABLE editorial_articles ENGINE=InnoDB");
+    }
+  } catch (err) {
+    console.warn('[migration] editorial_articles engine:', err?.message);
   }
 
   // Create editorial_reactions table (likes / dislikes on editorial articles)
@@ -1276,7 +1291,7 @@ async function _legacyRunMigrations() {
         INDEX idx_er_article (article_id),
         FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
         FOREIGN KEY (article_id) REFERENCES editorial_articles(id) ON DELETE CASCADE
-      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
     `);
   } catch (err) {
     if (!err?.message?.includes('already exists')) console.warn('[migration] editorial_reactions:', err?.message);
@@ -1308,10 +1323,50 @@ async function _legacyRunMigrations() {
         INDEX idx_spt_user (user_id),
         INDEX idx_spt_category (category),
         FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
-      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
     `);
   } catch (err) {
     if (!err?.message?.includes('already exists')) console.warn('[migration] session_page_time:', err?.message);
+  }
+
+  // Tickets / bug reports + threaded messages.
+  // (Previously defined only in the now-dead _legacyEnsureFixtureTables, so the
+  //  tables were never created. Explicit COLLATE so the CHAR(36) FK matches
+  //  users.id's utf8mb4_unicode_ci — a bare CHARSET=utf8mb4 resolves to
+  //  utf8mb4_0900_ai_ci on MySQL 8.4+ and the FK is rejected as incompatible.)
+  try {
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS tickets (
+        id CHAR(36) PRIMARY KEY,
+        user_id CHAR(36) NOT NULL,
+        category VARCHAR(50) NOT NULL DEFAULT 'bug',
+        subject VARCHAR(255) NOT NULL,
+        message TEXT NOT NULL,
+        page_url VARCHAR(500) NULL,
+        user_agent VARCHAR(500) NULL,
+        status ENUM('open','in_progress','closed') NOT NULL DEFAULT 'open',
+        created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        INDEX idx_tickets_user (user_id),
+        INDEX idx_tickets_status (status, created_at),
+        FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+    `);
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS ticket_messages (
+        id CHAR(36) PRIMARY KEY,
+        ticket_id CHAR(36) NOT NULL,
+        sender_id CHAR(36) NOT NULL,
+        is_admin TINYINT(1) NOT NULL DEFAULT 0,
+        body TEXT NOT NULL,
+        created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        INDEX idx_ticket_messages_ticket (ticket_id, created_at),
+        FOREIGN KEY (ticket_id) REFERENCES tickets(id) ON DELETE CASCADE,
+        FOREIGN KEY (sender_id) REFERENCES users(id) ON DELETE CASCADE
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+    `);
+  } catch (err) {
+    if (!err?.message?.includes('already exists')) console.warn('[migration] tickets:', err?.message);
   }
 
   // Ensure password_reset_tokens table exists
@@ -1409,6 +1464,42 @@ async function _legacyRunMigrations() {
     console.log("[info] Added rank column to shadow_team_players");
   } catch (err) {
     if (err?.errno !== 1060) console.warn("[warn] rank column migration:", err?.message);
+  }
+
+  // Ensure player_transfers table exists (persisted, dated transfer history of a
+  // user's players — sourced from Transfermarkt). No FK on player_id (local
+  // players table may be MyISAM → FK errno 1824); orphans are filtered out by the
+  // INNER JOIN on read. Explicit COLLATE so JOINs against `players` don't fail.
+  try {
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS player_transfers (
+        id CHAR(36) PRIMARY KEY,
+        user_id CHAR(36) NOT NULL,
+        player_id CHAR(36) NOT NULL,
+        tm_player_id VARCHAR(32) NOT NULL DEFAULT '',
+        tm_transfer_id VARCHAR(32) NOT NULL,
+        transfer_date DATE NULL,
+        date_accurate TINYINT(1) NOT NULL DEFAULT 0,
+        season VARCHAR(16) NULL,
+        from_club VARCHAR(255) NULL,
+        from_club_id VARCHAR(32) NULL,
+        from_club_logo VARCHAR(512) NULL,
+        to_club VARCHAR(255) NULL,
+        to_club_id VARCHAR(32) NULL,
+        to_club_logo VARCHAR(512) NULL,
+        market_value VARCHAR(64) NULL,
+        fee VARCHAR(64) NULL,
+        upcoming TINYINT(1) NOT NULL DEFAULT 0,
+        source VARCHAR(16) NOT NULL DEFAULT 'history',
+        created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        UNIQUE KEY uq_user_player_transfer (user_id, player_id, tm_transfer_id),
+        INDEX idx_pt_user_date (user_id, transfer_date),
+        INDEX idx_pt_player (player_id)
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+    `);
+  } catch (err) {
+    console.warn("[warn] Could not auto-create player_transfers table:", err?.message);
   }
 
   // Ensure squad_players table exists
@@ -7292,6 +7383,575 @@ app.get('/api/wyscout/peers', authMiddleware, async (req, res) => {
   }
 });
 
+// ── Data hub — explore / similar / cohort / profile-rank ────────────────────
+// These power /data/explore, /data/scatter, /data/profile and the similar-
+// players block. All are Premium-only (ensurePremiumOrAdmin) since the whole
+// /data section is gated. Percentiles / z-scores are computed on the fly over
+// a position-group cohort, cached 10 min — no precomputed table needed.
+
+// Position → group. Covers both the real WyScout vocab (GK/DC/LD/LG/MDef/MC/
+// MO/AD/AG/ATT from WYSCOUT_POS_MAP) and the legacy CATALOG codes (GB/DD/DG/
+// MDC/MOC/BU) so old rows still bucket correctly.
+const WYSCOUT_POSITION_GROUPS = {
+  GK:      ['GK', 'GB'],
+  DEF_C:   ['DC'],
+  DEF_L:   ['LD', 'LG', 'DD', 'DG'],
+  MID_DEF: ['MDef', 'MDC'],
+  MID_C:   ['MC'],
+  MID_OFF: ['MO', 'MOC'],
+  WING:    ['AD', 'AG'],
+  ATT:     ['ATT', 'BU'],
+};
+function wyscoutGroupForPosition(pos) {
+  const p = String(pos || '').trim();
+  for (const [g, arr] of Object.entries(WYSCOUT_POSITION_GROUPS)) {
+    if (arr.some(x => x.toLowerCase() === p.toLowerCase())) return g;
+  }
+  return null;
+}
+function wyscoutPositionsForGroup(group) {
+  return WYSCOUT_POSITION_GROUPS[group] || null;
+}
+
+// Stats where a LOWER value is better — percentiles/z-scores are flipped so a
+// high score consistently means "good".
+const WYSCOUT_LOWER_IS_BETTER = new Set([
+  'fouls_per90', 'conceded_goals_per90', 'xg_against_per90',
+  'yellow_cards_per90', 'red_cards_per90', 'shots_against_per90',
+]);
+
+// Similarity feature vectors (z-scored per cohort, equal weight).
+const WYSCOUT_SIM_FEATURES_OUTFIELD = [
+  'goals_per90', 'assists_per90', 'xg_per90', 'xa_per90',
+  'shots_per90', 'key_passes_per90', 'dribbles_per90', 'dribbles_success_pct',
+  'progressive_passes_per90', 'progressive_runs_per90',
+  'interceptions_per90', 'sliding_tackles_per90', 'duels_per90', 'duels_won_pct',
+  'passes_per90', 'passes_accurate_pct', 'crosses_per90',
+  'touches_in_box_per90', 'aerial_duels_won_pct',
+];
+const WYSCOUT_SIM_FEATURES_GK = [
+  'save_rate_pct', 'conceded_goals_per90', 'prevented_goals_per90',
+  'gk_exits_per90', 'gk_aerial_duels_per90',
+  'passes_per90', 'long_passes_accurate_pct', 'forward_passes_per90',
+];
+
+// Parse the stored market_value string ("2.5M€" / "500K€" / "1200€") → number.
+function parseMarketValueNum(s) {
+  if (s == null) return null;
+  const str = String(s).trim();
+  if (!str) return null;
+  const m = str.replace(/\s/g, '').match(/([\d.,]+)\s*([mkMK])?/);
+  if (!m) return null;
+  let num = parseFloat(m[1].replace(',', '.'));
+  if (!Number.isFinite(num)) return null;
+  const suf = (m[2] || '').toLowerCase();
+  if (suf === 'm') num *= 1_000_000;
+  else if (suf === 'k') num *= 1_000;
+  return Math.round(num);
+}
+
+function wyscoutAgeFromGeneration(generation) {
+  const g = parseInt(generation);
+  if (!g || g < 1900 || g > 2100) return null;
+  return new Date().getFullYear() - g;
+}
+
+// mean / std for a numeric column over the cohort
+function wyscoutColMeanStd(rows, col) {
+  let n = 0, sum = 0, sumsq = 0;
+  for (const r of rows) {
+    const v = r[col];
+    if (v == null) continue;
+    const x = Number(v);
+    if (!Number.isFinite(x)) continue;
+    n++; sum += x; sumsq += x * x;
+  }
+  if (n === 0) return null;
+  const mean = sum / n;
+  const variance = Math.max(0, sumsq / n - mean * mean);
+  return { mean, std: Math.sqrt(variance), n };
+}
+
+// Returns fn(value) → 0-100 percentile within the cohort (flipped for
+// lower-is-better metrics). Pre-sorts the column once.
+function wyscoutBuildPercentiler(rows, metric) {
+  const vals = [];
+  for (const r of rows) {
+    const v = r[metric];
+    if (v == null) continue;
+    const x = Number(v);
+    if (Number.isFinite(x)) vals.push(x);
+  }
+  vals.sort((a, b) => a - b);
+  const n = vals.length;
+  const lower = WYSCOUT_LOWER_IS_BETTER.has(metric);
+  return (v) => {
+    if (v == null || n === 0) return null;
+    const x = Number(v);
+    if (!Number.isFinite(x)) return null;
+    let lo = 0, hi = n;
+    while (lo < hi) { const mid = (lo + hi) >> 1; if (vals[mid] < x) lo = mid + 1; else hi = mid; }
+    const less = lo;
+    let lo2 = 0, hi2 = n;
+    while (lo2 < hi2) { const mid = (lo2 + hi2) >> 1; if (vals[mid] <= x) lo2 = mid + 1; else hi2 = mid; }
+    const eq = lo2 - less;
+    let pct = Math.round(100 * ((less + eq / 2) / n));
+    if (lower) pct = 100 - pct;
+    return Math.max(0, Math.min(100, pct));
+  };
+}
+
+// Returns fn(value) → signed z-score (flipped for lower-is-better).
+function wyscoutBuildZscorer(rows, metric) {
+  const ms = wyscoutColMeanStd(rows, metric);
+  const lower = WYSCOUT_LOWER_IS_BETTER.has(metric);
+  return (v) => {
+    if (!ms || ms.std === 0 || v == null) return 0;
+    const x = Number(v);
+    if (!Number.isFinite(x)) return 0;
+    let z = (x - ms.mean) / ms.std;
+    if (lower) z = -z;
+    return z;
+  };
+}
+
+// Cohort = one max-minutes season per player, restricted to a set of positions
+// (+ optional division), enriched with identity. Cached 10 min per key.
+const WYSCOUT_COHORT_CACHE = new Map();
+const WYSCOUT_COHORT_TTL_MS = 10 * 60 * 1000;
+async function loadWyscoutCohort({ positions, division, season, minMinutes, limit }) {
+  const posList = Array.isArray(positions) && positions.length ? positions : null;
+  const cap = Math.min(Math.max(parseInt(limit) || 5000, 1), 8000);
+  const mins = Math.max(parseInt(minMinutes) || 0, 0);
+  const div = (division || '').trim();
+  const seasonF = (season || '').trim();
+  const cacheKey = `${posList ? posList.slice().sort().join(',') : '*'}|${div}|${seasonF}|${mins}|${cap}`;
+  const cached = WYSCOUT_COHORT_CACHE.get(cacheKey);
+  if (cached && Date.now() - cached.at < WYSCOUT_COHORT_TTL_MS) return cached.rows;
+
+  // Subquery: max minutes per player (optionally restricted to a season).
+  const subParams = [mins];
+  let subSeasonSql = '';
+  if (seasonF) { subSeasonSql = ' AND season = ?'; subParams.push(seasonF); }
+
+  const where = [];
+  const params = [];
+  if (posList) {
+    where.push(`wp.position IN (${posList.map(() => '?').join(',')})`);
+    params.push(...posList);
+  }
+  if (div) { where.push('s.division = ?'); params.push(div); }
+  if (seasonF) { where.push('s.season = ?'); params.push(seasonF); }
+  where.push('s.minutes_played >= ?'); params.push(mins);
+  const whereSql = `WHERE ${where.join(' AND ')}`;
+
+  const [rows] = await pool.query(
+    `SELECT s.*, s.wyscout_player_id AS player_id,
+            wp.name, wp.position AS player_position, wp.club, wp.league,
+            wp.generation, wp.market_value, wp.foot, wp.height, wp.photo_url
+     FROM wyscout_player_stats s
+     JOIN wyscout_players wp ON wp.id = s.wyscout_player_id
+     JOIN (
+       SELECT wyscout_player_id, MAX(minutes_played) AS max_min
+       FROM wyscout_player_stats
+       WHERE minutes_played >= ?${subSeasonSql}
+       GROUP BY wyscout_player_id
+     ) latest ON latest.wyscout_player_id = s.wyscout_player_id AND latest.max_min = s.minutes_played
+     ${whereSql}
+     ORDER BY s.minutes_played DESC
+     LIMIT ?`,
+    [...subParams, ...params, cap]
+  );
+  WYSCOUT_COHORT_CACHE.set(cacheKey, { at: Date.now(), rows });
+  return rows;
+}
+
+// Resolve a {group?, positions?} request into an explicit position list (or null = all).
+function resolveCohortPositions({ group, positions }) {
+  if (group) {
+    const g = wyscoutPositionsForGroup(group);
+    if (g) return g;
+  }
+  if (typeof positions === 'string' && positions.trim()) {
+    return positions.split(',').map(p => p.trim()).filter(Boolean);
+  }
+  if (Array.isArray(positions) && positions.length) {
+    return positions.map(p => String(p).trim()).filter(Boolean);
+  }
+  return null;
+}
+
+// GET /api/wyscout/cohort?group=&positions=&division=&minMinutes=&limit=
+// Returns the raw cohort (one season per player) for client-side scatter plots.
+app.get('/api/wyscout/cohort', authMiddleware, ensurePremiumOrAdmin, async (req, res) => {
+  try {
+    const positions = resolveCohortPositions({ group: String(req.query.group || ''), positions: String(req.query.positions || '') });
+    const division = String(req.query.division || '').trim();
+    const season = String(req.query.season || '').trim();
+    const minMinutes = Math.max(parseInt(req.query.minMinutes) || 600, 0);
+    const limit = Math.min(Math.max(parseInt(req.query.limit) || 3000, 1), 5000);
+    const rows = await loadWyscoutCohort({ positions, division, season, minMinutes, limit });
+    return res.json({
+      group: String(req.query.group || '') || null,
+      positions: positions || null,
+      division: division || null,
+      season: season || null,
+      minMinutes,
+      count: rows.length,
+      rows,
+    });
+  } catch (err) {
+    console.warn('[api/wyscout/cohort] error:', err?.message);
+    return res.status(500).json({ error: 'Erreur serveur.' });
+  }
+});
+
+// POST /api/wyscout/explore — reverse search.
+// body: { group, positions, division, league, feet:[], minAge, maxAge, minMinutes,
+//         filters:[{metric, mode:'abs'|'pct', op:'gte'|'lte', value}],
+//         displayMetrics:[], sortMetric, sortMode:'abs'|'pct', sortDir, page, pageSize }
+app.post('/api/wyscout/explore', authMiddleware, ensurePremiumOrAdmin, async (req, res) => {
+  try {
+    const b = req.body || {};
+    const positions = resolveCohortPositions({ group: b.group, positions: b.positions });
+    const division = String(b.division || '').trim();
+    const season = String(b.season || '').trim();
+    const minMinutes = Math.max(parseInt(b.minMinutes) || 500, 0);
+    const filters = Array.isArray(b.filters) ? b.filters.filter(f => f && f.metric) : [];
+    const displayMetrics = Array.isArray(b.displayMetrics) ? b.displayMetrics.filter(Boolean) : [];
+    const league = String(b.league || '').trim().toLowerCase();
+    const feet = Array.isArray(b.feet) ? b.feet.map(f => String(f).toLowerCase()) : [];
+    const minAge = parseInt(b.minAge) || null;
+    const maxAge = parseInt(b.maxAge) || null;
+    const sortMetric = b.sortMetric ? String(b.sortMetric) : null;
+    const sortMode = b.sortMode === 'pct' ? 'pct' : 'abs';
+    const sortDir = b.sortDir === 'asc' ? 'asc' : 'desc';
+    const page = Math.max(parseInt(b.page) || 1, 1);
+    const pageSize = Math.min(Math.max(parseInt(b.pageSize) || 25, 1), 100);
+
+    const cohort = await loadWyscoutCohort({ positions, division, season, minMinutes, limit: 6000 });
+
+    // Build percentilers for every metric we need (filters + display + sort).
+    const pctMetrics = new Set();
+    filters.forEach(f => { if (f.mode === 'pct') pctMetrics.add(f.metric); });
+    displayMetrics.forEach(m => pctMetrics.add(m));
+    if (sortMetric && sortMode === 'pct') pctMetrics.add(sortMetric);
+    const percentilers = {};
+    for (const m of pctMetrics) percentilers[m] = wyscoutBuildPercentiler(cohort, m);
+
+    const nowYear = new Date().getFullYear();
+    const passesFilters = (row) => {
+      if (league && !String(row.league || '').toLowerCase().includes(league)) return false;
+      if (feet.length && !feet.includes(String(row.foot || '').toLowerCase())) return false;
+      const age = row.generation ? (nowYear - parseInt(row.generation)) : null;
+      if (minAge && (age == null || age < minAge)) return false;
+      if (maxAge && (age == null || age > maxAge)) return false;
+      for (const f of filters) {
+        const val = f.mode === 'pct'
+          ? percentilers[f.metric] ? percentilers[f.metric](row[f.metric]) : null
+          : (row[f.metric] == null ? null : Number(row[f.metric]));
+        if (val == null) return false;
+        const thr = Number(f.value);
+        if (!Number.isFinite(thr)) continue;
+        if (f.op === 'lte' && !(val <= thr)) return false;
+        if (f.op !== 'lte' && !(val >= thr)) return false;
+      }
+      return true;
+    };
+
+    const matched = cohort.filter(passesFilters);
+
+    // Sort
+    const sortVal = (row) => {
+      if (!sortMetric) return row.minutes_played == null ? -Infinity : Number(row.minutes_played);
+      if (sortMode === 'pct') { const p = percentilers[sortMetric]; return p ? (p(row[sortMetric]) ?? -Infinity) : -Infinity; }
+      return row[sortMetric] == null ? -Infinity : Number(row[sortMetric]);
+    };
+    matched.sort((a, c) => sortDir === 'asc' ? sortVal(a) - sortVal(c) : sortVal(c) - sortVal(a));
+
+    const total = matched.length;
+    const start = (page - 1) * pageSize;
+    const pageRows = matched.slice(start, start + pageSize).map(row => {
+      const pcts = {};
+      for (const m of displayMetrics) pcts[m] = percentilers[m] ? percentilers[m](row[m]) : null;
+      const out = {
+        player_id: row.player_id,
+        name: row.name,
+        position: row.player_position,
+        club: row.club,
+        league: row.league,
+        photo_url: row.photo_url,
+        generation: row.generation,
+        age: row.generation ? (nowYear - parseInt(row.generation)) : null,
+        foot: row.foot,
+        market_value: row.market_value,
+        market_value_num: parseMarketValueNum(row.market_value),
+        season: row.season,
+        division: row.division,
+        team: row.team,
+        minutes_played: row.minutes_played,
+        percentiles: pcts,
+        values: {},
+      };
+      for (const m of displayMetrics) out.values[m] = row[m] == null ? null : Number(row[m]);
+      for (const f of filters) if (!(f.metric in out.values)) out.values[f.metric] = row[f.metric] == null ? null : Number(row[f.metric]);
+      return out;
+    });
+
+    return res.json({ total, page, pageSize, cohortSize: cohort.length, results: pageRows });
+  } catch (err) {
+    console.warn('[api/wyscout/explore] error:', err?.message);
+    return res.status(500).json({ error: 'Erreur serveur.' });
+  }
+});
+
+// GET /api/wyscout/similar/:id?minMinutes=&limit=
+// z-score (per position-group cohort) Euclidean similarity. V2 of the old
+// client-side max-norm cosine.
+app.get('/api/wyscout/similar/:id', authMiddleware, ensurePremiumOrAdmin, async (req, res) => {
+  try {
+    const minMinutes = Math.max(parseInt(req.query.minMinutes) || 300, 0);
+    const limit = Math.min(Math.max(parseInt(req.query.limit) || 12, 1), 40);
+
+    const [[target]] = await pool.query(
+      `SELECT s.*, s.wyscout_player_id AS player_id,
+              wp.name, wp.position AS player_position, wp.club, wp.league
+       FROM wyscout_player_stats s
+       JOIN wyscout_players wp ON wp.id = s.wyscout_player_id
+       WHERE s.wyscout_player_id = ?
+       ORDER BY s.minutes_played DESC LIMIT 1`,
+      [req.params.id]
+    );
+    if (!target) return res.status(404).json({ error: 'Joueur introuvable.' });
+
+    const group = wyscoutGroupForPosition(target.player_position);
+    const positions = group ? wyscoutPositionsForGroup(group) : (target.player_position ? [target.player_position] : null);
+    const isGK = group === 'GK';
+    const features = isGK ? WYSCOUT_SIM_FEATURES_GK : WYSCOUT_SIM_FEATURES_OUTFIELD;
+
+    const cohort = await loadWyscoutCohort({ positions, division: '', minMinutes, limit: 6000 });
+    const zscorers = {};
+    for (const f of features) zscorers[f] = wyscoutBuildZscorer(cohort, f);
+    const targetVec = features.map(f => zscorers[f](target[f]));
+
+    const dist = (row) => {
+      let s = 0;
+      for (let i = 0; i < features.length; i++) {
+        const d = zscorers[features[i]](row[features[i]]) - targetVec[i];
+        s += d * d;
+      }
+      return Math.sqrt(s);
+    };
+
+    const peers = cohort.filter(r => r.player_id !== req.params.id);
+    const withDist = peers.map(r => ({ r, d: dist(r) }));
+    const maxD = withDist.reduce((m, x) => Math.max(m, x.d), 0) || 1;
+    const results = withDist
+      .map(({ r, d }) => ({
+        player_id: r.player_id,
+        name: r.name,
+        position: r.player_position,
+        club: r.club,
+        league: r.league,
+        photo_url: r.photo_url,
+        generation: r.generation,
+        market_value: r.market_value,
+        minutes_played: r.minutes_played,
+        similarity: Math.max(0, Math.round(100 * (1 - d / maxD))),
+      }))
+      .sort((a, c) => c.similarity - a.similarity)
+      .slice(0, limit);
+
+    return res.json({
+      target: { player_id: target.player_id, name: target.name, position: target.player_position, club: target.club },
+      group,
+      cohortSize: cohort.length,
+      results,
+    });
+  } catch (err) {
+    console.warn('[api/wyscout/similar] error:', err?.message);
+    return res.status(500).json({ error: 'Erreur serveur.' });
+  }
+});
+
+// POST /api/wyscout/profile-rank — weighted z-score ranking (profile builder).
+// body: { group, positions, division, minMinutes, weights:{metric:weight}, limit }
+app.post('/api/wyscout/profile-rank', authMiddleware, ensurePremiumOrAdmin, async (req, res) => {
+  try {
+    const b = req.body || {};
+    const positions = resolveCohortPositions({ group: b.group, positions: b.positions });
+    const division = String(b.division || '').trim();
+    const season = String(b.season || '').trim();
+    const minMinutes = Math.max(parseInt(b.minMinutes) || 500, 0);
+    const limit = Math.min(Math.max(parseInt(b.limit) || 25, 1), 100);
+    const weightsRaw = (b.weights && typeof b.weights === 'object') ? b.weights : {};
+    const metrics = Object.keys(weightsRaw).filter(m => Number(weightsRaw[m]) !== 0);
+    if (!metrics.length) return res.json({ cohortSize: 0, results: [] });
+
+    const cohort = await loadWyscoutCohort({ positions, division, season, minMinutes, limit: 6000 });
+    const zscorers = {}, percentilers = {};
+    for (const m of metrics) { zscorers[m] = wyscoutBuildZscorer(cohort, m); percentilers[m] = wyscoutBuildPercentiler(cohort, m); }
+
+    const scoreOf = (row) => {
+      let s = 0, wsum = 0;
+      for (const m of metrics) { const w = Number(weightsRaw[m]); s += w * zscorers[m](row[m]); wsum += Math.abs(w); }
+      return wsum ? s / wsum : 0;
+    };
+    const scored = cohort.map(row => ({ row, score: scoreOf(row) }));
+    // fit = percentile of the weighted score within the cohort
+    const sortedScores = scored.map(x => x.score).sort((a, c) => a - c);
+    const n = sortedScores.length;
+    const fitOf = (score) => {
+      if (!n) return 0;
+      let lo = 0, hi = n;
+      while (lo < hi) { const mid = (lo + hi) >> 1; if (sortedScores[mid] <= score) lo = mid + 1; else hi = mid; }
+      return Math.round(100 * (lo / n));
+    };
+
+    const nowYear = new Date().getFullYear();
+    const results = scored
+      .sort((a, c) => c.score - a.score)
+      .slice(0, limit)
+      .map(({ row, score }) => {
+        const pcts = {};
+        for (const m of metrics) pcts[m] = percentilers[m](row[m]);
+        return {
+          player_id: row.player_id,
+          name: row.name,
+          position: row.player_position,
+          club: row.club,
+          league: row.league,
+          photo_url: row.photo_url,
+          generation: row.generation,
+          age: row.generation ? (nowYear - parseInt(row.generation)) : null,
+          market_value: row.market_value,
+          minutes_played: row.minutes_played,
+          fit: fitOf(score),
+          percentiles: pcts,
+        };
+      });
+
+    return res.json({ cohortSize: cohort.length, metrics, results });
+  } catch (err) {
+    console.warn('[api/wyscout/profile-rank] error:', err?.message);
+    return res.status(500).json({ error: 'Erreur serveur.' });
+  }
+});
+
+// GET /api/wyscout/seasons — distinct seasons present in the catalogue (desc).
+const WYSCOUT_SEASONS_CACHE = { at: 0, data: null };
+app.get('/api/wyscout/seasons', authMiddleware, ensurePremiumOrAdmin, async (_req, res) => {
+  try {
+    if (WYSCOUT_SEASONS_CACHE.data && Date.now() - WYSCOUT_SEASONS_CACHE.at < 10 * 60 * 1000) {
+      return res.json(WYSCOUT_SEASONS_CACHE.data);
+    }
+    const [rows] = await pool.query(
+      `SELECT season, COUNT(*) AS n FROM wyscout_player_stats
+       WHERE season IS NOT NULL AND season <> ''
+       GROUP BY season ORDER BY season DESC`
+    );
+    const data = { seasons: rows.map(r => ({ season: r.season, count: Number(r.n) })) };
+    WYSCOUT_SEASONS_CACHE.at = Date.now();
+    WYSCOUT_SEASONS_CACHE.data = data;
+    return res.json(data);
+  } catch (err) {
+    console.warn('[api/wyscout/seasons] error:', err?.message);
+    return res.status(500).json({ error: 'Erreur serveur.' });
+  }
+});
+
+// GET /api/wyscout/divisions — distinct divisions (championships) present (by sample size).
+const WYSCOUT_DIVISIONS_CACHE = { at: 0, data: null };
+app.get('/api/wyscout/divisions', authMiddleware, ensurePremiumOrAdmin, async (_req, res) => {
+  try {
+    if (WYSCOUT_DIVISIONS_CACHE.data && Date.now() - WYSCOUT_DIVISIONS_CACHE.at < 10 * 60 * 1000) {
+      return res.json(WYSCOUT_DIVISIONS_CACHE.data);
+    }
+    const [rows] = await pool.query(
+      `SELECT division, COUNT(*) AS n FROM wyscout_player_stats
+       WHERE division IS NOT NULL AND division <> ''
+       GROUP BY division ORDER BY n DESC`
+    );
+    const data = { divisions: rows.map(r => ({ division: r.division, count: Number(r.n) })) };
+    WYSCOUT_DIVISIONS_CACHE.at = Date.now();
+    WYSCOUT_DIVISIONS_CACHE.data = data;
+    return res.json(data);
+  } catch (err) {
+    console.warn('[api/wyscout/divisions] error:', err?.message);
+    return res.status(500).json({ error: 'Erreur serveur.' });
+  }
+});
+
+// POST /api/wyscout/projection — project a player onto a target championship.
+// Shows where the player's per-90 output would rank within the target division's
+// same-position cohort, with an optional difficulty discount on volume metrics.
+// body: { playerId, division (target), season?, minMinutes, adjust (0..0.5), metrics:[] }
+app.post('/api/wyscout/projection', authMiddleware, ensurePremiumOrAdmin, async (req, res) => {
+  try {
+    const b = req.body || {};
+    const playerId = String(b.playerId || '').trim();
+    const targetDivision = String(b.division || '').trim();
+    const season = String(b.season || '').trim();
+    const minMinutes = Math.max(parseInt(b.minMinutes) || 600, 0);
+    const adjust = Math.min(Math.max(Number(b.adjust) || 0, 0), 0.6);
+    const metrics = Array.isArray(b.metrics) ? b.metrics.filter(Boolean) : [];
+    if (!playerId || !targetDivision || !metrics.length) {
+      return res.status(400).json({ error: 'playerId, division et metrics requis.' });
+    }
+
+    // Player's representative (most-played) season row + identity.
+    const [[player]] = await pool.query(
+      `SELECT s.*, s.wyscout_player_id AS player_id,
+              wp.name, wp.position AS player_position, wp.club, wp.league
+       FROM wyscout_player_stats s
+       JOIN wyscout_players wp ON wp.id = s.wyscout_player_id
+       WHERE s.wyscout_player_id = ?
+       ORDER BY s.minutes_played DESC LIMIT 1`,
+      [playerId]
+    );
+    if (!player) return res.status(404).json({ error: 'Joueur introuvable.' });
+
+    const group = wyscoutGroupForPosition(player.player_position);
+    const positions = group ? wyscoutPositionsForGroup(group) : (player.player_position ? [player.player_position] : null);
+
+    const cohort = await loadWyscoutCohort({ positions, division: targetDivision, season, minMinutes, limit: 6000 });
+    const percentilers = {};
+    for (const m of metrics) percentilers[m] = wyscoutBuildPercentiler(cohort, m);
+
+    const out = metrics.map(m => {
+      const value = player[m] == null ? null : Number(player[m]);
+      // Discount only volume/output metrics (not %): tougher league ⇒ lower output.
+      const adjusted = (value == null || m.endsWith('_pct')) ? value : value * (1 - adjust);
+      return {
+        metric: m,
+        value,
+        adjusted,
+        pctRaw: percentilers[m](value),
+        pctAdjusted: percentilers[m](adjusted),
+      };
+    });
+    const valid = out.filter(o => o.pctAdjusted != null);
+    const avgFit = valid.length ? Math.round(valid.reduce((s, o) => s + o.pctAdjusted, 0) / valid.length) : null;
+
+    return res.json({
+      player: {
+        player_id: player.player_id, name: player.name, position: player.player_position,
+        club: player.club, league: player.league, season: player.season, division: player.division,
+      },
+      group,
+      targetDivision,
+      season: season || null,
+      adjust,
+      cohortSize: cohort.length,
+      avgFit,
+      metrics: out,
+    });
+  } catch (err) {
+    console.warn('[api/wyscout/projection] error:', err?.message);
+    return res.status(500).json({ error: 'Erreur serveur.' });
+  }
+});
+
 // GET /api/wyscout/players/:id/match-mine
 // Helper for the player profile "Data" tab: tries to find this user's local
 // player that corresponds to the given wyscout_player_id by name+generation.
@@ -11058,6 +11718,374 @@ app.get("/api/player-tm-market-value/:tmId", authMiddleware, async (req, res) =>
   }
 });
 
+// ── Transfermarkt latest transfers feed (neuestetransfers) ──────────────────
+// Scrapes the global "latest transfers" stat page (a handful of pages), caches
+// the parsed feed shared across all users, then flags rows whose player matches
+// one of the caller's tracked players (by transfermarkt_id, fallback by name).
+const TM_TRANSFER_DOMAIN_BY_LANG = { fr: "transfermarkt.fr", en: "transfermarkt.com", es: "transfermarkt.es" };
+
+function parseNeuesteTransfers(html) {
+  const tbodyM = html.match(/<table class="items">[\s\S]*?<tbody>([\s\S]*?)<\/tbody>/);
+  if (!tbodyM) return [];
+  // Outer rows carry class="odd"/"even"; the nested inline-table <tr> have none.
+  const rows = tbodyM[1].split(/<tr class="(?:odd|even)">/).slice(1);
+  const strip = (s) => (s || "").replace(/<[^>]+>/g, "").replace(/\s+/g, " ").trim();
+  const out = [];
+  for (const row of rows) {
+    const pm = row.match(/href="(\/[^"]*\/profil\/spieler\/(\d+))"[^>]*>([^<]+)<\/a>/);
+    if (!pm) continue;
+    const photoM = row.match(/data-src="([^"]*portrait\/[^"]+)"/);
+    const posM = row.match(/profil\/spieler\/\d+"[^>]*>[^<]+<\/a>\s*<\/td>\s*<\/tr>\s*<tr>\s*<td>\s*([^<]+?)\s*<\/td>/);
+    const ageM = row.match(/<td class="zentriert">\s*(\d+)\s*<\/td>/);
+    const natM = row.match(/<td class="zentriert"><img[^>]*title="([^"]+)"[^>]*class="flaggenrahmen"/);
+    // From/To club badges, in document order: [0] = venant de, [1] = allant à.
+    const clubs = [];
+    const clubRe = /<a title="([^"]*)" href="\/[^"]*\/startseite\/verein\/(\d+)[^"]*"><img[^>]*src="([^"]+)"[^>]*class="tiny_wappen"/g;
+    let cm;
+    while ((cm = clubRe.exec(row)) !== null) {
+      let name = cm[1];
+      // TM doubles the title for unattached ("Sans clubSans club") — collapse it.
+      if (name.length % 2 === 0 && name.slice(0, name.length / 2) === name.slice(name.length / 2)) name = name.slice(0, name.length / 2);
+      clubs.push({ name: strip(name), id: cm[2], logo: cm[3] });
+    }
+    const feeM = row.match(/transfer_id\/(\d+)"[^>]*>([\s\S]*?)<\/a>/);
+    out.push({
+      playerName: strip(pm[3]),
+      tmPlayerId: pm[2],
+      playerSlug: pm[1],
+      playerPhoto: photoM ? photoM[1] : null,
+      position: posM ? strip(posM[1]) : null,
+      age: ageM ? parseInt(ageM[1]) : null,
+      nationality: natM ? natM[1] : null,
+      from: clubs[0] || null,
+      to: clubs[1] || null,
+      fee: feeM ? strip(feeM[2]) : null,
+      transferId: feeM ? feeM[1] : null,
+    });
+  }
+  return out;
+}
+
+app.get("/api/transfers/recent", authMiddleware, async (req, res) => {
+  const langRaw = String(req.query.lang || "fr").toLowerCase().slice(0, 2);
+  const lang = TM_TRANSFER_DOMAIN_BY_LANG[langRaw] ? langRaw : "fr";
+  const tmDomain = TM_TRANSFER_DOMAIN_BY_LANG[lang];
+  const PAGES = 3;
+
+  try {
+    // 1) Global feed — cached for all users (shared, not user-scoped)
+    const cacheKey = `tm-neuestetransfers:v1:${lang}:p${PAGES}`;
+    let feed = null;
+    let fetchedAt = null;
+    try {
+      const [cached] = await pool.query(
+        "SELECT response_json, fetched_at FROM api_football_cache WHERE cache_key = ? AND expires_at > NOW() LIMIT 1",
+        [cacheKey]
+      );
+      if (cached.length > 0) {
+        feed = typeof cached[0].response_json === "string" ? JSON.parse(cached[0].response_json) : cached[0].response_json;
+        fetchedAt = cached[0].fetched_at;
+      }
+    } catch {}
+
+    if (!feed) {
+      const all = [];
+      const seen = new Set();
+      for (let p = 1; p <= PAGES; p++) {
+        const url = `https://www.${tmDomain}/statistik/neuestetransfers${p > 1 ? `?page=${p}` : ""}`;
+        try {
+          const resp = await fetch(url, { headers: TM_HEADERS, signal: AbortSignal.timeout(15000) });
+          if (!resp.ok) break;
+          const html = await resp.text();
+          for (const t of parseNeuesteTransfers(html)) {
+            const key = `${t.tmPlayerId}:${t.transferId || ""}`;
+            if (seen.has(key)) continue;
+            seen.add(key);
+            all.push(t);
+          }
+        } catch {
+          break; // a partial feed is still useful
+        }
+      }
+      feed = all;
+      try {
+        await pool.query(
+          `INSERT INTO api_football_cache (cache_key, response_json, fetched_at, expires_at)
+           VALUES (?, ?, NOW(), DATE_ADD(NOW(), INTERVAL 3 HOUR))
+           ON DUPLICATE KEY UPDATE response_json = VALUES(response_json), fetched_at = NOW(), expires_at = DATE_ADD(NOW(), INTERVAL 3 HOUR)`,
+          [cacheKey, JSON.stringify(feed)]
+        );
+      } catch {}
+      fetchedAt = new Date();
+    }
+
+    // 2) Caller's tracked players → lookup index (by TM id, fallback by name)
+    const userId = req.user.id;
+    const [players] = await pool.query(
+      "SELECT id, name, transfermarkt_id FROM players WHERE user_id = ? AND name != ''",
+      [userId]
+    );
+    const byTmId = new Map();
+    const byName = new Map();
+    for (const pl of players) {
+      if (pl.transfermarkt_id) byTmId.set(String(pl.transfermarkt_id), pl.id);
+      const nm = normalizeStr(pl.name);
+      if (nm && !byName.has(nm)) byName.set(nm, pl.id);
+    }
+
+    // 3) Annotate each feed row with the internal player id when it matches
+    let matchedCount = 0;
+    const transfers = (Array.isArray(feed) ? feed : []).map((t) => {
+      let matchedPlayerId = null;
+      if (t.tmPlayerId && byTmId.has(String(t.tmPlayerId))) {
+        matchedPlayerId = byTmId.get(String(t.tmPlayerId));
+      } else {
+        const nm = normalizeStr(t.playerName);
+        if (nm && byName.has(nm)) matchedPlayerId = byName.get(nm);
+      }
+      if (matchedPlayerId) matchedCount++;
+      return { ...t, matchedPlayerId };
+    });
+
+    // 4) Persist matched transfers into the user's history base so a transfer is
+    // captured the moment it appears in the feed (date ≈ today, marked inaccurate;
+    // a later /sync from the player's TM history overwrites with the exact date).
+    try {
+      for (const t of transfers) {
+        if (!t.matchedPlayerId || !t.transferId) continue;
+        await upsertPlayerTransfer(userId, t.matchedPlayerId, t.tmPlayerId, {
+          tmTransferId: t.transferId,
+          date: null,            // unknown from the feed → use CURDATE() (see helper)
+          season: null,
+          fromClub: t.from?.name ?? null,
+          fromClubId: t.from?.id ?? null,
+          fromClubLogo: t.from?.logo ?? null,
+          toClub: t.to?.name ?? null,
+          toClubId: t.to?.id ?? null,
+          toClubLogo: t.to?.logo ?? null,
+          marketValue: null,
+          fee: t.fee && t.fee !== "-" ? t.fee : null,
+          upcoming: 0,
+        }, /*accurate*/ 0, "feed");
+      }
+    } catch (e) {
+      console.warn("[transfers/recent] history upsert skipped:", e?.message);
+    }
+
+    return res.json({
+      fetchedAt: fetchedAt instanceof Date ? fetchedAt.toISOString() : fetchedAt,
+      count: transfers.length,
+      matchedCount,
+      transfers,
+      source: "transfermarkt",
+      tmUrl: `https://www.${tmDomain}/statistik/neuestetransfers`,
+    });
+  } catch (err) {
+    console.error("[transfers/recent] Error:", err.message);
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+// Upsert one transfer into the persisted history base. `accurate` = 1 means the
+// date comes from the player's TM transfer history (exact); 0 means it was
+// detected via the live feed (date = today, will be corrected by a later sync).
+// An accurate date is never overwritten by an inaccurate one.
+async function upsertPlayerTransfer(userId, playerId, tmPlayerId, h, accurate, source) {
+  const dateExpr = h.date ? "?" : "CURDATE()";
+  const params = [
+    uuidv4(), userId, playerId, String(tmPlayerId || ""), String(h.tmTransferId),
+  ];
+  if (h.date) params.push(h.date);
+  params.push(
+    accurate ? 1 : 0, h.season ?? null,
+    h.fromClub ?? null, h.fromClubId ?? null, h.fromClubLogo ?? null,
+    h.toClub ?? null, h.toClubId ?? null, h.toClubLogo ?? null,
+    h.marketValue ?? null, h.fee ?? null, h.upcoming ? 1 : 0, source
+  );
+  await pool.query(
+    `INSERT INTO player_transfers
+       (id, user_id, player_id, tm_player_id, tm_transfer_id, transfer_date, date_accurate, season,
+        from_club, from_club_id, from_club_logo, to_club, to_club_id, to_club_logo,
+        market_value, fee, upcoming, source)
+     VALUES (?, ?, ?, ?, ?, ${dateExpr}, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+     ON DUPLICATE KEY UPDATE
+       transfer_date = IF(VALUES(date_accurate) >= date_accurate, VALUES(transfer_date), transfer_date),
+       date_accurate = GREATEST(date_accurate, VALUES(date_accurate)),
+       season        = COALESCE(VALUES(season), season),
+       from_club     = COALESCE(VALUES(from_club), from_club),
+       from_club_id  = COALESCE(VALUES(from_club_id), from_club_id),
+       from_club_logo= COALESCE(VALUES(from_club_logo), from_club_logo),
+       to_club       = COALESCE(VALUES(to_club), to_club),
+       to_club_id    = COALESCE(VALUES(to_club_id), to_club_id),
+       to_club_logo  = COALESCE(VALUES(to_club_logo), to_club_logo),
+       market_value  = COALESCE(VALUES(market_value), market_value),
+       fee           = COALESCE(VALUES(fee), fee),
+       upcoming      = VALUES(upcoming)`,
+    params
+  );
+}
+
+// Fetch a player's full dated transfer history from Transfermarkt's JSON endpoint
+// (the same data the profile "Transfer history" box uses). Cached per player+lang.
+async function fetchPlayerTransferHistory(tmId, lang) {
+  const tmDomain = TM_TRANSFER_DOMAIN_BY_LANG[lang] || "transfermarkt.fr";
+  const cacheKey = `tm-transferhistory:v1:${lang}:${tmId}`;
+  try {
+    const [cached] = await pool.query(
+      "SELECT response_json FROM api_football_cache WHERE cache_key = ? AND expires_at > NOW() LIMIT 1",
+      [cacheKey]
+    );
+    if (cached.length > 0) {
+      const v = typeof cached[0].response_json === "string" ? JSON.parse(cached[0].response_json) : cached[0].response_json;
+      if (Array.isArray(v)) return v;
+    }
+  } catch {}
+
+  let parsed = [];
+  try {
+    const url = `https://www.${tmDomain}/ceapi/transferHistory/list/${tmId}`;
+    const resp = await fetch(url, {
+      headers: { ...TM_HEADERS, Accept: "application/json", "X-Requested-With": "XMLHttpRequest" },
+      signal: AbortSignal.timeout(15000),
+    });
+    if (resp.ok) {
+      const payload = await resp.json().catch(() => null);
+      const list = Array.isArray(payload?.transfers) ? payload.transfers : [];
+      const vereinId = (href) => (String(href || "").match(/verein\/(\d+)/) || [])[1] || null;
+      parsed = list.map((tr) => {
+        const idM = String(tr.url || "").match(/transfer_id\/(\d+)/);
+        return {
+          tmTransferId: idM ? idM[1] : null,
+          date: tr.dateUnformatted || null,        // 'YYYY-MM-DD'
+          season: tr.season || null,
+          fromClub: tr.from?.clubName || null,
+          fromClubId: vereinId(tr.from?.href),
+          fromClubLogo: tr.from?.["clubEmblem-1x"] || null,
+          toClub: tr.to?.clubName || null,
+          toClubId: vereinId(tr.to?.href),
+          toClubLogo: tr.to?.["clubEmblem-1x"] || null,
+          marketValue: tr.marketValue || null,
+          fee: tr.fee || null,
+          upcoming: tr.upcoming ? 1 : 0,
+        };
+      }).filter((t) => t.tmTransferId);
+    }
+  } catch (e) {
+    console.warn(`[transfers/history] fetch ${tmId} failed:`, e?.message);
+    return [];
+  }
+
+  try {
+    await pool.query(
+      `INSERT INTO api_football_cache (cache_key, response_json, fetched_at, expires_at)
+       VALUES (?, ?, NOW(), DATE_ADD(NOW(), INTERVAL 12 HOUR))
+       ON DUPLICATE KEY UPDATE response_json = VALUES(response_json), fetched_at = NOW(), expires_at = DATE_ADD(NOW(), INTERVAL 12 HOUR)`,
+      [cacheKey, JSON.stringify(parsed)]
+    );
+  } catch {}
+  return parsed;
+}
+
+// Sync the dated transfer history of the caller's tracked players (those with a
+// transfermarkt_id) into the persisted base. Bounded + small concurrency pool;
+// per-player results are cached 12h so repeat syncs are cheap.
+app.post("/api/transfers/sync", authMiddleware, async (req, res) => {
+  const langRaw = String(req.query.lang || req.body?.lang || "fr").toLowerCase().slice(0, 2);
+  const lang = TM_TRANSFER_DOMAIN_BY_LANG[langRaw] ? langRaw : "fr";
+  const userId = req.user.id;
+  const MAX_PLAYERS = 80;
+
+  try {
+    const [players] = await pool.query(
+      "SELECT id, transfermarkt_id FROM players WHERE user_id = ? AND transfermarkt_id IS NOT NULL AND transfermarkt_id != '' ORDER BY updated_at DESC",
+      [userId]
+    );
+    const targets = players.slice(0, MAX_PLAYERS);
+
+    let transfersUpserted = 0;
+    let idx = 0;
+    const CONCURRENCY = 6;
+    async function worker() {
+      while (idx < targets.length) {
+        const p = targets[idx++];
+        const hist = await fetchPlayerTransferHistory(p.transfermarkt_id, lang);
+        for (const h of hist) {
+          try {
+            await upsertPlayerTransfer(userId, p.id, p.transfermarkt_id, h, /*accurate*/ 1, "history");
+            transfersUpserted++;
+          } catch (e) { /* skip a bad row */ }
+        }
+      }
+    }
+    await Promise.all(Array.from({ length: Math.min(CONCURRENCY, targets.length) }, worker));
+
+    return res.json({
+      playersSynced: targets.length,
+      playersTotal: players.length,
+      transfers: transfersUpserted,
+      capped: players.length > MAX_PLAYERS,
+    });
+  } catch (err) {
+    console.error("[transfers/sync] Error:", err.message);
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+// Read the persisted, dated transfer history of the caller's players (newest
+// first). Orphan rows (player deleted) are filtered out by the INNER JOIN.
+app.get("/api/transfers/history", authMiddleware, async (req, res) => {
+  const userId = req.user.id;
+  try {
+    const [rows] = await pool.query(
+      `SELECT pt.tm_transfer_id, DATE_FORMAT(pt.transfer_date, '%Y-%m-%d') AS transfer_date,
+              pt.date_accurate, pt.season, pt.from_club, pt.from_club_logo,
+              pt.to_club, pt.to_club_logo, pt.market_value, pt.fee, pt.upcoming,
+              pt.tm_player_id, pt.source,
+              p.id AS player_id, p.name AS player_name, p.photo_url AS player_photo
+       FROM player_transfers pt
+       JOIN players p ON p.id = pt.player_id AND p.user_id = pt.user_id
+       WHERE pt.user_id = ?
+       ORDER BY pt.upcoming DESC, pt.transfer_date DESC, pt.updated_at DESC
+       LIMIT 2000`,
+      [userId]
+    );
+    const [[meta]] = await pool.query(
+      "SELECT MAX(updated_at) AS last_synced, COUNT(*) AS total FROM player_transfers WHERE user_id = ?",
+      [userId]
+    );
+    const [[pc]] = await pool.query(
+      "SELECT COUNT(*) AS withTm FROM players WHERE user_id = ? AND transfermarkt_id IS NOT NULL AND transfermarkt_id != ''",
+      [userId]
+    );
+    const transfers = rows.map((r) => ({
+      tmTransferId: r.tm_transfer_id,
+      date: r.transfer_date,
+      dateAccurate: !!r.date_accurate,
+      season: r.season,
+      fromClub: r.from_club,
+      fromClubLogo: r.from_club_logo,
+      toClub: r.to_club,
+      toClubLogo: r.to_club_logo,
+      marketValue: r.market_value,
+      fee: r.fee,
+      upcoming: !!r.upcoming,
+      tmPlayerId: r.tm_player_id,
+      playerId: r.player_id,
+      playerName: r.player_name,
+      playerPhoto: r.player_photo,
+    }));
+    return res.json({
+      transfers,
+      lastSyncedAt: meta?.last_synced ? new Date(meta.last_synced).toISOString() : null,
+      total: meta?.total || 0,
+      playersWithTm: pc?.withTm || 0,
+    });
+  } catch (err) {
+    console.error("[transfers/history] Error:", err.message);
+    return res.status(500).json({ error: err.message });
+  }
+});
+
 // ── League logos (from league_name_mappings + user_followed_leagues) ─────────
 app.get("/api/league-logos", async (_req, res) => {
   try {
@@ -13192,6 +14220,318 @@ async function enrichOnePlayer(playerInfo, row, tmPath = null, options = {}) {
 }
 
 // ────────────────────────────────────────────────────────────────────────────
+// Transfermarkt squad scraping (shared by discover-players club mode & discover-match-players)
+// ────────────────────────────────────────────────────────────────────────────
+
+// GET a Transfermarkt page as text, retrying transient failures (TM returns
+// sporadic 502s and times out under load). Each attempt gets a fresh timeout.
+async function tmFetchHtml(url, attempts = 3) {
+  let lastErr;
+  for (let i = 0; i < attempts; i++) {
+    try {
+      const resp = await fetch(url, { headers: TM_HEADERS, signal: AbortSignal.timeout(15000) });
+      if (resp.ok) return await resp.text();
+      lastErr = new Error(`TM returned ${resp.status}`);
+    } catch (e) {
+      lastErr = e;
+    }
+    if (i < attempts - 1) await new Promise(r => setTimeout(r, 1000 * (i + 1)));
+  }
+  throw lastErr || new Error(`TM request failed: ${url}`);
+}
+
+// Resolve a club query on Transfermarkt and scrape its full squad (kader page).
+// Returns { clubName, players: DiscoveredPlayer[] }. Age/position/nationality
+// filters are applied inline; value filtering is left to the caller.
+async function fetchClubSquad(clubQuery, filters = {}) {
+  const { position, ageMin, ageMax, nationality } = filters;
+  const players = [];
+  let clubName = '';
+
+  // Step 1: resolve the club on TM
+  const searchUrl = `https://www.transfermarkt.fr/schnellsuche/ergebnis/schnellsuche?query=${encodeURIComponent(clubQuery)}`;
+  const searchHtml = await tmFetchHtml(searchUrl);
+
+  // Pick the first hauptlink that is actually a CLUB (verein link). The schnellsuche
+  // lists players before clubs, so a short query like "Arsenal"/"Chelsea" would
+  // otherwise grab a player named "… Arsenal" instead of the club.
+  let clubSlug, clubId;
+  const anchorRe = /<td[^>]*class="[^"]*hauptlink[^"]*"[^>]*>\s*<a\b([^>]+)>([^<]*)<\/a>/g;
+  let am;
+  while ((am = anchorRe.exec(searchHtml)) !== null) {
+    const attrs = am[1];
+    const hrefM = attrs.match(/href="\/([\w-]+)\/startseite\/verein\/(\d+)"/);
+    if (!hrefM) continue;
+    const titleM = attrs.match(/title="([^"]*)"/);
+    clubSlug = hrefM[1];
+    clubId = hrefM[2];
+    clubName = (titleM ? titleM[1] : am[2]).replace(/&#0?39;/g, "'").replace(/&amp;/g, '&').trim();
+    break;
+  }
+  if (!clubId) return { clubName: '', players };
+
+  // Step 2: fetch the squad (kader) page
+  await new Promise(r => setTimeout(r, 400));
+  const squadUrl = `https://www.transfermarkt.fr/${clubSlug}/kader/verein/${clubId}`;
+  const squadHtml = await tmFetchHtml(squadUrl);
+
+  // Locate the items table (handle nested tables)
+  const tableStart = squadHtml.indexOf('<table class="items">');
+  let tableEnd = -1;
+  if (tableStart !== -1) {
+    let d = 0;
+    for (let k = tableStart; k < squadHtml.length; k++) {
+      if (squadHtml.slice(k, k + 6) === '<table') d++;
+      if (squadHtml.slice(k, k + 8) === '</table>') { d--; if (d === 0) { tableEnd = k + 8; break; } }
+    }
+  }
+  if (tableStart === -1 || tableEnd === -1) return { clubName, players };
+
+  const table = squadHtml.slice(tableStart, tableEnd);
+  const rowStarts = [];
+  // Squad rows carry classes like "odd", "even", "odd theme6", "even theme6" —
+  // match any class that STARTS with odd/even (the old exact-match missed ~2/3).
+  const rowPattern = /<tr class="(?:odd|even)[^"]*">/g;
+  let rm;
+  while ((rm = rowPattern.exec(table)) !== null) rowStarts.push(rm.index);
+
+  for (let ri = 0; ri < rowStarts.length; ri++) {
+    const start = rowStarts[ri];
+    const end = ri + 1 < rowStarts.length ? rowStarts[ri + 1] : table.length;
+    const row = table.slice(start, end);
+
+    const nameMatch = row.match(/<td class="hauptlink">\s*<a[^>]*href="([^"]*\/profil\/spieler\/\d+)"[^>]*>\s*([^<]+)/);
+    if (!nameMatch) continue;
+    const tmPath = nameMatch[1].trim();
+    const name = nameMatch[2].trim().replace(/&#0?39;/g, "'").replace(/&amp;/g, '&');
+    const photoMatch = row.match(/img[^>]*src="(https:\/\/img[^"]*portrait[^"]*)"/);
+    const photo = photoMatch ? photoMatch[1].replace('/small/', '/big/').replace('/medium/', '/big/') : null;
+    // Position sits in the inline-table second row: …</a></td></tr><tr><td>Position</td>
+    const posMatch = row.match(/\/profil\/spieler\/\d+"[^>]*>[\s\S]*?<\/a>\s*<\/td>\s*<\/tr>\s*<tr>\s*<td[^>]*>\s*([^<]+?)\s*<\/td>/);
+    let posText = posMatch ? posMatch[1].replace(/&amp;/g, '&').trim() : '';
+    // Age: a standalone 1-2 digit value in a plain "zentriert" cell
+    let ageVal = null;
+    const tdZ = row.match(/<td class="zentriert">([^<]{1,30})<\/td>/g) || [];
+    for (const td of tdZ) {
+      const v = td.replace(/<[^>]*>/g, '').trim();
+      if (/^\d{1,2}$/.test(v)) { ageVal = parseInt(v); break; }
+    }
+    const natFlags = [];
+    const flagRegex = /title="([^"]*)"[^>]*class="flaggenrahmen"/g;
+    let fm;
+    while ((fm = flagRegex.exec(row)) !== null) natFlags.push(fm[1]);
+    const valMatch = row.match(/<td[^>]*class="rechts hauptlink"[^>]*>([\s\S]*?)<\/td>/);
+    const marketValue = valMatch ? valMatch[1].replace(/<[^>]*>/g, '').trim() : '';
+
+    // Inline filters (value filter handled by caller)
+    if (ageMin && ageVal && ageVal < parseInt(ageMin)) continue;
+    if (ageMax && ageVal && ageVal > parseInt(ageMax)) continue;
+    if (position && position !== '_all' && posText && !posText.toLowerCase().includes(position.toLowerCase())) continue;
+    if (nationality && natFlags.length > 0 && !natFlags.some(f => f.toLowerCase().includes(nationality.toLowerCase()))) continue;
+
+    players.push({
+      name,
+      tmPath,
+      tmId: tmPath.match(/\/spieler\/(\d+)/)?.[1] || null,
+      photo,
+      position: posText,
+      age: ageVal,
+      nationality: natFlags.join(', '),
+      club: clubName,
+      clubLogo: '',
+      marketValue,
+    });
+  }
+  return { clubName, players };
+}
+
+// ── Transfermarkt single-player search (used to enrich real lineup names) ──
+
+// Parse player rows out of a TM schnellsuche results page.
+function parseTmPlayerSearchHtml(html) {
+  const parsed = [];
+  const tableStart = html.indexOf('<table class="items">');
+  let tableEnd = -1;
+  if (tableStart !== -1) {
+    let d = 0;
+    for (let k = tableStart; k < html.length; k++) {
+      if (html.slice(k, k + 6) === '<table') d++;
+      if (html.slice(k, k + 8) === '</table>') { d--; if (d === 0) { tableEnd = k + 8; break; } }
+    }
+  }
+  if (tableStart === -1 || tableEnd === -1) return parsed;
+  const table = html.slice(tableStart, tableEnd);
+  const rowStarts = [];
+  const rowPattern = /<tr class="(?:odd|even)[^"]*">/g;
+  let rm;
+  while ((rm = rowPattern.exec(table)) !== null) rowStarts.push(rm.index);
+  for (let ri = 0; ri < rowStarts.length; ri++) {
+    const start = rowStarts[ri];
+    const end = ri + 1 < rowStarts.length ? rowStarts[ri + 1] : table.length;
+    const row = table.slice(start, end);
+    const photoMatch = row.match(/img[^>]*src="(https:\/\/img[^"]*portrait[^"]*)"/);
+    const photo = photoMatch ? photoMatch[1].replace('/small/', '/big/').replace('/medium/', '/big/') : null;
+    const nameMatch = row.match(/class="hauptlink"[^>]*>\s*<a[^>]*title="([^"]*)"[^>]*href="([^"]*)"/);
+    if (!nameMatch) continue;
+    const pName = nameMatch[1].replace(/&#0?39;/g, "'").replace(/&amp;/g, '&').replace(/&quot;/g, '"');
+    const tmPath = nameMatch[2];
+    const tdZentriert = row.match(/<td class="zentriert">([^<]{1,30})<\/td>/g) || [];
+    let posText = '', ageVal = null;
+    for (const td of tdZentriert) {
+      const val = td.replace(/<[^>]*>/g, '').trim();
+      if (/^\d{1,2}$/.test(val)) ageVal = parseInt(val);
+      else if (val && !posText && !/^\d+$/.test(val)) posText = val;
+    }
+    const natFlags = [];
+    const flagRegex = /title="([^"]*)"[^>]*class="flaggenrahmen"/g;
+    let fm;
+    while ((fm = flagRegex.exec(row)) !== null) natFlags.push(fm[1]);
+    const clubCellMatch = row.match(/<a[^>]*title="([^"]*)"[^>]*>[^<]*<img[^>]*class="tiny_wappen"/);
+    const club = clubCellMatch ? clubCellMatch[1] : '';
+    const clubLogoMatch = row.match(/<img[^>]*class="tiny_wappen"[^>]*src="([^"]*)"/);
+    const clubLogo = clubLogoMatch ? clubLogoMatch[1] : '';
+    const valueMatch = row.match(/<td[^>]*class="rechts hauptlink"[^>]*>([\s\S]*?)<\/td>/);
+    const marketValue = valueMatch ? valueMatch[1].replace(/<[^>]*>/g, '').trim() : '';
+    parsed.push({
+      name: pName, tmPath,
+      tmId: tmPath.match(/\/spieler\/(\d+)/)?.[1] || null,
+      photo, position: posText, age: ageVal,
+      nationality: natFlags.join(', '), club, clubLogo, marketValue,
+    });
+  }
+  return parsed;
+}
+
+async function tmPlayerSearch(query) {
+  try {
+    const url = `https://www.transfermarkt.fr/schnellsuche/ergebnis/schnellsuche?query=${encodeURIComponent(query)}`;
+    return parseTmPlayerSearchHtml(await tmFetchHtml(url, 2));
+  } catch { return []; }
+}
+
+const normalizeForMatch = (s) => (s || '').normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase().trim();
+
+// Pick the TM candidate that best matches a lineup name + team
+function pickBestTmCandidate(candidates, lineupName, teamName) {
+  if (!candidates || candidates.length === 0) return null;
+  const team = normalizeForMatch(teamName);
+  if (team) {
+    const clubMatch = candidates.find(c => {
+      const cc = normalizeForMatch(c.club);
+      return cc && (cc.includes(team) || team.includes(cc));
+    });
+    if (clubMatch) return clubMatch;
+  }
+  const ln = normalizeForMatch(lineupName);
+  const exact = candidates.find(c => normalizeForMatch(c.name) === ln);
+  if (exact) return exact;
+  const last = ln.split(/\s+/).pop();
+  if (last && last.length >= 3) {
+    const lastMatch = candidates.find(c => normalizeForMatch(c.name).split(/\s+/).pop() === last);
+    if (lastMatch) return lastMatch;
+  }
+  return candidates[0];
+}
+
+// Map over items with bounded concurrency (throttle TM enrichment hits)
+async function mapWithConcurrency(items, limit, fn) {
+  const out = new Array(items.length);
+  let cursor = 0;
+  const worker = async () => {
+    while (cursor < items.length) {
+      const idx = cursor++;
+      out[idx] = await fn(items[idx], idx);
+    }
+  };
+  await Promise.all(Array.from({ length: Math.max(1, Math.min(limit, items.length)) }, worker));
+  return out;
+}
+
+// Fetch + normalize a match lineup from LiveScore (starters + subs + formation).
+// Cached 1h in api_football_cache. Returns { matchId, home, away, available }.
+// Used by the livescore-match-lineups endpoint.
+async function fetchMatchLineup(matchId) {
+  const cacheKey = `lineup:${matchId}`;
+  try {
+    const [cached] = await pool.query(
+      "SELECT response_json FROM api_football_cache WHERE cache_key = ? AND expires_at > NOW() LIMIT 1",
+      [cacheKey]
+    );
+    if (cached.length > 0) {
+      const json = cached[0].response_json;
+      return typeof json === "string" ? JSON.parse(json) : json;
+    }
+  } catch { /* table may not exist */ }
+
+  const lsHeaders = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+    "Accept": "application/json",
+  };
+  const parseTeamLineup = (teamData) => {
+    if (!teamData || !Array.isArray(teamData)) return [];
+    return teamData.map((p) => ({
+      name: p.Nm || p.Pn || `${p.Fn || ''} ${p.Ln || ''}`.trim() || "",
+      number: p.Snu ? parseInt(p.Snu, 10) : (p.Jn ? parseInt(p.Jn, 10) : null),
+      position: p.Pos || "",
+      grid: p.Gd || null,
+      captain: !!p.Cpt,
+      substituted: !!p.Sub,
+      yellow: !!p.Yc,
+      red: !!p.Rc,
+    }));
+  };
+
+  let homeLineup = [], awayLineup = [], homeFormation = null, awayFormation = null, homeSubs = [], awaySubs = [];
+
+  const luUrl = `https://prod-public-api.livescore.com/v1/api/app/lineup/soccer/${matchId}`;
+  const resp = await fetch(luUrl, { headers: lsHeaders });
+  if (resp.ok) {
+    const luRaw = await resp.json();
+    const lu = luRaw.Lu || luRaw;
+    const hData = lu['1'] || lu.home || {};
+    const aData = lu['2'] || lu.away || {};
+    homeFormation = hData.Fo || hData.formation || null;
+    awayFormation = aData.Fo || aData.formation || null;
+    homeLineup = parseTeamLineup(hData.Ps || hData.players || hData.XI || []);
+    awayLineup = parseTeamLineup(aData.Ps || aData.players || aData.XI || []);
+    homeSubs = (hData.Sb || hData.subs || hData.Sub || []).map(p => ({ name: p.Nm || p.Pn || "", number: p.Snu ? parseInt(p.Snu, 10) : (p.Jn ? parseInt(p.Jn, 10) : null), position: p.Pos || "" }));
+    awaySubs = (aData.Sb || aData.subs || aData.Sub || []).map(p => ({ name: p.Nm || p.Pn || "", number: p.Snu ? parseInt(p.Snu, 10) : (p.Jn ? parseInt(p.Jn, 10) : null), position: p.Pos || "" }));
+  } else {
+    const sbUrl = `https://prod-public-api.livescore.com/v1/api/app/scoreboard/soccer/${matchId}?MD=1`;
+    const sbResp = await fetch(sbUrl, { headers: lsHeaders });
+    if (sbResp.ok) {
+      const raw = await sbResp.json();
+      if (raw.Lu) {
+        homeLineup = parseTeamLineup(raw.Lu.home?.Ps);
+        awayLineup = parseTeamLineup(raw.Lu.away?.Ps);
+        homeFormation = raw.Lu.home?.Fo || null;
+        awayFormation = raw.Lu.away?.Fo || null;
+        homeSubs = (raw.Lu.home?.Sb || []).map(p => ({ name: p.Nm || "", number: p.Snu ? parseInt(p.Snu, 10) : null, position: p.Pos || "" }));
+        awaySubs = (raw.Lu.away?.Sb || []).map(p => ({ name: p.Nm || "", number: p.Snu ? parseInt(p.Snu, 10) : null, position: p.Pos || "" }));
+      }
+    }
+  }
+
+  const result = {
+    matchId,
+    home: { formation: homeFormation, players: homeLineup, subs: homeSubs },
+    away: { formation: awayFormation, players: awayLineup, subs: awaySubs },
+    available: (homeLineup.length + awayLineup.length) > 0,
+  };
+
+  try {
+    await pool.query(
+      `INSERT INTO api_football_cache (cache_key, response_json, fetched_at, expires_at)
+       VALUES (?, ?, NOW(), DATE_ADD(NOW(), INTERVAL 60 MINUTE))
+       ON DUPLICATE KEY UPDATE response_json = VALUES(response_json), fetched_at = NOW(), expires_at = DATE_ADD(NOW(), INTERVAL 60 MINUTE)`,
+      [cacheKey, JSON.stringify(result)]
+    );
+  } catch { /* table may not exist */ }
+
+  return result;
+}
+
+// ────────────────────────────────────────────────────────────────────────────
 
 app.post("/api/functions/:name", authMiddleware, async (req, res) => {
   const { name } = req.params;
@@ -14891,112 +16231,10 @@ app.post("/api/functions/:name", authMiddleware, async (req, res) => {
     if (!matchId) return res.status(400).json({ error: "Missing matchId" });
 
     try {
-      // Check cache (1h TTL)
-      const cacheKey = `lineup:${matchId}`;
-      try {
-        const [cached] = await pool.query(
-          "SELECT response_json FROM api_football_cache WHERE cache_key = ? AND expires_at > NOW() LIMIT 1",
-          [cacheKey]
-        );
-        if (cached.length > 0) {
-          const json = cached[0].response_json;
-          return res.json(typeof json === "string" ? JSON.parse(json) : json);
-        }
-      } catch { /* table may not exist */ }
-
-      const parseTeamLineup = (teamData) => {
-        if (!teamData || !Array.isArray(teamData)) return [];
-        return teamData.map((p) => ({
-          name: p.Nm || p.Pn || `${p.Fn || ''} ${p.Ln || ''}`.trim() || "",
-          number: p.Snu ? parseInt(p.Snu, 10) : (p.Jn ? parseInt(p.Jn, 10) : null),
-          position: p.Pos || "",
-          grid: p.Gd || null,
-          captain: !!p.Cpt,
-          substituted: !!p.Sub,
-          yellow: !!p.Yc,
-          red: !!p.Rc,
-        }));
-      };
-
-      let homeLineup = [];
-      let awayLineup = [];
-      let homeFormation = null;
-      let awayFormation = null;
-      let homeSubs = [];
-      let awaySubs = [];
-
-      // Try the dedicated lineup endpoint first
-      const luUrl = `https://prod-public-api.livescore.com/v1/api/app/lineup/soccer/${matchId}`;
-      console.log(`[livescore-lineup] Fetching: ${luUrl}`);
-      const resp = await fetch(luUrl, {
-        headers: {
-          "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-          "Accept": "application/json",
-        },
-      });
-
-      if (resp.ok) {
-        const luRaw = await resp.json();
-        console.log(`[livescore-lineup] Response keys:`, Object.keys(luRaw));
-        const lu = luRaw.Lu || luRaw;
-        const hData = lu['1'] || lu.home || {};
-        const aData = lu['2'] || lu.away || {};
-        homeFormation = hData.Fo || hData.formation || null;
-        awayFormation = aData.Fo || aData.formation || null;
-        homeLineup = parseTeamLineup(hData.Ps || hData.players || hData.XI || []);
-        awayLineup = parseTeamLineup(aData.Ps || aData.players || aData.XI || []);
-        homeSubs = (hData.Sb || hData.subs || hData.Sub || []).map(p => ({ name: p.Nm || p.Pn || "", number: p.Snu ? parseInt(p.Snu, 10) : (p.Jn ? parseInt(p.Jn, 10) : null), position: p.Pos || "" }));
-        awaySubs = (aData.Sb || aData.subs || aData.Sub || []).map(p => ({ name: p.Nm || p.Pn || "", number: p.Snu ? parseInt(p.Snu, 10) : (p.Jn ? parseInt(p.Jn, 10) : null), position: p.Pos || "" }));
-        if (homeLineup.length === 0 && awayLineup.length === 0) {
-          console.log(`[livescore-lineup] Could not parse lineup, raw structure:`, JSON.stringify(luRaw).slice(0, 2000));
-        }
-      } else {
-        console.log(`[livescore-lineup] Lineup endpoint returned ${resp.status}, trying scoreboard fallback`);
-        // Fallback: try scoreboard endpoint
-        const sbUrl = `https://prod-public-api.livescore.com/v1/api/app/scoreboard/soccer/${matchId}?MD=1`;
-        const sbResp = await fetch(sbUrl, {
-          headers: { "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36", "Accept": "application/json" },
-        });
-        if (sbResp.ok) {
-          const raw = await sbResp.json();
-          if (raw.Lu) {
-            homeLineup = parseTeamLineup(raw.Lu.home?.Ps);
-            awayLineup = parseTeamLineup(raw.Lu.away?.Ps);
-            homeFormation = raw.Lu.home?.Fo || null;
-            awayFormation = raw.Lu.away?.Fo || null;
-            homeSubs = (raw.Lu.home?.Sb || []).map(p => ({ name: p.Nm || "", number: p.Snu ? parseInt(p.Snu, 10) : null, position: p.Pos || "" }));
-            awaySubs = (raw.Lu.away?.Sb || []).map(p => ({ name: p.Nm || "", number: p.Snu ? parseInt(p.Snu, 10) : null, position: p.Pos || "" }));
-          }
-        }
-      }
-
-      console.log(`[livescore-lineup] ${matchId}: home=${homeLineup.length} away=${awayLineup.length}`);
-
-      const result = {
-        matchId,
-        home: {
-          formation: homeFormation,
-          players: homeLineup,
-          subs: homeSubs,
-        },
-        away: {
-          formation: awayFormation,
-          players: awayLineup,
-          subs: awaySubs,
-        },
-        available: (homeLineup.length + awayLineup.length) > 0,
-      };
-
-      // Cache for 1 hour
-      try {
-        await pool.query(
-          `INSERT INTO api_football_cache (cache_key, response_json, fetched_at, expires_at)
-           VALUES (?, ?, NOW(), DATE_ADD(NOW(), INTERVAL 60 MINUTE))
-           ON DUPLICATE KEY UPDATE response_json = VALUES(response_json), fetched_at = NOW(), expires_at = DATE_ADD(NOW(), INTERVAL 60 MINUTE)`,
-          [cacheKey, JSON.stringify(result)]
-        );
-      } catch { /* table may not exist */ }
-
+      // Delegates to the shared fetchMatchLineup helper (handles caching, the
+      // dedicated lineup endpoint and the scoreboard fallback).
+      const result = await fetchMatchLineup(matchId);
+      console.log(`[livescore-lineup] ${matchId}: home=${result.home.players.length} away=${result.away.players.length}`);
       return res.json(result);
     } catch (err) {
       console.error("[livescore-lineup] ERROR:", err.message);
@@ -15591,12 +16829,6 @@ app.post("/api/functions/:name", authMiddleware, async (req, res) => {
 
   // ── Discover players (Premium) — search Transfermarkt by filters ──
   if (name === "discover-players") {
-    // Check premium
-    const [subRows] = await pool.query("SELECT is_premium FROM user_subscriptions WHERE user_id = ? LIMIT 1", [req.user.id]);
-    if (!subRows[0]?.is_premium) {
-      return res.status(403).json({ error: "Fonctionnalité réservée aux abonnés Premium." });
-    }
-
     const { query, clubQuery, competition, position, ageMin, ageMax, valueMin, valueMax, nationality, page } = req.body || {};
     if (!query && !clubQuery && !competition) {
       return res.status(400).json({ error: "Saisissez un nom de joueur ou un club." });
@@ -15607,108 +16839,11 @@ app.post("/api/functions/:name", authMiddleware, async (req, res) => {
       let results = [];
       let clubName = '';
 
-      // ── Club squad search mode ──
+      // ── Club squad search mode ── (reuses the shared fetchClubSquad helper)
       if (clubQuery) {
-        // Step 1: search for club on TM
-        const searchUrl = `https://www.transfermarkt.fr/schnellsuche/ergebnis/schnellsuche?query=${encodeURIComponent(clubQuery)}`;
-        const searchResp = await fetch(searchUrl, opts);
-        if (!searchResp.ok) throw new Error(`TM club search returned ${searchResp.status}`);
-        const searchHtml = await searchResp.text();
-
-        // Find club in the clubs results table. TM anchors put `title` before
-        // `href`, so we match the anchor block first and pull each attribute
-        // separately. The previous order-sensitive regex never matched and the
-        // fallback could pick up an unrelated verein link from elsewhere on
-        // the page.
-        let clubSlug, clubId;
-        const clubAnchorMatch = searchHtml.match(/<td[^>]*class="[^"]*hauptlink[^"]*"[^>]*>\s*<a\b([^>]+)>([^<]*)<\/a>/);
-        if (clubAnchorMatch) {
-          const attrs = clubAnchorMatch[1];
-          const hrefM = attrs.match(/href="\/([\w-]+)\/startseite\/verein\/(\d+)"/);
-          const titleM = attrs.match(/title="([^"]*)"/);
-          if (hrefM) {
-            clubSlug = hrefM[1];
-            clubId = hrefM[2];
-            clubName = (titleM ? titleM[1] : clubAnchorMatch[2]).replace(/&#0?39;/g, "'").replace(/&amp;/g, '&').trim();
-          }
-        }
-        if (!clubId) return res.json({ players: [], clubName: '' });
-
-        // Step 2: fetch squad page
-        await new Promise(r => setTimeout(r, 400));
-        const squadUrl = `https://www.transfermarkt.fr/${clubSlug}/kader/verein/${clubId}`;
-        const squadResp = await fetch(squadUrl, opts);
-        if (!squadResp.ok) throw new Error(`TM squad page returned ${squadResp.status}`);
-        const squadHtml = await squadResp.text();
-
-        // Find items table with nested table handling
-        const tableStart = squadHtml.indexOf('<table class="items">');
-        let tableEnd = -1;
-        if (tableStart !== -1) {
-          let d = 0;
-          for (let k = tableStart; k < squadHtml.length; k++) {
-            if (squadHtml.slice(k, k + 6) === '<table') d++;
-            if (squadHtml.slice(k, k + 8) === '</table>') { d--; if (d === 0) { tableEnd = k + 8; break; } }
-          }
-        }
-
-        if (tableStart !== -1 && tableEnd !== -1) {
-          const table = squadHtml.slice(tableStart, tableEnd);
-          const rowStarts = [];
-          const rowPattern = /<tr class="(?:odd|even)">/g;
-          let rm;
-          while ((rm = rowPattern.exec(table)) !== null) rowStarts.push(rm.index);
-
-          for (let ri = 0; ri < rowStarts.length; ri++) {
-            const start = rowStarts[ri];
-            const end = ri + 1 < rowStarts.length ? rowStarts[ri + 1] : table.length;
-            const row = table.slice(start, end);
-
-            // Name: <td class="hauptlink"><a href="/slug/profil/spieler/ID">Name</a>
-            const nameMatch = row.match(/<td class="hauptlink">\s*<a[^>]*href="([^"]*\/profil\/spieler\/\d+)"[^>]*>\s*([^<]+)/);
-            if (!nameMatch) continue;
-            const tmPath = nameMatch[1].trim();
-            const name = nameMatch[2].trim().replace(/&#0?39;/g, "'").replace(/&amp;/g, '&');
-            // Photo
-            const photoMatch = row.match(/img[^>]*src="(https:\/\/img[^"]*portrait[^"]*)"/);
-            const photo = photoMatch ? photoMatch[1].replace('/small/', '/big/').replace('/medium/', '/big/') : null;
-            // Position: zentriert td with plain text
-            const tdZ = row.match(/<td class="zentriert">([^<]{1,30})<\/td>/g) || [];
-            let posText = '', ageVal = null;
-            for (const td of tdZ) {
-              const v = td.replace(/<[^>]*>/g, '').trim();
-              if (/^\d{1,2}$/.test(v)) ageVal = parseInt(v);
-              else if (v && !posText && !/^\d+$/.test(v) && !/\d{4}/.test(v)) posText = v;
-            }
-            // Nationality
-            const natFlags = [];
-            const flagRegex = /title="([^"]*)"[^>]*class="flaggenrahmen"/g;
-            let fm;
-            while ((fm = flagRegex.exec(row)) !== null) natFlags.push(fm[1]);
-            // Market value
-            const valMatch = row.match(/<td[^>]*class="rechts hauptlink"[^>]*>([\s\S]*?)<\/td>/);
-            const marketValue = valMatch ? valMatch[1].replace(/<[^>]*>/g, '').trim() : '';
-
-            // Apply filters
-            if (ageMin && ageVal && ageVal < parseInt(ageMin)) continue;
-            if (ageMax && ageVal && ageVal > parseInt(ageMax)) continue;
-            if (position && position !== '_all' && posText && !posText.toLowerCase().includes(position.toLowerCase())) continue;
-            if (nationality && natFlags.length > 0 && !natFlags.some(f => f.toLowerCase().includes(nationality.toLowerCase()))) continue;
-
-            results.push({
-              name,
-              tmPath,
-              tmId: tmPath.match(/\/spieler\/(\d+)/)?.[1] || null,
-              photo,
-              position: posText,
-              age: ageVal,
-              nationality: natFlags.join(', '),
-              club: clubName,
-              clubLogo: '',
-              marketValue,
-            });
-          }
-        }
+        const squad = await fetchClubSquad(clubQuery, { position, ageMin, ageMax, nationality });
+        clubName = squad.clubName;
+        results.push(...squad.players);
       }
 
       // ── Helper: parse player rows from TM search HTML ──
@@ -15872,6 +17007,117 @@ app.post("/api/functions/:name", authMiddleware, async (req, res) => {
     } catch (err) {
       console.error("[discover-players] Error:", err);
       return res.status(500).json({ error: "Erreur lors de la recherche. Réessayez." });
+    }
+  }
+
+  // ── Discover players from a match ──
+  // Prefer the REAL LiveScore lineup (XI + subs, enriched via Transfermarkt) when it
+  // exists; otherwise fall back to scraping both teams' full TM squads (reliable).
+  if (name === "discover-match-players") {
+    const { matchId, homeTeam, awayTeam } = req.body || {};
+    if (!matchId && !homeTeam && !awayTeam) {
+      return res.status(400).json({ error: "Match ou équipes manquants." });
+    }
+
+    try {
+      // Serve result from cache (1h) when available
+      const cacheKey = `discover-match:v3:${matchId || `${homeTeam}|${awayTeam}`}`;
+      try {
+        const [cached] = await pool.query(
+          "SELECT response_json FROM api_football_cache WHERE cache_key = ? AND expires_at > NOW() LIMIT 1",
+          [cacheKey]
+        );
+        if (cached.length > 0) {
+          const json = cached[0].response_json;
+          return res.json(typeof json === "string" ? JSON.parse(json) : json);
+        }
+      } catch { /* table may not exist */ }
+
+      let result = null;
+
+      // 1) Try the real lineup from LiveScore
+      let lineup = null;
+      if (matchId) {
+        try { lineup = await fetchMatchLineup(matchId); }
+        catch (e) { console.error('[discover-match-players] lineup failed:', e.message); }
+      }
+
+      if (lineup && lineup.available) {
+        // Flatten XI + subs for both teams, then enrich each via Transfermarkt
+        const entries = [];
+        const pushSquad = (arr, team, isHome, isStarter) => {
+          for (const p of (arr || [])) {
+            if (p && p.name) entries.push({ name: p.name, position: p.position || '', team, isHome, isStarter });
+          }
+        };
+        pushSquad(lineup.home.players, homeTeam || '', true, true);
+        pushSquad(lineup.home.subs, homeTeam || '', true, false);
+        pushSquad(lineup.away.players, awayTeam || '', false, true);
+        pushSquad(lineup.away.subs, awayTeam || '', false, false);
+
+        const players = await mapWithConcurrency(entries, 4, async (e) => {
+          let best = null;
+          try { best = pickBestTmCandidate(await tmPlayerSearch(e.name), e.name, e.team); }
+          catch { /* enrichment best-effort */ }
+          return {
+            name: best?.name || e.name,
+            tmPath: best?.tmPath || '',
+            tmId: best?.tmId || null,
+            photo: best?.photo || null,
+            position: best?.position || e.position || '',
+            age: best?.age ?? null,
+            nationality: best?.nationality || '',
+            club: best?.club || e.team || '',
+            clubLogo: best?.clubLogo || '',
+            marketValue: best?.marketValue || '',
+            team: e.team || '',
+            isHome: e.isHome,
+            isStarter: e.isStarter,
+          };
+        });
+
+        result = {
+          players,
+          available: players.length > 0,
+          source: 'lineup',
+          homeTeam: homeTeam || '',
+          awayTeam: awayTeam || '',
+        };
+      } else {
+        // 2) Fallback: scrape both teams' full squads (sequential — TM hates parallel)
+        const safeSquad = async (team) => {
+          if (!team) return { clubName: '', players: [] };
+          try { return await fetchClubSquad(team); }
+          catch (e) { console.error(`[discover-match-players] squad "${team}" failed:`, e.message); return { clubName: '', players: [] }; }
+        };
+        const home = await safeSquad(homeTeam);
+        const away = await safeSquad(awayTeam);
+        const players = [
+          ...home.players.map((p) => ({ ...p, team: home.clubName || homeTeam || '', isHome: true })),
+          ...away.players.map((p) => ({ ...p, team: away.clubName || awayTeam || '', isHome: false })),
+        ];
+        result = {
+          players,
+          available: players.length > 0,
+          source: 'squad',
+          homeTeam: home.clubName || homeTeam || '',
+          awayTeam: away.clubName || awayTeam || '',
+        };
+      }
+
+      try {
+        await pool.query(
+          `INSERT INTO api_football_cache (cache_key, response_json, fetched_at, expires_at)
+           VALUES (?, ?, NOW(), DATE_ADD(NOW(), INTERVAL 60 MINUTE))
+           ON DUPLICATE KEY UPDATE response_json = VALUES(response_json), fetched_at = NOW(), expires_at = DATE_ADD(NOW(), INTERVAL 60 MINUTE)`,
+          [cacheKey, JSON.stringify(result)]
+        );
+      } catch { /* table may not exist */ }
+
+      return res.json(result);
+    } catch (err) {
+      console.error("[discover-match-players] Error:", err);
+      return res.status(500).json({ error: "Erreur lors de la recherche par match. Réessayez." });
     }
   }
 
