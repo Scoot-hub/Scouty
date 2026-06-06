@@ -103,6 +103,11 @@ async function apiRequest<T = unknown>(path: string, init: RequestInit = {}, _au
         err.ban_reason = payload.ban_reason ?? null;
         err.ban_expires_at = payload.ban_expires_at ?? null;
       }
+      // Session expirée — déconnecter silencieusement pour que ProtectedRoute redirige vers /auth
+      if (response.status === 401) {
+        setStoredSession(null);
+        notify('SIGNED_OUT', null);
+      }
       return { data: null, error: err };
     }
 

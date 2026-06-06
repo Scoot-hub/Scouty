@@ -22,6 +22,8 @@ export interface Ticket {
   user_email?: string;
   user_name?: string;
   unread_count?: number;
+  requested_role?: string | null;
+  role_request_status?: 'pending' | 'approved' | 'rejected' | null;
 }
 
 export interface TicketMessage {
@@ -120,6 +122,40 @@ export function useAdminUpdateTicketStatus() {
       qc.invalidateQueries({ queryKey: ['admin-ticket', vars.ticketId] });
       qc.invalidateQueries({ queryKey: ['admin-tickets'] });
       qc.invalidateQueries({ queryKey: ['admin-tickets-unread'] });
+    },
+  });
+}
+
+export function useAdminValidateRoleRequest() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (ticketId: string) => {
+      const res = await fetch(`${API}/admin/tickets/${ticketId}/validate-role`, {
+        method: 'POST', ...authFetchInit(),
+      });
+      if (!res.ok) { const d = await res.json().catch(() => ({})); throw new Error(d.error || 'Failed'); }
+      return res.json();
+    },
+    onSuccess: (_, ticketId) => {
+      qc.invalidateQueries({ queryKey: ['admin-ticket', ticketId] });
+      qc.invalidateQueries({ queryKey: ['admin-tickets'] });
+    },
+  });
+}
+
+export function useAdminRejectRoleRequest() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async ({ ticketId, reason }: { ticketId: string; reason: string }) => {
+      const res = await fetch(`${API}/admin/tickets/${ticketId}/reject-role`, {
+        method: 'POST', ...authFetchInit(), body: JSON.stringify({ reason }),
+      });
+      if (!res.ok) { const d = await res.json().catch(() => ({})); throw new Error(d.error || 'Failed'); }
+      return res.json();
+    },
+    onSuccess: (_, vars) => {
+      qc.invalidateQueries({ queryKey: ['admin-ticket', vars.ticketId] });
+      qc.invalidateQueries({ queryKey: ['admin-tickets'] });
     },
   });
 }

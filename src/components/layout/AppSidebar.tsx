@@ -2,7 +2,7 @@ import { useState, Fragment } from 'react';
 import { Link, useLocation, useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import {
-  Users, Menu, X, LogOut, Settings, Shield, UserCircle, Eye, Sparkles, Building2, CalendarDays, CalendarCheck, Shirt, ClipboardList, ChevronLeft, ChevronRight, ChevronDown, Route, MapPinned, Gift, Search, Globe, Heart, MessageSquare, Info, Trophy, FileSpreadsheet, Newspaper, PenLine, Plus, Zap, Twitter, Star, Lock, GitCompareArrows, ArrowLeftRight, Home, type LucideIcon,
+  Users, Menu, X, LogOut, Settings, Shield, UserCircle, Eye, Sparkles, Building2, CalendarDays, CalendarCheck, Shirt, ClipboardList, ChevronLeft, ChevronRight, ChevronDown, Route, MapPinned, Gift, Search, Globe, Heart, MessageSquare, Info, Trophy, FileSpreadsheet, Newspaper, PenLine, Plus, Zap, Twitter, Star, Lock, GitCompareArrows, ArrowLeftRight, Home, BookUser, UserPlus, type LucideIcon,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { useAuth } from '@/contexts/AuthContext';
@@ -69,13 +69,16 @@ const BASE_SECTIONS: NavSection[] = [
       {
         key: 'championships', to: '/championships', icon: Trophy, pageKey: 'championships', featureKey: 'feature_championships',
         children: [
-          { key: 'my_championships', to: '/my-championships', icon: Star, iconClass: 'text-yellow-500', pageKey: 'my_championships', featureKey: 'feature_my_championships' },
+          { key: 'my_championships',        to: '/my-championships',       icon: Star,        iconClass: 'text-yellow-500', pageKey: 'my_championships',        featureKey: 'feature_my_championships' },
+          { key: 'championship_calendar',   to: '/championship-calendar',  icon: CalendarDays, pageKey: 'championships',    featureKey: 'feature_championships' },
         ],
       },
       {
         key: 'clubs', to: '/club-search', icon: Building2, matchPaths: ['/club'], pageKey: 'club_profile', featureKey: 'feature_club_profile',
         children: [
-          { key: 'my_clubs', to: '/my-clubs', icon: Heart, pageKey: 'my_clubs', featureKey: 'feature_my_clubs' },
+          { key: 'my_clubs',          to: '/my-clubs',          icon: Heart,    pageKey: 'my_clubs',          featureKey: 'feature_my_clubs' },
+          { key: 'club_contacts',     to: '/club-contacts',     icon: BookUser, pageKey: 'club_contacts' },
+          { key: 'club_recruitment',  to: '/club-recruitment',  icon: UserPlus, pageKey: 'club_recruitment' },
         ],
       },
     ],
@@ -83,7 +86,12 @@ const BASE_SECTIONS: NavSection[] = [
   {
     label: 'section_social',
     items: [
-      { key: 'news', to: '/news', icon: Newspaper, pageKey: 'news', featureKey: 'feature_news' },
+      {
+        key: 'news', to: '/news', icon: Newspaper, pageKey: 'news', featureKey: 'feature_news',
+        children: [
+          { key: 'editorial', to: '/editorial', icon: PenLine, pageKey: 'editorial', featureKey: 'feature_editorial' },
+        ],
+      },
       { key: 'community', to: '/community', icon: MessageSquare, pageKey: 'community', featureKey: 'feature_community' },
     ],
   },
@@ -351,29 +359,39 @@ function OrgPromotedNav({
   const { data: unreadData } = useOrgUnread(orgId);
   const unread = unreadData?.count ?? 0;
 
+  // Sub-items use slightly smaller padding than top-level links
+  const subClass = (path: string) =>
+    cn(
+      'flex items-center gap-2.5 rounded-lg text-xs font-medium transition-all duration-200',
+      collapsed ? 'justify-center px-2 py-2' : 'px-3 py-1.5',
+      isActive(path)
+        ? 'bg-sidebar-accent text-sidebar-accent-foreground shadow-sm'
+        : 'text-sidebar-foreground/60 hover:text-sidebar-foreground hover:bg-sidebar-accent/50'
+    );
+
   return (
     <>
       <SidebarTooltip label={t('sidebar.squad')} collapsed={collapsed}>
-        <Link to={`${orgBase}/squad`} className={linkClass(`${orgBase}/squad`)} onClick={onNav}>
-          <ClipboardList className="w-4 h-4 shrink-0" />
+        <Link to={`${orgBase}/squad`} className={subClass(`${orgBase}/squad`)} onClick={onNav}>
+          <ClipboardList className="w-3.5 h-3.5 shrink-0" />
           {!collapsed && t('sidebar.squad')}
         </Link>
       </SidebarTooltip>
       <SidebarTooltip label={t('sidebar.org_players')} collapsed={collapsed}>
-        <Link to={`${orgBase}/players`} className={linkClass(`${orgBase}/players`)} onClick={onNav}>
-          <Users className="w-4 h-4 shrink-0" />
+        <Link to={`${orgBase}/players`} className={subClass(`${orgBase}/players`)} onClick={onNav}>
+          <Users className="w-3.5 h-3.5 shrink-0" />
           {!collapsed && t('sidebar.org_players')}
         </Link>
       </SidebarTooltip>
       <SidebarTooltip label={t('sidebar.roadmap')} collapsed={collapsed}>
-        <Link to={`${orgBase}/roadmap`} className={linkClass(`${orgBase}/roadmap`)} onClick={onNav}>
-          <Route className="w-4 h-4 shrink-0" />
+        <Link to={`${orgBase}/roadmap`} className={subClass(`${orgBase}/roadmap`)} onClick={onNav}>
+          <Route className="w-3.5 h-3.5 shrink-0" />
           {!collapsed && t('sidebar.roadmap')}
         </Link>
       </SidebarTooltip>
       <SidebarTooltip label={t('sidebar.org_chat')} collapsed={collapsed}>
-        <Link to={`${orgBase}/chat`} className={linkClass(`${orgBase}/chat`)} onClick={onNav}>
-          <MessageSquare className="w-4 h-4 shrink-0" />
+        <Link to={`${orgBase}/chat`} className={subClass(`${orgBase}/chat`)} onClick={onNav}>
+          <MessageSquare className="w-3.5 h-3.5 shrink-0" />
           {!collapsed && (
             <span className="flex items-center gap-2 flex-1">
               {t('sidebar.org_chat')}
@@ -387,8 +405,8 @@ function OrgPromotedNav({
         </Link>
       </SidebarTooltip>
       <SidebarTooltip label={t('sidebar.org_settings')} collapsed={collapsed}>
-        <Link to={`${orgBase}/settings`} className={linkClass(`${orgBase}/settings`)} onClick={onNav}>
-          <Settings className="w-4 h-4 shrink-0" />
+        <Link to={`${orgBase}/settings`} className={subClass(`${orgBase}/settings`)} onClick={onNav}>
+          <Settings className="w-3.5 h-3.5 shrink-0" />
           {!collapsed && t('sidebar.org_settings')}
         </Link>
       </SidebarTooltip>
@@ -416,7 +434,7 @@ export default function AppSidebar({ collapsed, onToggle }: AppSidebarProps) {
   const activeOrgSlug = location.pathname.match(/^\/organization\/([^/?]+)/)?.[1];
   const activeOrg = myOrgs?.find(o => slugify(o.name) === activeOrgSlug);
 
-  const WHITELIST_ONLY = new Set(['admin', 'data_import']);
+  const WHITELIST_ONLY = new Set(['admin', 'data_import', 'editorial']);
   const canView = (pageKey: string): boolean => {
     if (isAdmin) return true;
     if (!permsData?.permissions) return !WHITELIST_ONLY.has(pageKey);
@@ -815,15 +833,9 @@ export default function AppSidebar({ collapsed, onToggle }: AppSidebarProps) {
                 })}
 
                 {activeOrg && (
-                  <>
-                    <div className={cn('my-2 border-t border-sidebar-border/50', collapsed ? 'mx-2' : 'mx-4')} />
-                    {!collapsed && (
-                      <div className="px-4 pb-1.5">
-                        <p className="text-[10px] uppercase tracking-wider font-bold text-sidebar-foreground/40 truncate">
-                          {activeOrg.name}
-                        </p>
-                      </div>
-                    )}
+                  <div className={cn(
+                    collapsed ? 'mt-1' : 'mt-0.5 ml-3 pl-3 border-l border-sidebar-border/40'
+                  )}>
                     <OrgPromotedNav
                       orgBase={`/organization/${activeOrgSlug}`}
                       orgId={activeOrg.id as string}
@@ -832,7 +844,7 @@ export default function AppSidebar({ collapsed, onToggle }: AppSidebarProps) {
                       linkClass={linkClass}
                       onNav={() => setMobileOpen(false)}
                     />
-                  </>
+                  </div>
                 )}
               </>
             )}

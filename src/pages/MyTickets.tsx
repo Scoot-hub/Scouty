@@ -11,7 +11,7 @@ import { Badge } from '@/components/ui/badge';
 import { Textarea } from '@/components/ui/textarea';
 import {
   MessageSquare, Send, Loader2, CheckCircle, Clock, AlertCircle, ChevronLeft,
-  Plus, X, Bug, Lightbulb, HelpCircle, ChevronDown,
+  Plus, X, Bug, Lightbulb, HelpCircle, ChevronDown, Shield,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { toast } from 'sonner';
@@ -25,10 +25,13 @@ const statusBadge = (status: string, t: (k: string) => string) => {
 };
 
 const CATEGORY_META: Record<string, { icon: typeof Bug; color: string }> = {
-  bug:     { icon: Bug,         color: 'text-red-500' },
-  feature: { icon: Lightbulb,   color: 'text-amber-500' },
-  other:   { icon: HelpCircle,  color: 'text-muted-foreground' },
+  bug:          { icon: Bug,         color: 'text-red-500' },
+  feature:      { icon: Lightbulb,   color: 'text-amber-500' },
+  other:        { icon: HelpCircle,  color: 'text-muted-foreground' },
+  role_request: { icon: Shield,      color: 'text-violet-500' },
 };
+
+const ROLE_OPTIONS = ['influenceur', 'moderateur', 'importateur', 'redacteur'] as const;
 
 // ── New ticket inline form ──────────────────────────────────────────────────
 function NewTicketForm({ onCreated }: { onCreated: () => void }) {
@@ -37,13 +40,15 @@ function NewTicketForm({ onCreated }: { onCreated: () => void }) {
   const [subject, setSubject] = useState('');
   const [category, setCategory] = useState('bug');
   const [message, setMessage] = useState('');
+  const [requestedRole, setRequestedRole] = useState('');
   const [sending, setSending] = useState(false);
 
-  const reset = () => { setSubject(''); setCategory('bug'); setMessage(''); };
+  const reset = () => { setSubject(''); setCategory('bug'); setMessage(''); setRequestedRole(''); };
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!subject.trim() || !message.trim()) return;
+    if (category === 'role_request' && !requestedRole) { toast.error(t('tickets.select_role_required')); return; }
     if (!moderateFields(subject, message).clean) { toast.error(t('moderation.blocked')); return; }
     setSending(true);
     try {
@@ -51,7 +56,7 @@ function NewTicketForm({ onCreated }: { onCreated: () => void }) {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         credentials: 'include',
-        body: JSON.stringify({ category, subject: subject.trim(), message: message.trim(), url: window.location.href, userAgent: navigator.userAgent }),
+        body: JSON.stringify({ category, subject: subject.trim(), message: message.trim(), url: window.location.href, userAgent: navigator.userAgent, requested_role: category === 'role_request' ? requestedRole : undefined }),
       });
       if (!res.ok) { const d = await res.json().catch(() => ({})); throw new Error(d.error || 'Erreur'); }
       toast.success(t('report_issue.success'));
@@ -63,9 +68,10 @@ function NewTicketForm({ onCreated }: { onCreated: () => void }) {
   };
 
   const CATS = [
-    { value: 'bug',     label: t('report_issue.category_bug'),     Icon: Bug,        color: 'border-red-500/40 text-red-500 bg-red-500/5 hover:bg-red-500/10' },
-    { value: 'feature', label: t('report_issue.category_feature'), Icon: Lightbulb,  color: 'border-amber-500/40 text-amber-500 bg-amber-500/5 hover:bg-amber-500/10' },
-    { value: 'other',   label: t('report_issue.category_other'),   Icon: HelpCircle, color: 'border-border text-muted-foreground hover:bg-muted/50' },
+    { value: 'bug',          label: t('report_issue.category_bug'),          Icon: Bug,        color: 'border-red-500/40 text-red-500 bg-red-500/5 hover:bg-red-500/10' },
+    { value: 'feature',      label: t('report_issue.category_feature'),      Icon: Lightbulb,  color: 'border-amber-500/40 text-amber-500 bg-amber-500/5 hover:bg-amber-500/10' },
+    { value: 'role_request', label: t('report_issue.category_role_request'), Icon: Shield,     color: 'border-violet-500/40 text-violet-500 bg-violet-500/5 hover:bg-violet-500/10' },
+    { value: 'other',        label: t('report_issue.category_other'),        Icon: HelpCircle, color: 'border-border text-muted-foreground hover:bg-muted/50' },
   ];
 
   return (
@@ -79,12 +85,12 @@ function NewTicketForm({ onCreated }: { onCreated: () => void }) {
       <CardContent>
         <form onSubmit={handleSubmit} className="space-y-4">
           {/* Category picker */}
-          <div className="grid grid-cols-3 gap-2">
+          <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
             {CATS.map(({ value, label, Icon, color }) => (
               <button
                 key={value}
                 type="button"
-                onClick={() => setCategory(value)}
+                onClick={() => { setCategory(value); if (value !== 'role_request') setRequestedRole(''); }}
                 className={cn(
                   'flex flex-col items-center gap-1.5 rounded-xl border p-3 text-xs font-medium transition-all',
                   category === value ? color + ' ring-1 ring-current' : 'border-border text-muted-foreground hover:bg-muted/50',
@@ -95,6 +101,34 @@ function NewTicketForm({ onCreated }: { onCreated: () => void }) {
               </button>
             ))}
           </div>
+
+          {/* Role selector (only for role_request) */}
+          {category === 'role_request' && (
+            <div className="space-y-1.5">
+              <label className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+                {t('tickets.role_request_select_label')}
+              </label>
+              <div className="grid grid-cols-2 gap-2">
+                {ROLE_OPTIONS.map(role => (
+                  <button
+                    key={role}
+                    type="button"
+                    onClick={() => setRequestedRole(role)}
+                    className={cn(
+                      'flex items-center gap-2 rounded-xl border px-3 py-2 text-xs font-medium transition-all',
+                      requestedRole === role
+                        ? 'border-violet-500/40 text-violet-600 bg-violet-500/10 ring-1 ring-violet-500/40'
+                        : 'border-border text-muted-foreground hover:bg-muted/50',
+                    )}
+                  >
+                    <Shield className="w-3.5 h-3.5 shrink-0" />
+                    {t(`tickets.role_${role}`)}
+                  </button>
+                ))}
+              </div>
+              <p className="text-xs text-muted-foreground">{t('tickets.role_request_info')}</p>
+            </div>
+          )}
 
           {/* Subject */}
           <div className="space-y-1.5">
@@ -131,7 +165,7 @@ function NewTicketForm({ onCreated }: { onCreated: () => void }) {
           <div className="flex justify-end gap-2">
             <Button
               type="submit"
-              disabled={sending || !subject.trim() || !message.trim()}
+              disabled={sending || !subject.trim() || !message.trim() || (category === 'role_request' && !requestedRole)}
               className="rounded-xl gap-2"
             >
               {sending ? <Loader2 className="w-4 h-4 animate-spin" /> : <Send className="w-4 h-4" />}
@@ -294,6 +328,13 @@ function TicketChat({ ticketId, onBack }: { ticketId: string; onBack: () => void
   const CatIcon = CATEGORY_META[ticket.category ?? 'other']?.icon ?? HelpCircle;
   const catColor = CATEGORY_META[ticket.category ?? 'other']?.color ?? 'text-muted-foreground';
 
+  const roleRequestStatusBadge = () => {
+    if (ticket.category !== 'role_request' || !ticket.role_request_status) return null;
+    if (ticket.role_request_status === 'approved') return <Badge className="text-[10px] gap-1 bg-green-500/15 text-green-600 border-0"><CheckCircle className="w-3 h-3" /> {t('tickets.role_request_approved')}</Badge>;
+    if (ticket.role_request_status === 'rejected') return <Badge className="text-[10px] gap-1 bg-red-500/15 text-red-600 border-0"><AlertCircle className="w-3 h-3" /> {t('tickets.role_request_rejected')}</Badge>;
+    return <Badge className="text-[10px] gap-1 bg-violet-500/15 text-violet-600 border-0"><Clock className="w-3 h-3" /> {t('tickets.role_request_pending')}</Badge>;
+  };
+
   return (
     <div className="max-w-3xl mx-auto flex flex-col" style={{ height: 'calc(100vh - 80px)' }}>
       {/* Header */}
@@ -304,11 +345,23 @@ function TicketChat({ ticketId, onBack }: { ticketId: string; onBack: () => void
         <CatIcon className={cn('w-4 h-4 shrink-0', catColor)} />
         <div className="flex-1 min-w-0">
           <h2 className="text-lg font-bold truncate">{ticket.subject}</h2>
-          <p className="text-xs text-muted-foreground flex items-center gap-2">
-            {formatDateTime(ticket.created_at, dateFormat, timeFormat, timezone)} {statusBadge(ticket.status, t)}
+          <p className="text-xs text-muted-foreground flex items-center gap-2 flex-wrap">
+            {formatDateTime(ticket.created_at, dateFormat, timeFormat, timezone)}
+            {statusBadge(ticket.status, t)}
+            {roleRequestStatusBadge()}
           </p>
         </div>
       </div>
+
+      {/* Role request info banner */}
+      {ticket.category === 'role_request' && ticket.requested_role && (
+        <div className="mb-3 flex items-center gap-2 rounded-xl border border-violet-200 bg-violet-500/5 px-4 py-2.5">
+          <Shield className="w-4 h-4 text-violet-500 shrink-0" />
+          <span className="text-xs text-violet-700 dark:text-violet-400">
+            {t('tickets.role_request_label')} : <strong>{t(`tickets.role_${ticket.requested_role}`)}</strong>
+          </span>
+        </div>
+      )}
 
       {/* Messages */}
       <div className="flex-1 overflow-y-auto rounded-xl border bg-card px-4 py-4 space-y-3">

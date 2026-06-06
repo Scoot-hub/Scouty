@@ -10,6 +10,8 @@ import {
   useAdminReplyTicket,
   useAdminSendTicketEmail,
   useAdminUpdateTicketStatus,
+  useAdminValidateRoleRequest,
+  useAdminRejectRoleRequest,
   type Ticket,
 } from '@/hooks/use-tickets';
 import { Card, CardContent } from '@/components/ui/card';
@@ -19,7 +21,7 @@ import { Textarea } from '@/components/ui/textarea';
 import { Navigate } from 'react-router-dom';
 import {
   MessageSquare, Send, Mail, ChevronLeft, Loader2,
-  CheckCircle, Clock, AlertCircle, Bug, Sparkles, HelpCircle,
+  CheckCircle, Clock, AlertCircle, Bug, Sparkles, HelpCircle, Shield, ShieldCheck, ShieldX,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { toast } from 'sonner';
@@ -27,6 +29,7 @@ import { toast } from 'sonner';
 const categoryIcon = (cat: string) => {
   if (cat === 'bug') return <Bug className="w-3.5 h-3.5" />;
   if (cat === 'feature') return <Sparkles className="w-3.5 h-3.5" />;
+  if (cat === 'role_request') return <Shield className="w-3.5 h-3.5 text-violet-500" />;
   return <HelpCircle className="w-3.5 h-3.5" />;
 };
 
@@ -157,8 +160,12 @@ function ChatPanel({ ticketId, onBack }: { ticketId: string; onBack: () => void 
   const reply = useAdminReplyTicket();
   const sendEmailMut = useAdminSendTicketEmail();
   const updateStatus = useAdminUpdateTicketStatus();
+  const validateRole = useAdminValidateRoleRequest();
+  const rejectRole = useAdminRejectRoleRequest();
   const qc = useQueryClient();
   const [msg, setMsg] = useState('');
+  const [rejectReason, setRejectReason] = useState('');
+  const [showRejectForm, setShowRejectForm] = useState(false);
   const chatEndRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -188,6 +195,23 @@ function ChatPanel({ ticketId, onBack }: { ticketId: string; onBack: () => void 
   const handleStatusChange = async (status: string) => {
     await updateStatus.mutateAsync({ ticketId, status });
     toast.success(t('tickets.status_updated'));
+  };
+
+  const handleValidateRole = async () => {
+    try {
+      await validateRole.mutateAsync(ticketId);
+      toast.success(t('tickets.role_approved_toast'));
+    } catch (err: any) { toast.error(err.message || t('common.error')); }
+  };
+
+  const handleRejectRole = async () => {
+    if (!rejectReason.trim()) { toast.error(t('tickets.role_reject_reason_required')); return; }
+    try {
+      await rejectRole.mutateAsync({ ticketId, reason: rejectReason.trim() });
+      setRejectReason('');
+      setShowRejectForm(false);
+      toast.success(t('tickets.role_rejected_toast'));
+    } catch (err: any) { toast.error(err.message || t('common.error')); }
   };
 
   if (isLoading || !data) {
@@ -241,6 +265,78 @@ function ChatPanel({ ticketId, onBack }: { ticketId: string; onBack: () => void 
           </div>
         )}
       </div>
+
+      {/* Role request panel */}
+      {ticket.category === 'role_request' && ticket.requested_role && (
+        <div className="px-4 py-3 border-b bg-violet-500/5">
+          <div className="flex items-center justify-between gap-3 flex-wrap">
+            <div className="flex items-center gap-2">
+              <Shield className="w-4 h-4 text-violet-500 shrink-0" />
+              <span className="text-sm font-semibold">{t('tickets.role_request_label')} :</span>
+              <span className="text-sm text-violet-700 dark:text-violet-400 font-bold">{t(`tickets.role_${ticket.requested_role}`)}</span>
+              {ticket.role_request_status === 'approved' && (
+                <span className="inline-flex items-center gap-1 text-[10px] text-green-600 bg-green-500/10 rounded-full px-2 py-0.5 font-semibold">
+                  <CheckCircle className="w-3 h-3" /> {t('tickets.role_request_approved')}
+                </span>
+              )}
+              {ticket.role_request_status === 'rejected' && (
+                <span className="inline-flex items-center gap-1 text-[10px] text-red-600 bg-red-500/10 rounded-full px-2 py-0.5 font-semibold">
+                  <AlertCircle className="w-3 h-3" /> {t('tickets.role_request_rejected')}
+                </span>
+              )}
+              {(ticket.role_request_status === 'pending' || !ticket.role_request_status) && (
+                <span className="inline-flex items-center gap-1 text-[10px] text-violet-600 bg-violet-500/10 rounded-full px-2 py-0.5 font-semibold">
+                  <Clock className="w-3 h-3" /> {t('tickets.role_request_pending')}
+                </span>
+              )}
+            </div>
+            {ticket.role_request_status !== 'approved' && (
+              <div className="flex items-center gap-2">
+                <Button
+                  size="sm"
+                  className="text-[11px] h-7 rounded-lg gap-1 bg-green-600 hover:bg-green-700 text-white"
+                  onClick={handleValidateRole}
+                  disabled={validateRole.isPending}
+                >
+                  <ShieldCheck className="w-3.5 h-3.5" />
+                  {validateRole.isPending ? '...' : t('tickets.role_request_validate')}
+                </Button>
+                {ticket.role_request_status !== 'rejected' && (
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    className="text-[11px] h-7 rounded-lg gap-1 border-red-300 text-red-600 hover:bg-red-50"
+                    onClick={() => setShowRejectForm(v => !v)}
+                  >
+                    <ShieldX className="w-3.5 h-3.5" />
+                    {t('tickets.role_request_reject')}
+                  </Button>
+                )}
+              </div>
+            )}
+          </div>
+          {showRejectForm && (
+            <div className="mt-3 flex gap-2">
+              <input
+                type="text"
+                value={rejectReason}
+                onChange={e => setRejectReason(e.target.value)}
+                placeholder={t('tickets.role_reject_reason_placeholder')}
+                className="flex-1 rounded-xl border border-input bg-background px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                onKeyDown={e => { if (e.key === 'Enter') handleRejectRole(); if (e.key === 'Escape') setShowRejectForm(false); }}
+              />
+              <Button
+                size="sm"
+                className="rounded-xl text-[11px] h-8 bg-red-600 hover:bg-red-700 text-white"
+                onClick={handleRejectRole}
+                disabled={rejectRole.isPending || !rejectReason.trim()}
+              >
+                {rejectRole.isPending ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : t('tickets.role_request_reject_confirm')}
+              </Button>
+            </div>
+          )}
+        </div>
+      )}
 
       {/* Messages */}
       <div className="flex-1 overflow-y-auto px-4 py-4 space-y-3">

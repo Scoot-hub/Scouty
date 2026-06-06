@@ -153,12 +153,62 @@ const INTERNATIONAL_COMPETITIONS = [
   'Coupe du Monde', 'Euro', 'Copa America', 'CAN',
 ];
 
+// Transfermarkt competition IDs + URL slugs for match calendar scraping
+export const TM_COMPETITION_MAP: Record<string, { id: string; slug: string }> = {
+  'Ligue 1':                   { id: 'FR1',   slug: 'ligue-1' },
+  'Ligue 2':                   { id: 'FR2',   slug: 'ligue-2' },
+  'Premier League':            { id: 'GB1',   slug: 'premier-league' },
+  'EFL Championship':          { id: 'GB2',   slug: 'championship' },
+  'La Liga':                   { id: 'ES1',   slug: 'laliga' },
+  'La Liga 2':                 { id: 'ES2',   slug: 'laliga2' },
+  'Serie A':                   { id: 'IT1',   slug: 'serie-a' },
+  'Serie B':                   { id: 'IT2',   slug: 'serie-b' },
+  'Bundesliga':                { id: 'L1',    slug: '1-bundesliga' },
+  '2. Bundesliga':             { id: 'L2',    slug: '2-bundesliga' },
+  'Liga Portugal':             { id: 'PO1',   slug: 'liga-portugal-betclic' },
+  'Liga Portugal 2':           { id: 'PO2',   slug: 'liga-portugal-sabseg' },
+  'Eredivisie':                { id: 'NL1',   slug: 'eredivisie' },
+  'Eerste Divisie':            { id: 'NL2',   slug: 'eerste-divisie' },
+  'Jupiler Pro League':        { id: 'BE1',   slug: 'jupiler-pro-league' },
+  'Super Lig Turquie':         { id: 'TR1',   slug: 'super-lig' },
+  'Super League Suisse':       { id: 'C1',    slug: 'super-league' },
+  'Superligaen':               { id: 'DK1',   slug: 'superliga' },
+  'Allsvenskan':               { id: 'SE1',   slug: 'allsvenskan' },
+  'Eliteserien':               { id: 'NO1',   slug: 'eliteserien' },
+  'Bundesliga Autriche':       { id: 'A1',    slug: 'admiral-bundesliga' },
+  'Premier League Écosse':     { id: 'SC1',   slug: 'scottish-premiership' },
+  'Ekstraklasa':               { id: 'PL1',   slug: 'ekstraklasa' },
+  'Super League Grèce':        { id: 'GR1',   slug: 'super-league-1' },
+  'Premier League Ukrainienne':{ id: 'UKR1',  slug: 'premier-liga' },
+  'SuperLiga Serbie':          { id: 'SRB1',  slug: 'superliga' },
+  'HNL Croatie':               { id: 'KR1',   slug: 'hnl' },
+  'NB I Hongrie':              { id: 'UNG1',  slug: 'nb-i' },
+  'Fortuna Liga Tchéquie':     { id: 'TS1',   slug: 'fortuna-liga' },
+  'Fortuna Liga Slovaquie':    { id: 'SLK1',  slug: 'fortuna-liga' },
+  'Liga Profesional Argentina':{ id: 'AR1N',  slug: 'superliga' },
+  'MLS':                       { id: 'MLS1',  slug: 'major-league-soccer' },
+  'Liga MX':                   { id: 'MEX1',  slug: 'liga-mx' },
+  'Saudi Pro League':          { id: 'SA1',   slug: 'saudi-pro-league' },
+  'J1 League':                 { id: 'JP1',   slug: 'j1-league' },
+  'K League 1':                { id: 'KLEG1', slug: 'k-league-1' },
+  'Chinese Super League':      { id: 'CSL',   slug: 'chinese-super-league' },
+  'Egyptian Premier League':   { id: 'EGY1',  slug: 'premier-league' },
+  'Ligue des Champions':       { id: 'CL',    slug: 'champions-league' },
+  'Europa League':             { id: 'EL',    slug: 'europa-league' },
+  'Conference League':         { id: 'UECL',  slug: 'europa-conference-league' },
+  'Copa Libertadores':         { id: 'LIBER', slug: 'copa-libertadores' },
+};
+
 export interface ChampionshipEntry {
   name: string;
   country: string;
   clubCount: number;
   logoUrl: string | null;
   sofascoreId: number | null;
+  /** Transfermarkt competition code (e.g. "FR1", "GB1"). Used for match calendar scraping. */
+  tmCompetitionId: string | null;
+  /** Transfermarkt URL slug (e.g. "ligue-1"). Paired with tmCompetitionId. */
+  tmSlug: string | null;
   clubs: string[];
   isCustom?: boolean;
   customId?: string;
@@ -209,6 +259,8 @@ export function useChampionships() {
         clubCount: LEAGUE_CLUBS[name].length,
         logoUrl: getLeagueLogoUrl(name),
         sofascoreId: SOFASCORE_TOURNAMENT_IDS[name] ?? null,
+        tmCompetitionId: TM_COMPETITION_MAP[name]?.id ?? null,
+        tmSlug: TM_COMPETITION_MAP[name]?.slug ?? null,
         clubs: LEAGUE_CLUBS[name],
       }));
 
@@ -221,6 +273,8 @@ export function useChampionships() {
           clubCount: 0,
           logoUrl: getLeagueLogoUrl(name),
           sofascoreId: SOFASCORE_TOURNAMENT_IDS[name] ?? null,
+          tmCompetitionId: TM_COMPETITION_MAP[name]?.id ?? null,
+          tmSlug: TM_COMPETITION_MAP[name]?.slug ?? null,
           clubs: [],
         }));
 
@@ -241,6 +295,8 @@ export function useChampionships() {
               clubCount: 0,
               logoUrl: null,
               sofascoreId: null,
+              tmCompetitionId: null,
+              tmSlug: null,
               clubs: [],
               isCustom: true,
               customId: c.id,

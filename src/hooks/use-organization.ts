@@ -143,7 +143,7 @@ export function useUpdateOrganization(orgId: string | undefined) {
   });
 }
 
-// Join an organization by invite code
+// Join an organization by invite code (handles approval flow + max_members cap)
 export function useJoinOrganization() {
   const { user } = useAuth();
   const queryClient = useQueryClient();
@@ -160,6 +160,7 @@ export function useJoinOrganization() {
       } catch { /* not a URL, use as-is */ }
       code = code.toLowerCase();
 
+      // Find org by invite code
       const { data: org, error: orgErr } = await supabase
         .from('organizations')
         .select('*')
@@ -168,23 +169,60 @@ export function useJoinOrganization() {
       if (orgErr) throw orgErr;
       if (!org) throw new Error('INVALID_CODE');
 
-      // Check not already a member
-      const { data: existing } = await supabase
-        .from('organization_members')
-        .select('id')
-        .eq('organization_id', org.id)
-        .eq('user_id', user.id)
-        .maybeSingle();
-      if (existing) throw new Error('ALREADY_MEMBER');
-
-      const { error: memErr } = await supabase
-        .from('organization_members')
-        .insert({ organization_id: org.id, user_id: user.id, role: 'member' });
-      if (memErr) throw memErr;
-
+      // Use dedicated endpoint that handles approval + max_members
+      const res = await fetch(`${API_BASE}/organizations/${org.id}/join`, {
+        method: 'POST',
+        credentials: 'include',
+      });
+      const json = await res.json();
+      if (!res.ok) {
+        if (json.error === 'ALREADY_MEMBER') throw new Error('ALREADY_MEMBER');
+        if (json.error === 'max_members_reached') throw new Error('MAX_MEMBERS_REACHED');
+        throw new Error(json.error || 'Erreur');
+      }
+      if (json.pending) throw new Error('APPROVAL_PENDING');
       return org;
     },
     onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['my-organizations'] });
+    },
+  });
+}
+
+// Fetch pending join requests for the current org (admin only)
+export function useJoinRequests(orgId: string | undefined) {
+  return useQuery({
+    queryKey: ['join-requests', orgId],
+    queryFn: async () => {
+      if (!orgId) return [];
+      const res = await fetch(`${API_BASE}/organizations/${orgId}/join-requests`, { credentials: 'include' });
+      if (!res.ok) return [];
+      const json = await res.json();
+      return json.requests as Array<{ id: string; user_id: string; name: string; photo_url: string | null; requested_at: string }>;
+    },
+    enabled: !!orgId,
+    staleTime: 30_000,
+  });
+}
+
+// Approve or reject a join request
+export function useHandleJoinRequest(orgId: string | undefined) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async ({ requestId, action }: { requestId: string; action: 'approve' | 'reject' }) => {
+      const res = await fetch(`${API_BASE}/organizations/${orgId}/join-requests/${requestId}`, {
+        method: 'PATCH',
+        credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action }),
+      });
+      const json = await res.json();
+      if (!res.ok) throw new Error(json.error || 'Erreur');
+      return json;
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['join-requests', orgId] });
+      queryClient.invalidateQueries({ queryKey: ['organization-members'] });
       queryClient.invalidateQueries({ queryKey: ['my-organizations'] });
     },
   });

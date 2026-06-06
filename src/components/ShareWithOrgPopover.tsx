@@ -4,8 +4,17 @@ import { useMyOrganizations } from '@/hooks/use-organization';
 import { useSharePlayerWithOrg, useUnsharePlayerFromOrg, usePlayerOrgShares } from '@/hooks/use-players';
 import { Checkbox } from '@/components/ui/checkbox';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
-import { Building2, Loader2 } from 'lucide-react';
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
+import { Building2, Loader2, Lock } from 'lucide-react';
 import { toast } from 'sonner';
+
+function orgAllowsSharing(org: Record<string, unknown>): boolean {
+  try {
+    const raw = org.settings;
+    const cfg = typeof raw === 'string' ? JSON.parse(raw) : (raw as Record<string, boolean> | null);
+    return cfg?.allow_player_sharing !== false;
+  } catch { return true; }
+}
 
 interface ShareWithOrgPopoverProps {
   playerId: string;
@@ -55,21 +64,34 @@ export function ShareWithOrgPopover({ playerId, compact = false, className }: Sh
 
   // If only one org, just render a simple toggle button
   if (orgs.length === 1) {
-    const org = orgs[0];
-    const isShared = sharedOrgIds.has(org.id);
+    const org = orgs[0] as Record<string, unknown>;
+    const isShared = sharedOrgIds.has(org.id as string);
+    const sharingAllowed = orgAllowsSharing(org);
     return (
-      <button
-        onClick={(e) => { e.preventDefault(); e.stopPropagation(); handleToggle(org.id, isShared); }}
-        disabled={isPending}
-        className={compact
-          ? `p-1 rounded-md transition-colors ${isShared ? 'text-primary bg-primary/10' : 'text-muted-foreground/40 hover:text-muted-foreground'} ${className ?? ''}`
-          : `flex items-center gap-2.5 w-full text-left px-2 py-1.5 text-sm ${className ?? ''}`
-        }
-        title={isShared ? t('players.shared_with_org') : t('players.share_with_org')}
-      >
-        {isPending ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Building2 className="w-3.5 h-3.5" />}
-        {!compact && <span>{isShared ? t('players.shared_with_org') : t('players.share_with_org')}</span>}
-      </button>
+      <TooltipProvider delayDuration={200}>
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <button
+              onClick={(e) => { e.preventDefault(); e.stopPropagation(); if (sharingAllowed) handleToggle(org.id as string, isShared); }}
+              disabled={isPending || !sharingAllowed}
+              className={compact
+                ? `p-1 rounded-md transition-colors ${isShared ? 'text-primary bg-primary/10' : 'text-muted-foreground/40 hover:text-muted-foreground'} ${!sharingAllowed ? 'opacity-40 cursor-not-allowed' : ''} ${className ?? ''}`
+                : `flex items-center gap-2.5 w-full text-left px-2 py-1.5 text-sm ${!sharingAllowed ? 'opacity-40 cursor-not-allowed' : ''} ${className ?? ''}`
+              }
+              title={sharingAllowed ? (isShared ? t('players.shared_with_org') : t('players.share_with_org')) : undefined}
+            >
+              {isPending ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Building2 className="w-3.5 h-3.5" />}
+              {!compact && <span>{isShared ? t('players.shared_with_org') : t('players.share_with_org')}</span>}
+              {!sharingAllowed && <Lock className="w-3 h-3 ml-0.5" />}
+            </button>
+          </TooltipTrigger>
+          {!sharingAllowed && (
+            <TooltipContent side="top" className="text-xs">
+              Partage désactivé par le propriétaire de l'organisation
+            </TooltipContent>
+          )}
+        </Tooltip>
+      </TooltipProvider>
     );
   }
 
@@ -109,20 +131,24 @@ export function ShareWithOrgPopover({ playerId, compact = false, className }: Sh
           </p>
           <div className="space-y-1 max-h-48 overflow-y-auto">
             {orgs.map(org => {
-              const isShared = sharedOrgIds.has(org.id);
+              const typedOrg = org as Record<string, unknown>;
+              const isShared = sharedOrgIds.has(typedOrg.id as string);
+              const sharingAllowed = orgAllowsSharing(typedOrg);
               return (
                 <label
-                  key={org.id}
-                  className="flex items-center gap-2 px-2 py-1.5 rounded-md hover:bg-muted cursor-pointer text-sm"
+                  key={typedOrg.id as string}
+                  className={`flex items-center gap-2 px-2 py-1.5 rounded-md text-sm ${sharingAllowed ? 'hover:bg-muted cursor-pointer' : 'opacity-50 cursor-not-allowed'}`}
                   onClick={(e) => e.stopPropagation()}
+                  title={!sharingAllowed ? 'Partage désactivé par le propriétaire de l\'organisation' : undefined}
                 >
                   <Checkbox
                     checked={isShared}
-                    disabled={isPending}
-                    onCheckedChange={() => handleToggle(org.id, isShared)}
+                    disabled={isPending || !sharingAllowed}
+                    onCheckedChange={() => sharingAllowed && handleToggle(typedOrg.id as string, isShared)}
                   />
                   <Building2 className="w-3.5 h-3.5 text-muted-foreground shrink-0" />
-                  <span className="truncate">{org.name}</span>
+                  <span className="truncate flex-1">{typedOrg.name as string}</span>
+                  {!sharingAllowed && <Lock className="w-3 h-3 text-muted-foreground shrink-0" />}
                 </label>
               );
             })}
@@ -174,17 +200,23 @@ export function BulkShareDialog({ playerIds, open, onOpenChange, onDone }: BulkS
           {t('players.add_to_org')} ({playerIds.length})
         </p>
         <div className="space-y-1.5 max-h-60 overflow-y-auto">
-          {orgs.map(org => (
-            <button
-              key={org.id}
-              onClick={() => handleShareAll(org.id)}
-              disabled={sharing}
-              className="flex items-center gap-3 px-3 py-2.5 rounded-lg hover:bg-muted cursor-pointer text-sm w-full text-left transition-colors"
-            >
-              {sharing ? <Loader2 className="w-4 h-4 animate-spin shrink-0" /> : <Building2 className="w-4 h-4 text-muted-foreground shrink-0" />}
-              <span className="truncate font-medium">{org.name}</span>
-            </button>
-          ))}
+          {orgs.map(org => {
+            const typedOrg = org as Record<string, unknown>;
+            const sharingAllowed = orgAllowsSharing(typedOrg);
+            return (
+              <button
+                key={typedOrg.id as string}
+                onClick={() => sharingAllowed && handleShareAll(typedOrg.id as string)}
+                disabled={sharing || !sharingAllowed}
+                title={!sharingAllowed ? 'Partage désactivé par le propriétaire de l\'organisation' : undefined}
+                className={`flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm w-full text-left transition-colors ${sharingAllowed ? 'hover:bg-muted cursor-pointer' : 'opacity-50 cursor-not-allowed'}`}
+              >
+                {sharing ? <Loader2 className="w-4 h-4 animate-spin shrink-0" /> : <Building2 className="w-4 h-4 text-muted-foreground shrink-0" />}
+                <span className="truncate font-medium flex-1">{typedOrg.name as string}</span>
+                {!sharingAllowed && <Lock className="w-3.5 h-3.5 text-muted-foreground shrink-0" />}
+              </button>
+            );
+          })}
         </div>
       </DialogContent>
     </Dialog>

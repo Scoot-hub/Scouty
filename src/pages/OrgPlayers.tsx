@@ -34,6 +34,16 @@ export default function OrgPlayers() {
   const { data: org, isLoading: orgLoading, isFetching: orgFetching } = useCurrentOrg();
   const { data: players = [], isLoading } = useOrgPlayers();
 
+  const isAdminOrOwner = org?.myRole === 'owner' || org?.myRole === 'admin';
+  const orgSettings: Record<string, boolean | number> = (() => {
+    try {
+      const raw = (org as any)?.settings;
+      if (!raw) return {};
+      return typeof raw === 'string' ? JSON.parse(raw) : raw;
+    } catch { return {}; }
+  })();
+  const canExport = isAdminOrOwner || orgSettings.allow_player_export !== false;
+
   const [search, setSearch] = useState<string>(() => loadFilters().search ?? '');
   const [opinions, setOpinions] = useState<Opinion[]>(() => loadFilters().opinions ?? []);
   const [positions, setPositions] = useState<Position[]>(() => loadFilters().positions ?? []);
@@ -281,7 +291,12 @@ export default function OrgPlayers() {
             open={watchlistDialogOpen}
             onOpenChange={setWatchlistDialogOpen}
           />
-          <Button variant="outline" size="sm" className="rounded-xl" onClick={handleExportExcel} disabled={exporting || playersToExport.length === 0}>
+          <Button
+            variant="outline" size="sm" className="rounded-xl"
+            onClick={handleExportExcel}
+            disabled={exporting || playersToExport.length === 0 || !canExport}
+            title={!canExport ? 'Export désactivé par le propriétaire de l\'organisation' : undefined}
+          >
             <Download className="w-4 h-4 mr-1.5" />
             {exporting ? t('players.exporting') : selectedIds.size > 0 ? `${t('players.export_excel')} (${selectedIds.size})` : t('players.export_excel')}
           </Button>

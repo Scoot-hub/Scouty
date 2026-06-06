@@ -4,7 +4,8 @@ import { useAuth, INACTIVITY_TIMEOUT_KEY } from '@/contexts/AuthContext';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { CustomFieldsManager } from '@/components/CustomFieldsManager';
 import { useCustomFields, useDeleteCustomField } from '@/hooks/use-custom-fields';
-import { useIsPremium } from '@/hooks/use-admin';
+import { useIsPremium, useIsAdmin } from '@/hooks/use-admin';
+import { useCredits } from '@/hooks/use-credits';
 import { useIntegrations, useSaveIntegration, useDeleteIntegration, useTestIntegration } from '@/hooks/use-integrations';
 import { useNotificationPrefs, useSaveNotificationPrefs } from '@/hooks/use-notification-prefs';
 import {
@@ -14,7 +15,7 @@ import {
   KeyRound, ExternalLink, Crown, Bell, Mail, BellRing, Clock, Ruler, X,
   Euro, FileText, AlertTriangle,
   AlignLeft, ListChecks, Banknote, Phone, Lock, Minus, Info,
-  Image, Building2, TrendingUp, BarChart3, LayoutGrid, Sparkles,
+  Image, Building2, TrendingUp, BarChart3, LayoutGrid, Sparkles, Zap, CreditCard,
 } from 'lucide-react';
 import {
   Tooltip, TooltipContent, TooltipTrigger,
@@ -293,6 +294,7 @@ export default function Settings() {
   const {
     reducedVisionMode,
     showNotifications,
+    showCredits,
     showChatbot,
     hideRestrictedElements,
     autoShowGuide,
@@ -309,9 +311,18 @@ export default function Settings() {
     showPlayerPotential,
     showPlayerCompletion,
     animationsEnabled,
+    enrichmentDelayDays,
+    dedupCooldownHours,
+    apifootballCacheDays,
+    thesportsdbCacheDays,
     setAnimationsEnabled,
+    setEnrichmentDelayDays,
+    setDedupCooldownHours,
+    setApifootballCacheDays,
+    setThesportsdbCacheDays,
     setReducedVisionMode,
     setShowNotifications,
+    setShowCredits,
     setShowChatbot,
     setHideRestrictedElements,
     setAutoShowGuide,
@@ -330,6 +341,9 @@ export default function Settings() {
   } = useUiPreferences();
 
   const { data: isPremium } = useIsPremium();
+  const { data: isAdmin } = useIsAdmin();
+  const { data: creditsData } = useCredits();
+  const canConfigureCache = isAdmin || ['scout', 'pro'].includes(creditsData?.plan_type ?? '');
   const { data: integrations = [] } = useIntegrations();
   const saveIntegration = useSaveIntegration();
   const deleteIntegration = useDeleteIntegration();
@@ -340,6 +354,15 @@ export default function Settings() {
 
   const [apiKeys, setApiKeys] = useState<Record<string, string>>({});
   const [showKey, setShowKey] = useState<Record<string, boolean>>({});
+
+  // Animation "enregistré" pour les sélecteurs de la card Enrichissement
+  const [savedFields, setSavedFields] = useState<Record<string, boolean>>({});
+  const savedTimers = useRef<Record<string, ReturnType<typeof setTimeout>>>({});
+  const markSaved = (key: string) => {
+    setSavedFields(prev => ({ ...prev, [key]: true }));
+    clearTimeout(savedTimers.current[key]);
+    savedTimers.current[key] = setTimeout(() => setSavedFields(prev => ({ ...prev, [key]: false })), 1800);
+  };
 
   const getStatus = (serviceId: string) =>
     integrations.find(i => i.service === serviceId);
@@ -621,6 +644,7 @@ export default function Settings() {
                 {([
                   { key: 'vision',    icon: Eye,              title: t('settings.reduced_vision_title'),       desc: t('settings.reduced_vision_desc'),        checked: reducedVisionMode,      onCheckedChange: setReducedVisionMode },
                   { key: 'notif',     icon: BellOff,          title: t('settings.notifications_toggle_title'), desc: t('settings.notifications_toggle_desc'),  checked: showNotifications,      onCheckedChange: setShowNotifications },
+                  { key: 'credits',   icon: CreditCard,       title: t('settings.credits_toggle_title'),       desc: t('settings.credits_toggle_desc'),        checked: showCredits,            onCheckedChange: setShowCredits },
                   { key: 'chatbot',   icon: MessageSquareOff, title: t('settings.chatbot_toggle_title'),       desc: t('settings.chatbot_toggle_desc'),        checked: showChatbot,            onCheckedChange: setShowChatbot },
                   { key: 'guide',     icon: BookOpen,         title: t('settings.guide_auto_show_title'),      desc: t('settings.guide_auto_show_desc'),       checked: autoShowGuide,          onCheckedChange: setAutoShowGuide },
                   { key: 'hideperm',  icon: EyeOff,           title: t('settings.hide_restricted_title'),      desc: t('settings.hide_restricted_desc'),       checked: hideRestrictedElements, onCheckedChange: setHideRestrictedElements },
@@ -675,6 +699,104 @@ export default function Settings() {
                     </div>
                   );
                 })}
+              </CardContent>
+            </Card>
+
+            {/* Enrichissement */}
+            <Card>
+              <CardHeader>
+                <CardTitle className="flex items-center gap-2 text-base">
+                  <Zap className="w-4 h-4 text-primary" />
+                  {t('settings.enrichment_title')}
+                </CardTitle>
+                <CardDescription>{t('settings.enrichment_desc')}</CardDescription>
+              </CardHeader>
+              <CardContent className="space-y-5">
+                {/* Délai d'enrichissement */}
+                <div>
+                  <label className="flex items-center text-xs font-semibold uppercase tracking-wider text-muted-foreground mb-2">
+                    {t('settings.enrichment_delay_label')}
+                    <span className={`ml-1.5 inline-flex items-center gap-1 text-[10px] font-semibold text-green-500 transition-all duration-300 ${savedFields['enrichmentDelay'] ? 'opacity-100 translate-y-0' : 'opacity-0 -translate-y-1 pointer-events-none'}`}>
+                      <CheckCircle2 className="w-3 h-3" />{t('settings.pref_saved')}
+                    </span>
+                  </label>
+                  <Select value={String(enrichmentDelayDays)} onValueChange={v => { setEnrichmentDelayDays(Number(v)); markSaved('enrichmentDelay'); }}>
+                    <SelectTrigger className="rounded-xl"><SelectValue /></SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="1">{t('settings.enrichment_delay_1d')}</SelectItem>
+                      <SelectItem value="7">{t('settings.enrichment_delay_7d')}</SelectItem>
+                      <SelectItem value="30">{t('settings.enrichment_delay_30d')}</SelectItem>
+                      <SelectItem value="90">{t('settings.enrichment_delay_90d')}</SelectItem>
+                      <SelectItem value="180">{t('settings.enrichment_delay_180d')}</SelectItem>
+                      <SelectItem value="365">{t('settings.enrichment_delay_365d')}</SelectItem>
+                    </SelectContent>
+                  </Select>
+                  <p className="mt-2 text-xs text-muted-foreground">{t('settings.enrichment_delay_hint')}</p>
+                </div>
+
+                <div className="border-t border-border/50" />
+
+                {/* Cooldown fusion doublons — tout le monde */}
+                <div>
+                  <label className="flex items-center text-xs font-semibold uppercase tracking-wider text-muted-foreground mb-2">
+                    {t('settings.dedup_cooldown_label')}
+                    <span className={`ml-1.5 inline-flex items-center gap-1 text-[10px] font-semibold text-green-500 transition-all duration-300 ${savedFields['dedupCooldown'] ? 'opacity-100 translate-y-0' : 'opacity-0 -translate-y-1 pointer-events-none'}`}>
+                      <CheckCircle2 className="w-3 h-3" />{t('settings.pref_saved')}
+                    </span>
+                  </label>
+                  <Select value={String(dedupCooldownHours)} onValueChange={v => { setDedupCooldownHours(Number(v)); markSaved('dedupCooldown'); }}>
+                    <SelectTrigger className="rounded-xl"><SelectValue /></SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="1">{t('settings.dedup_cooldown_1h')}</SelectItem>
+                      <SelectItem value="6">{t('settings.dedup_cooldown_6h')}</SelectItem>
+                      <SelectItem value="24">{t('settings.dedup_cooldown_24h')}</SelectItem>
+                      <SelectItem value="72">{t('settings.dedup_cooldown_72h')}</SelectItem>
+                      <SelectItem value="168">{t('settings.dedup_cooldown_7d')}</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+
+                {/* Cache API-Football — scout/pro/admin uniquement */}
+                <div>
+                  <label className="flex items-center text-xs font-semibold uppercase tracking-wider text-muted-foreground mb-2">
+                    {t('settings.apifootball_cache_label')}
+                    {!canConfigureCache && <Lock className="w-3 h-3 shrink-0 ml-1" />}
+                    <span className={`ml-1.5 inline-flex items-center gap-1 text-[10px] font-semibold text-green-500 transition-all duration-300 ${savedFields['apifbCache'] ? 'opacity-100 translate-y-0' : 'opacity-0 -translate-y-1 pointer-events-none'}`}>
+                      <CheckCircle2 className="w-3 h-3" />{t('settings.pref_saved')}
+                    </span>
+                  </label>
+                  <Select value={String(apifootballCacheDays)} onValueChange={v => { setApifootballCacheDays(Number(v)); markSaved('apifbCache'); }} disabled={!canConfigureCache}>
+                    <SelectTrigger className="rounded-xl"><SelectValue /></SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="1">{t('settings.cache_1d')}</SelectItem>
+                      <SelectItem value="3">{t('settings.cache_3d')}</SelectItem>
+                      <SelectItem value="7">{t('settings.cache_7d')}</SelectItem>
+                      <SelectItem value="30">{t('settings.cache_30d')}</SelectItem>
+                    </SelectContent>
+                  </Select>
+                  {!canConfigureCache && <p className="mt-1.5 text-xs text-muted-foreground italic">{t('settings.cache_plan_required')}</p>}
+                </div>
+
+                {/* Cache TheSportsDB — scout/pro/admin uniquement */}
+                <div>
+                  <label className="flex items-center text-xs font-semibold uppercase tracking-wider text-muted-foreground mb-2">
+                    {t('settings.thesportsdb_cache_label')}
+                    {!canConfigureCache && <Lock className="w-3 h-3 shrink-0 ml-1" />}
+                    <span className={`ml-1.5 inline-flex items-center gap-1 text-[10px] font-semibold text-green-500 transition-all duration-300 ${savedFields['tsdbCache'] ? 'opacity-100 translate-y-0' : 'opacity-0 -translate-y-1 pointer-events-none'}`}>
+                      <CheckCircle2 className="w-3 h-3" />{t('settings.pref_saved')}
+                    </span>
+                  </label>
+                  <Select value={String(thesportsdbCacheDays)} onValueChange={v => { setThesportsdbCacheDays(Number(v)); markSaved('tsdbCache'); }} disabled={!canConfigureCache}>
+                    <SelectTrigger className="rounded-xl"><SelectValue /></SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="1">{t('settings.cache_1d')}</SelectItem>
+                      <SelectItem value="3">{t('settings.cache_3d')}</SelectItem>
+                      <SelectItem value="7">{t('settings.cache_7d')}</SelectItem>
+                      <SelectItem value="30">{t('settings.cache_30d')}</SelectItem>
+                    </SelectContent>
+                  </Select>
+                  {!canConfigureCache && <p className="mt-1.5 text-xs text-muted-foreground italic">{t('settings.cache_plan_required')}</p>}
+                </div>
               </CardContent>
             </Card>
 

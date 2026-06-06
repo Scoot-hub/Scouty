@@ -5,6 +5,7 @@ import type { DateFormat, TimeFormat } from '@/lib/format-utils';
 interface UiPreferences {
   reducedVisionMode: boolean;
   showNotifications: boolean;
+  showCredits: boolean;
   showChatbot: boolean;
   hideRestrictedElements: boolean;
   weekStartDay: 0 | 1; // 0 = Sunday, 1 = Monday
@@ -30,11 +31,21 @@ interface UiPreferences {
   // ── Animations ───────────────────────────────────────────────────────────
   /** When false, decorative animations (pulse, ping, reveal) are disabled. Persisted in DB. */
   animationsEnabled: boolean;
+  // ── Enrichment & cache ───────────────────────────────────────────────────
+  /** Minimum number of days between two enrichments of the same player. Persisted in DB. Default 180. */
+  enrichmentDelayDays: number;
+  /** Hours to wait before allowing a new duplicate merge run. Persisted in DB. Default 24. */
+  dedupCooldownHours: number;
+  /** Cache lifetime in days for API-Football fixture data. Scout/Pro/Admin only. Persisted in DB. Default 1. */
+  apifootballCacheDays: number;
+  /** Cache lifetime in days for TheSportsDB club/team data. Scout/Pro/Admin only. Persisted in DB. Default 1. */
+  thesportsdbCacheDays: number;
 }
 
 interface UiPreferencesContextType extends UiPreferences {
   setReducedVisionMode: (value: boolean) => void;
   setShowNotifications: (value: boolean) => void;
+  setShowCredits: (value: boolean) => void;
   setShowChatbot: (value: boolean) => void;
   setHideRestrictedElements: (value: boolean) => void;
   setWeekStartDay: (value: 0 | 1) => void;
@@ -52,6 +63,10 @@ interface UiPreferencesContextType extends UiPreferences {
   setShowPlayerPotential: (value: boolean) => void;
   setShowPlayerCompletion: (value: boolean) => void;
   setAnimationsEnabled: (value: boolean) => void;
+  setEnrichmentDelayDays: (value: number) => void;
+  setDedupCooldownHours: (value: number) => void;
+  setApifootballCacheDays: (value: number) => void;
+  setThesportsdbCacheDays: (value: number) => void;
 }
 
 const STORAGE_KEY = 'scouthub-ui-preferences';
@@ -63,6 +78,7 @@ function getBrowserTimezone(): string {
 const defaultPreferences: UiPreferences = {
   reducedVisionMode: false,
   showNotifications: true,
+  showCredits: true,
   showChatbot: true,
   hideRestrictedElements: false,
   weekStartDay: 1,
@@ -80,12 +96,17 @@ const defaultPreferences: UiPreferences = {
   showPlayerPotential: true,
   showPlayerCompletion: true,
   animationsEnabled: true,
+  enrichmentDelayDays: 180,
+  dedupCooldownHours: 72,
+  apifootballCacheDays: 7,
+  thesportsdbCacheDays: 7,
 };
 
 const UiPreferencesContext = createContext<UiPreferencesContextType>({
   ...defaultPreferences,
   setReducedVisionMode: () => {},
   setShowNotifications: () => {},
+  setShowCredits: () => {},
   setShowChatbot: () => {},
   setHideRestrictedElements: () => {},
   setWeekStartDay: () => {},
@@ -103,6 +124,10 @@ const UiPreferencesContext = createContext<UiPreferencesContextType>({
   setShowPlayerPotential: () => {},
   setShowPlayerCompletion: () => {},
   setAnimationsEnabled: () => {},
+  setEnrichmentDelayDays: () => {},
+  setDedupCooldownHours: () => {},
+  setApifootballCacheDays: () => {},
+  setThesportsdbCacheDays: () => {},
 });
 
 export function UiPreferencesProvider({ children }: { children: ReactNode }) {
@@ -122,10 +147,14 @@ export function UiPreferencesProvider({ children }: { children: ReactNode }) {
     }
   });
 
-  // Track previous animationsEnabled to detect changes for server sync
+  // Track server-synced prefs to detect changes
   const prevAnimRef = useRef<boolean | null>(null);
+  const prevEnrichDelayRef = useRef<number | null>(null);
+  const prevDedupCooldownRef = useRef<number | null>(null);
+  const prevApifbCacheRef = useRef<number | null>(null);
+  const prevTsdbCacheRef = useRef<number | null>(null);
 
-  // On mount: fetch server-persisted prefs (animationsEnabled) and merge
+  // On mount: fetch server-persisted prefs and merge
   useEffect(() => {
     fetch('/api/my-ui-prefs', { credentials: 'include' })
       .then(r => r.ok ? r.json() : null)
@@ -136,9 +165,17 @@ export function UiPreferencesProvider({ children }: { children: ReactNode }) {
           if (typeof data.animationsEnabled === 'boolean') {
             merged.animationsEnabled = data.animationsEnabled;
           }
+          if (typeof data.enrichmentDelayDays === 'number') merged.enrichmentDelayDays = data.enrichmentDelayDays;
+          if (typeof data.dedupCooldownHours === 'number') merged.dedupCooldownHours = data.dedupCooldownHours;
+          if (typeof data.apifootballCacheDays === 'number') merged.apifootballCacheDays = data.apifootballCacheDays;
+          if (typeof data.thesportsdbCacheDays === 'number') merged.thesportsdbCacheDays = data.thesportsdbCacheDays;
           return merged;
         });
         prevAnimRef.current = typeof data.animationsEnabled === 'boolean' ? data.animationsEnabled : true;
+        prevEnrichDelayRef.current = typeof data.enrichmentDelayDays === 'number' ? data.enrichmentDelayDays : 180;
+        prevDedupCooldownRef.current = typeof data.dedupCooldownHours === 'number' ? data.dedupCooldownHours : 24;
+        prevApifbCacheRef.current = typeof data.apifootballCacheDays === 'number' ? data.apifootballCacheDays : 1;
+        prevTsdbCacheRef.current = typeof data.thesportsdbCacheDays === 'number' ? data.thesportsdbCacheDays : 1;
       })
       .catch(() => {/* not logged in or network error — ignore */});
   }, []);
@@ -148,14 +185,33 @@ export function UiPreferencesProvider({ children }: { children: ReactNode }) {
     const root = document.documentElement;
     root.classList.toggle('reduced-vision', preferences.reducedVisionMode);
 
-    // Sync animationsEnabled to server when it changes (after initial load)
+    const patch: Record<string, unknown> = {};
     if (prevAnimRef.current !== null && prevAnimRef.current !== preferences.animationsEnabled) {
       prevAnimRef.current = preferences.animationsEnabled;
+      patch.animationsEnabled = preferences.animationsEnabled;
+    }
+    if (prevEnrichDelayRef.current !== null && prevEnrichDelayRef.current !== preferences.enrichmentDelayDays) {
+      prevEnrichDelayRef.current = preferences.enrichmentDelayDays;
+      patch.enrichmentDelayDays = preferences.enrichmentDelayDays;
+    }
+    if (prevDedupCooldownRef.current !== null && prevDedupCooldownRef.current !== preferences.dedupCooldownHours) {
+      prevDedupCooldownRef.current = preferences.dedupCooldownHours;
+      patch.dedupCooldownHours = preferences.dedupCooldownHours;
+    }
+    if (prevApifbCacheRef.current !== null && prevApifbCacheRef.current !== preferences.apifootballCacheDays) {
+      prevApifbCacheRef.current = preferences.apifootballCacheDays;
+      patch.apifootballCacheDays = preferences.apifootballCacheDays;
+    }
+    if (prevTsdbCacheRef.current !== null && prevTsdbCacheRef.current !== preferences.thesportsdbCacheDays) {
+      prevTsdbCacheRef.current = preferences.thesportsdbCacheDays;
+      patch.thesportsdbCacheDays = preferences.thesportsdbCacheDays;
+    }
+    if (Object.keys(patch).length > 0) {
       fetch('/api/my-ui-prefs', {
         method: 'PATCH',
         credentials: 'include',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ animationsEnabled: preferences.animationsEnabled }),
+        body: JSON.stringify(patch),
       }).catch(() => {});
     }
   }, [preferences]);
@@ -164,6 +220,7 @@ export function UiPreferencesProvider({ children }: { children: ReactNode }) {
     ...preferences,
     setReducedVisionMode: (value) => setPreferences((prev) => ({ ...prev, reducedVisionMode: value })),
     setShowNotifications: (value) => setPreferences((prev) => ({ ...prev, showNotifications: value })),
+    setShowCredits: (value) => setPreferences((prev) => ({ ...prev, showCredits: value })),
     setShowChatbot: (value) => setPreferences((prev) => ({ ...prev, showChatbot: value })),
     setHideRestrictedElements: (value) => setPreferences((prev) => ({ ...prev, hideRestrictedElements: value })),
     setWeekStartDay: (value) => setPreferences((prev) => ({ ...prev, weekStartDay: value })),
@@ -181,6 +238,10 @@ export function UiPreferencesProvider({ children }: { children: ReactNode }) {
     setShowPlayerPotential: (value) => setPreferences((prev) => ({ ...prev, showPlayerPotential: value })),
     setShowPlayerCompletion: (value) => setPreferences((prev) => ({ ...prev, showPlayerCompletion: value })),
     setAnimationsEnabled: (value) => setPreferences((prev) => ({ ...prev, animationsEnabled: value })),
+    setEnrichmentDelayDays: (value) => setPreferences((prev) => ({ ...prev, enrichmentDelayDays: value })),
+    setDedupCooldownHours: (value) => setPreferences((prev) => ({ ...prev, dedupCooldownHours: value })),
+    setApifootballCacheDays: (value) => setPreferences((prev) => ({ ...prev, apifootballCacheDays: value })),
+    setThesportsdbCacheDays: (value) => setPreferences((prev) => ({ ...prev, thesportsdbCacheDays: value })),
   }), [preferences]);
 
   return <UiPreferencesContext.Provider value={value}>{children}</UiPreferencesContext.Provider>;

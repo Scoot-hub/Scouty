@@ -74,15 +74,17 @@ export default function Editorial() {
     staleTime: 60_000,
   });
 
-  // Check write permission
+  // Check write permission — via role name OR explicit editorial.create permission
   useQuery({
     queryKey: ['editorial-can-write'],
     queryFn: async () => {
       const r2 = await fetch(`${API}/my-permissions`, { credentials: 'include' });
       const perms = await r2.json();
-      const hasRole = isAdmin || (perms?.roles ?? []).some((r: string) =>
-        ['rédacteur', 'redacteur', 'editeur', 'éditeur'].includes(r.toLowerCase())
-      );
+      const hasRole = isAdmin ||
+        (perms?.roles ?? []).some((r: string) =>
+          ['rédacteur', 'redacteur', 'editeur', 'éditeur'].includes(r.toLowerCase())
+        ) ||
+        perms?.permissions?.editorial?.create === true;
       setCanWrite(!!hasRole);
       return hasRole;
     },

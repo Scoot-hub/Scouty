@@ -112,6 +112,7 @@ const Legal = lazy(() => import("@/pages/Legal"));
 const About = lazy(() => import("@/pages/About"));
 const Affiliate = lazy(() => import("@/pages/Affiliate"));
 const Checkout = lazy(() => import("@/pages/Checkout"));
+const BuyCredits = lazy(() => import("@/pages/BuyCredits"));
 const CGV = lazy(() => import("@/pages/CGV"));
 const CGU = lazy(() => import("@/pages/CGU"));
 const Booking = lazy(() => import("@/pages/Booking"));
@@ -127,6 +128,8 @@ const UserProfile = lazy(() => import("@/pages/UserProfile"));
 const ClubProfile = lazy(() => import("@/pages/ClubProfile"));
 const ClubSearch = lazy(() => import("@/pages/ClubSearch"));
 const MyClubs = lazy(() => import("@/pages/MyClubs"));
+const ClubContacts = lazy(() => import("@/pages/ClubContacts"));
+const ClubRecruitment = lazy(() => import("@/pages/ClubRecruitment"));
 const Privacy = lazy(() => import("@/pages/Privacy"));
 const CookiesPolicy = lazy(() => import("@/pages/CookiesPolicy"));
 const Accessibility = lazy(() => import("@/pages/Accessibility"));
@@ -135,6 +138,7 @@ const AdminCredits = lazy(() => import("@/pages/AdminCredits"));
 const AdminCrons = lazy(() => import("@/pages/AdminCrons"));
 const AdminErrors = lazy(() => import("@/pages/AdminErrors"));
 const Championships = lazy(() => import("@/pages/Championships"));
+const ChampionshipCalendar = lazy(() => import("@/pages/ChampionshipCalendar"));
 const MapView = lazy(() => import("@/pages/MapView"));
 const MatchDetail = lazy(() => import("@/pages/MatchDetail"));
 const DataImport = lazy(() => import("@/pages/DataImport"));
@@ -254,7 +258,10 @@ const App = () => {
                 <Route path="/club-search" element={<ClubSearch />} />
                 <Route path="/club" element={<ClubProfile />} />
                 <Route path="/my-clubs" element={<MyClubs />} />
+                <Route path="/club-contacts" element={<ClubContacts />} />
+                <Route path="/club-recruitment" element={<ClubRecruitment />} />
                 <Route path="/championships" element={<Championships />} />
+                <Route path="/championship-calendar" element={<ChampionshipCalendar />} />
                 <Route element={<DataGuard />}>
                   <Route path="/data" element={<DataHub />} />
                   <Route path="/data/explore" element={<DataExplore />} />
@@ -267,6 +274,7 @@ const App = () => {
                 <Route path="/compare" element={<Navigate to="/data/compare" replace />} />
                 <Route path="/map" element={<MapView />} />
                 <Route path="/checkout" element={<Checkout />} />
+                <Route path="/buy-credits" element={<BuyCredits />} />
                 <Route path="/affiliate" element={<Affiliate />} />
                 <Route path="/data-import" element={<DataImport />} />
                 <Route path="/editorial" element={<Editorial />} />

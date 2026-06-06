@@ -6,7 +6,7 @@ import logo from '@/assets/logo.png';
 import { Lock } from 'lucide-react';
 
 // Pages where undefined permission = blocked (must be explicitly granted, like admin)
-const WHITELIST_ONLY_PAGES = new Set(['admin', 'data_import']);
+const WHITELIST_ONLY_PAGES = new Set(['admin', 'data_import', 'editorial']);
 
 // Map route paths to page permission keys
 const ROUTE_TO_PAGE_KEY: Record<string, string> = {
@@ -31,6 +31,8 @@ const ROUTE_TO_PAGE_KEY: Record<string, string> = {
   '/my-clubs': 'my_clubs',
   '/club-search': 'club_profile',
   '/club': 'club_profile',
+  '/club-contacts': 'club_contacts',
+  '/club-recruitment': 'club_recruitment',
   '/profile': 'user_profile',
   '/admin': 'admin',
   '/admin/roles': 'admin',

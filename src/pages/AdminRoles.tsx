@@ -8,7 +8,7 @@ import { Badge } from '@/components/ui/badge';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs';
 import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuCheckboxItem, DropdownMenuLabel, DropdownMenuSeparator } from '@/components/ui/dropdown-menu';
-import { Shield, Users, Lock, Check, X, Search, Plus, Trash2, ChevronDown, ChevronRight, Palette, Crown, User, ShieldAlert, SlidersHorizontal, Star, LogIn, Ban, CalendarDays, AlertTriangle, ArrowLeft } from 'lucide-react';
+import { Shield, Users, Lock, Check, X, Search, Plus, Trash2, ChevronDown, ChevronRight, Palette, Crown, User, ShieldAlert, SlidersHorizontal, Star, LogIn, Ban, CalendarDays, AlertTriangle, ArrowLeft, Sparkles } from 'lucide-react';
 import { toast } from 'sonner';
 import { Navigate, Link } from 'react-router-dom';
 import { useAuth } from '@/contexts/AuthContext';
@@ -92,10 +92,28 @@ function getRoleColor(role: string, roleColors: Record<string, string>) {
   return roleColors[role] || DEFAULT_ROLE_COLOR;
 }
 
+const ROLE_I18N_MAP: Record<string, string> = {
+  'admin': 'roles.name_admin',
+  'user': 'roles.name_user',
+  'moderateur': 'roles.name_moderateur',
+  'influenceur': 'roles.name_influenceur',
+  'importateur': 'roles.name_importateur',
+  'rédacteur': 'roles.name_redacteur',
+  'rédacteur scout': 'roles.name_redacteur_scout',
+  'scout pro': 'roles.name_scout_pro',
+};
+
+function getRoleDisplayName(role: string, t: (key: string) => string): string {
+  const key = ROLE_I18N_MAP[role.toLowerCase()];
+  if (key) return t(key);
+  return role.charAt(0).toUpperCase() + role.slice(1);
+}
+
 function getRoleIcon(role: string) {
   const normalized = role.toLowerCase();
   if (normalized === 'admin') return ShieldAlert;
   if (normalized === 'moderateur' || normalized === 'moderator') return Crown;
+  if (normalized === 'influenceur' || normalized === 'influencer') return Sparkles;
   if (normalized === 'user') return User;
   if (normalized.includes('manager') || normalized.includes('lead')) return Crown;
   if (normalized.includes('recruit') || normalized.includes('scout') || normalized.includes('analyst')) return Shield;
@@ -280,7 +298,7 @@ export default function AdminRoles() {
     } catch { toast.error(t('common.error')); }
   };
 
-  const SYSTEM_ROLES = ['admin', 'user', 'moderateur', 'importateur'];
+  const SYSTEM_ROLES = ['admin', 'user', 'moderateur', 'importateur', 'influenceur', 'rédacteur', 'rédacteur scout', 'scout pro'];
 
   const deleteRole = async (role: string) => {
     if (SYSTEM_ROLES.includes(role)) return;
@@ -393,8 +411,8 @@ export default function AdminRoles() {
                   style={isSelected ? { backgroundColor: color, color: '#fff' } : { borderColor: `${color}33`, color }}
                 >
                   <Icon className="w-3.5 h-3.5" />
-                  {role}
-                  {SYSTEM_ROLES.includes(role) && role !== 'admin' && role !== 'user' && (
+                  {getRoleDisplayName(role, t)}
+                  {SYSTEM_ROLES.includes(role) && (
                     <Lock className="w-2.5 h-2.5 opacity-60" />
                   )}
                 </Button>
@@ -432,12 +450,12 @@ export default function AdminRoles() {
                           >
                             <Icon className="w-4 h-4" />
                           </span>
-                          {selectedRole}
+                          {getRoleDisplayName(selectedRole, t)}
                         </>
                       );
                     })()}
                     {selectedRole === 'admin' && <Badge variant="outline" className="text-[10px]">{t('roles.full_access')}</Badge>}
-                    {SYSTEM_ROLES.includes(selectedRole) && selectedRole !== 'admin' && (
+                    {SYSTEM_ROLES.includes(selectedRole) && (
                       <Badge variant="outline" className="text-[10px] border-emerald-500/40 text-emerald-600 dark:text-emerald-400">
                         <Lock className="w-2.5 h-2.5 mr-1" />{t('roles.system_role')}
                       </Badge>
@@ -706,7 +724,8 @@ export default function AdminRoles() {
                                     }}
                                   >
                                     {(() => { const Icon = getRoleIcon(role); return <Icon className="w-2.5 h-2.5" />; })()}
-                                    {role}
+                                    {getRoleDisplayName(role, t)}
+                                    {SYSTEM_ROLES.includes(role) && <Lock className="w-2 h-2 opacity-50 ml-0.5" />}
                                     {!isCurrentUser && !(isCurrentUser && role === 'admin') && (
                                       <button
                                         onClick={() => removeRoleFromUser(u.id, role)}

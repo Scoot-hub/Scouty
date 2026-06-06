@@ -67,6 +67,21 @@ function countryName(country?: string | null) {
   return COUNTRY_META[country.toUpperCase()]?.name || country;
 }
 
+/** Strip HTML tags and decode common entities for safe plain-text display in cards. */
+function stripHtml(html: string): string {
+  return html
+    .replace(/<[^>]+>/g, ' ')  // complete tags
+    .replace(/<[^>]*$/, '')    // incomplete tag cut off at end of string
+    .replace(/&nbsp;/g, ' ')
+    .replace(/&amp;/g, '&')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'")
+    .replace(/\s{2,}/g, ' ')
+    .trim();
+}
+
 // Use flagcdn.com SVG flags — Windows doesn't ship colored flag-emoji fonts so
 // the unicode 🇪🇸 sequence falls back to "ES" text. The CDN is free, no key,
 // no rate limit, ~600 bytes per flag SVG, served with long cache headers.
@@ -570,7 +585,7 @@ function FeaturedCard({ item, onClick }: { item: UnifiedItem; onClick: () => voi
           {item.title}
         </h2>
         {item.excerpt && (
-          <p className="text-sm text-white/70 leading-relaxed line-clamp-2 max-w-2xl hidden md:block">{item.excerpt}</p>
+          <p className="text-sm text-white/70 leading-relaxed line-clamp-2 max-w-2xl hidden md:block">{stripHtml(item.excerpt)}</p>
         )}
         <div className="flex items-center gap-4 text-xs text-white/60">
           <span className="flex items-center gap-1.5"><Clock className="w-3.5 h-3.5" />{timeAgo(item.published_at)}</span>
@@ -651,7 +666,7 @@ function ItemCard({ item, onClick, onCountryClick }: {
       <div className="flex flex-col flex-1 p-4 space-y-2.5">
         <h3 className="text-sm font-bold leading-snug line-clamp-2 group-hover:text-primary transition-colors">{item.title}</h3>
         {item.excerpt && (
-          <p className="text-xs text-muted-foreground leading-relaxed line-clamp-3 flex-1">{item.excerpt}</p>
+          <p className="text-xs text-muted-foreground leading-relaxed line-clamp-3 flex-1">{stripHtml(item.excerpt)}</p>
         )}
         <div className="flex items-center justify-between text-[10px] text-muted-foreground pt-1 border-t border-border/30">
           <span className="flex items-center gap-1"><Calendar className="w-3 h-3" />{timeAgo(item.published_at)}</span>
@@ -911,8 +926,9 @@ export default function News() {
     setSelectedCountries([]);
   };
 
-  const articleCount = items.filter(i => i.type === 'article').length;
-  const buzzCount    = items.filter(i => i.type === 'buzz').length;
+  const articleCount   = items.filter(i => i.type === 'article').length;
+  const buzzCount      = items.filter(i => i.type === 'buzz').length;
+  const editorialCount = items.filter(i => i.type === 'editorial').length;
 
   return (
     <div className="max-w-7xl mx-auto space-y-8 pb-12">
@@ -1039,6 +1055,20 @@ export default function News() {
               tout
             </button>
           )}
+        </div>
+      )}
+
+      {/* Editorial context banner — visible when the filter is set to editorial
+          or when editorial articles appear in the mixed feed */}
+      {(typeFilter === 'editorial' || (!typeFilter && editorialCount > 0)) && (
+        <div className="flex items-start gap-3 rounded-xl border border-primary/20 bg-primary/5 px-4 py-3">
+          <PenLine className="w-4 h-4 text-primary shrink-0 mt-0.5" />
+          <p className="text-xs text-muted-foreground leading-relaxed">
+            <span className="font-semibold text-foreground">Éditorial Scouty</span>
+            {' '}— Ces articles ne visent pas à concurrencer la presse existante, mais à partager des analyses
+            et contenus pensés pour les besoins internes des Scouts : suivi des tendances terrain, bonnes pratiques
+            et actualités liées à l'utilisation de Scouty.
+          </p>
         </div>
       )}
 

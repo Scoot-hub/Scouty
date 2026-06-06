@@ -88,6 +88,7 @@ export function ImportTmClubDialog({ externalOpen, onExternalOpenChange }: { ext
   const [players, setPlayers] = useState<TmClubPlayer[]>([]);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [search, setSearch] = useState('');
+  const [importResult, setImportResult] = useState<{ importedCount: number; updatedCount: number; skippedCount: number } | null>(null);
 
   const existingNames = useMemo(() => {
     const set = new Set<string>();
@@ -139,6 +140,7 @@ export function ImportTmClubDialog({ externalOpen, onExternalOpenChange }: { ext
     setSearch('');
     setLoading(false);
     setImporting(false);
+    setImportResult(null);
   };
 
   const handleLoadSquad = async () => {
@@ -278,11 +280,11 @@ export function ImportTmClubDialog({ externalOpen, onExternalOpenChange }: { ext
         })();
       }
 
-      toast({
-        title: t('player_form.tm_club_import_success', { count: result.importedCount + result.updatedCount, club: clubName }),
+      setImportResult({
+        importedCount: result.importedCount,
+        updatedCount: result.updatedCount,
+        skippedCount: result.skippedCount,
       });
-      setOpen(false);
-      reset();
     } catch (err) {
       console.error('TM club import error:', err);
       completeOperation(opId, { errorCount: toImport.length });
@@ -312,28 +314,65 @@ export function ImportTmClubDialog({ externalOpen, onExternalOpenChange }: { ext
         </DialogHeader>
 
         {/* URL input */}
-        <div className="flex flex-col sm:flex-row gap-2">
-          <Input
-            value={tmUrl}
-            onChange={e => setTmUrl(e.target.value)}
-            placeholder="https://www.transfermarkt.fr/club/kader/verein/123"
-            className="flex-1 text-sm min-w-0"
-            disabled={loading || importing}
-            onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); handleLoadSquad(); } }}
-          />
-          <Button
-            size="sm"
-            onClick={handleLoadSquad}
-            disabled={loading || !tmUrl.trim() || importing}
-            className="shrink-0 gap-1.5 sm:w-auto w-full"
-          >
-            {loading ? <Loader2 className="w-4 h-4 animate-spin" /> : <Building2 className="w-4 h-4" />}
-            {loading ? t('player_form.tm_club_loading') : t('player_form.tm_club_import_btn')}
-          </Button>
-        </div>
+        {!importResult && (
+          <div className="flex flex-col sm:flex-row gap-2">
+            <Input
+              value={tmUrl}
+              onChange={e => setTmUrl(e.target.value)}
+              placeholder="https://www.transfermarkt.fr/club/kader/verein/123"
+              className="flex-1 text-sm min-w-0"
+              disabled={loading || importing}
+              onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); handleLoadSquad(); } }}
+            />
+            <Button
+              size="sm"
+              onClick={handleLoadSquad}
+              disabled={loading || !tmUrl.trim() || importing}
+              className="shrink-0 gap-1.5 sm:w-auto w-full"
+            >
+              {loading ? <Loader2 className="w-4 h-4 animate-spin" /> : <Building2 className="w-4 h-4" />}
+              {loading ? t('player_form.tm_club_loading') : t('player_form.tm_club_import_btn')}
+            </Button>
+          </div>
+        )}
+
+        {/* Import result */}
+        {importResult && (
+          <div className="flex flex-col items-center py-6 space-y-4">
+            <div className="w-12 h-12 rounded-full bg-emerald-500/10 flex items-center justify-center">
+              <Sparkles className="w-6 h-6 text-emerald-500" />
+            </div>
+            <p className="font-semibold text-base">{t('import.success')}</p>
+            <div className="w-full grid grid-cols-3 gap-2">
+              <div className="rounded-xl border border-emerald-500/20 bg-emerald-500/5 p-3 text-center">
+                <p className="text-xl font-bold text-emerald-600 dark:text-emerald-400">{importResult.importedCount}</p>
+                <p className="text-xs text-muted-foreground mt-0.5">{t('import.result_created', 'Créés')}</p>
+              </div>
+              <div className="rounded-xl border border-blue-500/20 bg-blue-500/5 p-3 text-center">
+                <p className="text-xl font-bold text-blue-600 dark:text-blue-400">{importResult.updatedCount}</p>
+                <p className="text-xs text-muted-foreground mt-0.5">{t('import.result_updated', 'Mis à jour')}</p>
+              </div>
+              <div className={`rounded-xl border p-3 text-center ${importResult.skippedCount > 0 ? 'border-amber-500/20 bg-amber-500/5' : 'border-border/40 bg-muted/30'}`}>
+                <p className={`text-xl font-bold ${importResult.skippedCount > 0 ? 'text-amber-600 dark:text-amber-400' : 'text-muted-foreground'}`}>{importResult.skippedCount}</p>
+                <p className="text-xs text-muted-foreground mt-0.5">{t('import.result_skipped', 'Ignorés')}</p>
+              </div>
+            </div>
+            {importResult.updatedCount > 0 && (
+              <p className="text-xs text-muted-foreground text-center max-w-xs leading-relaxed">
+                {t('import.result_updated_note', '{{count}} joueur(s) existaient déjà et ont été mis à jour avec les nouvelles données.', { count: importResult.updatedCount })}
+              </p>
+            )}
+            <div className="flex gap-2 w-full">
+              <Button variant="outline" className="flex-1" onClick={() => setImportResult(null)}>
+                {t('import.import_more', 'Importer un autre club')}
+              </Button>
+              <Button className="flex-1" onClick={() => { setOpen(false); reset(); }}>{t('common.close')}</Button>
+            </div>
+          </div>
+        )}
 
         {/* Squad list */}
-        {players.length > 0 && (
+        {!importResult && players.length > 0 && (
           <div className="flex flex-col gap-3">
             {/* Club header */}
             <div className="flex items-center gap-3">

@@ -16,6 +16,7 @@ import {
   Shield, Loader2, Plus, KeyRound, ChevronRight,
   Calendar, Briefcase, Camera, Trash2, Pencil, Check, X,
   MessageSquare, Bell, Eye, SlidersHorizontal, MessageSquareOff,
+  Map, Download, UserCheck, UserX, Lock, Link2Off, FileX, UserCog,
 } from 'lucide-react';
 import {
   useMyOrganizations,
@@ -30,6 +31,8 @@ import {
   useUpdateOrganization,
   useUpdateOrgSettings,
   useBlockMemberMessaging,
+  useJoinRequests,
+  useHandleJoinRequest,
   slugify,
 } from '@/hooks/use-organization';
 import OrgTabBar from '@/components/OrgTabBar';
@@ -195,6 +198,8 @@ function CreateJoinSection() {
       const message = err instanceof Error ? err.message : '';
       if (message === 'INVALID_CODE') toast.error(t('org.invalid_code'));
       else if (message === 'ALREADY_MEMBER') toast.error(t('org.already_member'));
+      else if (message === 'APPROVAL_PENDING') toast.success('Demande envoyée. Un admin doit approuver votre adhésion.');
+      else if (message === 'MAX_MEMBERS_REACHED') toast.error('Cette organisation a atteint sa limite de membres.');
       else toast.error(t('common.error'));
     }
   };
@@ -328,8 +333,13 @@ function OrganizationDashboard({ org, userId }: { org: Record<string, unknown>; 
   const [selectedMember, setSelectedMember] = useState<Record<string, unknown> | null>(null);
 
   // Parse org-level settings with defaults
-  const DEFAULT_SETTINGS = { allow_messaging: true, allow_player_sharing: true, notify_new_members: true, allow_squad_viewing: true };
-  const orgSettings: Record<string, boolean> = (() => {
+  const DEFAULT_SETTINGS: Record<string, boolean | number> = {
+    allow_messaging: true, allow_player_sharing: true, notify_new_members: true, allow_squad_viewing: true,
+    allow_roadmap_editing: true, require_approval_to_join: false, allow_player_export: true,
+    allow_member_directory: true, allow_external_links: true, allow_file_uploads: true,
+    org_visibility: false, max_members: 0,
+  };
+  const orgSettings: Record<string, boolean | number> = (() => {
     try {
       const raw = org.settings;
       if (!raw) return { ...DEFAULT_SETTINGS };
@@ -338,13 +348,16 @@ function OrganizationDashboard({ org, userId }: { org: Record<string, unknown>; 
     } catch { return { ...DEFAULT_SETTINGS }; }
   })();
 
-  const handleOrgSetting = async (key: string, value: boolean) => {
+  const handleOrgSetting = async (key: string, value: boolean | number) => {
     const next = { ...orgSettings, [key]: value };
     try {
-      await updateOrgSettings.mutateAsync(next);
+      await updateOrgSettings.mutateAsync(next as Record<string, boolean>);
       toast.success('Paramètre enregistré.');
     } catch { toast.error('Erreur lors de la sauvegarde.'); }
   };
+
+  const joinRequests = useJoinRequests(isAdmin ? org.id as string : undefined);
+  const handleJoinRequest = useHandleJoinRequest(org.id as string);
 
   const handleToggleBlockMessaging = async (member: Record<string, unknown>) => {
     const blocked = !member.messaging_blocked;
@@ -563,9 +576,51 @@ function OrganizationDashboard({ org, userId }: { org: Record<string, unknown>; 
                 key: 'allow_squad_viewing',
                 icon: Eye,
                 title: 'Visibilité de l\'effectif',
-                desc: 'Les membres peuvent consulter la liste complète des membres de l\'organisation.',
+                desc: 'Les membres peuvent consulter la liste complète de l\'effectif.',
               },
-            ] as const).map(item => {
+              {
+                key: 'allow_roadmap_editing',
+                icon: Map,
+                title: 'Modification de la feuille de route',
+                desc: 'Autoriser les membres (non-admins) à ajouter ou modifier des assignations de matchs.',
+              },
+              {
+                key: 'allow_player_export',
+                icon: Download,
+                title: 'Export des joueurs',
+                desc: 'Autoriser les membres à exporter la liste des joueurs partagés en Excel.',
+              },
+              {
+                key: 'allow_member_directory',
+                icon: UserCog,
+                title: 'Annuaire des membres',
+                desc: 'Permettre aux membres de voir la liste et les profils des autres membres.',
+              },
+              {
+                key: 'allow_external_links',
+                icon: Link2Off,
+                title: 'Liens externes dans le chat',
+                desc: 'Autoriser l\'envoi de liens http(s) dans les messages.',
+              },
+              {
+                key: 'allow_file_uploads',
+                icon: FileX,
+                title: 'Envoi de fichiers (chat)',
+                desc: 'Autoriser l\'envoi de pièces jointes dans le chat. (Fonctionnalité à venir)',
+              },
+              {
+                key: 'require_approval_to_join',
+                icon: UserCheck,
+                title: 'Approbation des nouveaux membres',
+                desc: 'Un admin doit approuver chaque demande avant qu\'un utilisateur puisse rejoindre.',
+              },
+              {
+                key: 'org_visibility',
+                icon: Share2,
+                title: 'Organisation publique',
+                desc: 'Rendre l\'organisation visible dans l\'annuaire public de la plateforme.',
+              },
+            ] as { key: string; icon: React.ElementType; title: string; desc: string }[]).map(item => {
               const ItemIcon = item.icon;
               return (
                 <div key={item.key} className="flex items-start justify-between gap-3 rounded-xl border border-border/60 bg-muted/20 p-3">
@@ -577,7 +632,7 @@ function OrganizationDashboard({ org, userId }: { org: Record<string, unknown>; 
                     <p className="mt-0.5 text-xs text-muted-foreground leading-relaxed">{item.desc}</p>
                   </div>
                   <Switch
-                    checked={orgSettings[item.key]}
+                    checked={!!orgSettings[item.key]}
                     onCheckedChange={v => handleOrgSetting(item.key, v)}
                     disabled={updateOrgSettings.isPending}
                     className="shrink-0 mt-0.5"
@@ -585,6 +640,77 @@ function OrganizationDashboard({ org, userId }: { org: Record<string, unknown>; 
                 </div>
               );
             })}
+            {/* max_members — numeric input */}
+            <div className="flex items-start justify-between gap-3 rounded-xl border border-border/60 bg-muted/20 p-3">
+              <div className="min-w-0 flex-1">
+                <div className="flex items-center gap-2 text-sm font-medium">
+                  <Users className="w-4 h-4 text-primary shrink-0" />
+                  <span>Limite de membres</span>
+                </div>
+                <p className="mt-0.5 text-xs text-muted-foreground leading-relaxed">Nombre maximum de membres autorisés. Mettre 0 pour illimité.</p>
+              </div>
+              <input
+                type="number"
+                min={0}
+                max={9999}
+                value={orgSettings.max_members as number}
+                onChange={e => handleOrgSetting('max_members', Math.max(0, Number(e.target.value)))}
+                onBlur={e => handleOrgSetting('max_members', Math.max(0, Number(e.target.value)))}
+                disabled={updateOrgSettings.isPending}
+                className="w-20 rounded-lg border border-border bg-background px-2 py-1 text-sm text-center shrink-0 mt-0.5 focus:outline-none focus:ring-1 focus:ring-primary"
+              />
+            </div>
+          </CardContent>
+        </Card>
+      )}
+
+      {/* Demandes d'adhésion — admin only, visible si require_approval_to_join */}
+      {isAdmin && orgSettings.require_approval_to_join && (
+        <Card>
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2 text-base">
+              <UserCheck className="w-4 h-4 text-primary" />
+              Demandes d'adhésion
+              {(joinRequests.data?.length ?? 0) > 0 && (
+                <span className="ml-1 min-w-[20px] h-5 px-1.5 rounded-full bg-primary text-primary-foreground text-xs font-bold flex items-center justify-center">
+                  {joinRequests.data!.length}
+                </span>
+              )}
+            </CardTitle>
+            <CardDescription>Membres en attente d'approbation pour rejoindre l'organisation.</CardDescription>
+          </CardHeader>
+          <CardContent>
+            {joinRequests.isLoading ? (
+              <div className="flex justify-center py-4"><Loader2 className="w-4 h-4 animate-spin text-muted-foreground" /></div>
+            ) : joinRequests.data?.length === 0 ? (
+              <p className="text-sm text-muted-foreground text-center py-4">Aucune demande en attente.</p>
+            ) : (
+              <div className="space-y-2">
+                {joinRequests.data?.map(req => (
+                  <div key={req.id} className="flex items-center gap-3 px-3 py-2.5 rounded-xl bg-muted/30 border border-border/40">
+                    <div className="w-8 h-8 rounded-full bg-primary/10 flex items-center justify-center shrink-0 text-xs font-bold text-primary overflow-hidden">
+                      {req.photo_url ? <img src={req.photo_url} alt={req.name} className="w-full h-full object-cover" /> : req.name?.[0]?.toUpperCase() ?? '?'}
+                    </div>
+                    <div className="flex-1 min-w-0">
+                      <p className="text-sm font-medium truncate">{req.name}</p>
+                      <p className="text-xs text-muted-foreground">{new Date(req.requested_at).toLocaleDateString('fr-FR')}</p>
+                    </div>
+                    <div className="flex items-center gap-1.5 shrink-0">
+                      <Button size="sm" variant="outline" className="h-7 gap-1 text-xs text-emerald-600 border-emerald-200 hover:bg-emerald-50"
+                        disabled={handleJoinRequest.isPending}
+                        onClick={() => handleJoinRequest.mutateAsync({ requestId: req.id, action: 'approve' }).then(() => toast.success('Membre approuvé.')).catch(() => toast.error('Erreur'))}>
+                        <UserCheck className="w-3 h-3" /> Approuver
+                      </Button>
+                      <Button size="sm" variant="outline" className="h-7 gap-1 text-xs text-destructive border-destructive/20 hover:bg-destructive/5"
+                        disabled={handleJoinRequest.isPending}
+                        onClick={() => handleJoinRequest.mutateAsync({ requestId: req.id, action: 'reject' }).then(() => toast.success('Demande refusée.')).catch(() => toast.error('Erreur'))}>
+                        <UserX className="w-3 h-3" /> Refuser
+                      </Button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
           </CardContent>
         </Card>
       )}
@@ -623,7 +749,13 @@ function OrganizationDashboard({ org, userId }: { org: Record<string, unknown>; 
           <CardDescription>{t('org.members_desc')}</CardDescription>
         </CardHeader>
         <CardContent>
-          {membersLoading ? (
+          {!isAdmin && orgSettings.allow_member_directory === false ? (
+            <div className="flex flex-col items-center justify-center py-8 gap-2 text-muted-foreground">
+              <Lock className="w-6 h-6" />
+              <p className="text-sm font-medium">Annuaire désactivé</p>
+              <p className="text-xs text-center">Le propriétaire a restreint l'accès à la liste des membres.</p>
+            </div>
+          ) : membersLoading ? (
             <div className="flex items-center justify-center py-8">
               <Loader2 className="w-5 h-5 animate-spin text-muted-foreground" />
             </div>

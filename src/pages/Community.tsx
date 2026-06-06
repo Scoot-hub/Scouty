@@ -21,7 +21,7 @@ import {
   MessageCircle, HelpCircle, Lightbulb, Trophy, Users as UsersIcon, Heart, ExternalLink, Trash2, AlertTriangle,
   Link2, ImageIcon, Archive, ArchiveRestore, Building2, Search, Pin, PinOff, Eye, ChevronDown, ChevronUp,
   ShieldCheck, MoreVertical, ArrowUp, ArrowDown, X as XClose, CheckSquare, Square,
-  CheckCircle2, Lock, Unlock, Globe, Upload, Loader2,
+  CheckCircle2, Lock, Unlock, Globe, Upload, Loader2, Hash, Tag,
 } from 'lucide-react';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from '@/components/ui/dialog';
 import { moderateFields } from '@/lib/content-moderation';
@@ -52,6 +52,8 @@ interface CommunityPost {
   created_at: string;
   lang?: string | null;
   country?: string | null;
+  tags?: string[] | null;
+  author_is_influencer?: boolean | number;
 }
 
 // ---------------------------------------------------------------------------
@@ -579,11 +581,16 @@ function CommunityFull() {
 
   const [filter, setFilter] = useState<PostCategory | 'all'>('all');
   const [countryFilter, setCountryFilter] = useState<string>('all');
+  const [searchQuery, setSearchQuery] = useState('');
+  const [showSearchSuggestions, setShowSearchSuggestions] = useState(false);
+  const [activeTagFilters, setActiveTagFilters] = useState<Set<string>>(new Set());
   const [composing, setComposing] = useState(false);
   const [title, setTitle] = useState('');
   const [content, setContent] = useState('');
   const [category, setCategory] = useState<PostCategory>('general');
   const [postLang, setPostLang] = useState<string>(() => i18n.language.split('-')[0]);
+  const [newTags, setNewTags] = useState<string[]>([]);
+  const [tagInput, setTagInput] = useState('');
   const [replyingTo, setReplyingTo] = useState<string | null>(null);
   const [replyContent, setReplyContent] = useState('');
   const [expandedPost, setExpandedPost] = useState<string | null>(null);
@@ -836,11 +843,18 @@ function CommunityFull() {
           closed_at: (p as any).closed_at ?? null,
           views: p.views || 0,
           display_order: p.display_order || 0,
+          tags: Array.isArray(p.tags) ? p.tags : (typeof p.tags === 'string' ? (() => { try { return JSON.parse(p.tags as unknown as string); } catch { return null; } })() : null),
+          author_is_influencer: !!(p as any).author_is_influencer,
         }))
         .sort((a, b) => {
           if (a.is_pinned !== b.is_pinned) return a.is_pinned ? -1 : 1;
           if (a.display_order !== b.display_order) return b.display_order - a.display_order;
-          return new Date(b.created_at).getTime() - new Date(a.created_at).getTime();
+          // Influencer posts with interactions (≥2 likes+replies) rank above regular newer posts
+          const interactA = (a.likes || 0) + (a.replies_count || 0);
+          const interactB = (b.likes || 0) + (b.replies_count || 0);
+          const scoreA = (a.author_is_influencer && interactA >= 2 ? 1e12 + interactA * 1e8 : 0) + new Date(a.created_at).getTime();
+          const scoreB = (b.author_is_influencer && interactB >= 2 ? 1e12 + interactB * 1e8 : 0) + new Date(b.created_at).getTime();
+          return scoreB - scoreA;
         });
     },
     enabled: !!isPremium,
@@ -852,12 +866,38 @@ function CommunityFull() {
     [posts]
   );
 
-  // Non-admins never see archived posts; admins see everything. Also apply country filter.
+  // All distinct tags across loaded posts
+  const allExistingTags = useMemo(() =>
+    [...new Set(posts.flatMap(p => p.tags || []))].sort(),
+    [posts]
+  );
+
+  // Search suggestions: posts matching title or content
+  const searchSuggestions = useMemo(() => {
+    const q = searchQuery.trim().toLowerCase();
+    if (q.length < 2) return [];
+    return (isAdmin ? posts : posts.filter(p => !p.is_archived))
+      .filter(p => p.title.toLowerCase().includes(q) || p.content.toLowerCase().includes(q))
+      .slice(0, 6);
+  }, [posts, searchQuery, isAdmin]);
+
+  // Non-admins never see archived posts; admins see everything. Also apply country/search/tag filters.
   const visiblePosts = useMemo(() => {
     let filtered = isAdmin ? posts : posts.filter(p => !p.is_archived);
     if (countryFilter !== 'all') filtered = filtered.filter(p => p.country === countryFilter);
+    const q = searchQuery.trim().toLowerCase();
+    if (q.length >= 2) {
+      filtered = filtered.filter(p =>
+        p.title.toLowerCase().includes(q) || p.content.toLowerCase().includes(q)
+      );
+    }
+    if (activeTagFilters.size > 0) {
+      filtered = filtered.filter(p =>
+        [...activeTagFilters].some(tag => (p.tags || []).includes(tag))
+      );
+    }
     return filtered;
-  }, [posts, isAdmin, countryFilter]);
+  }, [posts, isAdmin, countryFilter, searchQuery, activeTagFilters]);
 
   // --- Fetch user's likes ---
   const { data: likedPostIds = [] } = useQuery({
@@ -925,6 +965,7 @@ function CommunityFull() {
         replies_count: 0,
         lang: postLang || i18n.language.split('-')[0],
         country: (profile as any)?.country || null,
+        tags: newTags.length > 0 ? newTags : null,
       } as any);
       if (error) throw error;
       return { authorName, mentionedIds: extractMentionedUserIds(serialized) };
@@ -935,6 +976,8 @@ function CommunityFull() {
       mentionMapRef.current.clear();
       setTitle('');
       setContent('');
+      setNewTags([]);
+      setTagInput('');
       setComposing(false);
       setPostLang(i18n.language.split('-')[0]);
       queryClient.invalidateQueries({ queryKey: ['community-posts'] });
@@ -1270,6 +1313,84 @@ function CommunityFull() {
                 </SelectContent>
               </Select>
             </div>
+            {/* Tag input */}
+            <div className="space-y-1.5">
+              <div className="flex items-center gap-2">
+                <div className="relative flex-1">
+                  <Hash className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-muted-foreground" />
+                  <Input
+                    value={tagInput}
+                    onChange={e => setTagInput(e.target.value.toLowerCase().replace(/\s+/g, '-').replace(/[^a-z0-9àâäéèêëîïôùûüÀÂÄÉÈÊËÎÏÔÙÛÜ\-]/g, '').slice(0, 20))}
+                    placeholder={newTags.length >= 4 ? 'Maximum 4 tags atteint' : 'Ajouter un tag (max 4)…'}
+                    disabled={newTags.length >= 4}
+                    className="h-8 text-xs pl-8"
+                    onKeyDown={e => {
+                      if ((e.key === 'Enter' || e.key === ',') && tagInput.trim()) {
+                        e.preventDefault();
+                        const clean = tagInput.trim();
+                        if (clean && !newTags.includes(clean) && newTags.length < 4) {
+                          setNewTags(prev => [...prev, clean]);
+                          setTagInput('');
+                        }
+                      }
+                    }}
+                  />
+                  {/* Tag suggestions from existing posts */}
+                  {tagInput.length >= 1 && allExistingTags.filter(t => t.includes(tagInput) && !newTags.includes(t)).length > 0 && (
+                    <div className="absolute top-full left-0 mt-1 w-full rounded-lg border border-border bg-popover shadow-lg z-50 overflow-hidden">
+                      {allExistingTags.filter(t => t.includes(tagInput) && !newTags.includes(t)).slice(0, 5).map(tag => (
+                        <button
+                          key={tag}
+                          type="button"
+                          className="w-full text-left px-3 py-1.5 text-xs hover:bg-accent transition-colors flex items-center gap-1.5"
+                          onMouseDown={e => {
+                            e.preventDefault();
+                            if (!newTags.includes(tag) && newTags.length < 4) {
+                              setNewTags(prev => [...prev, tag]);
+                              setTagInput('');
+                            }
+                          }}
+                        >
+                          <Hash className="w-3 h-3 text-muted-foreground" />
+                          {tag}
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </div>
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="outline"
+                  className="h-8 text-xs"
+                  disabled={!tagInput.trim() || newTags.length >= 4 || newTags.includes(tagInput.trim())}
+                  onClick={() => {
+                    const clean = tagInput.trim();
+                    if (clean && !newTags.includes(clean) && newTags.length < 4) {
+                      setNewTags(prev => [...prev, clean]);
+                      setTagInput('');
+                    }
+                  }}
+                >
+                  <Tag className="w-3 h-3 mr-1" />Ajouter
+                </Button>
+              </div>
+              {newTags.length > 0 && (
+                <div className="flex items-center gap-1.5 flex-wrap">
+                  {newTags.map(tag => (
+                    <span key={tag} className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-primary/10 text-primary border border-primary/20 text-[11px] font-medium">
+                      <Hash className="w-2.5 h-2.5" />
+                      {tag}
+                      <button type="button" onClick={() => setNewTags(prev => prev.filter(t => t !== tag))} className="ml-0.5 hover:text-destructive transition-colors">
+                        <XClose className="w-2.5 h-2.5" />
+                      </button>
+                    </span>
+                  ))}
+                  <span className="text-[10px] text-muted-foreground">{newTags.length}/4</span>
+                </div>
+              )}
+            </div>
+
             <div className="space-y-2">
               <Textarea
                 ref={contentRef}
@@ -1488,7 +1609,7 @@ function CommunityFull() {
               )}
             </div>
             <div className="flex items-center gap-2 justify-end">
-              <Button variant="ghost" size="sm" onClick={() => { setComposing(false); setTitle(''); setContent(''); closeAllToolbars(); }}>
+              <Button variant="ghost" size="sm" onClick={() => { setComposing(false); setTitle(''); setContent(''); setNewTags([]); setTagInput(''); closeAllToolbars(); }}>
                 {t('common.cancel')}
               </Button>
               <Button
@@ -1502,6 +1623,52 @@ function CommunityFull() {
           </CardContent>
         </Card>
       )}
+
+      {/* Keyword search */}
+      <div className="relative">
+        <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
+        <Input
+          value={searchQuery}
+          onChange={e => { setSearchQuery(e.target.value); setShowSearchSuggestions(true); }}
+          onFocus={() => setShowSearchSuggestions(true)}
+          onBlur={() => setTimeout(() => setShowSearchSuggestions(false), 150)}
+          placeholder="Rechercher dans les discussions…"
+          className="pl-9 pr-8 h-9"
+        />
+        {searchQuery && (
+          <button
+            type="button"
+            onClick={() => setSearchQuery('')}
+            className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground transition-colors"
+          >
+            <XClose className="w-3.5 h-3.5" />
+          </button>
+        )}
+        {showSearchSuggestions && searchSuggestions.length > 0 && (
+          <div className="absolute top-full left-0 right-0 mt-1 rounded-xl border border-border bg-popover shadow-lg z-50 overflow-hidden">
+            {searchSuggestions.map(post => (
+              <button
+                key={post.id}
+                type="button"
+                className="w-full text-left px-4 py-2.5 hover:bg-accent transition-colors flex items-start gap-3 border-b border-border/40 last:border-0"
+                onMouseDown={e => {
+                  e.preventDefault();
+                  setSearchQuery(post.title);
+                  setShowSearchSuggestions(false);
+                }}
+              >
+                <Badge variant="outline" className={`text-[10px] shrink-0 mt-0.5 ${CATEGORY_COLORS[post.category]}`}>
+                  {t(`community.cat_${post.category}`)}
+                </Badge>
+                <div className="min-w-0 flex-1">
+                  <p className="text-xs font-semibold truncate">{post.title}</p>
+                  <p className="text-[11px] text-muted-foreground truncate mt-0.5">{post.content.slice(0, 80)}</p>
+                </div>
+              </button>
+            ))}
+          </div>
+        )}
+      </div>
 
       {/* Category + Country filters */}
       <div className="flex items-center gap-1.5 flex-wrap">
@@ -1536,6 +1703,45 @@ function CommunityFull() {
           </Select>
         )}
       </div>
+
+      {/* Tag filter chips */}
+      {allExistingTags.length > 0 && (
+        <div className="flex items-center gap-1.5 flex-wrap">
+          <span className="flex items-center gap-1 text-[11px] text-muted-foreground font-medium shrink-0">
+            <Hash className="w-3 h-3" />Tags :
+          </span>
+          {allExistingTags.map(tag => {
+            const isActive = activeTagFilters.has(tag);
+            return (
+              <button
+                key={tag}
+                onClick={() => setActiveTagFilters(prev => {
+                  const next = new Set(prev);
+                  if (next.has(tag)) next.delete(tag); else next.add(tag);
+                  return next;
+                })}
+                className={cn(
+                  'flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-medium border transition-all',
+                  isActive
+                    ? 'bg-primary/10 border-primary/40 text-primary'
+                    : 'bg-background border-border text-muted-foreground hover:border-primary/30 hover:text-foreground'
+                )}
+              >
+                <Hash className="w-2.5 h-2.5" />
+                {tag}
+              </button>
+            );
+          })}
+          {activeTagFilters.size > 0 && (
+            <button
+              onClick={() => setActiveTagFilters(new Set())}
+              className="flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-medium text-muted-foreground hover:text-foreground transition-colors"
+            >
+              <XClose className="w-3 h-3" />Effacer
+            </button>
+          )}
+        </div>
+      )}
 
       {/* Bulk moderation bar */}
       {moderationMode && (
@@ -1602,8 +1808,22 @@ function CommunityFull() {
       ) : visiblePosts.length === 0 ? (
         <div className="text-center py-16">
           <MessageSquare className="w-10 h-10 text-muted-foreground/20 mx-auto mb-3" />
-          <p className="text-sm font-medium text-muted-foreground">{t('community.empty')}</p>
-          <p className="text-xs text-muted-foreground/60 mt-1">{t('community.empty_desc')}</p>
+          <p className="text-sm font-medium text-muted-foreground">
+            {searchQuery || activeTagFilters.size > 0 ? 'Aucune discussion trouvée' : t('community.empty')}
+          </p>
+          <p className="text-xs text-muted-foreground/60 mt-1">
+            {searchQuery || activeTagFilters.size > 0
+              ? 'Essayez d\'autres mots-clés ou tags'
+              : t('community.empty_desc')}
+          </p>
+          {(searchQuery || activeTagFilters.size > 0) && (
+            <button
+              className="mt-3 text-xs text-primary hover:underline"
+              onClick={() => { setSearchQuery(''); setActiveTagFilters(new Set()); }}
+            >
+              Effacer les filtres
+            </button>
+          )}
         </div>
       ) : (
         <div className="space-y-3">
@@ -1643,6 +1863,7 @@ function CommunityFull() {
                     isArchived && 'opacity-60',
                     isSelected && 'ring-2 ring-amber-400',
                     isPinned && !isExpanded && 'bg-primary/3',
+                    post.author_is_influencer && ((post.likes || 0) + (post.replies_count || 0)) >= 2 && !isSelected && 'ring-1 ring-amber-400/25 shadow-sm shadow-amber-500/5',
                   )}
                 >
                   <CardContent className="p-4 pt-3">
@@ -1689,9 +1910,28 @@ function CommunityFull() {
                         {/* Author + meta */}
                         <div className="flex items-center gap-1.5 flex-wrap">
                           <span className="text-sm font-semibold">{post.author_name}</span>
+                          {post.author_is_influencer && (
+                            <span className="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded-full bg-amber-500/10 border border-amber-400/40 text-[10px] font-bold text-amber-600 uppercase tracking-wide">
+                              <Sparkles className="w-2.5 h-2.5" />Influenceur
+                            </span>
+                          )}
                           <Badge variant="outline" className={`text-[10px] ${CATEGORY_COLORS[post.category]}`}>
                             {t(`community.cat_${post.category}`)}
                           </Badge>
+                          {(post.tags || []).map(tag => (
+                            <button
+                              key={tag}
+                              onClick={e => { e.stopPropagation(); setActiveTagFilters(prev => { const next = new Set(prev); if (next.has(tag)) next.delete(tag); else next.add(tag); return next; }); }}
+                              className={cn(
+                                'inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded-full text-[10px] font-medium border transition-all',
+                                activeTagFilters.has(tag)
+                                  ? 'bg-primary/10 border-primary/40 text-primary'
+                                  : 'bg-muted border-border text-muted-foreground hover:border-primary/30 hover:text-primary'
+                              )}
+                            >
+                              <Hash className="w-2 h-2" />{tag}
+                            </button>
+                          ))}
                           <span className="text-[11px] text-muted-foreground flex items-center gap-0.5">
                             <Calendar className="w-3 h-3" />{formatDate(post.created_at)}
                           </span>
@@ -2035,6 +2275,65 @@ function CommunityFull() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      {/* ── Influencer programme notice ── */}
+      <div className="mt-8 rounded-2xl border border-amber-200/60 dark:border-amber-800/30 bg-amber-50/40 dark:bg-amber-950/10 p-5 space-y-4">
+        <div className="flex items-start gap-3">
+          <div className="w-9 h-9 rounded-xl bg-amber-500/15 flex items-center justify-center shrink-0 mt-0.5">
+            <Sparkles className="w-4 h-4 text-amber-600" />
+          </div>
+          <div>
+            <h3 className="text-sm font-bold text-foreground flex items-center gap-2">
+              Programme Influenceur Communauté
+              <span className="px-1.5 py-0.5 rounded-full bg-amber-500/10 border border-amber-400/30 text-[10px] font-bold text-amber-600 uppercase tracking-wide">Bêta</span>
+            </h3>
+            <p className="text-xs text-muted-foreground mt-0.5 leading-relaxed">
+              ScoutHub met en avant les membres qui contribuent de façon exemplaire à la communauté en leur attribuant le statut <strong className="text-amber-600">Influenceur</strong>. Les publications des Influenceurs bénéficient d'une meilleure visibilité dans le fil lorsqu'elles génèrent des interactions.
+            </p>
+          </div>
+        </div>
+
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+          <div className="space-y-1.5">
+            <p className="text-[11px] font-bold uppercase tracking-wider text-muted-foreground">Critères d'attribution</p>
+            {[
+              'Fiabilité et véracité des informations partagées',
+              'Utilité et pertinence des contributions pour la communauté',
+              'Respect des règles de bonne conduite sur la durée',
+              'Engagement actif, bienveillant et constructif',
+            ].map(c => (
+              <div key={c} className="flex items-start gap-2">
+                <CheckCircle2 className="w-3.5 h-3.5 text-amber-500 shrink-0 mt-0.5" />
+                <span className="text-xs text-muted-foreground leading-snug">{c}</span>
+              </div>
+            ))}
+          </div>
+          <div className="space-y-1.5">
+            <p className="text-[11px] font-bold uppercase tracking-wider text-muted-foreground">Ce que ce statut n'est pas</p>
+            {[
+              'Aucun avantage financier ou commercial',
+              'Aucun contrat de travail ni relation contractuelle',
+              'Aucune exclusivité ou accès privilégié aux données',
+              'Révocable à tout moment selon les mêmes critères objectifs',
+            ].map(c => (
+              <div key={c} className="flex items-start gap-2">
+                <div className="w-3.5 h-3.5 rounded-full border border-muted-foreground/40 flex items-center justify-center shrink-0 mt-0.5">
+                  <div className="w-1.5 h-1.5 rounded-full bg-muted-foreground/40" />
+                </div>
+                <span className="text-xs text-muted-foreground leading-snug">{c}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+
+        <div className="border-t border-amber-200/50 dark:border-amber-800/20 pt-3 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-2">
+          <p className="text-[11px] text-muted-foreground leading-relaxed max-w-xl">
+            <strong>Transparence & équité :</strong> L'attribution du statut Influenceur est décidée par l'équipe ScoutHub sur la base de critères objectifs et documentés. Aucune demande directe, aucun paiement et aucune relation personnelle ne peut influencer cette décision. Tout membre peut contester une décision en écrivant à{' '}
+            <a href="mailto:community@scouthub.pro" className="text-primary hover:underline">community@scouthub.pro</a>.
+          </p>
+          <span className="text-[10px] text-muted-foreground/50 italic shrink-0">Mis à jour le 07/06/2026</span>
+        </div>
+      </div>
     </div>
   );
 }

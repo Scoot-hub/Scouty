@@ -419,6 +419,8 @@ export default function OrgChat() {
     } catch (err: any) {
       if (err?.error === 'moderation_failed') {
         toast.error(t('org.chat_moderation_error'));
+      } else if (err?.error === 'external_links_disabled') {
+        toast.error('Les liens externes sont désactivés dans cette organisation.');
       } else if (err?.error === 'rate_limit') {
         const seconds = err.retry_after ?? 60;
         startCooldown(seconds);
@@ -465,8 +467,17 @@ export default function OrgChat() {
 
   if (!org) return null;
 
+  const orgSettings: Record<string, boolean> = (() => {
+    try {
+      const raw = (org as any).settings;
+      if (!raw) return {};
+      return typeof raw === 'string' ? JSON.parse(raw) : raw;
+    } catch { return {}; }
+  })();
+  const messagingDisabled = orgSettings.allow_messaging === false;
+
   const remaining = MAX_CHARS - input.length;
-  const canSend = input.trim().length > 0 && remaining >= 0;
+  const canSend = input.trim().length > 0 && remaining >= 0 && !messagingDisabled;
 
   return (
     <div className="space-y-4">
@@ -570,6 +581,12 @@ export default function OrgChat() {
 
         {/* Compose area */}
         <div className="border-t border-border p-3 space-y-2 shrink-0">
+          {messagingDisabled && (
+            <div className="flex items-center gap-2 px-3 py-2 rounded-lg bg-muted/60 border border-border/60 text-xs text-muted-foreground">
+              <AlertCircle className="w-3.5 h-3.5 shrink-0" />
+              La messagerie a été désactivée par le propriétaire de l'organisation.
+            </div>
+          )}
           {/* Reply/edit preview */}
           {(replyTo || editTarget) && (
             <div className="flex items-start gap-2 px-3 py-2 bg-muted/50 rounded-xl border border-border/60">
@@ -597,10 +614,11 @@ export default function OrgChat() {
                   if (e.key === 'Enter' && !e.shiftKey) {
                     e.preventDefault();
                     if (editTarget) handleEdit();
-                    else if (sendCooldown === 0) handleSend();
+                    else if (sendCooldown === 0 && !messagingDisabled) handleSend();
                   }
                 }}
-                placeholder={t('org.chat_placeholder')}
+                placeholder={messagingDisabled ? 'Messagerie désactivée' : t('org.chat_placeholder')}
+                disabled={messagingDisabled}
                 rows={1}
                 className="resize-none rounded-xl pr-16 min-h-[42px] max-h-[120px] overflow-y-auto text-sm"
               />

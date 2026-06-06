@@ -12,7 +12,7 @@ import { Badge } from '@/components/ui/badge';
 import { Input } from '@/components/ui/input';
 import { Separator } from '@/components/ui/separator';
 import { toast } from 'sonner';
-import { Crown, Mail, Lock, Building2, User, CalendarDays, ExternalLink, Loader2, Shield, ShieldCheck, ShieldOff, Download, Trash2, AlertTriangle, CreditCard, Camera, Phone, MapPin, Briefcase, Zap, Globe, Info, Users } from 'lucide-react';
+import { Crown, Mail, Lock, Building2, User, CalendarDays, ExternalLink, Loader2, Shield, ShieldCheck, ShieldOff, Download, Trash2, AlertTriangle, CreditCard, Camera, Phone, MapPin, Briefcase, Zap, Globe, Info, Users, ShoppingCart, ArrowRight, TrendingUp } from 'lucide-react';
 import { COUNTRY_LIST } from '@/data/country-names';
 import { getFlag } from '@/types/player';
 import { useCredits } from '@/hooks/use-credits';
@@ -544,6 +544,7 @@ export default function Account() {
   const isPremium = subscription?.subscribed;
   const userRoles = myPermissions?.roles?.length ? myPermissions.roles : ['user'];
   const { data: creditsData } = useCredits();
+  const isScoutPlan = creditsData?.plan_type === 'scout';
 
   return (
     <div className="max-w-2xl mx-auto space-y-6">
@@ -1084,12 +1085,20 @@ export default function Account() {
                   </p>
                 )}
               </div>
-              {subscription?.source !== 'admin' && (
-                <Button variant="outline" size="sm" onClick={handlePortal} disabled={portalLoading}>
-                  {portalLoading ? <Loader2 className="w-4 h-4 animate-spin mr-2" /> : <ExternalLink className="w-4 h-4 mr-2" />}
-                  {t('account.manage_subscription')}
-                </Button>
-              )}
+              <div className="flex flex-wrap gap-2">
+                {subscription?.source !== 'admin' && (
+                  <Button variant="outline" size="sm" onClick={handlePortal} disabled={portalLoading}>
+                    {portalLoading ? <Loader2 className="w-4 h-4 animate-spin mr-2" /> : <ExternalLink className="w-4 h-4 mr-2" />}
+                    {t('account.manage_subscription')}
+                  </Button>
+                )}
+                {creditsData?.plan_type !== 'elite' && (
+                  <Button variant="outline" size="sm" onClick={() => window.location.href = '/buy-credits'} className="gap-2 text-yellow-600 border-yellow-500/40 hover:bg-yellow-500/10 dark:text-yellow-400">
+                    <ShoppingCart className="w-4 h-4" />
+                    {t('buy_credits.buy_credits_btn')}
+                  </Button>
+                )}
+              </div>
             </>
           ) : (
             <div className="space-y-3">
@@ -1153,10 +1162,34 @@ export default function Account() {
             ) : (
               <p className="text-sm text-muted-foreground">{t('credits.unlimited_desc')}</p>
             )}
+            {/* Scout upsell — highlight Pro plan benefits */}
+            {isScoutPlan && (
+              <div className="rounded-xl border border-primary/25 bg-primary/5 p-3 space-y-2">
+                <div className="flex items-center gap-2">
+                  <TrendingUp className="w-4 h-4 text-primary shrink-0" />
+                  <p className="text-xs font-semibold text-primary">{t('buy_credits.scout_upsell_title')}</p>
+                </div>
+                <p className="text-xs text-muted-foreground leading-relaxed">{t('buy_credits.scout_upsell_desc')}</p>
+                <div className="flex gap-2 flex-wrap">
+                  <Button size="sm" variant="outline" className="gap-1.5 h-7 text-xs text-primary border-primary/30" onClick={() => window.location.href = '/pricing'}>
+                    <Crown className="w-3 h-3" />
+                    {t('buy_credits.scout_upsell_cta')}
+                    <ArrowRight className="w-3 h-3" />
+                  </Button>
+                </div>
+              </div>
+            )}
             {creditsData.plan_type === 'starter' && (
               <Button size="sm" variant="outline" onClick={() => window.location.href = '/pricing'}>
                 <Crown className="w-4 h-4 mr-2" />
                 {t('credits.upgrade_cta')}
+              </Button>
+            )}
+            {/* Buy credits button — for paid subscribers */}
+            {isPremium && creditsData.quotas.daily !== -1 && (
+              <Button size="sm" variant="ghost" onClick={() => window.location.href = '/buy-credits'} className="gap-2 text-yellow-600 dark:text-yellow-400 hover:bg-yellow-500/10">
+                <ShoppingCart className="w-4 h-4" />
+                {t('buy_credits.buy_credits_btn')}
               </Button>
             )}
           </CardContent>

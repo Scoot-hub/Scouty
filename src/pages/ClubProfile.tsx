@@ -122,6 +122,9 @@ interface TeamData {
   _tmSquadSize?: number | null;
   _tmAvgAge?: string | null;
   _tmMarketValue?: string | null;
+  _tmCompetitionId?: string | null;
+  _tmCompetitionSlug?: string | null;
+  _tmCurrentSeason?: string | null;
 }
 
 interface ClubOverride {
@@ -204,10 +207,11 @@ export default function ClubProfile() {
   const followedEntry = followedClubs.find(c => c.club_name.toLowerCase() === clubName.toLowerCase());
 
   // Lazy sections — only fetch when scrolled into view
-  const { ref: staffSectionRef,   visible: staffVisible   } = useLazySection();
-  const { ref: honoursSectionRef, visible: honoursVisible } = useLazySection();
-  const { ref: historySectionRef, visible: historyVisible } = useLazySection();
-  const { ref: buzzSectionRef,    visible: buzzVisible    } = useLazySection();
+  const { ref: staffSectionRef,      visible: staffVisible      } = useLazySection();
+  const { ref: standingsSectionRef,  visible: standingsVisible  } = useLazySection();
+  const { ref: honoursSectionRef,    visible: honoursVisible    } = useLazySection();
+  const { ref: historySectionRef,    visible: historyVisible    } = useLazySection();
+  const { ref: buzzSectionRef,       visible: buzzVisible       } = useLazySection();
 
   // Resolve common abbreviations
   const resolvedClub = clubName ? resolveClubName(clubName) : '';
@@ -222,6 +226,7 @@ export default function ClubProfile() {
     strKit: null, strBanner: null, strManager: null, strKeywords: null,
     strColour1: null, strColour2: null,
     _tmUrl: p.tmUrl ? String(p.tmUrl) : null, _tmSquadSize: p.squadSize ? Number(p.squadSize) : null, _tmAvgAge: p.avgAge ? String(p.avgAge) : null, _tmMarketValue: p.marketValue ? String(p.marketValue) : null,
+    _tmCompetitionId: p.competitionId ? String(p.competitionId) : null, _tmCompetitionSlug: p.competitionSlug ? String(p.competitionSlug) : null, _tmCurrentSeason: p.currentSeason ? String(p.currentSeason) : null,
   });
 
   // Build search term variants for TheSportsDB (which uses non-standard club names)
@@ -325,6 +330,9 @@ export default function ClubProfile() {
               best._tmSquadSize = tmTeam._tmSquadSize;
               best._tmAvgAge = tmTeam._tmAvgAge;
               best._tmMarketValue = tmTeam._tmMarketValue;
+              best._tmCompetitionId = tmTeam._tmCompetitionId;
+              best._tmCompetitionSlug = tmTeam._tmCompetitionSlug;
+              best._tmCurrentSeason = tmTeam._tmCurrentSeason;
               if (!best.strTeamBadge && tmTeam.strTeamBadge) best.strTeamBadge = tmTeam.strTeamBadge;
               if (!best.strCountry && tmTeam.strCountry) best.strCountry = tmTeam.strCountry;
               if (!best.strLeague && tmTeam.strLeague) best.strLeague = tmTeam.strLeague;
@@ -396,7 +404,7 @@ export default function ClubProfile() {
 
   // ── Honours from TheSportsDB ──
   interface ClubHonour { strLeague: string; strSeason: string; strTrophy: string }
-  const { data: honoursData } = useQuery<ClubHonour[]>({
+  const { data: honoursData, isLoading: honoursLoading } = useQuery<ClubHonour[]>({
     queryKey: ['club-honours', team?.idTeam],
     queryFn: async () => {
       const { data } = await supabase.functions.invoke('thesportsdb-proxy', {
@@ -415,7 +423,7 @@ export default function ClubProfile() {
     dateEvent: string; strLeague: string;
     strHomeTeamBadge?: string; strAwayTeamBadge?: string;
   }
-  const { data: recentEvents = [] } = useQuery<ClubEvent[]>({
+  const { data: recentEvents = [], isLoading: eventsLoading } = useQuery<ClubEvent[]>({
     queryKey: ['club-events', team?.idTeam],
     queryFn: async () => {
       const { data } = await supabase.functions.invoke('thesportsdb-proxy', {
@@ -430,7 +438,7 @@ export default function ClubProfile() {
   // ── Former players + TM honours ──
   interface TmHonour { trophy: string; count: number }
   const tmId = team?._tmUrl?.match(/\/verein\/(\d+)/)?.[1] ?? null;
-  const { data: clubHistory } = useQuery<{ formerPlayers: FormerPlayer[]; honours: TmHonour[] } | null>({
+  const { data: clubHistory, isLoading: historyLoading } = useQuery<{ formerPlayers: FormerPlayer[]; honours: TmHonour[] } | null>({
     queryKey: ['club-history', tmId],
     queryFn: async () => {
       const resp = await fetch(`${API}/club-tm-history/${tmId}`);
@@ -440,6 +448,34 @@ export default function ClubProfile() {
     enabled: !!tmId && historyVisible,
     staleTime: 24 * 60 * 60 * 1000,
   });
+
+  // ── Championship standings from Transfermarkt ──
+  interface StandingsRow { rank: number; clubId: string | null; club: string; badge: string | null; played: number; wins: number; draws: number; losses: number; goals: string | null; diff: string | null; points: number }
+  const { data: standingsData, isLoading: standingsLoading } = useQuery<{ rows: StandingsRow[]; season: string | null; competitionId: string } | null>({
+    queryKey: ['club-tm-standings', team?._tmCompetitionId, team?._tmCompetitionSlug],
+    queryFn: async () => {
+      const id = team!._tmCompetitionId!;
+      const slug = team!._tmCompetitionSlug || id.toLowerCase();
+      const res = await fetch(`${API}/club-tm-standings/${id}?slug=${encodeURIComponent(slug)}`);
+      if (!res.ok) return null;
+      return res.json();
+    },
+    enabled: !!team?._tmCompetitionId && standingsVisible,
+    staleTime: 3 * 60 * 60 * 1000,
+  });
+
+  // Find the current club's row in the standings (match by TM clubId or name prefix)
+  const currentClubStanding = useMemo(() => {
+    if (!standingsData?.rows) return null;
+    const norm = (s: string) => s.toLowerCase().replace(/[^a-z0-9]/g, '');
+    const myId = tmId;
+    const myName = norm(team?.strTeam ?? clubName ?? '');
+    return standingsData.rows.find(r =>
+      (myId && r.clubId === myId) ||
+      norm(r.club).startsWith(myName.slice(0, 5)) ||
+      myName.startsWith(norm(r.club).slice(0, 5))
+    ) ?? null;
+  }, [standingsData, tmId, team?.strTeam, clubName]);
 
   // ── Club staff (coach + president) from server cache (Sofascore + Wikidata) ──
   interface ClubStaff {
@@ -481,7 +517,7 @@ export default function ClubProfile() {
     dateEvent: string; strTime: string | null; strLeague: string;
     strHomeTeamBadge?: string; strAwayTeamBadge?: string;
   }
-  const { data: nextEvents = [] } = useQuery<ClubNextEvent[]>({
+  const { data: nextEvents = [], isLoading: fixturesLoading } = useQuery<ClubNextEvent[]>({
     queryKey: ['club-fixtures', team?.idTeam],
     queryFn: async () => {
       if (!team?.idTeam) return [];
@@ -496,7 +532,7 @@ export default function ClubProfile() {
 
   // ── Buzz articles mentioning this club ──
   interface BuzzPost { id: string; source_name: string; source_handle: string; source_color: string; content: string; image_url: string | null; external_url: string; buzz_score: number; published_at: string; }
-  const { data: clubBuzz } = useQuery<{ posts: BuzzPost[] }>({
+  const { data: clubBuzz, isFetching: buzzFetching } = useQuery<{ posts: BuzzPost[] }>({
     queryKey: ['buzz-club', clubName],
     queryFn: async () => {
       const res = await fetch(`${API}/buzz/club?name=${encodeURIComponent(team?.strTeam || clubName)}`, { credentials: 'include' });
@@ -582,6 +618,7 @@ export default function ClubProfile() {
       });
       const body = await res.json().catch(() => ({}));
       if (!res.ok) {
+        if (res.status === 401) throw new Error('session_expired');
         if (res.status === 403) throw new Error('permission_denied');
         throw new Error(body?.error || `HTTP ${res.status}`);
       }
@@ -598,7 +635,10 @@ export default function ClubProfile() {
       toast.success('Informations complétées avec succès');
     },
     onError: (err: Error) => {
-      if (err.message === 'permission_denied') {
+      if (err.message === 'session_expired') {
+        toast.error('Session expirée, veuillez vous reconnecter.');
+        supabase.auth.signOut();
+      } else if (err.message === 'permission_denied') {
         toast.error('Accès refusé — rôle admin ou modérateur requis');
       } else {
         toast.error(`Erreur : ${err.message}`);
@@ -943,6 +983,7 @@ export default function ClubProfile() {
                       {squadNotInList.length > 0 && (
                         <span className="ml-1 text-sm font-normal text-muted-foreground">({squadNotInList.length})</span>
                       )}
+                      {squadLoading && <Loader2 className="w-3.5 h-3.5 animate-spin text-muted-foreground ml-auto shrink-0" />}
                     </CardTitle>
                   </CardHeader>
                   <CardContent className="pt-0">
@@ -998,7 +1039,7 @@ export default function ClubProfile() {
               )}
 
               {/* ── Derniers résultats ── */}
-              {recentEvents.length > 0 && (() => {
+              {(eventsLoading || recentEvents.length > 0) && (() => {
                 const evWithScore = recentEvents.filter(ev => {
                   const isHome = ev.strHomeTeam?.toLowerCase() === team.strTeam?.toLowerCase();
                   const myScore = isHome ? ev.intHomeScore : ev.intAwayScore;
@@ -1018,7 +1059,8 @@ export default function ClubProfile() {
                         <CardTitle className="flex items-center gap-2 text-base">
                           <Calendar className="w-4 h-4 text-primary" />
                           {t('club.recent_results')}
-                          <span className="text-sm font-normal text-muted-foreground">({recentEvents.length})</span>
+                          {recentEvents.length > 0 && <span className="text-sm font-normal text-muted-foreground">({recentEvents.length})</span>}
+                          {eventsLoading && <Loader2 className="w-3.5 h-3.5 animate-spin text-muted-foreground shrink-0" />}
                         </CardTitle>
                         {form.length > 0 && (
                           <div className="flex items-center gap-1">
@@ -1033,6 +1075,12 @@ export default function ClubProfile() {
                       </div>
                     </CardHeader>
                     <CardContent className="pt-0 space-y-1.5">
+                      {eventsLoading && recentEvents.length === 0 && (
+                        <div className="flex items-center justify-center gap-2 py-4 text-xs text-muted-foreground">
+                          <Search className="w-3.5 h-3.5 animate-pulse" />
+                          {t('club.searching')}
+                        </div>
+                      )}
                       {recentEvents.slice(0, 8).map(ev => {
                         const isHome = ev.strHomeTeam?.toLowerCase() === team.strTeam?.toLowerCase();
                         const myScore = isHome ? ev.intHomeScore : ev.intAwayScore;
@@ -1074,6 +1122,7 @@ export default function ClubProfile() {
                       <Calendar className="w-4 h-4 text-primary" />
                       {t('club.upcoming_fixtures')}
                       {nextEvents.length > 0 && <span className="text-sm font-normal text-muted-foreground">({nextEvents.length})</span>}
+                      {fixturesLoading && <Loader2 className="w-3.5 h-3.5 animate-spin text-muted-foreground ml-auto shrink-0" />}
                     </CardTitle>
                   </CardHeader>
                   <CardContent className="pt-0">
@@ -1166,42 +1215,212 @@ export default function ClubProfile() {
                 );
               })()}
 
-              {/* ── Palmarès (TheSportsDB) ── */}
-              <div ref={honoursSectionRef}>
-              {sortedHonours.length > 0 && (
+              {/* ── Classement dans le championnat (Transfermarkt) ── */}
+              <div ref={standingsSectionRef}>
+              {team?._tmCompetitionId && (
                 <Card>
                   <CardHeader className="pb-3">
-                    <CardTitle className="flex items-center gap-2 text-base">
-                      <Trophy className="w-4 h-4 text-amber-500" />
-                      {t('club.honours')}
-                      <span className="text-sm font-normal text-muted-foreground ml-1">— {sortedHonours.reduce((s, [, v]) => s + v.length, 0)} {t('club.honours_total')}</span>
-                    </CardTitle>
+                    <div className="flex items-center justify-between gap-2 flex-wrap">
+                      <CardTitle className="flex items-center gap-2 text-base">
+                        <Trophy className="w-4 h-4 text-primary" />
+                        {t('club.standings_title')}
+                        {standingsLoading && <Loader2 className="w-3.5 h-3.5 animate-spin text-muted-foreground shrink-0" />}
+                        {standingsData?.season && (
+                          <Badge variant="outline" className="text-[11px] font-normal">{standingsData.season}</Badge>
+                        )}
+                        {currentClubStanding && (
+                          <span className="ml-1 text-sm font-black text-amber-600 dark:text-amber-400">
+                            #{currentClubStanding.rank}
+                          </span>
+                        )}
+                      </CardTitle>
+                      <Link
+                        to={`/championships?search=${encodeURIComponent(displayLeague)}`}
+                        className="text-xs text-primary hover:underline flex items-center gap-1 shrink-0"
+                      >
+                        {t('club.see_championship')} <ExternalLink className="w-3 h-3" />
+                      </Link>
+                    </div>
                   </CardHeader>
-                  <CardContent className="pt-0 space-y-3">
-                    {sortedHonours.slice(0, 15).map(([trophy, seasons]) => (
-                      <div key={trophy} className="flex items-start gap-3">
-                        <div className="w-7 h-7 rounded-lg bg-amber-500/10 flex items-center justify-center shrink-0 mt-0.5">
-                          <Star className="w-3.5 h-3.5 text-amber-500" />
-                        </div>
-                        <div className="flex-1 min-w-0">
-                          <div className="flex items-center gap-2">
-                            <p className="text-sm font-semibold truncate">{trophy}</p>
-                            <span className="shrink-0 text-xs font-black text-amber-600 bg-amber-500/10 px-1.5 py-0.5 rounded-full">{seasons.length}×</span>
-                          </div>
-                          <p className="text-[11px] text-muted-foreground mt-0.5">
-                            {[...seasons].sort().slice(-6).join(', ')}{seasons.length > 6 ? ` +${seasons.length - 6}` : ''}
-                          </p>
-                        </div>
+                  <CardContent className="pt-0">
+                    {standingsLoading ? (
+                      <div className="flex items-center justify-center py-6 gap-2 text-muted-foreground text-sm">
+                        <Loader2 className="w-4 h-4 animate-spin" />
+                        {t('club.standings_loading')}
                       </div>
-                    ))}
+                    ) : !standingsData?.rows?.length ? (
+                      <p className="text-sm text-muted-foreground text-center py-4">{t('club.standings_empty')}</p>
+                    ) : (
+                      <div className="overflow-x-auto -mx-1">
+                        <table className="w-full text-xs">
+                          <thead>
+                            <tr className="border-b text-muted-foreground">
+                              <th className="pb-1.5 text-left pl-1 w-7">#</th>
+                              <th className="pb-1.5 text-left">{t('club.standings_club')}</th>
+                              <th className="pb-1.5 text-center w-7">{t('club.standings_played')}</th>
+                              <th className="pb-1.5 text-center w-7 hidden sm:table-cell">{t('club.standings_wins')}</th>
+                              <th className="pb-1.5 text-center w-7 hidden sm:table-cell">{t('club.standings_draws')}</th>
+                              <th className="pb-1.5 text-center w-7 hidden sm:table-cell">{t('club.standings_losses')}</th>
+                              <th className="pb-1.5 text-center w-14 hidden sm:table-cell">{t('club.standings_goals')}</th>
+                              <th className="pb-1.5 text-center w-8 hidden sm:table-cell">{t('club.standings_diff')}</th>
+                              <th className="pb-1.5 text-center w-8 font-bold">{t('club.standings_pts')}</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {standingsData.rows.map(row => {
+                              const isCurrent = row.clubId === tmId ||
+                                (currentClubStanding?.rank === row.rank);
+                              return (
+                                <tr
+                                  key={row.rank}
+                                  className={`border-b last:border-0 transition-colors ${
+                                    isCurrent
+                                      ? 'bg-primary/8 font-semibold ring-1 ring-primary/20 rounded'
+                                      : 'hover:bg-muted/30'
+                                  }`}
+                                >
+                                  <td className={`py-1.5 pl-1 tabular-nums font-mono ${isCurrent ? 'text-primary font-bold' : 'text-muted-foreground'}`}>
+                                    {row.rank}
+                                  </td>
+                                  <td className="py-1.5 pr-2">
+                                    <div className="flex items-center gap-1.5">
+                                      {row.badge && (
+                                        <img src={row.badge} alt={row.club} className="w-4 h-4 object-contain shrink-0" onError={e => { (e.target as HTMLImageElement).style.display = 'none'; }} />
+                                      )}
+                                      <span className={`truncate max-w-[120px] ${isCurrent ? 'text-primary' : ''}`}>{row.club}</span>
+                                    </div>
+                                  </td>
+                                  <td className="py-1.5 text-center tabular-nums text-muted-foreground">{row.played}</td>
+                                  <td className="py-1.5 text-center tabular-nums text-green-600 hidden sm:table-cell">{row.wins}</td>
+                                  <td className="py-1.5 text-center tabular-nums hidden sm:table-cell">{row.draws}</td>
+                                  <td className="py-1.5 text-center tabular-nums text-red-500 hidden sm:table-cell">{row.losses}</td>
+                                  <td className="py-1.5 text-center tabular-nums text-muted-foreground hidden sm:table-cell">{row.goals ?? '—'}</td>
+                                  <td className={`py-1.5 text-center tabular-nums hidden sm:table-cell ${Number(row.diff) > 0 ? 'text-green-600' : Number(row.diff) < 0 ? 'text-red-500' : 'text-muted-foreground'}`}>
+                                    {row.diff ?? '—'}
+                                  </td>
+                                  <td className={`py-1.5 text-center tabular-nums font-bold ${isCurrent ? 'text-primary' : ''}`}>{row.points}</td>
+                                </tr>
+                              );
+                            })}
+                          </tbody>
+                        </table>
+                        <p className="text-[10px] text-muted-foreground mt-2 text-right">{t('club.standings_source')}</p>
+                      </div>
+                    )}
                   </CardContent>
                 </Card>
               )}
+              </div>
 
+              {/* ── Palmarès (Transfermarkt prioritaire, TheSportsDB en fallback) ── */}
+              <div ref={honoursSectionRef}>
+              {honoursVisible && honoursLoading && !clubHistory?.honours?.length && sortedHonours.length === 0 && (
+                <Card>
+                  <CardHeader className="pb-3">
+                    <CardTitle className="flex items-center gap-2 text-base">
+                      <Crown className="w-4 h-4 text-amber-500" />
+                      {t('club.honours')}
+                      <Loader2 className="w-3.5 h-3.5 animate-spin text-muted-foreground ml-auto shrink-0" />
+                    </CardTitle>
+                  </CardHeader>
+                  <CardContent className="pt-0">
+                    <div className="flex items-center gap-2 py-3 text-xs text-muted-foreground">
+                      <Search className="w-3.5 h-3.5 animate-pulse" />
+                      {t('club.searching')}
+                    </div>
+                  </CardContent>
+                </Card>
+              )}
+              {(() => {
+                // Prefer TM honours (have real year data); fall back to TSDB grouped
+                const tmHonours = clubHistory?.honours ?? [];
+                if (tmHonours.length > 0) {
+                  const totalTitles = tmHonours.reduce((s, h) => s + (h.count || 1), 0);
+                  return (
+                    <Card>
+                      <CardHeader className="pb-3">
+                        <CardTitle className="flex items-center gap-2 text-base">
+                          <Crown className="w-4 h-4 text-amber-500" />
+                          {t('club.honours')}
+                          <span className="text-sm font-normal text-muted-foreground ml-1">— {totalTitles} {t('club.honours_total')}</span>
+                          <Badge variant="outline" className="text-[10px] ml-auto font-normal">Transfermarkt</Badge>
+                        </CardTitle>
+                      </CardHeader>
+                      <CardContent className="pt-0 space-y-2">
+                        {tmHonours.map((h, i) => (
+                          <div key={i} className="flex items-center gap-3 py-1.5 border-b last:border-0">
+                            <div className="w-7 h-7 rounded-lg bg-amber-500/10 flex items-center justify-center shrink-0">
+                              <Star className="w-3.5 h-3.5 text-amber-500" />
+                            </div>
+                            <div className="flex-1 min-w-0">
+                              <p className="text-sm font-semibold truncate">{h.trophy}</p>
+                              {(h as { trophy: string; count: number; years?: number[] }).years?.length ? (
+                                <p className="text-[11px] text-muted-foreground mt-0.5">
+                                  {[...(h as { trophy: string; count: number; years?: number[] }).years!].sort().slice(-8).join(', ')}
+                                  {((h as { trophy: string; count: number; years?: number[] }).years?.length ?? 0) > 8 ? ` +${(h as { trophy: string; count: number; years?: number[] }).years!.length - 8}` : ''}
+                                </p>
+                              ) : null}
+                            </div>
+                            <span className="shrink-0 text-xs font-black text-amber-600 bg-amber-500/10 px-1.5 py-0.5 rounded-full">{h.count}×</span>
+                          </div>
+                        ))}
+                      </CardContent>
+                    </Card>
+                  );
+                }
+                // Fallback: TheSportsDB grouped
+                if (sortedHonours.length === 0) return null;
+                return (
+                  <Card>
+                    <CardHeader className="pb-3">
+                      <CardTitle className="flex items-center gap-2 text-base">
+                        <Crown className="w-4 h-4 text-amber-500" />
+                        {t('club.honours')}
+                        <span className="text-sm font-normal text-muted-foreground ml-1">— {sortedHonours.reduce((s, [, v]) => s + v.length, 0)} {t('club.honours_total')}</span>
+                      </CardTitle>
+                    </CardHeader>
+                    <CardContent className="pt-0 space-y-3">
+                      {sortedHonours.slice(0, 15).map(([trophy, seasons]) => (
+                        <div key={trophy} className="flex items-start gap-3">
+                          <div className="w-7 h-7 rounded-lg bg-amber-500/10 flex items-center justify-center shrink-0 mt-0.5">
+                            <Star className="w-3.5 h-3.5 text-amber-500" />
+                          </div>
+                          <div className="flex-1 min-w-0">
+                            <div className="flex items-center gap-2">
+                              <p className="text-sm font-semibold truncate">{trophy}</p>
+                              <span className="shrink-0 text-xs font-black text-amber-600 bg-amber-500/10 px-1.5 py-0.5 rounded-full">{seasons.length}×</span>
+                            </div>
+                            <p className="text-[11px] text-muted-foreground mt-0.5">
+                              {[...seasons].sort().slice(-6).join(', ')}{seasons.length > 6 ? ` +${seasons.length - 6}` : ''}
+                            </p>
+                          </div>
+                        </div>
+                      ))}
+                    </CardContent>
+                  </Card>
+                );
+              })()}
               </div>{/* end honoursSectionRef */}
 
               {/* ── Anciens joueurs (Transfermarkt) ── */}
               <div ref={historySectionRef}>
+              {historyVisible && historyLoading && !clubHistory && (
+                <Card>
+                  <CardHeader className="pb-3">
+                    <CardTitle className="flex items-center gap-2 text-base">
+                      <History className="w-4 h-4 text-primary" />
+                      {t('club.former_players')}
+                      <Loader2 className="w-3.5 h-3.5 animate-spin text-muted-foreground ml-auto shrink-0" />
+                    </CardTitle>
+                  </CardHeader>
+                  <CardContent className="pt-0">
+                    <div className="flex items-center gap-2 py-3 text-xs text-muted-foreground">
+                      <Search className="w-3.5 h-3.5 animate-pulse" />
+                      {t('club.searching')}
+                    </div>
+                  </CardContent>
+                </Card>
+              )}
               {(clubHistory?.formerPlayers?.length ?? 0) > 0 && (
                 <FormerPlayersCard players={clubHistory!.formerPlayers} t={t} />
               )}
@@ -1217,6 +1436,7 @@ export default function ClubProfile() {
                     {(clubBuzz?.posts?.length ?? 0) > 0 && (
                       <span className="text-sm font-normal text-muted-foreground">({clubBuzz!.posts.length})</span>
                     )}
+                    {buzzFetching && !clubBuzz && <Loader2 className="w-3.5 h-3.5 animate-spin text-muted-foreground ml-auto shrink-0" />}
                   </CardTitle>
                 </CardHeader>
                 <CardContent className="pt-0">
@@ -1342,6 +1562,44 @@ export default function ClubProfile() {
 
               {/* ── Coach / Manager ── */}
               <div ref={staffSectionRef}>
+              {staffVisible && staffLoading && !coachName && !presidentInfo && (
+                <>
+                  <Card>
+                    <CardHeader className="pb-3">
+                      <CardTitle className="flex items-center justify-between gap-2 text-sm">
+                        <span className="flex items-center gap-2">
+                          <Shirt className="w-4 h-4 text-primary" />
+                          {t('club.manager')}
+                        </span>
+                        <Loader2 className="w-3.5 h-3.5 animate-spin text-muted-foreground shrink-0" />
+                      </CardTitle>
+                    </CardHeader>
+                    <CardContent className="pt-0">
+                      <div className="flex items-center gap-2 py-3 text-xs text-muted-foreground">
+                        <Search className="w-3.5 h-3.5 animate-pulse" />
+                        {t('club.searching')}
+                      </div>
+                    </CardContent>
+                  </Card>
+                  <Card className="mt-4">
+                    <CardHeader className="pb-3">
+                      <CardTitle className="flex items-center justify-between gap-2 text-sm">
+                        <span className="flex items-center gap-2">
+                          <Crown className="w-4 h-4 text-amber-500" />
+                          {t('club.president')}
+                        </span>
+                        <Loader2 className="w-3.5 h-3.5 animate-spin text-muted-foreground shrink-0" />
+                      </CardTitle>
+                    </CardHeader>
+                    <CardContent className="pt-0">
+                      <div className="flex items-center gap-2 py-3 text-xs text-muted-foreground">
+                        <Search className="w-3.5 h-3.5 animate-pulse" />
+                        {t('club.searching')}
+                      </div>
+                    </CardContent>
+                  </Card>
+                </>
+              )}
               {coachName && (
                 <Card>
                   <CardHeader className="pb-3">
@@ -1349,6 +1607,7 @@ export default function ClubProfile() {
                       <span className="flex items-center gap-2">
                         <Shirt className="w-4 h-4 text-primary" />
                         {t('club.manager')}
+                        {staffLoading && <Loader2 className="w-3.5 h-3.5 animate-spin text-muted-foreground shrink-0" />}
                       </span>
                       <button
                         onClick={handleRefreshStaff}

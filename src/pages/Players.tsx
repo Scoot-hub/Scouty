@@ -221,9 +221,10 @@ export default function Players() {
     recentCount: number;
     total: number;
   }>({ open: false, recentCount: 0, total: 0 });
-  type DupLite = { id: string; name: string; generation: number; club: string };
+  type DupLite = { id: string; name: string; generation: number; club: string; matchRule?: string };
   const [duplicateGroups, setDuplicateGroups] = useState<{ keep: DupLite; duplicates: DupLite[] }[]>([]);
   const [duplicateDialogOpen, setDuplicateDialogOpen] = useState(false);
+  const [dupRulesDialogOpen, setDupRulesDialogOpen] = useState(false);
   const [deletingDuplicates, setDeletingDuplicates] = useState(false);
   const [filtersOpen, setFiltersOpen] = useState<boolean>(() => loadFilters().filtersOpen ?? false);
   const [viewMode, setViewMode] = useState<'compact' | 'detailed' | 'table'>(() => loadFilters().viewMode ?? 'compact');
@@ -333,7 +334,7 @@ export default function Players() {
   const { data: isPremium } = useIsPremium();
   const { data: isAdmin } = useIsAdmin();
   const { addOperation, updateOperation, completeOperation } = useOperationBanner();
-  const { currency, dateFormat } = useUiPreferences();
+  const { currency, dateFormat, dedupCooldownHours } = useUiPreferences();
   const rates = useRatesMap();
   const { data: myOrgs = [] } = useMyOrganizations();
   const hasOrg = myOrgs.length > 0;
@@ -476,7 +477,12 @@ export default function Players() {
 
   const availableRoles = useMemo(() => (facets?.roles ?? []).sort((a, b) => a.localeCompare(b, 'fr')), [facets]);
 
-  const handleFindDuplicates = async () => {
+  const handleFindDuplicates = () => {
+    setDupRulesDialogOpen(true);
+  };
+
+  const handleConfirmDuplicateSearch = async () => {
+    setDupRulesDialogOpen(false);
     const ok = await tryConsumeCredits(1, 'find_duplicates');
     if (!ok) return;
     try {
@@ -499,16 +505,14 @@ export default function Players() {
     setCompareDialogOpen(true);
   };
 
-  const DEDUP_COOLDOWN_MS = 24 * 60 * 60 * 1000; // 24 h
-
-  const handleDeleteDuplicates = async () => {
-    // Cooldown: block if last deletion was < 24h ago
+  const handleMergeDuplicates = async () => {
+    const dedupCooldownMs = dedupCooldownHours * 60 * 60 * 1000;
     const { data: { user: authUser } } = await supabase.auth.getUser().catch(() => ({ data: { user: null } }));
     const storageKey = `scouthub_last_dedup_${authUser?.id ?? 'anon'}`;
     const lastDedup = Number(localStorage.getItem(storageKey) ?? 0);
     const elapsed = Date.now() - lastDedup;
-    if (elapsed < DEDUP_COOLDOWN_MS) {
-      const remaining = DEDUP_COOLDOWN_MS - elapsed;
+    if (elapsed < dedupCooldownMs) {
+      const remaining = dedupCooldownMs - elapsed;
       const h = Math.floor(remaining / 3_600_000);
       const m = Math.floor((remaining % 3_600_000) / 60_000);
       const timeStr = h > 0 ? `${h}h ${m}min` : `${m} min`;
@@ -518,12 +522,17 @@ export default function Players() {
 
     setDeletingDuplicates(true);
     try {
-      const idsToDelete = duplicateGroups.flatMap(g => g.duplicates.map(d => d.id));
-      for (const id of idsToDelete) {
-        await supabase.from('players').delete().eq('id', id);
+      for (const group of duplicateGroups) {
+        await fetch('/api/players/merge', {
+          method: 'POST',
+          credentials: 'include',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ keepId: group.keep.id, mergeIds: group.duplicates.map(d => d.id) }),
+        });
       }
+      const count = duplicateGroups.reduce((a, g) => a + g.duplicates.length, 0);
       localStorage.setItem(storageKey, String(Date.now()));
-      toast.success(t('players.duplicates_deleted', { count: idsToDelete.length }));
+      toast.success(t('players.duplicates_merged', { count }));
       setDuplicateDialogOpen(false);
       setDuplicateGroups([]);
       refetch();
@@ -1296,6 +1305,41 @@ export default function Players() {
               />
             </Suspense>
           )}
+          {/* Dialog explication des règles de détection */}
+          <Dialog open={dupRulesDialogOpen} onOpenChange={setDupRulesDialogOpen}>
+            <DialogContent className="max-w-lg">
+              <DialogHeader>
+                <DialogTitle className="flex items-center gap-2">
+                  <Info className="w-5 h-5 text-primary" />
+                  {t('players.dup_rules_title')}
+                </DialogTitle>
+                <DialogDescription>{t('players.dup_rules_desc')}</DialogDescription>
+              </DialogHeader>
+              <div className="space-y-3 py-2">
+                {(['tm_id', 'name_club', 'name_gen', 'initial_last', 'last_name_only'] as const).map(rule => (
+                  <div key={rule} className="flex gap-3 rounded-xl border border-border p-3">
+                    <div className="mt-0.5 w-2 h-2 rounded-full bg-primary shrink-0 mt-1.5" />
+                    <div>
+                      <p className="text-sm font-semibold">{t(`players.dup_rule_${rule}_title`)}</p>
+                      <p className="text-xs text-muted-foreground">{t(`players.dup_rule_${rule}_desc`)}</p>
+                      <p className="text-xs text-muted-foreground italic mt-0.5">{t(`players.dup_rule_${rule}_example`)}</p>
+                    </div>
+                  </div>
+                ))}
+              </div>
+              <div className="rounded-xl bg-amber-500/10 border border-amber-500/20 p-3 text-xs text-amber-700 dark:text-amber-400">
+                {t('players.dup_rules_merge_note')}
+              </div>
+              <DialogFooter>
+                <Button variant="outline" onClick={() => setDupRulesDialogOpen(false)}>{t('common.cancel')}</Button>
+                <Button onClick={handleConfirmDuplicateSearch}>
+                  <Copy className="w-4 h-4 mr-2" />
+                  {t('players.dup_rules_confirm')}
+                </Button>
+              </DialogFooter>
+            </DialogContent>
+          </Dialog>
+
           {/* Duplicate detection dialog */}
           <Dialog open={duplicateDialogOpen} onOpenChange={setDuplicateDialogOpen}>
             <DialogContent className="max-w-xl max-h-[85vh] overflow-y-auto">
@@ -1315,18 +1359,23 @@ export default function Players() {
                 <div className="space-y-4 py-2">
                   {duplicateGroups.map((group, gi) => (
                     <div key={gi} className="rounded-xl border border-border p-4 space-y-2">
-                      <div className="flex items-center gap-2">
-                        <Check className="w-4 h-4 text-green-500" />
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <Check className="w-4 h-4 text-green-500 shrink-0" />
                         <span className="text-sm font-bold">{group.keep.name}</span>
                         <span className="text-xs text-muted-foreground">{group.keep.club} &middot; {group.keep.generation}</span>
                         <span className="text-[10px] px-1.5 py-0.5 rounded bg-green-500/10 text-green-600 font-medium">{t('players.keep')}</span>
                       </div>
                       {group.duplicates.map(dup => (
-                        <div key={dup.id} className="flex items-center gap-2 pl-6 text-muted-foreground">
-                          <Trash2 className="w-3.5 h-3.5 text-destructive/60" />
+                        <div key={dup.id} className="flex items-center gap-2 pl-6 text-muted-foreground flex-wrap">
+                          <Trash2 className="w-3.5 h-3.5 text-destructive/60 shrink-0" />
                           <span className="text-sm">{dup.name}</span>
                           <span className="text-xs">{dup.club} &middot; {dup.generation}</span>
                           <span className="text-[10px] px-1.5 py-0.5 rounded bg-destructive/10 text-destructive font-medium">{t('players.duplicate')}</span>
+                          {dup.matchRule && (
+                            <span className="text-[10px] px-1.5 py-0.5 rounded bg-muted text-muted-foreground font-medium">
+                              {t(`players.dup_rule_${dup.matchRule}_title`, { defaultValue: dup.matchRule })}
+                            </span>
+                          )}
                         </div>
                       ))}
                     </div>
@@ -1337,9 +1386,9 @@ export default function Players() {
               <DialogFooter>
                 <Button variant="outline" onClick={() => setDuplicateDialogOpen(false)}>{t('common.cancel')}</Button>
                 {duplicateGroups.length > 0 && (
-                  <Button variant="destructive" onClick={handleDeleteDuplicates} disabled={deletingDuplicates}>
+                  <Button variant="destructive" onClick={handleMergeDuplicates} disabled={deletingDuplicates}>
                     {deletingDuplicates ? <RefreshCw className="w-4 h-4 animate-spin mr-2" /> : <Trash2 className="w-4 h-4 mr-2" />}
-                    {t('players.delete_duplicates', { count: duplicateGroups.reduce((a, g) => a + g.duplicates.length, 0) })}
+                    {t('players.merge_duplicates', { count: duplicateGroups.reduce((a, g) => a + g.duplicates.length, 0) })}
                   </Button>
                 )}
               </DialogFooter>

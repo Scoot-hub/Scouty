@@ -44,7 +44,7 @@ function SessionTracker() {
 
 export default function AppLayout() {
   const { isImpersonating } = useAuth();
-  const { showNotifications, showChatbot } = useUiPreferences();
+  const { showNotifications, showCredits, showChatbot } = useUiPreferences();
   const [collapsed, setCollapsed] = useState(() => localStorage.getItem('sidebar-collapsed') === 'true');
 
   const toggleCollapsed = () => {
@@ -62,8 +62,8 @@ export default function AppLayout() {
         <div className={`${collapsed ? 'lg:ml-[72px]' : 'lg:ml-64'} min-h-screen flex flex-col transition-[margin] duration-300`}>
           {isImpersonating && <ImpersonationBanner />}
           {/* On mobile this bar always occupies space to clear the fixed hamburger button */}
-          <div className={`flex items-center justify-end gap-1 px-4 lg:px-8 pt-3 pb-1 min-h-[3.5rem] lg:min-h-0 ${!showNotifications ? 'lg:hidden' : ''}`}>
-            {showNotifications && <CreditWidget />}
+          <div className={`flex items-center justify-end gap-1 px-4 lg:px-8 pt-3 pb-1 min-h-[3.5rem] lg:min-h-0 ${!showNotifications && !showCredits ? 'lg:hidden' : ''}`}>
+            {showCredits && <CreditWidget />}
             {showNotifications && <NotificationCenter />}
           </div>
           <main className="flex-1 px-4 lg:px-8 pb-4 lg:pb-8">

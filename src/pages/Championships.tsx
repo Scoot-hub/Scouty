@@ -770,16 +770,20 @@ function ManualStandingsModal({
 function ChampionshipDetail({
   champ,
   onBack,
+  initialTab,
+  initialSeason,
 }: {
   champ: ChampionshipEntry;
   onBack: () => void;
+  initialTab?: 'standings' | 'clubs' | 'players' | 'notes' | 'calendar';
+  initialSeason?: number;
 }) {
   const { t } = useTranslation();
   const { dateFormat, timeFormat, timezone } = useUiPreferences();
   const { data: players = [] } = usePlayers();
   const { data: linkedPlayers = [] } = useChampionshipPlayers(champ.name);
   const availableSeasons = useMemo(() => getAvailableSeasons(6), []);
-  const [seasonYear, setSeasonYear] = useState<number | null>(null); // null = current
+  const [seasonYear, setSeasonYear] = useState<number | null>(initialSeason ?? null); // null = current
   const { data: sofaData, isLoading: sofaLoading, refetch: refetchStandings } = useSofascoreLeague(champ.sofascoreId, seasonYear, champ.name);
   const refreshStandings = useRefreshStandings();
 
@@ -822,7 +826,165 @@ function ChampionshipDetail({
   const isSaved = savedChamps.some(s => s.championship_name === champ.name);
   const [justSaved, setJustSaved] = useState(false);
   const [playerSearch, setPlayerSearch] = useState('');
-  const [tab, setTab] = useState<'standings' | 'clubs' | 'players' | 'notes'>('standings');
+  const [tab, setTab] = useState<'standings' | 'clubs' | 'players' | 'notes' | 'calendar'>(initialTab ?? 'standings');
+
+  // ── Calendar: match schedule from Sofascore ──────────────────────────────
+  // ── Calendar: normalised match shape used by both TM and Sofascore sources ──
+  interface CalendarMatch {
+    id?: number | string;
+    homeTeam: { id?: number | string; name: string; logo: string | null; badge?: string | null };
+    awayTeam: { id?: number | string; name: string; logo: string | null; badge?: string | null };
+    homeScore: number | null;
+    awayScore: number | null;
+    startDate: string | null;
+    startTimestamp?: number | null;
+    hasDate: boolean;
+    hasTime?: boolean;
+    finished: boolean;
+    inProgress?: boolean;
+    notStarted: boolean;
+    isManual?: boolean;
+  }
+  interface CalendarRound { round: number; name: string; matches?: CalendarMatch[]; events?: CalendarMatch[] }
+  interface CalendarData {
+    currentRound: number;
+    seasonLabel?: string;
+    seasonName?: string;
+    rounds: CalendarRound[];
+    source?: string;
+    scraped_at?: string;
+    // set by frontend when server returns no_data_for_season
+    noData?: boolean;
+    noDataSeason?: number;
+  }
+
+  // ── Calendar: always Transfermarkt (DB-backed) ───────────────────────────────
+  const queryClient = useQueryClient();
+  const calendarQueryKey = ['championship-calendar-tm', champ.name, seasonYear] as const;
+  const { data: calendarData, isLoading: calendarFetching } = useQuery<CalendarData | null>({
+    queryKey: calendarQueryKey,
+    queryFn: async () => {
+      const params = new URLSearchParams({ name: champ.name });
+      if (seasonYear) params.set('season', String(seasonYear));
+      const res = await fetch(`${API_BASE}/championship-calendar-tm?${params}`, { credentials: 'include', cache: 'no-store' });
+      if (res.status === 404) {
+        const body = await res.json().catch(() => ({}));
+        if (body.error === 'no_data_for_season') {
+          return { noData: true, noDataSeason: body.season ?? seasonYear, currentRound: 0, rounds: [] };
+        }
+      }
+      if (!res.ok) return null;
+      return res.json();
+    },
+    enabled: tab === 'calendar',
+    staleTime: 0, // always refetch to ensure DB IDs are present for editing
+  });
+
+  // Admin: force re-scrape from TM
+  const refreshCalendar = useMutation({
+    mutationFn: async () => {
+      const params = new URLSearchParams({ name: champ.name });
+      if (seasonYear) params.set('season', String(seasonYear));
+      const res = await fetch(`${API_BASE}/championship-calendar/refresh?${params}`, { method: 'POST', credentials: 'include' });
+      if (!res.ok) { const b = await res.json().catch(() => ({})); throw new Error(b.error || 'refresh_failed'); }
+      return res.json();
+    },
+    onSuccess: () => {
+      queryClient.refetchQueries({ queryKey: calendarQueryKey });
+      toast.success('Calendrier mis à jour depuis Transfermarkt');
+    },
+    onError: (e: Error) => toast.error(`Erreur : ${e.message}`),
+  });
+
+  // Admin: inline match editing — holds full match context for upsert by composite key
+  interface EditingMatch {
+    dbId: number | null;
+    round: number;
+    roundName: string;
+    homeTeamName: string;
+    homeTeamBadge: string | null;
+    homeTeamTmId: string | null;
+    awayTeamName: string;
+    awayTeamBadge: string | null;
+    awayTeamTmId: string | null;
+    hasExistingData: boolean; // has score or date scraped from TM (not manual)
+  }
+  const [editingMatch, setEditingMatch] = useState<EditingMatch | null>(null);
+  const [editForm, setEditForm] = useState({ homeScore: '', awayScore: '', finished: false, startDate: '', startTime: '', hasTime: false });
+
+  const currentSeasonYearFallback = new Date().getMonth() >= 6 ? new Date().getFullYear() : new Date().getFullYear() - 1;
+
+  const saveMatchEdit = useMutation({
+    mutationFn: async () => {
+      if (!editingMatch) return;
+      const hs = editForm.homeScore !== '' ? parseInt(editForm.homeScore) : null;
+      const as_ = editForm.awayScore !== '' ? parseInt(editForm.awayScore) : null;
+      const sd = editForm.startDate
+        ? `${editForm.startDate}${editForm.hasTime && editForm.startTime ? 'T' + editForm.startTime + ':00' : 'T00:00:00'}`
+        : null;
+      const body = { homeScore: hs, awayScore: as_, finished: editForm.finished, startDate: sd, hasTime: editForm.hasTime };
+
+      let res: Response;
+      if (editingMatch.dbId) {
+        // Has DB ID — direct update
+        res = await fetch(`${API_BASE}/championship-calendar/match/${editingMatch.dbId}`, {
+          method: 'PUT', credentials: 'include',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body),
+        });
+      } else {
+        // No DB ID yet (data from live scrape cache) — upsert by composite key
+        res = await fetch(`${API_BASE}/championship-calendar/match`, {
+          method: 'POST', credentials: 'include',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            championshipName: champ.name,
+            seasonYear: seasonYear ?? currentSeasonYearFallback,
+            roundNumber: editingMatch.round,
+            roundName: editingMatch.roundName,
+            homeTeamName: editingMatch.homeTeamName,
+            homeTeamBadge: editingMatch.homeTeamBadge,
+            homeTeamId: editingMatch.homeTeamTmId,
+            awayTeamName: editingMatch.awayTeamName,
+            awayTeamBadge: editingMatch.awayTeamBadge,
+            awayTeamId: editingMatch.awayTeamTmId,
+            ...body,
+          }),
+        });
+      }
+      if (!res.ok) { const b = await res.json().catch(() => ({})); throw new Error(b.error || 'save_failed'); }
+      return res.json();
+    },
+    onSuccess: () => {
+      queryClient.refetchQueries({ queryKey: calendarQueryKey });
+      setEditingMatch(null);
+      toast.success('Match mis à jour');
+    },
+    onError: (e: Error) => toast.error(`Erreur : ${e.message}`),
+  });
+
+  const calendarLoading = calendarFetching;
+
+  // Normalise round matches (TM uses "matches" field)
+  function getRoundMatches(r: CalendarRound): CalendarMatch[] {
+    return (r.matches ?? r.events ?? []) as CalendarMatch[];
+  }
+
+  // Championship search inside calendar tab
+  const [calendarSearch, setCalendarSearch] = useState('');
+  const { data: allChamps = [] } = useChampionships();
+  const calendarSearchResults = useMemo(() => {
+    const q = calendarSearch.toLowerCase().trim();
+    if (!q) return [];
+    return allChamps.filter(c =>
+      c.name.toLowerCase().includes(q) || c.country.toLowerCase().includes(q)
+    ).slice(0, 8);
+  }, [calendarSearch, allChamps]);
+
+  const [selectedRound, setSelectedRound] = useState<number | null>(null);
+  const calendarAvailable = calendarData && !calendarData.noData;
+  const activeRound = selectedRound ?? (calendarAvailable ? calendarData.currentRound : 1);
+  const activeRoundData = calendarAvailable ? (calendarData.rounds.find(r => r.round === activeRound) ?? null) : null;
 
   // ── Scouting notes — notepad par utilisateur ──
   interface ChampNote { id: number; content: string; rating: number | null; created_at: string; updated_at: string; user_id: string; author_name: string; }
@@ -996,17 +1158,20 @@ function ChampionshipDetail({
         {/* Season selector — only shown for leagues with SofaScore standings */}
         {champ.sofascoreId && (
           <div className="shrink-0">
-            <select
-              value={seasonYear ?? ''}
-              onChange={e => setSeasonYear(e.target.value ? Number(e.target.value) : null)}
-              className="text-xs border border-border rounded-lg px-2.5 py-1.5 bg-background text-foreground focus:outline-none focus:ring-2 focus:ring-primary cursor-pointer"
-              title="Sélectionner une saison"
+            <Select
+              value={seasonYear != null ? String(seasonYear) : 'current'}
+              onValueChange={v => setSeasonYear(v === 'current' ? null : Number(v))}
             >
-              <option value="">Saison actuelle</option>
-              {availableSeasons.map(s => (
-                <option key={s.year} value={s.year}>{s.label}</option>
-              ))}
-            </select>
+              <SelectTrigger className="h-9 text-sm min-w-[110px]">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="current">{t('championships.current_season')}</SelectItem>
+                {availableSeasons.map(s => (
+                  <SelectItem key={s.year} value={String(s.year)}>{s.label}</SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
           </div>
         )}
         <div className="relative shrink-0">
@@ -1090,6 +1255,16 @@ function ChampionshipDetail({
           {(notesData?.notes?.length ?? 0) > 0 && (
             <span className="text-[10px] font-bold bg-primary/15 text-primary px-1.5 py-0.5 rounded-full">{notesData!.notes.length}</span>
           )}
+        </button>
+        <button
+          onClick={() => setTab('calendar')}
+          className={cn(
+            'px-4 py-2 text-sm font-medium border-b-2 transition-colors -mb-px',
+            tab === 'calendar' ? 'border-primary text-foreground' : 'border-transparent text-muted-foreground hover:text-foreground',
+          )}
+        >
+          <CalendarDays className="w-4 h-4 inline mr-1.5 -mt-0.5" />
+          {t('championships.calendar_tab')}
         </button>
       </div>
 
@@ -1683,6 +1858,390 @@ function ChampionshipDetail({
         </div>
       )}
 
+      {/* ── Calendar tab ── */}
+      {tab === 'calendar' && (
+        <div className="space-y-4">
+
+          {/* ── Sub-menu: search another championship ── */}
+          <div className="relative">
+            <div className="flex items-center gap-2 rounded-xl border border-border/60 bg-muted/30 px-3 py-2">
+              <Search className="w-4 h-4 text-muted-foreground shrink-0" />
+              <input
+                type="text"
+                placeholder={t('championships.calendar_search_placeholder')}
+                value={calendarSearch}
+                onChange={e => setCalendarSearch(e.target.value)}
+                className="flex-1 bg-transparent text-sm outline-none placeholder:text-muted-foreground/60"
+              />
+              {calendarSearch && (
+                <button onClick={() => setCalendarSearch('')} className="text-muted-foreground hover:text-foreground">
+                  <X className="w-3.5 h-3.5" />
+                </button>
+              )}
+            </div>
+            {calendarSearchResults.length > 0 && (
+              <div className="absolute top-full left-0 right-0 z-20 mt-1 rounded-xl border bg-background shadow-lg overflow-hidden">
+                {calendarSearchResults.map(c => (
+                  <button
+                    key={c.name}
+                    className="w-full flex items-center gap-3 px-3 py-2 text-sm hover:bg-muted/60 transition-colors text-left"
+                    onClick={() => {
+                      setCalendarSearch('');
+                      onBack();
+                      // Navigate by triggering URL change — Championships will auto-select
+                      window.history.pushState({}, '', `/championships?search=${encodeURIComponent(c.name)}`);
+                      window.dispatchEvent(new PopStateEvent('popstate'));
+                    }}
+                  >
+                    <LeagueLogo league={c.name} size="sm" />
+                    <div className="min-w-0">
+                      <p className="font-medium truncate">{c.name}</p>
+                      <p className="text-xs text-muted-foreground">{c.country}</p>
+                    </div>
+                    <CalendarDays className="w-3.5 h-3.5 text-muted-foreground shrink-0 ml-auto" />
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+
+          {calendarLoading ? (
+            <div className="space-y-3">
+              <div className="flex gap-2 overflow-x-auto pb-1">
+                {[...Array(8)].map((_, i) => <div key={i} className="h-8 w-14 shrink-0 rounded-lg bg-muted animate-pulse" />)}
+              </div>
+              {[...Array(5)].map((_, i) => <div key={i} className="h-14 rounded-xl bg-muted animate-pulse" />)}
+            </div>
+          ) : calendarData?.noData ? (
+            /* Season not yet available on TM */
+            <div className="rounded-xl border border-dashed p-8 text-center space-y-3">
+              <CalendarDays className="w-8 h-8 mx-auto text-muted-foreground/40" />
+              <div>
+                <p className="text-sm font-medium text-muted-foreground">
+                  Pas encore de données pour la saison {calendarData.noDataSeason}–{String((calendarData.noDataSeason ?? 0) + 1).slice(2)}
+                </p>
+                <p className="text-xs text-muted-foreground/70 mt-1">
+                  Les données seront disponibles dès que la saison débutera sur Transfermarkt.
+                </p>
+              </div>
+              {canManageStandings && (
+                <Button size="sm" variant="outline" onClick={() => refreshCalendar.mutate()} disabled={refreshCalendar.isPending}>
+                  <RefreshCw className={cn('w-3.5 h-3.5 mr-1.5', refreshCalendar.isPending && 'animate-spin')} />
+                  Vérifier sur Transfermarkt
+                </Button>
+              )}
+            </div>
+          ) : !calendarData ? (
+            <div className="rounded-xl border border-dashed p-8 text-center space-y-2">
+              <CalendarDays className="w-8 h-8 mx-auto text-muted-foreground/40" />
+              <p className="text-sm font-medium text-muted-foreground">{t('championships.calendar_unavailable')}</p>
+              <p className="text-xs text-muted-foreground/70">{t('championships.calendar_not_found_tm')}</p>
+            </div>
+          ) : (
+            <>
+              {/* Source badge + admin refresh */}
+              <div className="flex items-center gap-2 flex-wrap">
+                <span className={cn(
+                  'text-[10px] border rounded px-1.5 py-0.5',
+                  calendarData.source === 'db' ? 'text-blue-500/70 border-blue-300/40' : 'text-muted-foreground/60',
+                )}>
+                  {calendarData.source === 'db' ? '🗄️ Base de données' : '📊 Transfermarkt'}
+                </span>
+                <span className="text-[10px] text-muted-foreground/60">{calendarData.seasonLabel ?? calendarData.seasonName}</span>
+                {canManageStandings && (
+                  <Button
+                    size="sm" variant="ghost"
+                    className="h-6 px-2 text-[10px] text-muted-foreground/60 hover:text-foreground ml-auto"
+                    onClick={() => refreshCalendar.mutate()} disabled={refreshCalendar.isPending}
+                    title="Re-télécharger depuis Transfermarkt (remplace les données actuelles)"
+                  >
+                    <RefreshCw className={cn('w-3 h-3 mr-1', refreshCalendar.isPending && 'animate-spin')} />
+                    Actualiser TM
+                  </Button>
+                )}
+              </div>
+
+              {/* Round selector */}
+              <div className="flex items-center gap-2">
+                <p className="text-xs text-muted-foreground shrink-0">{t('championships.calendar_round')}</p>
+                <div className="flex gap-1.5 overflow-x-auto pb-1 flex-1">
+                  {calendarData.rounds.map(r => {
+                    const matches = getRoundMatches(r);
+                    const hasResults = matches.some(e => e.finished);
+                    const isActive = r.round === activeRound;
+                    const isCurrent = r.round === calendarData.currentRound;
+                    return (
+                      <button
+                        key={r.round}
+                        onClick={() => setSelectedRound(r.round)}
+                        className={cn(
+                          'shrink-0 min-w-[40px] px-2.5 py-1.5 rounded-lg text-xs font-medium transition-colors border',
+                          isActive
+                            ? 'bg-primary text-primary-foreground border-primary'
+                            : isCurrent
+                              ? 'border-primary/60 text-primary bg-primary/5'
+                              : hasResults
+                                ? 'border-border bg-muted/40 text-muted-foreground hover:bg-muted/80'
+                                : 'border-border/50 bg-transparent text-muted-foreground/60 hover:bg-muted/40',
+                        )}
+                      >
+                        {r.round}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+
+              {/* Matchday header */}
+              {activeRoundData && (
+                <div className="flex items-center justify-between">
+                  <h3 className="text-sm font-semibold">
+                    {activeRoundData.name || `${t('championships.calendar_matchday')} ${activeRoundData.round}`}
+                  </h3>
+                  <span className="text-xs text-muted-foreground">{getRoundMatches(activeRoundData).length} {t('championships.calendar_match_count')}</span>
+                </div>
+              )}
+
+              {/* Matches list */}
+              {(() => {
+                const matches = activeRoundData ? getRoundMatches(activeRoundData) : [];
+                if (!activeRoundData || matches.length === 0) {
+                  return (
+                    <div className="rounded-xl border border-dashed p-6 text-center space-y-2">
+                      <p className="text-sm text-muted-foreground">{t('championships.calendar_no_matches')}</p>
+                      <p className="text-xs text-muted-foreground/60">{t('championships.calendar_dates_tbd')}</p>
+                    </div>
+                  );
+                }
+                return (
+                  <div className="space-y-1.5">
+                    {matches.map((match, mi) => {
+                      const logo = (t: { logo?: string | null; badge?: string | null }) => t.logo ?? t.badge ?? null;
+                      const homeWon = match.finished && match.homeScore !== null && match.awayScore !== null && match.homeScore > match.awayScore;
+                      const awayWon = match.finished && match.homeScore !== null && match.awayScore !== null && match.awayScore > match.homeScore;
+                      const draw = match.finished && match.homeScore !== null && match.awayScore !== null && match.homeScore === match.awayScore;
+                      const matchDbId = typeof match.id === 'number' ? match.id : null;
+                      const matchKey = `${activeRoundData?.round}-${match.homeTeam.name}-${match.awayTeam.name}`;
+                      const isEditing = editingMatch?.homeTeamName === match.homeTeam.name && editingMatch?.awayTeamName === match.awayTeam.name && editingMatch?.round === activeRoundData?.round;
+                      const hasExistingData = !match.isManual && (match.homeScore !== null || match.hasDate);
+                      return (
+                        <div key={matchDbId ?? matchKey} className={cn('rounded-xl border border-border/60 overflow-hidden', isEditing && 'border-primary/40')}>
+                          {/* Match row */}
+                          <div className="flex items-center gap-3 p-3 hover:bg-muted/30 transition-colors">
+                            {/* Home team */}
+                            <div className="flex-1 min-w-0 flex items-center gap-2 justify-end">
+                              {match.isManual && <span title="Modifié manuellement" className="text-[9px] text-amber-500 shrink-0">✎</span>}
+                              <Link
+                                to={`/club?club=${encodeURIComponent(match.homeTeam.name)}`}
+                                className={cn(
+                                  'text-sm font-medium text-right truncate hover:underline hover:text-primary transition-colors',
+                                  homeWon ? 'font-bold' : awayWon ? 'text-muted-foreground' : '',
+                                )}
+                              >{match.homeTeam.name}</Link>
+                              {logo(match.homeTeam) && (
+                                <Link to={`/club?club=${encodeURIComponent(match.homeTeam.name)}`} className="shrink-0">
+                                  <img src={logo(match.homeTeam)!} alt={match.homeTeam.name} className="w-6 h-6 object-contain" onError={e => { (e.target as HTMLImageElement).style.display = 'none'; }} />
+                                </Link>
+                              )}
+                            </div>
+
+                            {/* Score / date / TBD */}
+                            <div className="shrink-0 text-center w-24 space-y-0.5">
+                              {match.finished ? (
+                                <>
+                                  <div className={cn(
+                                    'flex items-center justify-center gap-1.5 px-3 py-1 rounded-lg text-sm font-bold tabular-nums',
+                                    draw ? 'bg-muted/60' : 'bg-primary/10 text-primary',
+                                  )}>
+                                    <span className={homeWon ? 'font-black' : ''}>{match.homeScore}</span>
+                                    <span className="text-muted-foreground text-xs">-</span>
+                                    <span className={awayWon ? 'font-black' : ''}>{match.awayScore}</span>
+                                  </div>
+                                  {match.hasDate && match.startDate && (
+                                    <p className="text-[10px] text-muted-foreground/60">
+                                      {formatDate(match.startDate, dateFormat)}
+                                      {match.hasTime && <> · {new Date(match.startDate).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</>}
+                                    </p>
+                                  )}
+                                </>
+                              ) : match.inProgress ? (
+                                <>
+                                  <div className="flex items-center justify-center gap-1.5 px-3 py-1 rounded-lg text-sm font-bold tabular-nums bg-green-500/10 text-green-600 animate-pulse">
+                                    <span>{match.homeScore ?? 0}</span>
+                                    <span className="text-xs">-</span>
+                                    <span>{match.awayScore ?? 0}</span>
+                                  </div>
+                                  {match.hasDate && match.startDate && match.hasTime && (
+                                    <p className="text-[10px] text-muted-foreground/60">
+                                      {new Date(match.startDate).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                                    </p>
+                                  )}
+                                </>
+                              ) : match.hasDate && match.startDate ? (
+                                <div className="space-y-0.5">
+                                  <p className="text-xs font-semibold text-foreground">{formatDate(match.startDate, dateFormat)}</p>
+                                  {match.hasTime && (
+                                    <p className="text-[10px] text-muted-foreground">{new Date(match.startDate).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</p>
+                                  )}
+                                </div>
+                              ) : (
+                                <span className="inline-block text-[10px] font-medium text-muted-foreground/70 bg-muted/50 border border-dashed px-2 py-1 rounded-lg">
+                                  {t('championships.calendar_tbd')}
+                                </span>
+                              )}
+                            </div>
+
+                            {/* Away team */}
+                            <div className="flex-1 min-w-0 flex items-center gap-2">
+                              {logo(match.awayTeam) && (
+                                <Link to={`/club?club=${encodeURIComponent(match.awayTeam.name)}`} className="shrink-0">
+                                  <img src={logo(match.awayTeam)!} alt={match.awayTeam.name} className="w-6 h-6 object-contain" onError={e => { (e.target as HTMLImageElement).style.display = 'none'; }} />
+                                </Link>
+                              )}
+                              <Link
+                                to={`/club?club=${encodeURIComponent(match.awayTeam.name)}`}
+                                className={cn(
+                                  'text-sm font-medium truncate hover:underline hover:text-primary transition-colors',
+                                  awayWon ? 'font-bold' : homeWon ? 'text-muted-foreground' : '',
+                                )}
+                              >{match.awayTeam.name}</Link>
+                            </div>
+
+                            {/* Admin edit button — visible for ALL matches */}
+                            {canManageStandings && (
+                              <button
+                                onClick={() => {
+                                  if (isEditing) { setEditingMatch(null); return; }
+                                  const sd = match.startDate ?? '';
+                                  const datePart = sd.includes('T') ? sd.split('T')[0] : sd.substring(0, 10);
+                                  const timePart = sd.includes('T') ? sd.split('T')[1]?.substring(0, 5) : '';
+                                  setEditForm({
+                                    homeScore: match.homeScore != null ? String(match.homeScore) : '',
+                                    awayScore: match.awayScore != null ? String(match.awayScore) : '',
+                                    finished: !!match.finished,
+                                    startDate: datePart,
+                                    startTime: timePart || '',
+                                    hasTime: !!match.hasTime,
+                                  });
+                                  setEditingMatch({
+                                    dbId: matchDbId,
+                                    round: activeRoundData!.round,
+                                    roundName: activeRoundData!.name,
+                                    homeTeamName: match.homeTeam.name,
+                                    homeTeamBadge: match.homeTeam.badge ?? match.homeTeam.logo ?? null,
+                                    homeTeamTmId: String(match.homeTeam.id ?? ''),
+                                    awayTeamName: match.awayTeam.name,
+                                    awayTeamBadge: match.awayTeam.badge ?? match.awayTeam.logo ?? null,
+                                    awayTeamTmId: String(match.awayTeam.id ?? ''),
+                                    hasExistingData,
+                                  });
+                                }}
+                                className={cn(
+                                  'shrink-0 w-6 h-6 rounded flex items-center justify-center transition-colors',
+                                  isEditing ? 'bg-primary/10 text-primary' : 'text-muted-foreground/40 hover:text-foreground hover:bg-muted',
+                                )}
+                                title="Modifier ce match"
+                              >
+                                <Pencil className="w-3 h-3" />
+                              </button>
+                            )}
+                          </div>
+
+                          {/* Inline edit form */}
+                          {isEditing && editingMatch && (
+                            <div className="border-t border-border/40 bg-muted/20 px-3 py-3 space-y-3">
+                              <div className="flex items-center justify-between">
+                                <p className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wide">Modifier le match</p>
+                                {!matchDbId && (
+                                  <span className="text-[9px] text-muted-foreground/50 italic">données non encore en base</span>
+                                )}
+                              </div>
+
+                              {/* Warning when overwriting real TM data */}
+                              {hasExistingData && (
+                                <div className="flex items-start gap-2 rounded-lg bg-amber-500/10 border border-amber-500/20 px-2.5 py-2">
+                                  <span className="text-amber-500 text-xs shrink-0 mt-px">⚠</span>
+                                  <p className="text-[11px] text-amber-700 dark:text-amber-400 leading-snug">
+                                    Ces données viennent de Transfermarkt. Les enregistrer les marquera comme <strong>modifiées manuellement</strong> et elles ne seront plus mises à jour automatiquement.
+                                  </p>
+                                </div>
+                              )}
+
+                              <div className="grid grid-cols-2 gap-3">
+                                <div className="space-y-1">
+                                  <label className="text-xs text-muted-foreground">{match.homeTeam.name}</label>
+                                  <Input
+                                    type="number" min={0} max={99} placeholder="–"
+                                    value={editForm.homeScore}
+                                    onChange={e => setEditForm(f => ({ ...f, homeScore: e.target.value }))}
+                                    className="h-8 text-sm"
+                                  />
+                                </div>
+                                <div className="space-y-1">
+                                  <label className="text-xs text-muted-foreground">{match.awayTeam.name}</label>
+                                  <Input
+                                    type="number" min={0} max={99} placeholder="–"
+                                    value={editForm.awayScore}
+                                    onChange={e => setEditForm(f => ({ ...f, awayScore: e.target.value }))}
+                                    className="h-8 text-sm"
+                                  />
+                                </div>
+                              </div>
+                              <div className="flex items-center gap-3 flex-wrap">
+                                <div className="flex items-center gap-1.5">
+                                  <input type="checkbox" id={`fin-${matchKey}`} checked={editForm.finished}
+                                    onChange={e => setEditForm(f => ({ ...f, finished: e.target.checked }))}
+                                    className="rounded" />
+                                  <label htmlFor={`fin-${matchKey}`} className="text-xs text-muted-foreground cursor-pointer">Match joué</label>
+                                </div>
+                                <Input
+                                  type="date" value={editForm.startDate}
+                                  onChange={e => setEditForm(f => ({ ...f, startDate: e.target.value }))}
+                                  className="h-8 text-xs w-36"
+                                />
+                                <div className="flex items-center gap-1.5">
+                                  <input type="checkbox" id={`ht-${matchKey}`} checked={editForm.hasTime}
+                                    onChange={e => setEditForm(f => ({ ...f, hasTime: e.target.checked }))}
+                                    className="rounded" />
+                                  <label htmlFor={`ht-${matchKey}`} className="text-xs text-muted-foreground cursor-pointer">Heure</label>
+                                </div>
+                                {editForm.hasTime && (
+                                  <Input
+                                    type="time" value={editForm.startTime}
+                                    onChange={e => setEditForm(f => ({ ...f, startTime: e.target.value }))}
+                                    className="h-8 text-xs w-28"
+                                  />
+                                )}
+                              </div>
+                              <div className="flex gap-2 justify-end">
+                                <Button size="sm" variant="ghost" className="h-7 text-xs" onClick={() => setEditingMatch(null)}>
+                                  <X className="w-3 h-3 mr-1" />Annuler
+                                </Button>
+                                <Button size="sm" className="h-7 text-xs" onClick={() => saveMatchEdit.mutate()} disabled={saveMatchEdit.isPending}>
+                                  <Check className="w-3 h-3 mr-1" />{saveMatchEdit.isPending ? 'Enregistrement…' : 'Enregistrer'}
+                                </Button>
+                              </div>
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                );
+              })()}
+
+              {/* TBD info banner */}
+              {activeRoundData && getRoundMatches(activeRoundData).some(e => !e.hasDate && e.notStarted) && (
+                <div className="flex items-start gap-2 text-xs text-muted-foreground bg-muted/40 rounded-xl p-3">
+                  <CalendarDays className="w-4 h-4 shrink-0 mt-0.5" />
+                  <p>{t('championships.calendar_tbd_info')}</p>
+                </div>
+              )}
+            </>
+          )}
+        </div>
+      )}
+
       {/* Manual standings modal */}
       {manualModalOpen && (
         <ManualStandingsModal
@@ -1711,12 +2270,20 @@ export default function Championships() {
   const [search, setSearch] = useState(() => urlParams.get('search') || '');
   const [countryFilter, setCountryFilter] = useState('');
   const [dialogOpen, setDialogOpen] = useState(false);
+
+  // Sync search bar when URL param changes (e.g. popstate navigation from calendar tab)
+  useEffect(() => {
+    setSearch(urlParams.get('search') || '');
+  }, [urlParams]);
   const [deleteTarget, setDeleteTarget] = useState<ChampionshipEntry | null>(null);
   const [formName, setFormName] = useState('');
   const [formCountry, setFormCountry] = useState('');
   const [selectedChamp, setSelectedChamp] = useState<ChampionshipEntry | null>(null);
 
-  // Auto-select championship that exactly matches the ?search= param
+  // Auto-select championship that exactly matches the ?search= param + read ?tab and ?season
+  const urlInitialTab = urlParams.get('tab') as 'standings' | 'clubs' | 'players' | 'notes' | 'calendar' | null;
+  const urlInitialSeason = urlParams.get('season') ? parseInt(urlParams.get('season')!) : null;
+
   useEffect(() => {
     const q = urlParams.get('search');
     if (!q || championships.length === 0) return;
@@ -1748,8 +2315,9 @@ export default function Championships() {
 
   const handleAddCustom = async () => {
     if (!formName.trim()) { toast.error(t('championships.name_required')); return; }
+    if (!formCountry) { toast.error(t('championships.country_required')); return; }
     try {
-      await addCustom.mutateAsync({ name: formName.trim(), country: formCountry.trim() || 'Autre' });
+      await addCustom.mutateAsync({ name: formName.trim(), country: formCountry });
       toast.success(t('championships.added'));
       setDialogOpen(false);
       setFormName('');
@@ -1768,7 +2336,15 @@ export default function Championships() {
   };
 
   if (selectedChamp) {
-    return <ChampionshipDetail key={selectedChamp.name} champ={selectedChamp} onBack={() => setSelectedChamp(null)} />;
+    return (
+      <ChampionshipDetail
+        key={selectedChamp.name}
+        champ={selectedChamp}
+        onBack={() => setSelectedChamp(null)}
+        initialTab={urlInitialTab ?? undefined}
+        initialSeason={urlInitialSeason ?? undefined}
+      />
+    );
   }
 
   return (
@@ -1884,7 +2460,22 @@ export default function Championships() {
             </div>
             <div>
               <Label>{t('championships.country_label')}</Label>
-              <Input value={formCountry} onChange={e => setFormCountry(e.target.value)} placeholder="France, International..." />
+              <Select value={formCountry || '_none'} onValueChange={v => setFormCountry(v === '_none' ? '' : v)}>
+                <SelectTrigger>
+                  <SelectValue placeholder={t('championships.filter_country')} />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="_none">{t('championships.filter_country')}</SelectItem>
+                  {(countries as string[]).map(country => (
+                    <SelectItem key={country} value={country}>
+                      <span className="flex items-center gap-2">
+                        <FlagIcon nationality={country} size="sm" />
+                        {country}
+                      </span>
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
             </div>
             <Button onClick={handleAddCustom} className="w-full" disabled={addCustom.isPending}>
               {t('championships.create')}

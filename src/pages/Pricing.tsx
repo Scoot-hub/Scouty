@@ -4,7 +4,7 @@ import { useSearchParams, Link, useNavigate } from 'react-router-dom';
 import { useAuth } from '@/contexts/AuthContext';
 import { supabase } from '@/integrations/supabase/client';
 import { Button } from '@/components/ui/button';
-import { Check, X, Crown, Loader2, ExternalLink, Sparkles } from 'lucide-react';
+import { Check, X, Crown, Loader2, ExternalLink, Sparkles, Zap, ArrowRight } from 'lucide-react';
 import { toast } from 'sonner';
 import LanguageSwitcher from '@/components/LanguageSwitcher';
 import { cn } from '@/lib/utils';
@@ -225,7 +225,7 @@ export default function Pricing() {
           </div>
 
           {/* Plans grid */}
-          <div className="grid md:grid-cols-2 lg:grid-cols-4 gap-6 max-w-6xl mx-auto">
+          <div className="grid md:grid-cols-2 lg:grid-cols-4 gap-6 max-w-6xl mx-auto" id="plans">
             {plans.map((plan) => (
               <div
                 key={plan.id}
@@ -335,6 +335,28 @@ export default function Pricing() {
                 )}
               </div>
             ))}
+          </div>
+
+          {/* Credits alternative — top-up without plan change */}
+          <div className="max-w-6xl mx-auto mt-10">
+            <div className="flex flex-col sm:flex-row items-center justify-between gap-4 rounded-2xl border border-yellow-500/25 bg-yellow-500/5 px-6 py-5">
+              <div className="flex items-center gap-3 min-w-0">
+                <div className="w-9 h-9 rounded-xl bg-yellow-500/15 flex items-center justify-center shrink-0">
+                  <Zap className="w-4 h-4 text-yellow-500" />
+                </div>
+                <div className="min-w-0">
+                  <p className="text-sm font-semibold">{t('pricing.credits_alt_title')}</p>
+                  <p className="text-xs text-muted-foreground mt-0.5">{t('pricing.credits_alt_desc')}</p>
+                </div>
+              </div>
+              <Link to={user ? '/buy-credits' : '/auth?signup=true'} className="shrink-0">
+                <Button variant="outline" size="sm" className="gap-2 border-yellow-500/40 text-yellow-600 dark:text-yellow-400 hover:bg-yellow-500/10 whitespace-nowrap">
+                  <Zap className="w-3.5 h-3.5" />
+                  {t('pricing.credits_alt_cta')}
+                  <ArrowRight className="w-3.5 h-3.5" />
+                </Button>
+              </Link>
+            </div>
           </div>
         </div>
       </main>

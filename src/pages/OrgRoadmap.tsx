@@ -98,6 +98,15 @@ export default function OrgRoadmap() {
   const myRole = org?.myRole;
   const isAdminOrOwner = myRole === 'owner' || myRole === 'admin';
 
+  const orgSettings: Record<string, boolean | number> = (() => {
+    try {
+      const raw = (org as any)?.settings;
+      if (!raw) return {};
+      return typeof raw === 'string' ? JSON.parse(raw) : raw;
+    } catch { return {}; }
+  })();
+  const canEditRoadmap = isAdminOrOwner || orgSettings.allow_roadmap_editing !== false;
+
   const membersMap = useMemo(() => {
     const map = new Map<string, string>();
     for (const m of members ?? []) {
@@ -333,7 +342,7 @@ export default function OrgRoadmap() {
                         match={m}
                         membersMap={membersMap}
                         members={members ?? []}
-                        isAdminOrOwner={isAdminOrOwner}
+                        isAdminOrOwner={canEditRoadmap}
                         onAssign={handleAssign}
                         onCycleStatus={() => handleCycleStatus(m)}
                         onRemove={() => handleRemove(m.id)}

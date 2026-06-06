@@ -357,6 +357,7 @@ export function ImportPlayersDialog({ externalOpen, onExternalOpenChange }: { ex
   const open = controlled ? externalOpen : internalOpen;
   const setOpen = controlled ? (v: boolean) => onExternalOpenChange?.(v) : setInternalOpen;
   const [step, setStep] = useState<'upload' | 'mapping' | 'preview' | 'importing' | 'done'>('upload');
+  const [importResult, setImportResult] = useState<{ importedCount: number; updatedCount: number; skippedCount: number; skippedErrors: { name: string; error: string }[] } | null>(null);
   const [rawData, setRawData] = useState<{ headers: string[]; rows: RawRow[]; hyperlinks: Record<number, Record<string, { url: string; text: string }>> }>({ headers: [], rows: [], hyperlinks: {} });
   const [columnMapping, setColumnMapping] = useState<Record<string, string>>({});
   const [parsed, setParsed] = useState<ParsedPlayer[]>([]);
@@ -775,6 +776,12 @@ export function ImportPlayersDialog({ externalOpen, onExternalOpenChange }: { ex
         })();
       }
 
+      setImportResult({
+        importedCount: result.importedCount,
+        updatedCount: result.updatedCount,
+        skippedCount: result.skippedCount,
+        skippedErrors: result.skippedErrors ?? [],
+      });
       setStep('done');
     } catch (err) {
       console.error('Import error:', err);
@@ -1207,13 +1214,57 @@ export function ImportPlayersDialog({ externalOpen, onExternalOpenChange }: { ex
           </div>
         )}
 
-        {step === 'done' && (
-          <div className="flex flex-col items-center justify-center py-12">
-            <div className="w-16 h-16 rounded-full bg-success/10 flex items-center justify-center mb-4">
-              <Check className="w-8 h-8 text-success" />
+        {step === 'done' && importResult && (
+          <div className="flex flex-col items-center py-8 px-4 space-y-5">
+            {/* Header */}
+            <div className="w-14 h-14 rounded-full bg-emerald-500/10 flex items-center justify-center">
+              <Check className="w-7 h-7 text-emerald-500" />
             </div>
-            <p className="text-lg font-semibold mb-2">{t('import.success')}</p>
-            <Button onClick={() => { setOpen(false); reset(); }} className="mt-4">{t('common.close')}</Button>
+            <p className="text-lg font-semibold">{t('import.success')}</p>
+
+            {/* Summary cards */}
+            <div className="w-full grid grid-cols-3 gap-3">
+              {/* Created */}
+              <div className="rounded-xl border border-emerald-500/20 bg-emerald-500/5 p-3 text-center">
+                <p className="text-2xl font-bold text-emerald-600 dark:text-emerald-400">{importResult.importedCount}</p>
+                <p className="text-xs text-muted-foreground mt-0.5">{t('import.result_created', 'Créés')}</p>
+              </div>
+              {/* Updated */}
+              <div className="rounded-xl border border-blue-500/20 bg-blue-500/5 p-3 text-center">
+                <p className="text-2xl font-bold text-blue-600 dark:text-blue-400">{importResult.updatedCount}</p>
+                <p className="text-xs text-muted-foreground mt-0.5">{t('import.result_updated', 'Mis à jour')}</p>
+              </div>
+              {/* Skipped */}
+              <div className={`rounded-xl border p-3 text-center ${importResult.skippedCount > 0 ? 'border-amber-500/20 bg-amber-500/5' : 'border-border/40 bg-muted/30'}`}>
+                <p className={`text-2xl font-bold ${importResult.skippedCount > 0 ? 'text-amber-600 dark:text-amber-400' : 'text-muted-foreground'}`}>{importResult.skippedCount}</p>
+                <p className="text-xs text-muted-foreground mt-0.5">{t('import.result_skipped', 'Ignorés')}</p>
+              </div>
+            </div>
+
+            {/* Updated note */}
+            {importResult.updatedCount > 0 && (
+              <p className="text-xs text-muted-foreground text-center max-w-xs leading-relaxed">
+                {t('import.result_updated_note', '{{count}} joueur(s) existaient déjà et ont été mis à jour avec les nouvelles données.', { count: importResult.updatedCount })}
+              </p>
+            )}
+
+            {/* Error details */}
+            {importResult.skippedErrors.length > 0 && (
+              <div className="w-full rounded-lg border border-amber-500/20 bg-amber-500/5 max-h-32 overflow-y-auto">
+                {importResult.skippedErrors.slice(0, 5).map((e, i) => (
+                  <div key={i} className="flex items-start gap-2 px-3 py-1.5 text-xs border-b border-amber-500/10 last:border-0">
+                    <AlertTriangle className="w-3.5 h-3.5 text-amber-500 shrink-0 mt-0.5" />
+                    <span className="font-medium truncate max-w-[120px]">{e.name}</span>
+                    <span className="text-muted-foreground truncate">{e.error}</span>
+                  </div>
+                ))}
+                {importResult.skippedErrors.length > 5 && (
+                  <p className="px-3 py-1.5 text-xs text-muted-foreground">+{importResult.skippedErrors.length - 5} autres erreurs</p>
+                )}
+              </div>
+            )}
+
+            <Button onClick={() => { setOpen(false); reset(); }}>{t('common.close')}</Button>
           </div>
         )}
       </DialogContent>

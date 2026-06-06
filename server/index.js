@@ -299,7 +299,7 @@ for (const p of HONEYPOT_PATHS) {
 
 // 5. SQL injection & XSS detection on API routes — flag + 403 with event type
 const _SQLI_API = /(\bunion\b[\s\S]{0,60}\bselect\b|\bselect\b[\s\S]{0,60}\bfrom\b|\bdrop\b[\s\S]{0,30}\btable\b|\binsert\b[\s\S]{0,30}\binto\b|\bdelete\b[\s\S]{0,30}\bfrom\b|'[\s\S]{0,10}(or|and)[\s\S]{0,10}[=\s]|xp_\w|\bexec\s*\(|\bsleep\s*\(|\bbenchmark\s*\(|\bwaitfor\b)/i;
-const _XSS_API  = /<script[\s>]|javascript\s*:|on\w{2,20}\s*=|document\.(cookie|write)|<iframe[\s>]|\balert\s*\(|<svg[\s>].*on\w/i;
+const _XSS_API  = /<script[\s>]|javascript\s*:|\bon\w{2,20}\s*=|document\.(cookie|write)|<iframe[\s>]|\balert\s*\(|<svg[\s>].*on\w/i;
 const _SCOUTHUB_TOKEN_KEY = "scouthub_token"; // forward-declared for the middleware below
 
 // Safely decode JWT payload without verifying signature (only for logging/flagging)
@@ -382,6 +382,28 @@ app.post("/api/stripe/webhook", express.raw({ type: "application/json" }), async
         const userId = session.metadata?.user_id || session.client_reference_id;
         if (!userId) {
           console.warn("[stripe-webhook] checkout.session.completed: no user_id found (metadata or client_reference_id)");
+          break;
+        }
+
+        // ── Credit purchase (one-time payment) ──────────────────────────────
+        if (session.metadata?.type === "credit_purchase") {
+          const creditsToAdd = parseInt(session.metadata?.credits || "0", 10);
+          const packId = session.metadata?.pack || "unknown";
+          if (creditsToAdd > 0) {
+            await pool.query(
+              `INSERT INTO user_credit_events (id, user_id, action_type, direction, amount, description, created_at)
+               VALUES (?, ?, 'purchase', 'earn', ?, ?, NOW())`,
+              [uuidv4(), userId, creditsToAdd, `Achat pack crédits : ${packId} (${creditsToAdd} crédits)`]
+            );
+            await createNotification(userId, {
+              type: "credits",
+              title: "Crédits ajoutés",
+              message: `${creditsToAdd} crédits ont été ajoutés à votre compte (${packId}).`,
+              icon: "Zap",
+              link: "/account",
+            });
+            console.log(`[stripe-webhook] Credit purchase: ${creditsToAdd} credits added for user ${userId} (pack: ${packId})`);
+          }
           break;
         }
 
@@ -519,8 +541,10 @@ app.post("/api/stripe/webhook", express.raw({ type: "application/json" }), async
   }
 });
 
-app.use(express.json({ limit: "10mb" }));
-app.use(express.urlencoded({ limit: "10mb", extended: true }));
+// 35 MB to accommodate file import uploads (multipart/form-data, max 30 MB via multer).
+// Express 5 applies this limit globally before per-route multer middleware gets a chance to run.
+app.use(express.json({ limit: "35mb" }));
+app.use(express.urlencoded({ limit: "35mb", extended: true }));
 app.use("/uploads", express.static(UPLOAD_DIR));
 
 const upload = multer({
@@ -655,7 +679,7 @@ const ALLOWED_TABLES = {
   followed_clubs: ["id", "user_id", "club_name", "notes", "display_order", "created_at"],
   player_org_shares: ["id", "player_id", "organization_id", "user_id", "created_at"],
   match_assignments: ["id", "user_id", "organization_id", "assigned_to", "assigned_by", "home_team", "away_team", "match_date", "match_time", "competition", "venue", "home_badge", "away_badge", "notes", "status", "created_at", "updated_at"],
-  community_posts: ["id", "user_id", "author_name", "category", "title", "content", "likes", "replies_count", "is_archived", "views", "is_pinned", "display_order", "is_closed", "accepted_reply_id", "closed_by", "closed_at", "created_at", "lang", "country"],
+  community_posts: ["id", "user_id", "author_name", "category", "title", "content", "likes", "replies_count", "is_archived", "views", "is_pinned", "display_order", "is_closed", "accepted_reply_id", "closed_by", "closed_at", "created_at", "lang", "country", "tags"],
   community_replies: ["id", "post_id", "user_id", "author_name", "content", "created_at"],
   community_likes: ["id", "post_id", "user_id", "created_at"],
 };
@@ -1015,7 +1039,7 @@ function sanitizePlayerName(raw) {
 }
 
 function sanitizeValueByColumn(col, value) {
-  if (col === "field_options" || col === "external_data") {
+  if (col === "field_options" || col === "external_data" || col === "tags") {
     if (value == null) return null;
     return typeof value === "string" ? value : JSON.stringify(value);
   }
@@ -1042,6 +1066,10 @@ function parseRowJsonColumns(row) {
 
   if (typeof parsed.settings === "string") {
     try { parsed.settings = JSON.parse(parsed.settings); } catch { parsed.settings = null; }
+  }
+
+  if (typeof parsed.tags === "string") {
+    try { parsed.tags = JSON.parse(parsed.tags); } catch { parsed.tags = null; }
   }
 
   if (parsed.ts_report_published !== undefined) parsed.ts_report_published = !!parsed.ts_report_published;
@@ -1562,6 +1590,7 @@ async function _legacyRunMigrations() {
     'closed_at DATETIME NULL',
     'lang VARCHAR(10) NULL',
     'country VARCHAR(100) NULL',
+    'tags JSON NULL',
   ]) {
     try { await pool.query(`ALTER TABLE community_posts ADD COLUMN ${col}`); } catch { /* already exists */ }
   }
@@ -2520,6 +2549,27 @@ async function _legacyRunMigrations() {
     }
   } catch (err) { console.warn('[warn] importateur role seed:', err?.message); }
 
+  // Seed default 'influenceur' role (community visibility boost — no extra permissions needed)
+  try {
+    await pool.query(`INSERT INTO role_metadata (role, color) VALUES ('influenceur', '#f59e0b') ON DUPLICATE KEY UPDATE role = role`);
+    // Influenceurs can view the community page (same as any authenticated user — no extra pages unlocked)
+    await pool.query(
+      `INSERT INTO page_permissions (id, role, page_key, action, allowed) VALUES (?, 'influenceur', 'community', 'view', 1) ON DUPLICATE KEY UPDATE allowed = 1`,
+      [uuidv4()]
+    );
+  } catch (err) { console.warn('[warn] influenceur role seed:', err?.message); }
+
+  // Seed default 'rédacteur' role with editorial permissions
+  try {
+    await pool.query(`INSERT INTO role_metadata (role, color) VALUES ('rédacteur', '#f59e0b') ON DUPLICATE KEY UPDATE role = role`);
+    for (const action of ['view', 'create', 'edit', 'delete', 'publish', 'view_drafts']) {
+      await pool.query(
+        `INSERT INTO page_permissions (id, role, page_key, action, allowed) VALUES (?, 'rédacteur', 'editorial', ?, 1) ON DUPLICATE KEY UPDATE allowed = 1`,
+        [uuidv4(), action]
+      );
+    }
+  } catch (err) { console.warn('[warn] rédacteur role seed:', err?.message); }
+
   // Add action column to page_permissions for sub-permission support
   try {
     await pool.query(`ALTER TABLE page_permissions ADD COLUMN action VARCHAR(50) NOT NULL DEFAULT 'view' AFTER page_key`);
@@ -2653,6 +2703,24 @@ async function _legacyRunMigrations() {
     `);
   } catch (err) { if (!err?.message?.includes('already exists')) console.warn('[warn] org_message_reads:', err?.message); }
 
+  // org_join_requests — pending membership requests when require_approval_to_join is enabled
+  try {
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS org_join_requests (
+        id              CHAR(36)     NOT NULL PRIMARY KEY,
+        organization_id CHAR(36)     NOT NULL,
+        user_id         CHAR(36)     NOT NULL,
+        status          ENUM('pending','approved','rejected') NOT NULL DEFAULT 'pending',
+        requested_at    DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        reviewed_at     DATETIME,
+        reviewed_by     CHAR(36),
+        UNIQUE KEY uniq_org_user (organization_id, user_id),
+        INDEX idx_ojr_org (organization_id),
+        INDEX idx_ojr_user (user_id)
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+    `);
+  } catch (err) { if (!err?.message?.includes('already exists')) console.warn('[warn] org_join_requests:', err?.message); }
+
   // Dedicated standings cache table — permanent for historical seasons
   try {
     await pool.query(`
@@ -2705,6 +2773,116 @@ async function _legacyRunMigrations() {
     `);
   } catch (err) {
     if (!err?.message?.includes("already exists")) console.warn("[warn] championship_manual_data migration:", err?.message);
+  }
+
+  // championship_tm_mapping — Transfermarkt competition ID + URL slug per championship name
+  try {
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS championship_tm_mapping (
+        championship_name  VARCHAR(200) NOT NULL PRIMARY KEY,
+        tm_competition_id  VARCHAR(20)  NOT NULL,
+        tm_slug            VARCHAR(100) NOT NULL,
+        updated_at         DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+    `);
+    // Seed static map — ON DUPLICATE KEY ignores existing customisations
+    const TM_SEED = [
+      ['Ligue 1','FR1','ligue-1'],['Ligue 2','FR2','ligue-2'],
+      ['Premier League','GB1','premier-league'],['EFL Championship','GB2','championship'],
+      ['La Liga','ES1','laliga'],['La Liga 2','ES2','laliga2'],
+      ['Serie A','IT1','serie-a'],['Serie B','IT2','serie-b'],
+      ['Bundesliga','L1','1-bundesliga'],['2. Bundesliga','L2','2-bundesliga'],
+      ['Liga Portugal','PO1','liga-portugal-betclic'],['Liga Portugal 2','PO2','liga-portugal-sabseg'],
+      ['Eredivisie','NL1','eredivisie'],['Eerste Divisie','NL2','eerste-divisie'],
+      ['Jupiler Pro League','BE1','jupiler-pro-league'],
+      ['Super Lig Turquie','TR1','super-lig'],
+      ['Super League Suisse','C1','super-league'],
+      ['Superligaen','DK1','superliga'],
+      ['Allsvenskan','SE1','allsvenskan'],
+      ['Eliteserien','NO1','eliteserien'],
+      ['Bundesliga Autriche','A1','admiral-bundesliga'],
+      ['Premier League Écosse','SC1','scottish-premiership'],
+      ['Ekstraklasa','PL1','ekstraklasa'],
+      ['Super League Grèce','GR1','super-league-1'],
+      ['Premier League Ukrainienne','UKR1','premier-liga'],
+      ['SuperLiga Serbie','SRB1','superliga'],
+      ['HNL Croatie','KR1','hnl'],
+      ['NB I Hongrie','UNG1','nb-i'],
+      ['Fortuna Liga Tchéquie','TS1','fortuna-liga'],
+      ['Fortuna Liga Slovaquie','SLK1','fortuna-liga'],
+      ['Liga Profesional Argentina','AR1N','superliga'],
+      ['MLS','MLS1','major-league-soccer'],
+      ['Liga MX','MEX1','liga-mx'],
+      ['Saudi Pro League','SA1','saudi-pro-league'],
+      ['J1 League','JP1','j1-league'],
+      ['K League 1','KLEG1','k-league-1'],
+      ['Chinese Super League','CSL','chinese-super-league'],
+      ['Egyptian Premier League','EGY1','premier-league'],
+      ['Ligue des Champions','CL','champions-league'],
+      ['Europa League','EL','europa-league'],
+      ['Conference League','UECL','europa-conference-league'],
+      ['Copa Libertadores','LIBER','copa-libertadores'],
+    ];
+    for (const [name, id, slug] of TM_SEED) {
+      await pool.query(
+        'INSERT IGNORE INTO championship_tm_mapping (championship_name, tm_competition_id, tm_slug) VALUES (?, ?, ?)',
+        [name, id, slug]
+      );
+    }
+  } catch (err) {
+    if (!err?.message?.includes('already exists')) console.warn('[migration] championship_tm_mapping:', err?.message);
+  }
+
+  // championship_calendar — persistent header record per championship-season
+  try {
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS championship_calendar (
+        id                INT AUTO_INCREMENT PRIMARY KEY,
+        championship_name VARCHAR(200) NOT NULL,
+        season_year       INT NOT NULL,
+        current_round     INT NOT NULL DEFAULT 1,
+        total_rounds      INT NOT NULL DEFAULT 0,
+        season_label      VARCHAR(50),
+        source            VARCHAR(20) DEFAULT 'transfermarkt',
+        scraped_at        DATETIME,
+        updated_at        DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        UNIQUE KEY uk_cal (championship_name(191), season_year)
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+    `);
+  } catch (err) {
+    if (!err?.message?.includes('already exists')) console.warn('[migration] championship_calendar:', err?.message);
+  }
+
+  // championship_calendar_matches — individual matches (is_manual=1 = admin-edited)
+  try {
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS championship_calendar_matches (
+        id               INT AUTO_INCREMENT PRIMARY KEY,
+        championship_name VARCHAR(200) NOT NULL,
+        season_year      INT NOT NULL,
+        round_number     INT NOT NULL,
+        round_name       VARCHAR(100),
+        home_team_id     VARCHAR(50),
+        home_team_name   VARCHAR(200) NOT NULL DEFAULT '',
+        home_team_badge  VARCHAR(500),
+        away_team_id     VARCHAR(50),
+        away_team_name   VARCHAR(200) NOT NULL DEFAULT '',
+        away_team_badge  VARCHAR(500),
+        home_score       TINYINT UNSIGNED NULL,
+        away_score       TINYINT UNSIGNED NULL,
+        finished         TINYINT(1) NOT NULL DEFAULT 0,
+        start_date       DATETIME NULL,
+        has_time         TINYINT(1) NOT NULL DEFAULT 0,
+        not_started      TINYINT(1) NOT NULL DEFAULT 1,
+        in_progress      TINYINT(1) NOT NULL DEFAULT 0,
+        is_manual        TINYINT(1) NOT NULL DEFAULT 0,
+        created_at       DATETIME DEFAULT CURRENT_TIMESTAMP,
+        updated_at       DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        INDEX idx_ccm (championship_name(191), season_year, round_number)
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+    `);
+  } catch (err) {
+    if (!err?.message?.includes('already exists')) console.warn('[migration] championship_calendar_matches:', err?.message);
   }
 
   // exchange_rates table — admin-managed currency conversion rates vs EUR
@@ -4400,6 +4578,21 @@ app.delete("/api/followed-clubs/:id", authMiddleware, async (req, res) => {
   }
 });
 
+// PATCH /api/followed-clubs/:id — update notes
+app.patch("/api/followed-clubs/:id", authMiddleware, async (req, res) => {
+  const { notes } = req.body || {};
+  try {
+    await pool.query(
+      "UPDATE followed_clubs SET notes = ? WHERE id = ? AND user_id = ?",
+      [notes ?? null, req.params.id, req.user.id]
+    );
+    return res.json({ ok: true });
+  } catch (err) {
+    console.error("[followed-clubs] PATCH error:", err);
+    return res.status(500).json({ error: "Erreur serveur" });
+  }
+});
+
 // PATCH /api/followed-clubs/reorder — persist drag-and-drop order
 app.patch("/api/followed-clubs/reorder", authMiddleware, async (req, res) => {
   const { order } = req.body || {};
@@ -4415,6 +4608,78 @@ app.patch("/api/followed-clubs/reorder", authMiddleware, async (req, res) => {
     return res.json({ ok: true });
   } catch (err) {
     return res.status(500).json({ error: err?.message });
+  }
+});
+
+// ── GET /api/club-standing-info — lightweight division + rank from cache ────
+// Returns cached standing data for a club without making new external calls.
+// Reads from api_football_cache (Transfermarkt standings) and club_directory.
+app.get("/api/club-standing-info", authMiddleware, async (req, res) => {
+  const clubName = String(req.query.name || '').trim();
+  if (!clubName) return res.status(400).json({ error: 'name param required' });
+
+  const norm = (s) => s.toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '').trim();
+  const normName = norm(clubName);
+
+  try {
+    // 1. Look up division from club_directory (fast, indexed by club_name)
+    let division = null;
+    let country = null;
+    try {
+      const [dirRows] = await pool.query(
+        `SELECT competition, country FROM club_directory
+         WHERE LOWER(club_name) = ? OR LOWER(club_name) LIKE ?
+         ORDER BY CHAR_LENGTH(club_name) ASC LIMIT 1`,
+        [normName, `%${normName}%`]
+      );
+      if (dirRows.length) {
+        division = dirRows[0].competition || null;
+        country  = dirRows[0].country    || null;
+      }
+    } catch { /* club_directory may not exist */ }
+
+    // 2. Scan api_football_cache for any cached standings matching this club
+    let rank = null;
+    let points = null;
+    let played = null;
+    let wins = null;
+    let losses = null;
+    let draws = null;
+    let season = null;
+    let standingDivision = null;
+    try {
+      const [cacheRows] = await pool.query(
+        `SELECT cache_key, response_json FROM api_football_cache
+         WHERE cache_key LIKE 'club_tm_standings_%' AND expires_at > NOW()
+         ORDER BY expires_at DESC LIMIT 30`
+      );
+      for (const row of cacheRows) {
+        try {
+          const parsed = JSON.parse(row.response_json);
+          if (!parsed?.rows?.length) continue;
+          const match = parsed.rows.find(r => r.club && norm(r.club) === normName);
+          if (match) {
+            rank   = match.rank   ?? null;
+            points = match.points ?? null;
+            played = match.played ?? null;
+            wins   = match.wins   ?? null;
+            losses = match.losses ?? null;
+            draws  = match.draws  ?? null;
+            season = parsed.season ?? null;
+            // Try to derive division from competition metadata stored in cache
+            if (parsed.competitionId && !division) standingDivision = parsed.competitionId;
+            break;
+          }
+        } catch { continue; }
+      }
+    } catch { /* cache scan failed */ }
+
+    if (!division && standingDivision) division = standingDivision;
+
+    return res.json({ division, country, rank, points, played, wins, losses, draws, season });
+  } catch (err) {
+    console.error('[club-standing-info]', err?.message);
+    return res.status(500).json({ error: 'Erreur serveur' });
   }
 });
 
@@ -4473,21 +4738,29 @@ app.delete("/api/notifications/:id", authMiddleware, async (req, res) => {
 
 // ── POST /api/report-issue ────────────────────────────────────────────────
 app.post("/api/report-issue", authMiddleware, async (req, res) => {
-  const { category, subject, message, url, userAgent } = req.body || {};
+  const { category, subject, message, url, userAgent, requested_role } = req.body || {};
   if (!subject || !message) return res.status(400).json({ error: "Sujet et message requis." });
+
+  const VALID_ROLES = ['influenceur', 'moderateur', 'importateur', 'redacteur'];
+  if (category === 'role_request' && (!requested_role || !VALID_ROLES.includes(requested_role))) {
+    return res.status(400).json({ error: "Rôle demandé invalide." });
+  }
 
   const userEmail = req.user?.email || "inconnu";
   const userName = req.user?.name || req.user?.email || "inconnu";
   const userId = req.user?.id || "inconnu";
-  const categoryLabels = { bug: "Bug", feature: "Demande de fonctionnalité", other: "Autre" };
+  const categoryLabels = { bug: "Bug", feature: "Demande de fonctionnalité", other: "Autre", role_request: "Demande de rôle" };
   const catLabel = categoryLabels[category] || category || "Autre";
 
   // Persist ticket in DB
   const ticketId = uuidv4();
+  const isRoleRequest = category === 'role_request';
   try {
     await pool.query(
-      `INSERT INTO tickets (id, user_id, category, subject, message, page_url, user_agent) VALUES (?, ?, ?, ?, ?, ?, ?)`,
-      [ticketId, userId, category || "bug", subject, message, url || null, userAgent || null]
+      `INSERT INTO tickets (id, user_id, category, subject, message, page_url, user_agent, requested_role, role_request_status) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [ticketId, userId, category || "bug", subject, message, url || null, userAgent || null,
+       isRoleRequest ? (requested_role || null) : null,
+       isRoleRequest ? 'pending' : null]
     );
   } catch (dbErr) {
     console.error("[report-issue] DB insert error:", dbErr.message);
@@ -4634,6 +4907,54 @@ app.patch("/api/admin/tickets/:id/status", authMiddleware, ensureAdmin, async (r
       const [t] = await pool.query("SELECT user_id, subject FROM tickets WHERE id = ?", [req.params.id]);
       if (t[0]) await createNotification(t[0].user_id, { type: "system", title: "Ticket résolu", message: `Votre ticket « ${t[0].subject} » a été clôturé.`, icon: "check-circle" });
     }
+    return res.json({ ok: true });
+  } catch (err) { return res.status(500).json({ error: err.message }); }
+});
+
+// ── Admin: validate a role request ────────────────────────────────────────
+app.post("/api/admin/tickets/:id/validate-role", authMiddleware, ensureAdmin, async (req, res) => {
+  try {
+    const [tickets] = await pool.query("SELECT * FROM tickets WHERE id = ? LIMIT 1", [req.params.id]);
+    if (!tickets.length) return res.status(404).json({ error: "Ticket not found" });
+    const ticket = tickets[0];
+    if (!ticket.requested_role) return res.status(400).json({ error: "Aucun rôle demandé sur ce ticket." });
+    if (ticket.role_request_status === 'approved') return res.status(400).json({ error: "Ce rôle a déjà été accordé." });
+
+    const VALID_ROLES = ['influenceur', 'moderateur', 'importateur', 'redacteur'];
+    if (!VALID_ROLES.includes(ticket.requested_role)) return res.status(400).json({ error: "Rôle invalide." });
+
+    // Add role if not already present
+    const [existing] = await pool.query("SELECT id FROM user_roles WHERE user_id = ? AND role = ? LIMIT 1", [ticket.user_id, ticket.requested_role]);
+    if (!existing.length) {
+      await pool.query("INSERT INTO user_roles (id, user_id, role, created_at) VALUES (?, ?, ?, NOW())", [uuidv4(), ticket.user_id, ticket.requested_role]);
+    }
+
+    await pool.query("UPDATE tickets SET role_request_status = 'approved', status = 'closed', updated_at = NOW() WHERE id = ?", [req.params.id]);
+    await pool.query(`INSERT INTO ticket_messages (id, ticket_id, sender_id, is_admin, body) VALUES (?, ?, ?, 1, ?)`,
+      [uuidv4(), req.params.id, req.user.id, `✅ Votre demande de rôle « ${ticket.requested_role} » a été validée. Ce rôle est maintenant actif sur votre compte.`]);
+
+    await createNotification(ticket.user_id, { type: "system", title: "Demande de rôle accordée", message: `Votre demande de rôle « ${ticket.requested_role} » a été acceptée.`, icon: "shield-check", link: "/my-tickets" });
+
+    return res.json({ ok: true });
+  } catch (err) { return res.status(500).json({ error: err.message }); }
+});
+
+// ── Admin: reject a role request ──────────────────────────────────────────
+app.post("/api/admin/tickets/:id/reject-role", authMiddleware, ensureAdmin, async (req, res) => {
+  const { reason } = req.body || {};
+  if (!reason?.trim()) return res.status(400).json({ error: "Motif de refus requis." });
+  try {
+    const [tickets] = await pool.query("SELECT * FROM tickets WHERE id = ? LIMIT 1", [req.params.id]);
+    if (!tickets.length) return res.status(404).json({ error: "Ticket not found" });
+    const ticket = tickets[0];
+    if (!ticket.requested_role) return res.status(400).json({ error: "Aucun rôle demandé sur ce ticket." });
+
+    await pool.query("UPDATE tickets SET role_request_status = 'rejected', status = 'in_progress', updated_at = NOW() WHERE id = ?", [req.params.id]);
+    await pool.query(`INSERT INTO ticket_messages (id, ticket_id, sender_id, is_admin, body) VALUES (?, ?, ?, 1, ?)`,
+      [uuidv4(), req.params.id, req.user.id, `❌ Votre demande de rôle « ${ticket.requested_role} » a été refusée.\n\nMotif : ${reason.trim()}`]);
+
+    await createNotification(ticket.user_id, { type: "system", title: "Demande de rôle refusée", message: `Votre demande de rôle « ${ticket.requested_role} » n'a pas été accordée.`, icon: "shield-x", link: "/my-tickets" });
+
     return res.json({ ok: true });
   } catch (err) { return res.status(500).json({ error: err.message }); }
 });
@@ -5463,9 +5784,6 @@ app.post("/api/players/resolve-names", authMiddleware, async (req, res) => {
 });
 
 // ── Server-side duplicate detection ──
-// Mirrors src/hooks/use-players.ts → isSamePlayer / normalizeName. Keeping the
-// loop here avoids dragging the full roster (with external_data) to the client
-// just to do an O(n²) compare in React.
 function srvNormalizeName(name) {
   if (!name) return "";
   return String(name)
@@ -5477,26 +5795,171 @@ function srvNormalizeName(name) {
     .trim();
 }
 
-function srvIsSamePlayer(a, b) {
-  if (a.transfermarkt_id && b.transfermarkt_id && a.transfermarkt_id === b.transfermarkt_id) return true;
-  if (a.transfermarkt_id && b.transfermarkt_id && a.transfermarkt_id !== b.transfermarkt_id) return false;
-  const nA = srvNormalizeName(a.name);
-  const nB = srvNormalizeName(b.name);
-  if (!nA || !nB) return false;
-  const sameClub = !!(a.club && b.club && srvNormalizeName(a.club) === srvNormalizeName(b.club));
-  const genClose = Math.abs((a.generation || 0) - (b.generation || 0)) <= 1;
-  const bothGenKnown = a.generation !== 2000 && b.generation !== 2000;
-  if (nA === nB && sameClub) return true;
-  if (nA === nB && bothGenKnown && genClose) return true;
-  if (nA === nB && a.generation === b.generation) return true;
-  if (nA === nB && !bothGenKnown && sameClub) return true;
-  if (!sameClub || !genClose) return false;
-  const partsA = nA.split(" ").filter(Boolean);
-  const partsB = nB.split(" ").filter(Boolean);
-  const lastA = partsA[partsA.length - 1];
-  const lastB = partsB[partsB.length - 1];
-  if (lastA === lastB && lastA && lastA.length >= 3 && partsA[0]?.[0] === partsB[0]?.[0]) return true;
-  return false;
+// Indexed duplicate detection — O(n) per pass instead of O(n²) global.
+// Returns groups: [{ keep, duplicates: [{...player, matchRule}] }]
+// Rules:
+//   tm_id         — même identifiant Transfermarkt
+//   name_club     — nom normalisé identique + même club
+//   name_gen      — nom normalisé identique + génération proche (±1 an)
+//   initial_last  — même initiale + même nom de famille + même club + génération proche
+//   last_name_only— un joueur n'a qu'un nom de famille correspondant au dernier mot du nom d'un autre, même club
+function srvFindDuplicates(rows) {
+  const parent = new Map();
+  const dupeRule = new Map();
+  function find(id) {
+    if (!parent.has(id)) return id;
+    return find(parent.get(id));
+  }
+  function union(keepId, dupeId, rule) {
+    const rootKeep = find(keepId);
+    const rootDupe = find(dupeId);
+    if (rootKeep === rootDupe) return;
+    parent.set(rootDupe, rootKeep);
+    if (!dupeRule.has(dupeId)) dupeRule.set(dupeId, rule);
+  }
+  function score(p) {
+    let s = 0;
+    if (p.transfermarkt_id) s += 10;
+    const n = srvNormalizeName(p.name);
+    s += n.split(" ").filter(Boolean).length * 2;
+    if (p.generation && p.generation !== 2000) s += 1;
+    return s;
+  }
+  function better(a, b) { return score(a) >= score(b) ? a : b; }
+
+  // Pass 1 — même ID Transfermarkt
+  const byTmId = new Map();
+  for (const r of rows) {
+    if (!r.transfermarkt_id) continue;
+    if (!byTmId.has(r.transfermarkt_id)) byTmId.set(r.transfermarkt_id, []);
+    byTmId.get(r.transfermarkt_id).push(r);
+  }
+  for (const bucket of byTmId.values()) {
+    for (let i = 0; i < bucket.length; i++) {
+      for (let j = i + 1; j < bucket.length; j++) {
+        const k = better(bucket[i], bucket[j]);
+        union(k.id, (k === bucket[i] ? bucket[j] : bucket[i]).id, "tm_id");
+      }
+    }
+  }
+
+  // Pass 2 — nom normalisé identique + même club
+  const byNameClub = new Map();
+  for (const r of rows) {
+    const n = srvNormalizeName(r.name);
+    const c = srvNormalizeName(r.club || "");
+    if (!n || !c) continue;
+    const key = `${n}|${c}`;
+    if (!byNameClub.has(key)) byNameClub.set(key, []);
+    byNameClub.get(key).push(r);
+  }
+  for (const bucket of byNameClub.values()) {
+    for (let i = 0; i < bucket.length; i++) {
+      for (let j = i + 1; j < bucket.length; j++) {
+        if (find(bucket[i].id) === find(bucket[j].id)) continue;
+        const k = better(bucket[i], bucket[j]);
+        union(k.id, (k === bucket[i] ? bucket[j] : bucket[i]).id, "name_club");
+      }
+    }
+  }
+
+  // Pass 3 — même nom normalisé, matching par génération (sans club ou sans génération connue)
+  const byNormName = new Map();
+  for (const r of rows) {
+    const n = srvNormalizeName(r.name);
+    if (!n) continue;
+    if (!byNormName.has(n)) byNormName.set(n, []);
+    byNormName.get(n).push(r);
+  }
+  for (const bucket of byNormName.values()) {
+    if (bucket.length < 2) continue;
+    for (let i = 0; i < bucket.length; i++) {
+      for (let j = i + 1; j < bucket.length; j++) {
+        if (find(bucket[i].id) === find(bucket[j].id)) continue;
+        const a = bucket[i], b = bucket[j];
+        const genClose = Math.abs((a.generation || 0) - (b.generation || 0)) <= 1;
+        const bothKnown = a.generation !== 2000 && b.generation !== 2000;
+        let rule = null;
+        if (bothKnown && genClose) rule = "name_gen";
+        else if (a.generation === b.generation) rule = "name_gen";
+        else if (!bothKnown) {
+          const sameClub = a.club && b.club && srvNormalizeName(a.club) === srvNormalizeName(b.club);
+          if (sameClub) rule = "name_club";
+        }
+        if (rule) {
+          const k = better(a, b);
+          union(k.id, (k === a ? b : a).id, rule);
+        }
+      }
+    }
+  }
+
+  // Pass 4 — même initiale + même nom de famille + même club + génération proche
+  const byInitLastClub = new Map();
+  for (const r of rows) {
+    const n = srvNormalizeName(r.name);
+    const c = srvNormalizeName(r.club || "");
+    if (!n || !c) continue;
+    const parts = n.split(" ").filter(Boolean);
+    if (parts.length < 2) continue;
+    const last = parts[parts.length - 1];
+    if (last.length < 3) continue;
+    const key = `${c}|${last}|${parts[0][0]}`;
+    if (!byInitLastClub.has(key)) byInitLastClub.set(key, []);
+    byInitLastClub.get(key).push(r);
+  }
+  for (const bucket of byInitLastClub.values()) {
+    if (bucket.length < 2) continue;
+    for (let i = 0; i < bucket.length; i++) {
+      for (let j = i + 1; j < bucket.length; j++) {
+        if (find(bucket[i].id) === find(bucket[j].id)) continue;
+        const a = bucket[i], b = bucket[j];
+        if (Math.abs((a.generation || 0) - (b.generation || 0)) > 1) continue;
+        const k = better(a, b);
+        union(k.id, (k === a ? b : a).id, "initial_last");
+      }
+    }
+  }
+
+  // Pass 5 — nom de famille seul = dernier mot du nom complet, même club
+  const byClub = new Map();
+  for (const r of rows) {
+    const c = srvNormalizeName(r.club || "");
+    if (!c) continue;
+    if (!byClub.has(c)) byClub.set(c, []);
+    byClub.get(c).push(r);
+  }
+  for (const clubGroup of byClub.values()) {
+    const singles = clubGroup.filter(r => {
+      const n = srvNormalizeName(r.name);
+      return n && n.split(" ").filter(Boolean).length === 1 && n.length >= 3;
+    });
+    if (singles.length === 0) continue;
+    const multis = clubGroup.filter(r => {
+      const n = srvNormalizeName(r.name);
+      return n && n.split(" ").filter(Boolean).length > 1;
+    });
+    for (const single of singles) {
+      const singleN = srvNormalizeName(single.name);
+      for (const multi of multis) {
+        if (find(single.id) === find(multi.id)) continue;
+        const parts = srvNormalizeName(multi.name).split(" ").filter(Boolean);
+        if (parts[parts.length - 1] !== singleN) continue;
+        union(multi.id, single.id, "last_name_only");
+      }
+    }
+  }
+
+  // Construire les groupes depuis l'union-find
+  const rowById = new Map(rows.map(r => [r.id, r]));
+  const groupMap = new Map();
+  for (const r of rows) {
+    const root = find(r.id);
+    if (root === r.id) continue;
+    if (!groupMap.has(root)) groupMap.set(root, { keep: rowById.get(root), duplicates: [] });
+    groupMap.get(root).duplicates.push({ ...r, matchRule: dupeRule.get(r.id) || "unknown" });
+  }
+  return Array.from(groupMap.values()).filter(g => g.duplicates.length > 0);
 }
 
 app.get("/api/players/duplicates", authMiddleware, antiScrapeMiddleware, async (req, res) => {
@@ -5504,7 +5967,6 @@ app.get("/api/players/duplicates", authMiddleware, antiScrapeMiddleware, async (
     const userId = req.user.id;
     const hasArchivedCol = await playersHasIsArchived();
     const archivedFilter = hasArchivedCol ? " AND `is_archived` = 0" : "";
-    // Only the fields needed for duplicate detection + display in the dialog.
     const [rows] = await pool.query(
       `SELECT \`id\`, \`name\`, \`generation\`, \`club\`, \`transfermarkt_id\`
          FROM \`players\`
@@ -5512,27 +5974,71 @@ app.get("/api/players/duplicates", authMiddleware, antiScrapeMiddleware, async (
         ORDER BY \`name\``,
       [userId]
     );
-
-    const processed = new Set();
-    const groups = [];
-    for (let i = 0; i < rows.length; i++) {
-      if (processed.has(rows[i].id)) continue;
-      const dupes = [];
-      for (let j = i + 1; j < rows.length; j++) {
-        if (processed.has(rows[j].id)) continue;
-        if (srvIsSamePlayer(rows[i], rows[j])) {
-          dupes.push(rows[j]);
-          processed.add(rows[j].id);
-        }
-      }
-      if (dupes.length > 0) {
-        processed.add(rows[i].id);
-        groups.push({ keep: rows[i], duplicates: dupes });
-      }
-    }
+    const groups = srvFindDuplicates(rows);
     return res.json({ groups });
   } catch (err) {
     console.error("[GET /api/players/duplicates]", err);
+    return res.status(500).json({ error: err?.message || "Server error" });
+  }
+});
+
+// Fusion de doublons : migre toutes les FK du joueur dupliqué vers le joueur conservé,
+// puis supprime les doublons.
+app.post("/api/players/merge", authMiddleware, async (req, res) => {
+  try {
+    const userId = req.user.id;
+    const { keepId, mergeIds } = req.body;
+    if (!keepId || !Array.isArray(mergeIds) || mergeIds.length === 0) {
+      return res.status(400).json({ error: "keepId and mergeIds required" });
+    }
+    const allIds = [keepId, ...mergeIds];
+    const placeholders = allIds.map(() => "?").join(",");
+    const [owned] = await pool.query(
+      `SELECT id FROM \`players\` WHERE id IN (${placeholders}) AND user_id = ?`,
+      [...allIds, userId]
+    );
+    if (owned.length !== allIds.length) {
+      return res.status(403).json({ error: "Access denied" });
+    }
+    // Tables sans contrainte unique sur player_id — simple UPDATE
+    const SIMPLE_TABLES = ["scouting_reports", "player_research", "player_videos", "notifications"];
+    // Tables avec une contrainte unique impliquant player_id — UPDATE IGNORE (les conflits sont ignorés,
+    // le joueur conservé garde déjà la donnée)
+    const IGNORE_TABLES = [
+      "player_custom_field_values",
+      "player_org_shares",
+      "watchlist_players",
+      "shadow_team_players",
+      "player_transfers",
+      "championship_players",
+      "player_seasonal_stats",
+      "player_name_aliases",
+      "scout_opinions",
+      "recruitment_proposals",
+    ];
+    const conn = await pool.getConnection();
+    try {
+      await conn.beginTransaction();
+      for (const dupeId of mergeIds) {
+        for (const tbl of SIMPLE_TABLES) {
+          try { await conn.query(`UPDATE \`${tbl}\` SET player_id = ? WHERE player_id = ?`, [keepId, dupeId]); } catch (_) {}
+        }
+        for (const tbl of IGNORE_TABLES) {
+          try { await conn.query(`UPDATE IGNORE \`${tbl}\` SET player_id = ? WHERE player_id = ?`, [keepId, dupeId]); } catch (_) {}
+        }
+        // Supprimer le doublon (les FK ON DELETE CASCADE nettoient le reste)
+        await conn.query(`DELETE FROM \`players\` WHERE id = ? AND user_id = ?`, [dupeId, userId]);
+      }
+      await conn.commit();
+      return res.json({ ok: true });
+    } catch (err) {
+      await conn.rollback();
+      throw err;
+    } finally {
+      conn.release();
+    }
+  } catch (err) {
+    console.error("[POST /api/players/merge]", err);
     return res.status(500).json({ error: err?.message || "Server error" });
   }
 });
@@ -5673,6 +6179,19 @@ app.post("/api/query", authMiddleware, async (req, res) => {
       if (table === "players" && parsedRows.length) {
         const ratingMap = await fetchUserRatings(req.user.id, parsedRows.map(r => r.id));
         for (const r of parsedRows) applyUserRating(r, ratingMap);
+      }
+
+      // Enrich community_posts with influencer status of the author
+      if (table === "community_posts" && parsedRows.length) {
+        const userIds = [...new Set(parsedRows.map(r => r.user_id).filter(Boolean))];
+        if (userIds.length) {
+          const [influencerRows] = await pool.query(
+            `SELECT user_id FROM user_roles WHERE role = 'influenceur' AND user_id IN (${userIds.map(() => '?').join(',')})`,
+            userIds
+          );
+          const influencerSet = new Set(influencerRows.map(r => r.user_id));
+          for (const r of parsedRows) r.author_is_influencer = influencerSet.has(r.user_id) ? 1 : 0;
+        }
       }
 
       if (single) {
@@ -5906,20 +6425,23 @@ app.post("/api/query", authMiddleware, async (req, res) => {
 
       if (table === "organization_members" && op === "insert" && row.organization_id) {
         try {
-          const [orgRows] = await pool.query("SELECT name FROM organizations WHERE id = ? LIMIT 1", [row.organization_id]);
+          const [orgRows] = await pool.query("SELECT name, settings FROM organizations WHERE id = ? LIMIT 1", [row.organization_id]);
           const [profileRows] = await pool.query("SELECT full_name FROM profiles WHERE user_id = ? LIMIT 1", [req.user.id]);
           const orgName = orgRows[0]?.name || "l'organisation";
           const memberName = profileRows[0]?.full_name || req.user.email;
-          // Notify all other members
-          const [members] = await pool.query("SELECT user_id FROM organization_members WHERE organization_id = ? AND user_id != ?", [row.organization_id, req.user.id]);
-          for (const m of members) {
-            await createNotification(m.user_id, {
-              type: "organization",
-              title: `${memberName} a rejoint ${orgName}`,
-              message: `Un nouveau membre a rejoint votre organisation.`,
-              icon: "Building2",
-              link: "/organization",
-            });
+          const joinCfg = (() => { try { const s = orgRows[0]?.settings; return typeof s === 'string' ? JSON.parse(s) : (s || {}); } catch { return {}; } })();
+          if (joinCfg.notify_new_members !== false) {
+            // Notify all other members
+            const [members] = await pool.query("SELECT user_id FROM organization_members WHERE organization_id = ? AND user_id != ?", [row.organization_id, req.user.id]);
+            for (const m of members) {
+              await createNotification(m.user_id, {
+                type: "organization",
+                title: `${memberName} a rejoint ${orgName}`,
+                message: `Un nouveau membre a rejoint votre organisation.`,
+                icon: "Building2",
+                link: "/organization",
+              });
+            }
           }
         } catch (err) { console.warn("[notification] org-join hook:", err?.message); }
       }
@@ -6167,6 +6689,13 @@ app.post("/api/rpc/share_player_with_org", authMiddleware, async (req, res) => {
       [organization_id, req.user.id],
     );
     if (!membership.length) return res.status(403).json({ error: "Not a member of this organization" });
+
+    // Check org-level player sharing setting
+    const [[shareOrgRow]] = await pool.query("SELECT settings FROM organizations WHERE id = ? LIMIT 1", [organization_id]);
+    const shareCfg = (() => { try { const s = shareOrgRow?.settings; return typeof s === 'string' ? JSON.parse(s) : (s || {}); } catch { return {}; } })();
+    if (shareCfg.allow_player_sharing === false) {
+      return res.status(403).json({ error: "player_sharing_disabled" });
+    }
 
     // Insert share (ignore duplicate)
     await pool.query(
@@ -6634,10 +7163,17 @@ app.post("/api/community/bulk", authMiddleware, async (req, res) => {
           await pool.query("UPDATE community_posts SET display_order = GREATEST(display_order - 1, 0) WHERE id = ?", [id]);
         }
         break;
-      case 'delete':
+      case 'delete': {
+        // Bulk delete is restricted to admins only (moderators can only delete their own posts individually)
+        const [adminCheckRows] = await pool.query(
+          "SELECT id FROM user_roles WHERE user_id = ? AND role = 'admin' LIMIT 1",
+          [req.user.id]
+        );
+        if (!adminCheckRows.length) return res.status(403).json({ error: "La suppression en masse est réservée aux administrateurs." });
         await pool.query(`DELETE FROM community_replies WHERE post_id IN (${placeholders})`, ids);
         await pool.query(`DELETE FROM community_posts WHERE id IN (${placeholders})`, ids);
         break;
+      }
       default:
         return res.status(400).json({ error: "Action inconnue" });
     }
@@ -8250,10 +8786,10 @@ app.get("/api/admin/roles", authMiddleware, ensureAdmin, async (_req, res) => {
   try {
     const [userRoleRows] = await pool.query("SELECT DISTINCT role FROM user_roles");
     const [permRoleRows] = await pool.query("SELECT DISTINCT role FROM page_permissions");
-    const allRolesSet = new Set(["admin", "moderateur", "user"]);
+    const allRolesSet = new Set(["admin", "moderateur", "user", "importateur", "rédacteur", "influenceur"]);
     for (const r of userRoleRows) allRolesSet.add(r.role);
     for (const r of permRoleRows) allRolesSet.add(r.role);
-    const order = ['admin', 'moderateur', 'user'];
+    const order = ['admin', 'moderateur', 'influenceur', 'user', 'importateur', 'rédacteur'];
     return res.json([...allRolesSet].sort((a, b) => {
       const ai = order.indexOf(a);
       const bi = order.indexOf(b);
@@ -8313,7 +8849,7 @@ app.post("/api/admin/roles/remove", authMiddleware, ensureAdmin, async (req, res
 });
 
 // DELETE /api/admin/roles/delete — remove a custom role and its permissions
-const PROTECTED_ROLES = ['admin', 'user', 'moderateur', 'importateur'];
+const PROTECTED_ROLES = ['admin', 'user', 'moderateur', 'importateur', 'rédacteur'];
 app.post("/api/admin/roles/delete", authMiddleware, ensureAdmin, async (req, res) => {
   const { role } = req.body || {};
   if (!role || PROTECTED_ROLES.includes(role)) {
@@ -8823,6 +9359,571 @@ app.delete("/api/championships/:name/clubs/:clubName", authMiddleware, ensureAdm
     res.json({ ok: true });
   } catch (err) {
     res.status(500).json({ error: err?.message });
+  }
+});
+
+// ── Championship calendar DB helpers ────────────────────────────────────────
+
+/** Load a saved calendar from DB. Returns CalendarData-shaped object or null. */
+async function loadCalendarFromDb(championshipName, seasonYear) {
+  const [[header]] = await pool.query(
+    'SELECT current_round, total_rounds, season_label, source, scraped_at FROM championship_calendar WHERE championship_name = ? AND season_year = ? LIMIT 1',
+    [championshipName, seasonYear]
+  );
+  if (!header) return null;
+
+  const [rows] = await pool.query(
+    `SELECT id, round_number, round_name,
+            home_team_id, home_team_name, home_team_badge,
+            away_team_id, away_team_name, away_team_badge,
+            home_score, away_score, finished, has_time, not_started, in_progress, is_manual,
+            DATE_FORMAT(start_date, '%Y-%m-%dT%H:%i:00') AS start_date_str
+     FROM championship_calendar_matches
+     WHERE championship_name = ? AND season_year = ?
+     ORDER BY round_number, id`,
+    [championshipName, seasonYear]
+  );
+
+  const roundMap = new Map();
+  for (const m of rows) {
+    if (!roundMap.has(m.round_number)) {
+      roundMap.set(m.round_number, { round: m.round_number, name: m.round_name || `Journée ${m.round_number}`, matches: [] });
+    }
+    const sd = m.start_date_str && !m.start_date_str.startsWith('0000') ? m.start_date_str : null;
+    roundMap.get(m.round_number).matches.push({
+      id: m.id,
+      homeTeam: { id: m.home_team_id, name: m.home_team_name, badge: m.home_team_badge },
+      awayTeam: { id: m.away_team_id, name: m.away_team_name, badge: m.away_team_badge },
+      homeScore: m.home_score ?? null, awayScore: m.away_score ?? null,
+      finished: !!m.finished, hasDate: !!sd, hasTime: !!m.has_time,
+      notStarted: !!m.not_started, inProgress: !!m.in_progress, isManual: !!m.is_manual,
+      startDate: sd, startTimestamp: sd ? new Date(sd).getTime() : null,
+    });
+  }
+
+  const rounds = [...roundMap.values()].sort((a, b) => a.round - b.round);
+  const nowMs  = Date.now();
+  const currentRoundNum = (() => {
+    const lastFinished  = [...rounds].reverse().find(r => r.matches.some(m => m.finished));
+    const nextUpcoming  = rounds.find(r => r.matches.some(m => !m.finished && m.hasDate && m.startTimestamp && m.startTimestamp > nowMs));
+    return (nextUpcoming ?? lastFinished ?? rounds[0])?.round ?? 1;
+  })();
+
+  return {
+    season: seasonYear, seasonLabel: header.season_label,
+    currentRound: currentRoundNum, totalRounds: header.total_rounds, rounds,
+    source: header.source || 'db', scraped_at: header.scraped_at,
+  };
+}
+
+/** Persist a scraped CalendarData into championship_calendar + championship_calendar_matches. */
+async function saveCalendarToDb(championshipName, seasonYear, calendarData) {
+  const { currentRound, totalRounds, seasonLabel, rounds } = calendarData;
+  await pool.query(
+    `INSERT INTO championship_calendar (championship_name, season_year, current_round, total_rounds, season_label, source, scraped_at)
+     VALUES (?, ?, ?, ?, ?, 'transfermarkt', NOW())
+     ON DUPLICATE KEY UPDATE current_round=VALUES(current_round), total_rounds=VALUES(total_rounds),
+       season_label=VALUES(season_label), source='transfermarkt', scraped_at=NOW()`,
+    [championshipName, seasonYear, currentRound, totalRounds, seasonLabel || null]
+  );
+  // Delete non-manual matches and re-insert from scrape (manual edits survive)
+  await pool.query(
+    'DELETE FROM championship_calendar_matches WHERE championship_name = ? AND season_year = ? AND is_manual = 0',
+    [championshipName, seasonYear]
+  );
+  const vals = [];
+  for (const round of (rounds || [])) {
+    for (const m of (round.matches || [])) {
+      const sd = m.startDate ? m.startDate.replace('T', ' ').substring(0, 19) : null;
+      vals.push([
+        championshipName, seasonYear, round.round, round.name || null,
+        m.homeTeam?.id || null, m.homeTeam?.name || '', m.homeTeam?.badge || null,
+        m.awayTeam?.id || null, m.awayTeam?.name || '', m.awayTeam?.badge || null,
+        m.homeScore ?? null, m.awayScore ?? null,
+        m.finished ? 1 : 0, m.notStarted !== false ? 1 : 0, m.inProgress ? 1 : 0,
+        sd, m.hasTime ? 1 : 0,
+      ]);
+    }
+  }
+  if (vals.length > 0) {
+    await pool.query(
+      `INSERT INTO championship_calendar_matches
+         (championship_name, season_year, round_number, round_name,
+          home_team_id, home_team_name, home_team_badge,
+          away_team_id, away_team_name, away_team_badge,
+          home_score, away_score, finished, not_started, in_progress, start_date, has_time)
+       VALUES ?`,
+      [vals]
+    );
+  }
+}
+
+/** Parse Transfermarkt gesamtspielplan HTML into rounds array. */
+function parseTmGesamtspielplan(html) {
+  const rounds = [];
+  const sections = html.split(/<div[^>]*class="[^"]*content-box-headline[^"]*"[^>]*>/i);
+  for (let si = 1; si < sections.length; si++) {
+    const section = sections[si];
+    const headerM = section.match(/^(\d+)\.[^<]{0,50}<\/div>/);
+    if (!headerM) continue;
+    const roundNum  = parseInt(headerM[1]);
+    const roundName = headerM[0].replace(/<\/div>$/, '').replace(/\s+/g, ' ').trim();
+    const currentRound = { round: roundNum, name: roundName, matches: [] };
+    rounds.push(currentRound);
+    let currentIsoDate = null;
+    const allTrRx = /<tr([^>]*)>([\s\S]*?)<\/tr>/g;
+    let trm;
+    while ((trm = allTrRx.exec(section)) !== null) {
+      const trAttrs = trm[1]; const row = trm[2];
+      if (trAttrs.includes('bg_blau_20')) {
+        const dm = row.match(/datum\/(\d{4}-\d{2}-\d{2})/);
+        if (dm) currentIsoDate = dm[1];
+        continue;
+      }
+      const nameLinks = [...row.matchAll(/title="([^"]{2,60})"\s+href="\/[^"]+\/spielplan\/verein\/(\d+)[^"]*">(?!<img)([^<]{1,60})<\/a>/g)];
+      if (nameLinks.length < 2) continue;
+      const homeId = nameLinks[0][2]; const homeName = nameLinks[0][1];
+      const awayId = nameLinks[1][2]; const awayName = nameLinks[1][1];
+      if (!homeId || !awayId || homeId === awayId) continue;
+      let homeScore = null, awayScore = null, finished = false;
+      const scoreM = row.match(/class="ergebnis-link"[^>]*>(\d+):(\d+)<\/a>/);
+      if (scoreM) { homeScore = parseInt(scoreM[1]); awayScore = parseInt(scoreM[2]); finished = true; }
+      const inlineDM = row.match(/datum\/(\d{4}-\d{2}-\d{2})/);
+      const isoDate  = inlineDM ? inlineDM[1] : currentIsoDate;
+      const timeM    = row.match(/class="zentriert hide-for-small">\s*(\d{1,2}):(\d{2})\s*</);
+      let startDate = null, startTimestamp = null;
+      if (isoDate) {
+        const t = timeM ? `T${timeM[1].padStart(2,'0')}:${timeM[2]}:00` : 'T00:00:00';
+        startDate = isoDate + t; startTimestamp = new Date(startDate).getTime();
+      }
+      currentRound.matches.push({
+        homeTeam: { id: homeId, name: homeName, badge: `https://tmssl.akamaized.net/images/wappen/normquad/${homeId}.png` },
+        awayTeam: { id: awayId, name: awayName, badge: `https://tmssl.akamaized.net/images/wappen/normquad/${awayId}.png` },
+        homeScore, awayScore, finished,
+        hasDate: startDate !== null, hasTime: timeM !== null, notStarted: !finished,
+        startDate, startTimestamp,
+      });
+    }
+  }
+  return rounds;
+}
+
+/** Build the CalendarData result object from parsed rounds. */
+function buildCalendarResult(tmId, tmSlug, saison, rounds) {
+  const nowMs = Date.now();
+  const currentRoundNum = (() => {
+    const lastFinished = [...rounds].reverse().find(r => r.matches.some(m => m.finished));
+    const nextUpcoming = rounds.find(r => r.matches.some(m => !m.finished && m.hasDate && m.startTimestamp && m.startTimestamp > nowMs));
+    return (nextUpcoming ?? lastFinished ?? rounds[0])?.round ?? 1;
+  })();
+  return {
+    competitionId: tmId, slug: tmSlug, season: saison,
+    seasonLabel: `${saison}–${String(saison + 1).slice(2)}`,
+    currentRound: currentRoundNum, totalRounds: rounds.length, rounds,
+    source: 'transfermarkt',
+  };
+}
+
+// ── Transfermarkt competition lookup by name ─────────────────────────────────
+// GET /api/championship-tm-lookup?q=Ligue+1
+// Returns { id, slug, name } for the best-matching competition on TM.
+app.get("/api/championship-tm-lookup", authMiddleware, async (req, res) => {
+  const q = String(req.query.q || '').trim();
+  if (!q || q.length < 2) return res.status(400).json({ error: 'q requis' });
+
+  const cacheKey = `tm-comp-lookup:${q.toLowerCase().replace(/\s+/g, '_')}`;
+  try {
+    const [cached] = await pool.query(
+      'SELECT response_data FROM api_football_cache WHERE cache_key = ? AND created_at > DATE_SUB(NOW(), INTERVAL 7 DAY) LIMIT 1',
+      [cacheKey]
+    );
+    if (cached.length > 0) return res.json(JSON.parse(cached[0].response_data));
+  } catch {}
+
+  try {
+    const url = `https://www.transfermarkt.fr/schnellsuche/ergebnis/schnellsuche?query=${encodeURIComponent(q)}&x=0&y=0`;
+    const resp = await fetch(url, { headers: TM_HEADERS, signal: AbortSignal.timeout(10000) });
+    if (!resp.ok) return res.status(502).json({ error: `TM ${resp.status}` });
+    const html = await resp.text();
+
+    // Competition links: href="/ligue-1/startseite/wettbewerb/FR1" or similar
+    const compRx = /href="\/([a-z0-9-]+)\/(?:startseite|gesamtspielplan)\/wettbewerb\/([A-Z0-9]+)"/gi;
+    const results = [];
+    let m;
+    while ((m = compRx.exec(html)) !== null && results.length < 5) {
+      const slug = m[1];
+      const id = m[2];
+      // Extract name near this link
+      const around = html.slice(Math.max(0, m.index - 200), m.index + 200);
+      const nameM = around.match(/<(?:td|a)[^>]*>\s*([^<]{3,60})\s*<\/(?:td|a)>/);
+      const name = nameM ? nameM[1].trim() : slug.replace(/-/g, ' ');
+      if (!results.find(r => r.id === id)) {
+        results.push({ id, slug, name });
+      }
+    }
+
+    if (!results.length) return res.status(404).json({ error: 'Aucun championnat trouvé sur Transfermarkt' });
+
+    const best = results[0];
+    await pool.query(
+      'INSERT INTO api_football_cache (cache_key, response_data, created_at) VALUES (?, ?, NOW()) ON DUPLICATE KEY UPDATE response_data = VALUES(response_data), created_at = NOW()',
+      [cacheKey, JSON.stringify(best)]
+    ).catch(() => {});
+
+    return res.json(best);
+  } catch (err) {
+    console.error('[championship-tm-lookup]', err?.message);
+    return res.status(500).json({ error: err?.message });
+  }
+});
+
+// ── Championship match calendar — Transfermarkt gesamtspielplan ─────────────
+// GET /api/championship-calendar-tm?name=Ligue+2&season=2025
+// Also accepts legacy: ?competitionId=FR1&slug=ligue-1&season=2025
+// Looks up TM mapping from championship_tm_mapping table (seeded at startup).
+app.get("/api/championship-calendar-tm", authMiddleware, async (req, res) => {
+  const { name, competitionId, slug, season } = req.query;
+
+  let tmId = null;
+  let tmSlug = null;
+
+  // 1. Look up from DB by championship name (primary path)
+  if (name) {
+    try {
+      const [[row]] = await pool.query(
+        'SELECT tm_competition_id, tm_slug FROM championship_tm_mapping WHERE championship_name = ? LIMIT 1',
+        [String(name)]
+      );
+      if (row) { tmId = row.tm_competition_id; tmSlug = row.tm_slug; }
+    } catch {}
+  }
+
+  // 2. Fall back to direct parameters (legacy / custom championships)
+  if (!tmId && competitionId && /^[A-Z0-9]+$/i.test(String(competitionId))) {
+    tmId   = String(competitionId).toUpperCase();
+    tmSlug = String(slug || tmId.toLowerCase()).replace(/[^a-z0-9-]/g, '-');
+  }
+
+  // 3. Auto-discover via TM search if still not mapped
+  if (!tmId && name) {
+    try {
+      const cacheKeyLookup = `tm-lookup:${String(name).toLowerCase()}`;
+      const [cachedLookup] = await pool.query(
+        'SELECT response_data FROM api_football_cache WHERE cache_key = ? AND created_at > DATE_SUB(NOW(), INTERVAL 7 DAY) LIMIT 1',
+        [cacheKeyLookup]
+      );
+      if (cachedLookup.length > 0) {
+        const lu = JSON.parse(cachedLookup[0].response_data);
+        tmId = lu.id; tmSlug = lu.slug;
+      } else {
+        const qUrl = `https://www.transfermarkt.fr/schnellsuche/ergebnis/schnellsuche?query=${encodeURIComponent(String(name))}`;
+        const qResp = await fetch(qUrl, { headers: TM_HEADERS, signal: AbortSignal.timeout(10000) });
+        if (qResp.ok) {
+          const qHtml = await qResp.text();
+          const compRx = /href="\/([a-z0-9-]+)\/(?:startseite|gesamtspielplan)\/wettbewerb\/([A-Z0-9]+)"/gi;
+          const firstM = compRx.exec(qHtml);
+          if (firstM) {
+            tmSlug = firstM[1]; tmId = firstM[2];
+            await pool.query(
+              'INSERT INTO api_football_cache (cache_key, response_data, created_at) VALUES (?, ?, NOW()) ON DUPLICATE KEY UPDATE response_data = VALUES(response_data), created_at = NOW()',
+              [cacheKeyLookup, JSON.stringify({ id: tmId, slug: tmSlug, name })]
+            ).catch(() => {});
+            // Persist to mapping table for future use
+            await pool.query(
+              'INSERT IGNORE INTO championship_tm_mapping (championship_name, tm_competition_id, tm_slug) VALUES (?, ?, ?)',
+              [String(name), tmId, tmSlug]
+            ).catch(() => {});
+          }
+        }
+      }
+    } catch {}
+  }
+
+  if (!tmId) {
+    return res.status(400).json({ error: 'Paramètre name (ou competitionId) requis.' });
+  }
+
+  // Default season: current starting year
+  const now = new Date();
+  const defaultSeason = now.getMonth() >= 6 ? now.getFullYear() : now.getFullYear() - 1;
+  const saison = parseInt(String(season || '')) || defaultSeason;
+
+  // Check persistent DB cache first (when name provided)
+  if (name) {
+    try {
+      const dbData = await loadCalendarFromDb(String(name), saison);
+      if (dbData) return res.json(dbData);
+    } catch {}
+  }
+
+  try {
+    const url = `https://www.transfermarkt.fr/${tmSlug}/gesamtspielplan/wettbewerb/${tmId}/saison_id/${saison}`;
+    const resp = await fetch(url, { headers: TM_HEADERS, signal: AbortSignal.timeout(20000) });
+    if (!resp.ok) return res.status(502).json({ error: `Transfermarkt a répondu ${resp.status}` });
+    const html = await resp.text();
+
+    const rounds = parseTmGesamtspielplan(html);
+
+    if (rounds.length === 0) {
+      return res.status(404).json({ error: 'no_data_for_season', season: saison, championship: name || tmId });
+    }
+
+    const result = buildCalendarResult(tmId, tmSlug, saison, rounds);
+
+    if (name) {
+      await saveCalendarToDb(String(name), saison, result).catch(e => console.warn('[calendar-save]', e?.message));
+      // Reload from DB so match objects include auto-increment IDs (needed for admin editing)
+      const dbResult = await loadCalendarFromDb(String(name), saison).catch(() => null);
+      return res.json(dbResult ?? result);
+    } else {
+      // Legacy path: keep using api_football_cache
+      await pool.query(
+        'INSERT INTO api_football_cache (cache_key, response_data, created_at) VALUES (?, ?, NOW()) ON DUPLICATE KEY UPDATE response_data = VALUES(response_data), created_at = NOW()',
+        [`tm-calendar:${tmId}:${saison}`, JSON.stringify(result)]
+      ).catch(() => {});
+    }
+
+    return res.json(result);
+  } catch (err) {
+    console.error('[championship-calendar-tm]', err?.message);
+    return res.status(500).json({ error: err?.message });
+  }
+});
+
+// ── Admin: upsert a match by composite key (when no DB ID available) ─────────
+// POST /api/championship-calendar/match
+app.post('/api/championship-calendar/match', authMiddleware, ensureAdminOrModerator, async (req, res) => {
+  const { championshipName, seasonYear, roundNumber, roundName,
+          homeTeamName, homeTeamBadge, homeTeamId,
+          awayTeamName, awayTeamBadge, awayTeamId,
+          homeScore, awayScore, finished, startDate, hasTime } = req.body || {};
+
+  if (!championshipName || !seasonYear || roundNumber == null || !homeTeamName || !awayTeamName) {
+    return res.status(400).json({ error: 'championshipName, seasonYear, roundNumber, homeTeamName, awayTeamName requis' });
+  }
+
+  const name = String(championshipName); const yr = parseInt(seasonYear); const rn = parseInt(roundNumber);
+  const sd = startDate ? String(startDate).replace('T', ' ').substring(0, 19) : null;
+  const fin = finished ? 1 : 0;
+
+  try {
+    const [[existing]] = await pool.query(
+      'SELECT id FROM championship_calendar_matches WHERE championship_name = ? AND season_year = ? AND round_number = ? AND home_team_name = ? AND away_team_name = ? LIMIT 1',
+      [name, yr, rn, String(homeTeamName), String(awayTeamName)]
+    );
+
+    if (existing) {
+      await pool.query(
+        'UPDATE championship_calendar_matches SET home_score=?, away_score=?, finished=?, not_started=?, start_date=?, has_time=?, is_manual=1 WHERE id=?',
+        [homeScore != null ? parseInt(homeScore) : null, awayScore != null ? parseInt(awayScore) : null, fin, fin ? 0 : 1, sd, hasTime ? 1 : 0, existing.id]
+      );
+      return res.json({ ok: true, id: existing.id });
+    }
+
+    await pool.query(
+      'INSERT INTO championship_calendar (championship_name, season_year, current_round, total_rounds, source, scraped_at) VALUES (?, ?, ?, 0, "manual", NOW()) ON DUPLICATE KEY UPDATE updated_at = updated_at',
+      [name, yr, rn]
+    );
+    const [ins] = await pool.query(
+      `INSERT INTO championship_calendar_matches
+         (championship_name, season_year, round_number, round_name,
+          home_team_id, home_team_name, home_team_badge,
+          away_team_id, away_team_name, away_team_badge,
+          home_score, away_score, finished, not_started, start_date, has_time, is_manual)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)`,
+      [name, yr, rn, roundName || null,
+       homeTeamId || null, String(homeTeamName), homeTeamBadge || null,
+       awayTeamId || null, String(awayTeamName), awayTeamBadge || null,
+       homeScore != null ? parseInt(homeScore) : null, awayScore != null ? parseInt(awayScore) : null,
+       fin, fin ? 0 : 1, sd, hasTime ? 1 : 0]
+    );
+    return res.json({ ok: true, id: ins.insertId });
+  } catch (err) {
+    console.error('[calendar-match-post]', err?.message);
+    return res.status(500).json({ error: err?.message });
+  }
+});
+
+// ── Admin: update a single calendar match (set score, date, etc.) ────────────
+// PUT /api/championship-calendar/match/:id
+app.put('/api/championship-calendar/match/:id', authMiddleware, ensureAdminOrModerator, async (req, res) => {
+  const id = parseInt(req.params.id);
+  if (!id || isNaN(id)) return res.status(400).json({ error: 'ID invalide' });
+
+  const { homeScore, awayScore, finished, startDate, hasTime, homeTeamName, awayTeamName } = req.body || {};
+
+  const updates = []; const vals = [];
+
+  if (homeScore !== undefined)    { updates.push('home_score = ?');   vals.push(homeScore === null ? null : Math.max(0, parseInt(homeScore) || 0)); }
+  if (awayScore !== undefined)    { updates.push('away_score = ?');   vals.push(awayScore === null ? null : Math.max(0, parseInt(awayScore) || 0)); }
+  if (finished  !== undefined)    { updates.push('finished = ?', 'not_started = ?'); vals.push(finished ? 1 : 0, finished ? 0 : 1); }
+  if (startDate !== undefined)    { updates.push('start_date = ?');   vals.push(startDate ? String(startDate).replace('T', ' ').substring(0, 19) : null); }
+  if (hasTime   !== undefined)    { updates.push('has_time = ?');     vals.push(hasTime ? 1 : 0); }
+  if (homeTeamName !== undefined) { updates.push('home_team_name = ?'); vals.push(String(homeTeamName).slice(0, 200)); }
+  if (awayTeamName !== undefined) { updates.push('away_team_name = ?'); vals.push(String(awayTeamName).slice(0, 200)); }
+
+  if (!updates.length) return res.status(400).json({ error: 'Aucun champ à mettre à jour' });
+
+  updates.push('is_manual = 1'); vals.push(id);
+
+  try {
+    await pool.query(`UPDATE championship_calendar_matches SET ${updates.join(', ')} WHERE id = ?`, vals);
+    const [[updated]] = await pool.query(
+      `SELECT id, round_number, home_team_name, away_team_name, home_score, away_score, finished,
+              has_time, not_started, is_manual,
+              DATE_FORMAT(start_date, '%Y-%m-%dT%H:%i:00') AS start_date_str
+       FROM championship_calendar_matches WHERE id = ?`,
+      [id]
+    );
+    if (!updated) return res.status(404).json({ error: 'Match non trouvé' });
+    return res.json({ ok: true, match: updated });
+  } catch (err) {
+    console.error('[calendar-match-update]', err?.message);
+    return res.status(500).json({ error: err?.message });
+  }
+});
+
+// ── Admin: force re-scrape a calendar from Transfermarkt ─────────────────────
+// POST /api/championship-calendar/refresh?name=Ligue+2&season=2025
+app.post('/api/championship-calendar/refresh', authMiddleware, ensureAdminOrModerator, async (req, res) => {
+  const { name, season } = req.query;
+  if (!name) return res.status(400).json({ error: 'name requis' });
+
+  const [[tmRow]] = await pool.query(
+    'SELECT tm_competition_id, tm_slug FROM championship_tm_mapping WHERE championship_name = ? LIMIT 1',
+    [String(name)]
+  ).catch(() => [[null]]);
+
+  if (!tmRow?.tm_competition_id) return res.status(404).json({ error: 'Championnat non trouvé dans le mapping TM. Vérifiez championship_tm_mapping.' });
+
+  const now = new Date();
+  const defaultSeason = now.getMonth() >= 6 ? now.getFullYear() : now.getFullYear() - 1;
+  const saison = parseInt(String(season || '')) || defaultSeason;
+
+  try {
+    const url = `https://www.transfermarkt.fr/${tmRow.tm_slug}/gesamtspielplan/wettbewerb/${tmRow.tm_competition_id}/saison_id/${saison}`;
+    const resp = await fetch(url, { headers: TM_HEADERS, signal: AbortSignal.timeout(20000) });
+    if (!resp.ok) return res.status(502).json({ error: `Transfermarkt a répondu ${resp.status}` });
+    const html = await resp.text();
+
+    const rounds = parseTmGesamtspielplan(html);
+    if (rounds.length === 0) return res.status(404).json({ error: 'no_data_for_season', season: saison });
+
+    const result = buildCalendarResult(tmRow.tm_competition_id, tmRow.tm_slug, saison, rounds);
+    // Full replace (manual edits will be lost — admin-confirmed action)
+    await pool.query(
+      'DELETE FROM championship_calendar_matches WHERE championship_name = ? AND season_year = ?',
+      [String(name), saison]
+    );
+    await saveCalendarToDb(String(name), saison, result);
+
+    console.log(`[calendar-refresh] ${name} ${saison} by user ${req.user?.id}`);
+    return res.json({ ok: true, totalRounds: rounds.length, season: saison });
+  } catch (err) {
+    console.error('[calendar-refresh]', err?.message);
+    return res.status(500).json({ error: err?.message });
+  }
+});
+
+// ── Championship match calendar (Sofascore) ─────────────────────────────────
+// GET /api/championship-calendar?tournamentId=34&seasonYear=2024
+// Returns all matchdays with results (past) or dates (future) for a season.
+app.get("/api/championship-calendar", authMiddleware, async (req, res) => {
+  const tournamentId = parseInt(req.query.tournamentId);
+  const seasonYearReq = req.query.seasonYear ? parseInt(req.query.seasonYear) : null;
+  if (!tournamentId || isNaN(tournamentId)) return res.status(400).json({ error: 'tournamentId requis' });
+
+  const cacheKey = `champ-calendar:${tournamentId}:${seasonYearReq ?? 'current'}`;
+  try {
+    const [cached] = await pool.query(
+      'SELECT response_data FROM api_football_cache WHERE cache_key = ? AND created_at > DATE_SUB(NOW(), INTERVAL 2 HOUR) LIMIT 1',
+      [cacheKey]
+    );
+    if (cached.length > 0) {
+      res.set('Cache-Control', 'public, max-age=7200');
+      return res.json(JSON.parse(cached[0].response_data));
+    }
+  } catch {}
+
+  try {
+    // 1. Get seasons list to resolve seasonId
+    const seasonsData = await sofaFetch(`/unique-tournament/${tournamentId}/seasons`);
+    if (!seasonsData?.seasons?.length) return res.status(404).json({ error: 'Aucune saison trouvée' });
+
+    // Sort descending by year to find the requested one (or most recent)
+    const seasons = [...seasonsData.seasons].sort((a, b) => (b.year ?? b.id) - (a.year ?? a.id));
+    const targetSeason = seasonYearReq
+      ? seasons.find(s => String(s.year) === String(seasonYearReq) || String(s.id) === String(seasonYearReq)) ?? seasons[0]
+      : seasons[0];
+    const seasonId = targetSeason.id;
+    const seasonName = targetSeason.name ?? String(targetSeason.year ?? seasonId);
+
+    // 2. Get rounds list
+    const roundsData = await sofaFetch(`/unique-tournament/${tournamentId}/season/${seasonId}/rounds`);
+    const rounds = roundsData?.rounds ?? [];
+    if (!rounds.length) return res.status(404).json({ error: 'Aucune journée trouvée' });
+
+    // 3. Fetch events for each round — batch 8 at a time to avoid overwhelming the API
+    const allRounds = [];
+    for (let i = 0; i < rounds.length; i += 8) {
+      const batch = rounds.slice(i, i + 8);
+      const results = await Promise.all(
+        batch.map(r => sofaFetch(`/unique-tournament/${tournamentId}/season/${seasonId}/events/round/${r.round}`, 8000))
+      );
+      for (let j = 0; j < batch.length; j++) {
+        const r = batch[j];
+        const data = results[j];
+        const events = (data?.events ?? []).map(ev => {
+          const finished = ev.status?.type === 'finished';
+          const notStarted = ev.status?.type === 'notStarted';
+          const inProgress = ev.status?.type === 'inprogress';
+          const ts = ev.startTimestamp ? Number(ev.startTimestamp) * 1000 : null;
+          return {
+            id: ev.id,
+            homeTeam: { id: ev.homeTeam?.id, name: ev.homeTeam?.name, logo: ev.homeTeam?.id ? `https://api.sofascore.com/api/v1/team/${ev.homeTeam.id}/image` : null },
+            awayTeam: { id: ev.awayTeam?.id, name: ev.awayTeam?.name, logo: ev.awayTeam?.id ? `https://api.sofascore.com/api/v1/team/${ev.awayTeam.id}/image` : null },
+            homeScore: finished || inProgress ? (ev.homeScore?.current ?? null) : null,
+            awayScore: finished || inProgress ? (ev.awayScore?.current ?? null) : null,
+            status: ev.status?.type ?? 'unknown',
+            statusDescription: ev.status?.description ?? null,
+            startTimestamp: ts,
+            startDate: ts ? new Date(ts).toISOString() : null,
+            hasDate: ts !== null,
+            finished,
+            inProgress,
+            notStarted,
+          };
+        }).sort((a, b) => (a.startTimestamp ?? 0) - (b.startTimestamp ?? 0));
+        allRounds.push({ round: r.round, name: r.name ?? `J${r.round}`, events });
+      }
+      // Small delay between batches to be polite to Sofascore
+      if (i + 8 < rounds.length) await new Promise(ok => setTimeout(ok, 200));
+    }
+
+    // Sort rounds
+    allRounds.sort((a, b) => a.round - b.round);
+
+    // Find "current" round: last finished or first upcoming
+    const now = Date.now();
+    const currentRound = (() => {
+      const lastFinished = [...allRounds].reverse().find(r => r.events.some(e => e.finished));
+      const nextUpcoming = allRounds.find(r => r.events.some(e => e.notStarted && e.startTimestamp && e.startTimestamp > now));
+      return (nextUpcoming ?? lastFinished ?? allRounds[0])?.round ?? 1;
+    })();
+
+    const result = { tournamentId, seasonId, seasonName, currentRound, rounds: allRounds };
+
+    // Cache 2h
+    await pool.query(
+      'INSERT INTO api_football_cache (cache_key, response_data, created_at) VALUES (?, ?, NOW()) ON DUPLICATE KEY UPDATE response_data = VALUES(response_data), created_at = NOW()',
+      [cacheKey, JSON.stringify(result)]
+    ).catch(() => {});
+
+    res.set('Cache-Control', 'public, max-age=7200');
+    return res.json(result);
+  } catch (err) {
+    console.error('[championship-calendar]', err?.message);
+    return res.status(500).json({ error: err?.message });
   }
 });
 
@@ -9514,11 +10615,152 @@ app.patch("/api/organizations/:id/settings", authMiddleware, async (req, res) =>
     if (!memberRows.length || !['owner', 'admin'].includes(memberRows[0].role)) {
       return res.status(403).json({ error: "Réservé au propriétaire et aux admins." });
     }
-    const allowed = ['allow_messaging', 'allow_player_sharing', 'notify_new_members', 'allow_squad_viewing'];
+    const boolKeys = ['allow_messaging', 'allow_player_sharing', 'notify_new_members', 'allow_squad_viewing',
+      'allow_roadmap_editing', 'require_approval_to_join', 'allow_player_export',
+      'allow_member_directory', 'allow_external_links', 'allow_file_uploads', 'org_visibility'];
     const safe = {};
-    for (const k of allowed) { if (typeof settings[k] === 'boolean') safe[k] = settings[k]; }
+    for (const k of boolKeys) { if (typeof settings[k] === 'boolean') safe[k] = settings[k]; }
+    // max_members: 0 = unlimited, positive int = cap
+    if (typeof settings.max_members === 'number' && settings.max_members >= 0) {
+      safe.max_members = Math.floor(settings.max_members);
+    }
     await pool.query("UPDATE organizations SET settings = ?, updated_at = NOW() WHERE id = ?", [JSON.stringify(safe), id]);
     return res.json({ ok: true, settings: safe });
+  } catch (err) { return res.status(500).json({ error: err?.message || "Erreur serveur" }); }
+});
+
+// POST /api/organizations/:id/join — join by invite code (handles approval flow + max_members cap)
+app.post("/api/organizations/:id/join", authMiddleware, async (req, res) => {
+  const { id } = req.params;
+  try {
+    const [[org]] = await pool.query("SELECT id, name, settings FROM organizations WHERE id = ? LIMIT 1", [id]);
+    if (!org) return res.status(404).json({ error: "Organisation introuvable." });
+
+    const cfg = (() => { try { const s = org.settings; return typeof s === 'string' ? JSON.parse(s) : (s || {}); } catch { return {}; } })();
+
+    // Already a member?
+    const [[existing]] = await pool.query(
+      "SELECT id FROM organization_members WHERE organization_id = ? AND user_id = ? LIMIT 1",
+      [id, req.user.id]
+    );
+    if (existing) return res.status(409).json({ error: "ALREADY_MEMBER" });
+
+    // max_members cap
+    if (cfg.max_members > 0) {
+      const [[{ cnt }]] = await pool.query(
+        "SELECT COUNT(*) AS cnt FROM organization_members WHERE organization_id = ?", [id]
+      );
+      if (cnt >= cfg.max_members) return res.status(403).json({ error: "max_members_reached" });
+    }
+
+    // Approval flow
+    if (cfg.require_approval_to_join) {
+      // Upsert: if already rejected, allow re-request
+      await pool.query(
+        `INSERT INTO org_join_requests (id, organization_id, user_id, status, requested_at)
+         VALUES (UUID(), ?, ?, 'pending', NOW())
+         ON DUPLICATE KEY UPDATE status = 'pending', requested_at = NOW(), reviewed_at = NULL, reviewed_by = NULL`,
+        [id, req.user.id]
+      );
+      // Notify admins
+      const [admins] = await pool.query(
+        "SELECT user_id FROM organization_members WHERE organization_id = ? AND role IN ('owner','admin')",
+        [id]
+      );
+      const [[profile]] = await pool.query(
+        "SELECT COALESCE(p.full_name, u.email) AS name FROM users u LEFT JOIN profiles p ON p.user_id = u.id WHERE u.id = ? LIMIT 1",
+        [req.user.id]
+      );
+      const requesterName = profile?.name ?? 'quelqu\'un';
+      for (const a of admins) {
+        createNotification(a.user_id, {
+          type: 'organization', title: `Demande d'adhésion — ${org.name}`,
+          message: `${requesterName} souhaite rejoindre votre organisation.`,
+          icon: 'UserPlus', link: `/organization/${id}/settings`,
+        }).catch(() => {});
+      }
+      return res.json({ pending: true });
+    }
+
+    // Direct join
+    await pool.query(
+      "INSERT INTO organization_members (id, organization_id, user_id, role, joined_at) VALUES (UUID(), ?, ?, 'member', NOW())",
+      [id, req.user.id]
+    );
+    return res.json({ ok: true, org });
+  } catch (err) { return res.status(500).json({ error: err?.message || "Erreur serveur" }); }
+});
+
+// GET /api/organizations/:id/join-requests — list pending requests (admin only)
+app.get("/api/organizations/:id/join-requests", authMiddleware, async (req, res) => {
+  const { id } = req.params;
+  try {
+    const [[member]] = await pool.query(
+      "SELECT role FROM organization_members WHERE organization_id = ? AND user_id = ? LIMIT 1",
+      [id, req.user.id]
+    );
+    if (!member || !['owner', 'admin'].includes(member.role)) {
+      return res.status(403).json({ error: "Réservé aux admins." });
+    }
+    const [rows] = await pool.query(`
+      SELECT r.id, r.user_id, r.status, r.requested_at,
+        COALESCE(p.full_name, u.email) AS name, p.photo_url
+      FROM org_join_requests r
+      LEFT JOIN users u ON u.id = r.user_id
+      LEFT JOIN profiles p ON p.user_id = r.user_id
+      WHERE r.organization_id = ? AND r.status = 'pending'
+      ORDER BY r.requested_at ASC
+    `, [id]);
+    return res.json({ requests: rows });
+  } catch (err) { return res.status(500).json({ error: err?.message || "Erreur serveur" }); }
+});
+
+// PATCH /api/organizations/:id/join-requests/:requestId — approve or reject (admin only)
+app.patch("/api/organizations/:id/join-requests/:requestId", authMiddleware, async (req, res) => {
+  const { id, requestId } = req.params;
+  const { action } = req.body || {}; // 'approve' | 'reject'
+  if (!['approve', 'reject'].includes(action)) return res.status(400).json({ error: "action doit être 'approve' ou 'reject'" });
+  try {
+    const [[member]] = await pool.query(
+      "SELECT role FROM organization_members WHERE organization_id = ? AND user_id = ? LIMIT 1",
+      [id, req.user.id]
+    );
+    if (!member || !['owner', 'admin'].includes(member.role)) {
+      return res.status(403).json({ error: "Réservé aux admins." });
+    }
+    const [[request]] = await pool.query(
+      "SELECT * FROM org_join_requests WHERE id = ? AND organization_id = ? AND status = 'pending' LIMIT 1",
+      [requestId, id]
+    );
+    if (!request) return res.status(404).json({ error: "Demande introuvable ou déjà traitée." });
+
+    const status = action === 'approve' ? 'approved' : 'rejected';
+    await pool.query(
+      "UPDATE org_join_requests SET status = ?, reviewed_at = NOW(), reviewed_by = ? WHERE id = ?",
+      [status, req.user.id, requestId]
+    );
+
+    if (action === 'approve') {
+      await pool.query(
+        "INSERT IGNORE INTO organization_members (id, organization_id, user_id, role, joined_at) VALUES (UUID(), ?, ?, 'member', NOW())",
+        [id, request.user_id]
+      );
+    }
+
+    // Notify the requester
+    const [[org]] = await pool.query("SELECT name FROM organizations WHERE id = ? LIMIT 1", [id]);
+    const orgName = org?.name ?? 'l\'organisation';
+    createNotification(request.user_id, {
+      type: 'organization',
+      title: action === 'approve' ? `Adhésion approuvée — ${orgName}` : `Adhésion refusée — ${orgName}`,
+      message: action === 'approve'
+        ? `Votre demande a été approuvée. Bienvenue dans ${orgName} !`
+        : `Votre demande d'adhésion à ${orgName} a été refusée.`,
+      icon: action === 'approve' ? 'CheckCircle' : 'XCircle',
+      link: '/organization',
+    }).catch(() => {});
+
+    return res.json({ ok: true });
   } catch (err) { return res.status(500).json({ error: err?.message || "Erreur serveur" }); }
 });
 
@@ -9661,6 +10903,22 @@ app.post("/api/match-assignments", authMiddleware, async (req, res) => {
     if (!home_team || !away_team || !match_date) {
       return res.status(400).json({ error: 'home_team, away_team, match_date requis' });
     }
+
+    // Check org-level roadmap editing setting (non-admins blocked if disabled)
+    if (organization_id) {
+      const [[roadmapOrg]] = await pool.query("SELECT settings FROM organizations WHERE id = ? LIMIT 1", [organization_id]);
+      const roadmapCfg = (() => { try { const s = roadmapOrg?.settings; return typeof s === 'string' ? JSON.parse(s) : (s || {}); } catch { return {}; } })();
+      if (roadmapCfg.allow_roadmap_editing === false) {
+        const [[rolRow]] = await pool.query(
+          "SELECT role FROM organization_members WHERE organization_id = ? AND user_id = ? LIMIT 1",
+          [organization_id, req.user.id]
+        );
+        if (!rolRow || !['owner', 'admin'].includes(rolRow.role)) {
+          return res.status(403).json({ error: "roadmap_editing_disabled" });
+        }
+      }
+    }
+
     const id = uuidv4();
     await pool.query(
       `INSERT INTO match_assignments
@@ -9883,6 +11141,13 @@ app.post("/api/organizations/:orgId/messages", authMiddleware, async (req, res) 
     const { content, reply_to_id } = req.body || {};
     if (!content || typeof content !== 'string') return res.status(400).json({ error: "content required" });
 
+    // Check org-level messaging setting
+    const [[orgSettingsRow]] = await pool.query("SELECT settings FROM organizations WHERE id = ? LIMIT 1", [orgId]);
+    const orgCfg = (() => { try { const s = orgSettingsRow?.settings; return typeof s === 'string' ? JSON.parse(s) : (s || {}); } catch { return {}; } })();
+    if (orgCfg.allow_messaging === false) {
+      return res.status(403).json({ error: "messaging_disabled" });
+    }
+
     // Anti-spam: 1 message per minute per user per org
     const [[lastMsg]] = await pool.query(
       "SELECT created_at FROM org_messages WHERE org_id = ? AND user_id = ? AND deleted_at IS NULL ORDER BY created_at DESC LIMIT 1",
@@ -9899,6 +11164,11 @@ app.post("/api/organizations/:orgId/messages", authMiddleware, async (req, res) 
     const trimmed = content.trim().slice(0, 512);
     if (!trimmed) return res.status(400).json({ error: "empty" });
     if (!moderateOrgMessage(trimmed)) return res.status(422).json({ error: "moderation_failed" });
+
+    // Block external links if setting is disabled
+    if (orgCfg.allow_external_links === false && /(https?:\/\/|www\.)[^\s]{2,}/i.test(trimmed)) {
+      return res.status(422).json({ error: "external_links_disabled" });
+    }
 
     // Validate reply_to_id: must exist and not be soft-deleted
     let validReplyId = null;
@@ -10516,6 +11786,63 @@ app.get("/api/credits/me", authMiddleware, async (req, res) => {
   }
 });
 
+// POST /api/credits/activate-purchase — backup activation after Stripe redirect
+app.post("/api/credits/activate-purchase", authMiddleware, async (req, res) => {
+  if (!stripe) return res.status(501).json({ error: "Stripe non configuré." });
+  const { session_id } = req.body || {};
+  if (!session_id) return res.status(400).json({ error: "session_id requis." });
+
+  try {
+    const session = await stripe.checkout.sessions.retrieve(session_id);
+
+    // Ownership check
+    const sessionUserId = session.metadata?.user_id || session.client_reference_id;
+    if (!sessionUserId || sessionUserId !== req.user.id) {
+      return res.status(403).json({ error: "Forbidden" });
+    }
+
+    if (session.metadata?.type !== "credit_purchase") {
+      return res.status(400).json({ error: "Cette session n'est pas un achat de crédits." });
+    }
+
+    if (session.status !== "complete" || session.payment_status !== "paid") {
+      return res.json({ activated: false, reason: "Paiement non complété." });
+    }
+
+    const creditsToAdd = parseInt(session.metadata?.credits || "0", 10);
+    const packId = session.metadata?.pack || "unknown";
+
+    // Idempotency: check if already processed via webhook
+    const [existing] = await pool.query(
+      "SELECT id FROM user_credit_events WHERE user_id = ? AND action_type = 'purchase' AND description LIKE ? LIMIT 1",
+      [req.user.id, `%${session_id.slice(-12)}%`]
+    );
+    if (existing.length > 0) {
+      return res.json({ activated: true, credits_added: creditsToAdd, already_processed: true });
+    }
+
+    if (creditsToAdd > 0) {
+      await pool.query(
+        `INSERT INTO user_credit_events (id, user_id, action_type, direction, amount, description, created_at)
+         VALUES (?, ?, 'purchase', 'earn', ?, ?, NOW())`,
+        [uuidv4(), req.user.id, creditsToAdd, `Achat pack crédits : ${packId} (${creditsToAdd} crédits) [${session_id.slice(-12)}]`]
+      );
+      await createNotification(req.user.id, {
+        type: "credits",
+        title: "Crédits ajoutés",
+        message: `${creditsToAdd} crédits ont été ajoutés à votre compte.`,
+        icon: "Zap",
+        link: "/account",
+      });
+    }
+
+    return res.json({ activated: true, credits_added: creditsToAdd });
+  } catch (err) {
+    console.error("[activate-credit-purchase] Error:", err);
+    return res.status(500).json({ error: err?.message || "Erreur serveur." });
+  }
+});
+
 // POST /api/credits/consume — consume credits, enforce quotas
 app.post("/api/credits/consume", authMiddleware, async (req, res) => {
   const { action_type, amount = 1, description } = req.body || {};
@@ -10756,13 +12083,24 @@ app.get("/api/admin/credits/quotas/:userId", authMiddleware, ensureAdmin, async 
 
 // ── UI preferences (animations, etc.) — persisted per user in DB ─────────────
 
-const UI_PREFS_ALLOWED = ['animationsEnabled'];
+const UI_PREFS_ALLOWED = ['animationsEnabled', 'enrichmentDelayDays', 'dedupCooldownHours', 'apifootballCacheDays', 'thesportsdbCacheDays'];
+
+const UI_PREFS_DEFAULTS = { animationsEnabled: true, enrichmentDelayDays: 180, dedupCooldownHours: 72, apifootballCacheDays: 7, thesportsdbCacheDays: 7 };
+
+/** Lit une préférence UI persistée pour un utilisateur depuis la colonne ui_prefs. */
+async function getUserUiPref(userId, key, fallback) {
+  try {
+    const [[row]] = await pool.query('SELECT ui_prefs FROM users WHERE id = ? LIMIT 1', [userId]);
+    const stored = row?.ui_prefs ? JSON.parse(row.ui_prefs) : {};
+    return stored[key] ?? (UI_PREFS_DEFAULTS[key] ?? fallback);
+  } catch { return fallback; }
+}
 
 app.get("/api/my-ui-prefs", authMiddleware, async (req, res) => {
   try {
     const [[row]] = await pool.query('SELECT ui_prefs FROM users WHERE id = ? LIMIT 1', [req.user.id]);
     const stored = row?.ui_prefs ? JSON.parse(row.ui_prefs) : {};
-    return res.json({ animationsEnabled: true, ...stored });
+    return res.json({ ...UI_PREFS_DEFAULTS, ...stored });
   } catch (err) {
     return res.status(500).json({ error: err?.message });
   }
@@ -11192,6 +12530,15 @@ app.get("/api/club-tm/:clubId", async (req, res) => {
     const mvM = html.match(/data-header__market-value-wrapper[^>]*>([\d\s,.]+)\s*<span class="waehrung">([^<]+)<\/span>/);
     const marketValue = mvM ? `${mvM[1].trim()} ${mvM[2].trim()}` : null;
 
+    // Competition ID & slug — href="/ligue-1/startseite/wettbewerb/FR1"
+    const compLinkM = html.match(/<span[^>]*class="[^"]*data-header__club[^"]*"[^>]*>[\s\S]{0,300}?href="\/([a-z0-9-]+)\/(?:startseite|spielplan)\/wettbewerb\/([A-Z0-9]+)"/);
+    const competitionSlug = compLinkM ? compLinkM[1] : null;
+    const competitionId   = compLinkM ? compLinkM[2] : null;
+
+    // Current season — saison_id/XXXX appears in squad table links
+    const seasonM = html.match(/saison_id[=/](\d{4})/);
+    const currentSeason = seasonM ? seasonM[1] : null;
+
     const result = {
       clubId,
       clubName,
@@ -11202,6 +12549,9 @@ app.get("/api/club-tm/:clubId", async (req, res) => {
       squadSize,
       avgAge,
       marketValue,
+      competitionSlug,
+      competitionId,
+      currentSeason,
       tmUrl: `https://www.transfermarkt.fr/club/startseite/verein/${clubId}`,
       source: "transfermarkt",
     };
@@ -11540,17 +12890,35 @@ app.get("/api/club-tm-history/:clubId", async (req, res) => {
 
     const honours = [];
     if (honoursHtml) {
-      // TM honours page has: <div class="row" ...><div class="col-sm-4">TROPHY NAME</div><div class="col-sm-8">COUNT × (YEAR, YEAR...)</div>
-      const blockRx = /<div[^>]*class="[^"]*erfolg_bereich[^"]*"[^>]*>([\s\S]*?)<\/div>\s*<\/div>/g;
-      // Fallback: look for achievement rows
-      const rowRx2 = /<td[^>]*class="[^"]*hauptlink[^"]*"[^>]*>([\s\S]*?)<\/td>[\s\S]*?<td[^>]*>([\s\S]*?)<\/td>/g;
+      // TM honours page: <tr class="odd|even"><td class="hauptlink">TROPHY</td><td>COUNT</td><td>YEARS (2004, 2005, ...)</td>
+      const rowRx2 = /<tr[^>]*class="(?:odd|even)[^"]*"[^>]*>([\s\S]*?)<\/tr>/g;
       let hm;
-      while ((hm = rowRx2.exec(honoursHtml)) !== null && honours.length < 30) {
-        const trophyRaw = hm[1].replace(/<[^>]+>/g, '').trim();
-        const countRaw = hm[2].replace(/<[^>]+>/g, '').trim();
-        if (!trophyRaw || trophyRaw.length < 2) continue;
+      while ((hm = rowRx2.exec(honoursHtml)) !== null && honours.length < 40) {
+        const row = hm[1];
+        const cells = [...row.matchAll(/<td[^>]*>([\s\S]*?)<\/td>/g)].map(c => c[1].replace(/<[^>]+>/g, '').trim());
+        if (cells.length < 2) continue;
+        const trophyRaw = cells[0];
+        if (!trophyRaw || trophyRaw.length < 2 || /^\d+$/.test(trophyRaw)) continue;
+        const countRaw = cells[1];
         const count = parseInt(countRaw) || 1;
-        honours.push({ trophy: trophyRaw, count });
+        // Third cell often contains comma-separated years
+        const yearsRaw = cells[2] || '';
+        const years = yearsRaw.match(/\b(19|20)\d{2}\b/g)?.map(Number) ?? [];
+        honours.push({ trophy: trophyRaw, count, years });
+      }
+      // Fallback if table rows didn't work: hauptlink pattern
+      if (honours.length === 0) {
+        const fallbackRx = /<td[^>]*class="[^"]*hauptlink[^"]*"[^>]*>([\s\S]*?)<\/td>[\s\S]{0,200}?<td[^>]*>([\s\S]*?)<\/td>(?:[\s\S]{0,200}?<td[^>]*>([\s\S]*?)<\/td>)?/g;
+        let fm;
+        while ((fm = fallbackRx.exec(honoursHtml)) !== null && honours.length < 40) {
+          const trophyRaw = fm[1].replace(/<[^>]+>/g, '').trim();
+          const countRaw  = fm[2].replace(/<[^>]+>/g, '').trim();
+          if (!trophyRaw || trophyRaw.length < 2) continue;
+          const count = parseInt(countRaw) || 1;
+          const yearsRaw = (fm[3] || '').replace(/<[^>]+>/g, '');
+          const years = yearsRaw.match(/\b(19|20)\d{2}\b/g)?.map(Number) ?? [];
+          honours.push({ trophy: trophyRaw, count, years });
+        }
       }
     }
 
@@ -11564,6 +12932,102 @@ app.get("/api/club-tm-history/:clubId", async (req, res) => {
     return res.json(result);
   } catch (err) {
     console.error("[club-tm-history] Error:", err.message);
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+// ── Transfermarkt league standings scraping ────────────────────────────────
+// GET /api/club-tm-standings/:competitionId?slug=ligue-1
+app.get("/api/club-tm-standings/:competitionId", async (req, res) => {
+  const { competitionId } = req.params;
+  const slug = String(req.query.slug || '').toLowerCase().replace(/[^a-z0-9-]/g, '') || competitionId.toLowerCase();
+  if (!competitionId || !/^[A-Z0-9]+$/.test(competitionId)) {
+    return res.status(400).json({ error: "Invalid competition ID" });
+  }
+
+  const cacheKey = `tm-standings:${competitionId}`;
+  try {
+    const [cached] = await pool.query(
+      "SELECT response_json FROM api_football_cache WHERE cache_key = ? AND expires_at > NOW() LIMIT 1",
+      [cacheKey]
+    );
+    if (cached.length > 0) {
+      return res.json(typeof cached[0].response_json === "string" ? JSON.parse(cached[0].response_json) : cached[0].response_json);
+    }
+  } catch {}
+
+  try {
+    const url = `https://www.transfermarkt.fr/${slug}/tabelle/wettbewerb/${competitionId}`;
+    const resp = await fetch(url, { headers: TM_HEADERS, signal: AbortSignal.timeout(15000) });
+    if (!resp.ok) return res.status(502).json({ error: `TM returned ${resp.status}` });
+    const html = await resp.text();
+
+    const rows = [];
+    // Each row has id="tabelle-tabelle-row-N"
+    const rowRx = /<tr[^>]*id="tabelle-tabelle-row-\d+"[^>]*>([\s\S]*?)<\/tr>/g;
+    let rm;
+    while ((rm = rowRx.exec(html)) !== null && rows.length < 50) {
+      const row = rm[1];
+
+      // Rank — first zentriert td with a plain digit
+      const rankM = row.match(/<td[^>]*class="[^"]*zentriert[^"]*"[^>]*>[\s\S]*?<a[^>]*>\s*(\d+)\s*<\/a>/);
+      const rank = rankM ? parseInt(rankM[1]) : null;
+      if (!rank) continue;
+
+      // Club ID from verein link
+      const vereinM = row.match(/href="\/[^"]+\/verein\/(\d+)/);
+      const clubId = vereinM ? vereinM[1] : null;
+
+      // Club name — text inside hauptlink <a>
+      const nameM = row.match(/class="[^"]*hauptlink[^"]*"[^>]*>[\s\S]*?<a[^>]+href="[^"]+\/verein\/\d+[^"]*"[^>]*>\s*([^<]{2,60}?)\s*<\/a>/);
+      const club = nameM ? nameM[1].trim() : null;
+      if (!club) continue;
+
+      // Badge — tiny wappen image
+      const badgeM = row.match(/src="([^"]+(?:wappen|logo)[^"]+(?:tiny|small|normal)[^"]+)"/i)
+                  || row.match(/src="(https?:\/\/tmssl\.akamaized\.net[^"]+\.(?:png|jpg)[^"]*)"/i);
+      const badge = badgeM ? badgeM[1] : null;
+
+      // All zentriert td text values → numbers and goals string
+      const cells = [...row.matchAll(/<td[^>]*class="[^"]*zentriert[^"]*"[^>]*>([\s\S]*?)<\/td>/g)]
+        .map(m => m[1].replace(/<[^>]+>/g, '').trim())
+        .filter(v => v !== '' && v !== String(rank)); // exclude rank cell
+
+      const goals   = cells.find(v => v.includes(':')) ?? null;         // e.g. "65:32"
+      const numOnly = cells.filter(v => /^[+-]?\d+$/.test(v)).map(Number);
+
+      rows.push({
+        rank,
+        clubId,
+        club,
+        badge,
+        played:  numOnly[0] ?? 0,
+        wins:    numOnly[1] ?? 0,
+        draws:   numOnly[2] ?? 0,
+        losses:  numOnly[3] ?? 0,
+        goals,
+        diff:    cells.find(v => /^[+-]\d+$/.test(v)) ?? null,
+        points:  numOnly[numOnly.length - 1] ?? 0,
+      });
+    }
+
+    // Extract season from URL references on the page
+    const seasonM = html.match(/saison_id[=/](\d{4})/);
+    const season  = seasonM ? `${seasonM[1]}/${String(Number(seasonM[1]) + 1).slice(2)}` : null;
+
+    const result = { competitionId, slug, rows, season };
+
+    // Cache 3 hours
+    await pool.query(
+      `INSERT INTO api_football_cache (cache_key, response_json, fetched_at, expires_at)
+       VALUES (?, ?, NOW(), DATE_ADD(NOW(), INTERVAL 3 HOUR))
+       ON DUPLICATE KEY UPDATE response_json = VALUES(response_json), fetched_at = NOW(), expires_at = DATE_ADD(NOW(), INTERVAL 3 HOUR)`,
+      [cacheKey, JSON.stringify(result)]
+    ).catch(() => {});
+
+    return res.json(result);
+  } catch (err) {
+    console.error("[club-tm-standings] Error:", err.message);
     return res.status(500).json({ error: err.message });
   }
 });
@@ -15373,11 +16837,14 @@ app.post("/api/functions/:name", authMiddleware, async (req, res) => {
 
   // Returns counts to help the client decide whether to show the re-enrich confirmation
   if (name === "enrich-all-stats") {
-    const sixMonthsAgo = new Date(Date.now() - 6 * 30 * 24 * 60 * 60 * 1000);
+    const [[uiPrefRowS]] = await pool.query('SELECT ui_prefs FROM users WHERE id = ? LIMIT 1', [req.user.id]);
+    const uiPrefsS = uiPrefRowS?.ui_prefs ? JSON.parse(uiPrefRowS.ui_prefs) : {};
+    const enrichDelayDays = Number(uiPrefsS.enrichmentDelayDays) || 180;
+    const enrichCutoff = new Date(Date.now() - enrichDelayDays * 24 * 60 * 60 * 1000);
     const [[totalRow]] = await pool.query("SELECT COUNT(*) AS cnt FROM players WHERE user_id = ? AND is_archived = 0", [req.user.id]);
     const [[recentRow]] = await pool.query(
       "SELECT COUNT(*) AS cnt FROM players WHERE user_id = ? AND is_archived = 0 AND external_data_fetched_at >= ?",
-      [req.user.id, sixMonthsAgo]
+      [req.user.id, enrichCutoff]
     );
     const [[neverRow]] = await pool.query(
       "SELECT COUNT(*) AS cnt FROM players WHERE user_id = ? AND is_archived = 0 AND external_data_fetched_at IS NULL",
@@ -15386,13 +16853,12 @@ app.post("/api/functions/:name", authMiddleware, async (req, res) => {
     const total = Number(totalRow.cnt);
     const recentlyEnriched = Number(recentRow.cnt);
     const neverEnriched = Number(neverRow.cnt);
-    return res.json({ total, recentlyEnriched, neverEnriched, oldOrNever: total - recentlyEnriched });
+    return res.json({ total, recentlyEnriched, neverEnriched, oldOrNever: total - recentlyEnriched, enrichDelayDays });
   }
 
   if (name === "enrich-all-players") {
     const [_adminR2] = await pool.query("SELECT id FROM user_roles WHERE user_id = ? AND role = 'admin' LIMIT 1", [req.user.id]);
     const _isAdmin2 = !!_adminR2.length;
-    // includeRecentlyEnriched: when true, re-enrich players enriched within 6 months too
     const includeRecentlyEnriched = !!(req.body?.includeRecentlyEnriched);
     // Credit check before starting — must have at least 1 credit
     if (!_isAdmin2) {
@@ -15407,7 +16873,10 @@ app.post("/api/functions/:name", authMiddleware, async (req, res) => {
       return res.json({ total: existing.total, message: 'Enrichissement déjà en cours', alreadyRunning: true });
     }
 
-    const sixMonthsAgo = new Date(Date.now() - 6 * 30 * 24 * 60 * 60 * 1000);
+    const [[uiPrefRowE]] = await pool.query('SELECT ui_prefs FROM users WHERE id = ? LIMIT 1', [req.user.id]);
+    const uiPrefsE = uiPrefRowE?.ui_prefs ? JSON.parse(uiPrefRowE.ui_prefs) : {};
+    const enrichDelayDaysE = Number(uiPrefsE.enrichmentDelayDays) || 180;
+    const enrichCutoffE = new Date(Date.now() - enrichDelayDaysE * 24 * 60 * 60 * 1000);
     const [playersRaw] = await pool.query(
       `SELECT id, name, club, nationality, generation,
               photo_url, date_of_birth, contract_end, market_value,
@@ -15416,7 +16885,7 @@ app.post("/api/functions/:name", authMiddleware, async (req, res) => {
        FROM players WHERE user_id = ?
        ${!includeRecentlyEnriched ? 'AND (external_data_fetched_at IS NULL OR external_data_fetched_at < ?)' : ''}
        ORDER BY name`,
-      !includeRecentlyEnriched ? [req.user.id, sixMonthsAgo] : [req.user.id]
+      !includeRecentlyEnriched ? [req.user.id, enrichCutoffE] : [req.user.id]
     );
     if (!playersRaw.length) return res.json({ total: 0, message: 'No players to enrich', allRecentlyEnriched: true });
 
@@ -15856,6 +17325,7 @@ app.post("/api/functions/:name", authMiddleware, async (req, res) => {
       );
       if (leagues.length === 0) return res.json({ imported: 0, leagues: 0 });
 
+      const fixtureTtlMinutes = Math.max(60, (await getUserUiPref(req.user.id, 'apifootballCacheDays', 1)) * 24 * 60);
       let imported = 0;
       for (const league of leagues) {
         const data = await apiFootballFetch("fixtures", {
@@ -15863,7 +17333,7 @@ app.post("/api/functions/:name", authMiddleware, async (req, res) => {
           season: String(season),
           from,
           to,
-        }, 240); // 4h cache
+        }, fixtureTtlMinutes);
         const fixtures = data.response || [];
 
         for (const fx of fixtures) {
@@ -15987,6 +17457,7 @@ app.post("/api/functions/:name", authMiddleware, async (req, res) => {
       console.log("[apifootball-auto-sync] Followed leagues:", leagues.map((l) => `${l.league_name} (${l.league_id})`));
       if (leagues.length === 0) return res.json({ imported: 0, leagues: 0 });
 
+      const autoSyncTtlMinutes = Math.max(60, (await getUserUiPref(req.user.id, 'apifootballCacheDays', 1)) * 24 * 60);
       let imported = 0;
       for (const league of leagues) {
         console.log(`[apifootball-auto-sync] Fetching fixtures for ${league.league_name} (${league.league_id}), season ${season}, ${from} -> ${to}`);
@@ -15995,7 +17466,7 @@ app.post("/api/functions/:name", authMiddleware, async (req, res) => {
           season: String(season),
           from,
           to,
-        }, 240);
+        }, autoSyncTtlMinutes);
         const fixtures = data.response || [];
         console.log(`[apifootball-auto-sync] Got ${fixtures.length} fixtures for ${league.league_name}`);
 
@@ -16707,8 +18178,14 @@ app.post("/api/functions/:name", authMiddleware, async (req, res) => {
       lookupplayer: 10080,     // 7 days — player profile
       searchplayers: 10080,
     };
+    // Endpoints dont la fraîcheur peut être réduite par la préférence utilisateur (scout/pro/admin)
+    const TSDB_USER_CONFIGURABLE = new Set(['searchteams', 'lookupteam', 'eventslast', 'eventsnext', 'eventspastleague', 'eventsseason']);
     const baseEndpoint = endpoint.split('?')[0].replace(/\.php$/, '');
-    const ttlMinutes = TSDB_TTL[baseEndpoint] ?? 360; // default 6h
+    let ttlMinutes = TSDB_TTL[baseEndpoint] ?? 360; // default 6h
+    if (req.user?.id && TSDB_USER_CONFIGURABLE.has(baseEndpoint)) {
+      const userCacheDays = await getUserUiPref(req.user.id, 'thesportsdbCacheDays', 1);
+      ttlMinutes = Math.min(ttlMinutes, Math.max(1, userCacheDays) * 24 * 60);
+    }
 
     const sortedParams = Object.entries(params || {}).sort(([a], [b]) => a.localeCompare(b));
     const cacheKey = `tsdb:${endpoint}:${sortedParams.map(([k, v]) => `${k}=${v}`).join(':')}`;
@@ -17189,6 +18666,64 @@ app.post("/api/functions/:name", authMiddleware, async (req, res) => {
       return res.json({ url: session.url });
     } catch (err) {
       console.error("[create-checkout] Error:", err);
+      return res.status(500).json({ error: err?.message || "Erreur Stripe." });
+    }
+  }
+
+  if (name === "create-credit-checkout") {
+    if (!stripe) return res.status(501).json({ error: "Stripe non configuré sur ce serveur." });
+
+    const CREDIT_PACKS = {
+      boost:    { credits: 100,  amount: 900,   label: "Pack Boost — 100 crédits" },
+      standard: { credits: 300,  amount: 2400,  label: "Pack Standard — 300 crédits" },
+      power:    { credits: 1000, amount: 6900,  label: "Pack Power — 1 000 crédits" },
+      ultra:    { credits: 3000, amount: 17900, label: "Pack Ultra — 3 000 crédits" },
+    };
+
+    const { pack } = req.body || {};
+    if (!CREDIT_PACKS[pack]) {
+      return res.status(400).json({ error: `Pack invalide : ${pack}` });
+    }
+
+    const [subRows] = await pool.query(
+      "SELECT is_premium, stripe_customer_id FROM user_subscriptions WHERE user_id = ? LIMIT 1",
+      [req.user.id]
+    );
+    if (!subRows[0]?.is_premium) {
+      return res.status(403).json({ error: "Un abonnement actif est requis pour acheter des crédits." });
+    }
+
+    const packConfig = CREDIT_PACKS[pack];
+
+    try {
+      const customerId = subRows[0]?.stripe_customer_id;
+      const origin = req.headers.origin || req.headers.referer?.replace(/\/+$/, "") || `${req.protocol}://${req.get("host")}`;
+      const sessionParams = {
+        mode: "payment",
+        line_items: [{
+          price_data: {
+            currency: "eur",
+            product_data: { name: packConfig.label },
+            unit_amount: packConfig.amount,
+          },
+          quantity: 1,
+        }],
+        success_url: `${origin}/buy-credits?credits_success=1&session_id={CHECKOUT_SESSION_ID}`,
+        cancel_url: `${origin}/buy-credits`,
+        metadata: {
+          user_id: req.user.id,
+          type: "credit_purchase",
+          pack,
+          credits: String(packConfig.credits),
+        },
+      };
+      if (customerId) sessionParams.customer = customerId;
+      else sessionParams.customer_email = req.user.email;
+
+      const session = await stripe.checkout.sessions.create(sessionParams);
+      return res.json({ url: session.url });
+    } catch (err) {
+      console.error("[create-credit-checkout] Error:", err);
       return res.status(500).json({ error: err?.message || "Erreur Stripe." });
     }
   }
@@ -18705,7 +20240,7 @@ app.get("/api/news/unified", authMiddleware, async (req, res) => {
     if (includeEd) {
       unionParts.push(`
         SELECT ea.id, 'editorial' AS type, ea.title,
-               SUBSTRING(ea.content, 1, 300) AS excerpt,
+               SUBSTRING(ea.content, 1, 2000) AS excerpt,
                ea.banner_url AS image_url,
                ea.id AS url,
                'Éditorial' AS category,
@@ -18738,7 +20273,8 @@ app.get("/api/news/unified", authMiddleware, async (req, res) => {
     let items = rows.map(row => {
       if (row.type === 'editorial' && row.excerpt) {
         const plain = String(row.excerpt)
-          .replace(/<[^>]+>/g, ' ')
+          .replace(/<[^>]+>/g, ' ')   // strip complete tags
+          .replace(/<[^>]*$/, '')     // strip any tag cut off at end
           .replace(/&nbsp;/g, ' ')
           .replace(/&amp;/g, '&')
           .replace(/&lt;/g, '<')
@@ -18746,9 +20282,9 @@ app.get("/api/news/unified", authMiddleware, async (req, res) => {
           .replace(/&quot;/g, '"')
           .replace(/&#39;/g, "'")
           .replace(/\s+/g, ' ')
-          .trim()
-          .slice(0, 240);
-        return { ...row, excerpt: plain || null };
+          .trim();
+        const truncated = plain.length > 240 ? plain.slice(0, 240).replace(/\s+\S*$/, '') + '…' : plain;
+        return { ...row, excerpt: truncated || null };
       }
       return row;
     });
@@ -19114,6 +20650,8 @@ pool.query('ALTER TABLE club_overrides ADD COLUMN coach_date_born DATE NULL').ca
 pool.query("ALTER TABLE followed_clubs ADD COLUMN display_order INT NOT NULL DEFAULT 0").catch(err => { if (err.errno !== 1060) console.warn('[warn] followed_clubs display_order:', err?.message); });
 pool.query('ALTER TABLE tickets ADD COLUMN user_read_at DATETIME NULL').catch(err => { if (err.errno !== 1060) console.warn('[warn] tickets user_read_at:', err?.message); });
 pool.query('ALTER TABLE tickets ADD COLUMN admin_read_at DATETIME NULL').catch(err => { if (err.errno !== 1060) console.warn('[warn] tickets admin_read_at:', err?.message); });
+pool.query("ALTER TABLE tickets ADD COLUMN requested_role VARCHAR(50) NULL").catch(err => { if (err.errno !== 1060) console.warn('[warn] tickets requested_role:', err?.message); });
+pool.query("ALTER TABLE tickets ADD COLUMN role_request_status VARCHAR(20) NULL DEFAULT NULL").catch(err => { if (err.errno !== 1060) console.warn('[warn] tickets role_request_status:', err?.message); });
 pool.query('ALTER TABLE organizations ADD COLUMN settings JSON NULL').catch(err => { if (err.errno !== 1060) console.warn('[warn] org settings:', err?.message); });
 pool.query("ALTER TABLE organization_members ADD COLUMN messaging_blocked TINYINT(1) NOT NULL DEFAULT 0").catch(err => { if (err.errno !== 1060) console.warn('[warn] org_members messaging_blocked:', err?.message); });
 
@@ -19261,6 +20799,89 @@ pool.query("ALTER TABLE club_scouting_notes ADD UNIQUE KEY uniq_csn_club_user (c
   // 1061 = key already exists, 1060 = duplicate column, 1062 = duplicate entry (dedup may not have run yet on first boot)
   if (err.errno !== 1061 && err.errno !== 1060 && err.errno !== 1062) console.warn('[warn] club_scouting_notes unique:', err?.message);
 });
+
+// ── Club contacts ─────────────────────────────────────────────────────────────
+pool.query(`CREATE TABLE IF NOT EXISTS club_contacts (
+  id         INT UNSIGNED  NOT NULL AUTO_INCREMENT PRIMARY KEY,
+  user_id    VARCHAR(36)   NOT NULL,
+  club_name  VARCHAR(255)  NOT NULL,
+  name       VARCHAR(255)  NOT NULL,
+  role       VARCHAR(100)  NULL,
+  phone      VARCHAR(50)   NULL,
+  email      VARCHAR(255)  NULL,
+  linkedin   VARCHAR(500)  NULL,
+  notes      TEXT          NULL,
+  photo_url  VARCHAR(500)  NULL,
+  created_at TIMESTAMP     NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at TIMESTAMP     NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  INDEX idx_cc_user (user_id),
+  INDEX idx_cc_club (club_name(100))
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+`).catch(err => { if (!err?.message?.includes('already exists')) console.warn('[warn] club_contacts table:', err?.message); });
+pool.query("ALTER TABLE club_contacts ADD COLUMN photo_url VARCHAR(500) NULL").catch(err => {
+  if (err.errno !== 1060) console.warn('[warn] club_contacts photo_url col:', err?.message);
+});
+for (const colDef of [
+  "nickname VARCHAR(100) NULL",
+  "birth_date DATE NULL",
+  "company VARCHAR(255) NULL",
+  "address TEXT NULL",
+  "youtube VARCHAR(500) NULL",
+  "twitter VARCHAR(500) NULL",
+  "instagram VARCHAR(500) NULL",
+  "other_contacts TEXT NULL",
+  "context TEXT NULL",
+  "last_exchange_at DATE NULL",
+  "proximity TINYINT UNSIGNED NULL",
+  "trust TINYINT UNSIGNED NULL",
+  "reactivity TINYINT UNSIGNED NULL",
+]) {
+  pool.query(`ALTER TABLE club_contacts ADD COLUMN ${colDef}`).catch(err => {
+    if (err.errno !== 1060) console.warn(`[warn] club_contacts add col: ${err?.message}`);
+  });
+}
+
+// ── Club recruitment ──────────────────────────────────────────────────────────
+pool.query(`CREATE TABLE IF NOT EXISTS club_recruitment (
+  id          INT UNSIGNED  NOT NULL AUTO_INCREMENT PRIMARY KEY,
+  user_id     VARCHAR(36)   NOT NULL,
+  club_name   VARCHAR(255)  NOT NULL,
+  player_name VARCHAR(255)  NOT NULL,
+  player_id   CHAR(36)      NULL,
+  position    VARCHAR(100)  NULL,
+  status      ENUM('proposed','in_discussion','accepted','refused','signed') NOT NULL DEFAULT 'proposed',
+  notes       TEXT          NULL,
+  proposed_at DATE          NULL,
+  created_at  TIMESTAMP     NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at  TIMESTAMP     NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  INDEX idx_cr_user (user_id),
+  INDEX idx_cr_club (club_name(100))
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+`).catch(err => { if (!err?.message?.includes('already exists')) console.warn('[warn] club_recruitment table:', err?.message); });
+// Fix: change player_id from INT to CHAR(36) to match players.id UUID type
+pool.query("ALTER TABLE club_recruitment MODIFY COLUMN player_id CHAR(36) NULL").catch(err => {
+  if (err.errno !== 1060) console.warn('[warn] club_recruitment player_id type fix:', err?.message);
+});
+// Add contract & player-context columns (idempotent — errno 1060 = already exists)
+for (const colDef of [
+  "contract_type ENUM('transfer','loan','free_agent') NULL",
+  "contract_start_date DATE NULL",
+  "contract_end_date DATE NULL",
+  "salary INT UNSIGNED NULL COMMENT 'Euros/mois brut'",
+  "transfer_fee INT UNSIGNED NULL COMMENT 'Indemnité en euros'",
+  "signing_bonus INT UNSIGNED NULL COMMENT 'Prime à la signature en euros'",
+  "release_clause INT UNSIGNED NULL COMMENT 'Clause libératoire en euros'",
+  "performance_bonus VARCHAR(500) NULL",
+  "max_injuries TINYINT UNSIGNED NULL",
+  "current_contract_end DATE NULL",
+  "market_value INT UNSIGNED NULL COMMENT 'Valeur marchande en k€'",
+  "nationality VARCHAR(100) NULL",
+  "agent_contact VARCHAR(255) NULL",
+]) {
+  pool.query(`ALTER TABLE club_recruitment ADD COLUMN ${colDef}`).catch(err => {
+    if (err.errno !== 1060) console.warn(`[warn] club_recruitment add column: ${err?.message}`);
+  });
+}
 
 // ── Frontend error tracking ───────────────────────────────────────────────────
 pool.query(`CREATE TABLE IF NOT EXISTS frontend_errors (
@@ -19765,6 +21386,256 @@ app.delete("/api/club-notes/:id", authMiddleware, async (req, res) => {
       "DELETE FROM club_scouting_notes WHERE id = ? AND user_id = ?",
       [req.params.id, req.user.id]
     );
+    return res.json({ ok: true });
+  } catch (err) {
+    return res.status(500).json({ error: err?.message });
+  }
+});
+
+// ── Club contacts CRUD ────────────────────────────────────────────────────────
+
+app.get("/api/club-contacts", authMiddleware, async (req, res) => {
+  try {
+    const club = (req.query.club || '').trim();
+    const [rows] = club
+      ? await pool.query(
+          "SELECT * FROM club_contacts WHERE user_id = ? AND club_name = ? ORDER BY name",
+          [req.user.id, club]
+        )
+      : await pool.query(
+          "SELECT * FROM club_contacts WHERE user_id = ? ORDER BY club_name, name",
+          [req.user.id]
+        );
+    return res.json({ contacts: rows });
+  } catch (err) {
+    return res.status(500).json({ error: err?.message });
+  }
+});
+
+app.post("/api/club-contacts", authMiddleware, async (req, res) => {
+  try {
+    const {
+      club_name, name, role, phone, email, linkedin, notes,
+      nickname, birth_date, company, address, youtube, twitter, instagram, other_contacts,
+      context, last_exchange_at, proximity, trust, reactivity,
+    } = req.body || {};
+    if (!club_name?.trim() || !name?.trim()) return res.status(400).json({ error: 'missing_fields' });
+    const clamp = v => (v != null && v !== '' ? Math.min(5, Math.max(1, parseInt(v, 10))) : null);
+    const [r] = await pool.query(
+      `INSERT INTO club_contacts
+         (user_id, club_name, name, role, phone, email, linkedin, notes,
+          nickname, birth_date, company, address, youtube, twitter, instagram, other_contacts,
+          context, last_exchange_at, proximity, trust, reactivity)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [req.user.id, club_name.trim(), name.trim(),
+       role?.trim() || null, phone?.trim() || null, email?.trim() || null,
+       linkedin?.trim() || null, notes?.trim() || null,
+       nickname?.trim() || null, birth_date || null, company?.trim() || null,
+       address?.trim() || null, youtube?.trim() || null, twitter?.trim() || null,
+       instagram?.trim() || null, other_contacts?.trim() || null,
+       context?.trim() || null, last_exchange_at || null,
+       clamp(proximity), clamp(trust), clamp(reactivity)]
+    );
+    const [[row]] = await pool.query("SELECT * FROM club_contacts WHERE id = ?", [r.insertId]);
+    return res.json({ ok: true, contact: row });
+  } catch (err) {
+    return res.status(500).json({ error: err?.message });
+  }
+});
+
+app.patch("/api/club-contacts/:id", authMiddleware, async (req, res) => {
+  try {
+    const {
+      club_name, name, role, phone, email, linkedin, notes,
+      nickname, birth_date, company, address, youtube, twitter, instagram, other_contacts,
+      context, last_exchange_at, proximity, trust, reactivity,
+    } = req.body || {};
+    if (!name?.trim()) return res.status(400).json({ error: 'missing_fields' });
+    const clamp = v => (v != null && v !== '' ? Math.min(5, Math.max(1, parseInt(v, 10))) : null);
+    await pool.query(
+      `UPDATE club_contacts
+       SET club_name = ?, name = ?, role = ?, phone = ?, email = ?, linkedin = ?, notes = ?,
+           nickname = ?, birth_date = ?, company = ?, address = ?, youtube = ?, twitter = ?, instagram = ?, other_contacts = ?,
+           context = ?, last_exchange_at = ?, proximity = ?, trust = ?, reactivity = ?,
+           updated_at = NOW()
+       WHERE id = ? AND user_id = ?`,
+      [club_name?.trim() || '', name.trim(),
+       role?.trim() || null, phone?.trim() || null, email?.trim() || null,
+       linkedin?.trim() || null, notes?.trim() || null,
+       nickname?.trim() || null, birth_date || null, company?.trim() || null,
+       address?.trim() || null, youtube?.trim() || null, twitter?.trim() || null,
+       instagram?.trim() || null, other_contacts?.trim() || null,
+       context?.trim() || null, last_exchange_at || null,
+       clamp(proximity), clamp(trust), clamp(reactivity),
+       req.params.id, req.user.id]
+    );
+    const [[row]] = await pool.query("SELECT * FROM club_contacts WHERE id = ? AND user_id = ?", [req.params.id, req.user.id]);
+    return res.json({ ok: true, contact: row || null });
+  } catch (err) {
+    return res.status(500).json({ error: err?.message });
+  }
+});
+
+app.delete("/api/club-contacts/:id", authMiddleware, async (req, res) => {
+  try {
+    const [[row]] = await pool.query("SELECT photo_url FROM club_contacts WHERE id = ? AND user_id = ?", [req.params.id, req.user.id]);
+    if (row?.photo_url) await deleteImageFromDb(row.photo_url);
+    await pool.query("DELETE FROM club_contacts WHERE id = ? AND user_id = ?", [req.params.id, req.user.id]);
+    return res.json({ ok: true });
+  } catch (err) {
+    return res.status(500).json({ error: err?.message });
+  }
+});
+
+app.post("/api/club-contacts/:id/photo", authMiddleware, upload.single("photo"), async (req, res) => {
+  if (!req.file) return res.status(400).json({ error: "no_file" });
+  try {
+    const [[contact]] = await pool.query("SELECT id, photo_url FROM club_contacts WHERE id = ? AND user_id = ?", [req.params.id, req.user.id]);
+    if (!contact) { try { require("fs").unlinkSync(req.file.path); } catch {} return res.status(404).json({ error: "not_found" }); }
+    const ext = require("path").extname(req.file.originalname).toLowerCase() || ".jpg";
+    const allowed = [".jpg", ".jpeg", ".png", ".webp", ".gif"];
+    if (!allowed.includes(ext)) { try { require("fs").unlinkSync(req.file.path); } catch {} return res.status(400).json({ error: "format_not_supported" }); }
+    if (req.file.size > 4 * 1024 * 1024) { try { require("fs").unlinkSync(req.file.path); } catch {} return res.status(413).json({ error: "photo_too_large" }); }
+    if (contact.photo_url) await deleteImageFromDb(contact.photo_url);
+    const imageId = `contact_${req.params.id}_u${req.user.id}`;
+    const photoUrl = await saveImageToDb(req.file.path, imageId, req.file.mimetype);
+    await pool.query("UPDATE club_contacts SET photo_url = ?, updated_at = NOW() WHERE id = ?", [photoUrl, req.params.id]);
+    return res.json({ photo_url: photoUrl });
+  } catch (err) {
+    try { if (req.file?.path) require("fs").unlinkSync(req.file.path); } catch {}
+    return res.status(500).json({ error: err?.message });
+  }
+});
+
+app.delete("/api/club-contacts/:id/photo", authMiddleware, async (req, res) => {
+  try {
+    const [[contact]] = await pool.query("SELECT photo_url FROM club_contacts WHERE id = ? AND user_id = ?", [req.params.id, req.user.id]);
+    if (!contact) return res.status(404).json({ error: "not_found" });
+    if (contact.photo_url) await deleteImageFromDb(contact.photo_url);
+    await pool.query("UPDATE club_contacts SET photo_url = NULL, updated_at = NOW() WHERE id = ?", [req.params.id]);
+    return res.json({ ok: true });
+  } catch (err) {
+    return res.status(500).json({ error: err?.message });
+  }
+});
+
+// ── Club recruitment CRUD ─────────────────────────────────────────────────────
+
+app.get("/api/club-recruitment", authMiddleware, async (req, res) => {
+  try {
+    const club = (req.query.club || '').trim();
+    const [rows] = club
+      ? await pool.query(
+          `SELECT cr.*, p.photo_url AS player_photo
+           FROM club_recruitment cr LEFT JOIN players p ON p.id = cr.player_id
+           WHERE cr.user_id = ? AND cr.club_name = ? ORDER BY cr.updated_at DESC`,
+          [req.user.id, club]
+        )
+      : await pool.query(
+          `SELECT cr.*, p.photo_url AS player_photo
+           FROM club_recruitment cr LEFT JOIN players p ON p.id = cr.player_id
+           WHERE cr.user_id = ? ORDER BY cr.updated_at DESC`,
+          [req.user.id]
+        );
+    return res.json({ items: rows });
+  } catch (err) {
+    return res.status(500).json({ error: err?.message });
+  }
+});
+
+app.post("/api/club-recruitment", authMiddleware, async (req, res) => {
+  try {
+    const {
+      club_name, player_name, player_id, position, status, notes, proposed_at,
+      contract_type, contract_start_date, contract_end_date,
+      salary, transfer_fee, signing_bonus, release_clause, performance_bonus, max_injuries,
+      current_contract_end, market_value, nationality, agent_contact,
+    } = req.body || {};
+    if (!club_name?.trim() || !player_name?.trim()) return res.status(400).json({ error: 'missing_fields' });
+    const [[existing]] = await pool.query(
+      `SELECT id FROM club_recruitment
+       WHERE user_id = ?
+         AND club_name COLLATE utf8mb4_general_ci = ? COLLATE utf8mb4_general_ci
+         AND player_name COLLATE utf8mb4_general_ci = ? COLLATE utf8mb4_general_ci
+       LIMIT 1`,
+      [req.user.id, club_name.trim(), player_name.trim()]
+    );
+    if (existing) return res.status(409).json({ error: 'duplicate_recruitment' });
+    const validStatuses = ['proposed', 'in_discussion', 'accepted', 'refused', 'signed'];
+    const safeStatus = validStatuses.includes(status) ? status : 'proposed';
+    const validContractTypes = ['transfer', 'loan', 'free_agent'];
+    const safeContractType = validContractTypes.includes(contract_type) ? contract_type : null;
+    const [r] = await pool.query(
+      `INSERT INTO club_recruitment
+         (user_id, club_name, player_name, player_id, position, status, notes, proposed_at,
+          contract_type, contract_start_date, contract_end_date,
+          salary, transfer_fee, signing_bonus, release_clause, performance_bonus, max_injuries,
+          current_contract_end, market_value, nationality, agent_contact)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [req.user.id, club_name.trim(), player_name.trim(),
+       player_id || null, position?.trim() || null, safeStatus,
+       notes?.trim() || null, proposed_at || null,
+       safeContractType, contract_start_date || null, contract_end_date || null,
+       salary ? parseInt(salary, 10) : null, transfer_fee ? parseInt(transfer_fee, 10) : null,
+       signing_bonus ? parseInt(signing_bonus, 10) : null, release_clause ? parseInt(release_clause, 10) : null,
+       performance_bonus?.trim() || null, max_injuries !== undefined && max_injuries !== '' ? parseInt(max_injuries, 10) : null,
+       current_contract_end || null, market_value ? parseInt(market_value, 10) : null,
+       nationality?.trim() || null, agent_contact?.trim() || null]
+    );
+    const [[row]] = await pool.query(
+      `SELECT cr.*, p.photo_url AS player_photo FROM club_recruitment cr LEFT JOIN players p ON p.id = cr.player_id WHERE cr.id = ?`,
+      [r.insertId]
+    );
+    return res.json({ ok: true, item: row });
+  } catch (err) {
+    return res.status(500).json({ error: err?.message });
+  }
+});
+
+app.patch("/api/club-recruitment/:id", authMiddleware, async (req, res) => {
+  try {
+    const {
+      club_name, player_name, position, status, notes, proposed_at,
+      contract_type, contract_start_date, contract_end_date,
+      salary, transfer_fee, signing_bonus, release_clause, performance_bonus, max_injuries,
+      current_contract_end, market_value, nationality, agent_contact,
+    } = req.body || {};
+    if (!player_name?.trim()) return res.status(400).json({ error: 'missing_fields' });
+    const validStatuses = ['proposed', 'in_discussion', 'accepted', 'refused', 'signed'];
+    const safeStatus = validStatuses.includes(status) ? status : 'proposed';
+    const validContractTypes = ['transfer', 'loan', 'free_agent'];
+    const safeContractType = validContractTypes.includes(contract_type) ? contract_type : null;
+    await pool.query(
+      `UPDATE club_recruitment
+       SET club_name = ?, player_name = ?, position = ?, status = ?, notes = ?, proposed_at = ?,
+           contract_type = ?, contract_start_date = ?, contract_end_date = ?,
+           salary = ?, transfer_fee = ?, signing_bonus = ?, release_clause = ?, performance_bonus = ?, max_injuries = ?,
+           current_contract_end = ?, market_value = ?, nationality = ?, agent_contact = ?,
+           updated_at = NOW()
+       WHERE id = ? AND user_id = ?`,
+      [club_name?.trim() || '', player_name.trim(),
+       position?.trim() || null, safeStatus, notes?.trim() || null, proposed_at || null,
+       safeContractType, contract_start_date || null, contract_end_date || null,
+       salary ? parseInt(salary, 10) : null, transfer_fee ? parseInt(transfer_fee, 10) : null,
+       signing_bonus ? parseInt(signing_bonus, 10) : null, release_clause ? parseInt(release_clause, 10) : null,
+       performance_bonus?.trim() || null, max_injuries !== undefined && max_injuries !== '' ? parseInt(max_injuries, 10) : null,
+       current_contract_end || null, market_value ? parseInt(market_value, 10) : null,
+       nationality?.trim() || null, agent_contact?.trim() || null,
+       req.params.id, req.user.id]
+    );
+    const [[row]] = await pool.query(
+      `SELECT cr.*, p.photo_url AS player_photo FROM club_recruitment cr LEFT JOIN players p ON p.id = cr.player_id WHERE cr.id = ? AND cr.user_id = ?`,
+      [req.params.id, req.user.id]
+    );
+    return res.json({ ok: true, item: row || null });
+  } catch (err) {
+    return res.status(500).json({ error: err?.message });
+  }
+});
+
+app.delete("/api/club-recruitment/:id", authMiddleware, async (req, res) => {
+  try {
+    await pool.query("DELETE FROM club_recruitment WHERE id = ? AND user_id = ?", [req.params.id, req.user.id]);
     return res.json({ ok: true });
   } catch (err) {
     return res.status(500).json({ error: err?.message });
