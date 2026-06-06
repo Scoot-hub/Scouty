@@ -48,15 +48,17 @@ export function PhotoUpload({ currentUrl, onPhotoChange, label = 'Photo', classN
       const ext = file.name.split('.').pop();
       const fileName = `${crypto.randomUUID()}.${ext}`;
 
-      const { error } = await supabase.storage
+      const { data: uploadData, error } = await supabase.storage
         .from('player-photos')
         .upload(fileName, file, { upsert: true });
 
       if (error) throw error;
 
-      const { data: { publicUrl } } = supabase.storage
-        .from('player-photos')
-        .getPublicUrl(fileName);
+      // The server stores images in the DB and returns the canonical /api/images/:id
+      // URL (same flow as the organization logo upload). Use it directly — rebuilding
+      // a /uploads/<name> path here would 404 since DB-stored images aren't on disk.
+      const publicUrl = uploadData?.publicUrl
+        ?? supabase.storage.from('player-photos').getPublicUrl(uploadData?.path ?? fileName).data.publicUrl;
 
       setPreview(publicUrl);
       onPhotoChange(publicUrl);

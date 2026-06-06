@@ -365,6 +365,35 @@ CREATE TABLE IF NOT EXISTS shadow_team_players (
   FOREIGN KEY (player_id) REFERENCES players(id) ON DELETE CASCADE
 );
 
+-- Persisted, dated transfer history of a user's players (sourced from
+-- Transfermarkt). No FK on player_id on purpose (local players table may be
+-- MyISAM → FK errno 1824); orphans are filtered out by the INNER JOIN on read.
+CREATE TABLE IF NOT EXISTS player_transfers (
+  id CHAR(36) PRIMARY KEY,
+  user_id CHAR(36) NOT NULL,
+  player_id CHAR(36) NOT NULL,
+  tm_player_id VARCHAR(32) NOT NULL DEFAULT '',
+  tm_transfer_id VARCHAR(32) NOT NULL,
+  transfer_date DATE NULL,
+  date_accurate TINYINT(1) NOT NULL DEFAULT 0,
+  season VARCHAR(16) NULL,
+  from_club VARCHAR(255) NULL,
+  from_club_id VARCHAR(32) NULL,
+  from_club_logo VARCHAR(512) NULL,
+  to_club VARCHAR(255) NULL,
+  to_club_id VARCHAR(32) NULL,
+  to_club_logo VARCHAR(512) NULL,
+  market_value VARCHAR(64) NULL,
+  fee VARCHAR(64) NULL,
+  upcoming TINYINT(1) NOT NULL DEFAULT 0,
+  source VARCHAR(16) NOT NULL DEFAULT 'history',
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  UNIQUE KEY uq_user_player_transfer (user_id, player_id, tm_transfer_id),
+  INDEX idx_pt_user_date (user_id, transfer_date),
+  INDEX idx_pt_player (player_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
 -- ── Organizations ───────────────────────────────────────────────────────────
 
 CREATE TABLE IF NOT EXISTS organizations (

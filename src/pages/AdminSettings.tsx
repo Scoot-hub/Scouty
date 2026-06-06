@@ -13,7 +13,7 @@ import {
   Settings, Mail, Trash2, ToggleLeft, Loader2, ArrowLeft, AlertTriangle,
   Shield, Users, CalendarDays, MessageSquare, Heart, Building2, Globe, Search, Database, Ticket, Bell, Archive,
   UserX, Play, RefreshCw, CheckCircle2, XCircle, Clock,
-  Newspaper, Trophy, Eye, Star, Zap, Camera, FileText, Euro, Pencil, Check,
+  Newspaper, Trophy, Eye, Star, Zap, Camera, FileText, Euro, Pencil, Check, ArrowLeftRight,
 } from 'lucide-react';
 import { useExchangeRates, useUpdateExchangeRate } from '@/hooks/use-exchange-rates';
 import { CURRENCIES } from '@/lib/format-utils';
@@ -33,6 +33,7 @@ function authFetchInit(): RequestInit {
 const FEATURES = [
   { key: 'feature_players',          icon: Users,         color: 'text-blue-500',    sub: false },
   { key: 'feature_watchlist',        icon: Eye,           color: 'text-cyan-500',    sub: true  },
+  { key: 'feature_transfers',        icon: ArrowLeftRight, color: 'text-cyan-400',   sub: true  },
   { key: 'feature_shadow_team',      icon: Shield,        color: 'text-orange-500',  sub: true  },
   { key: 'feature_fixtures',         icon: CalendarDays,  color: 'text-emerald-500', sub: false },
   { key: 'feature_my_matches',       icon: CalendarDays,  color: 'text-emerald-400', sub: true  },
@@ -382,7 +383,7 @@ export default function AdminSettings() {
           </CardTitle>
           <CardDescription>
             {t('admin_settings.fix_leagues_desc', {
-              defaultValue: 'Recalcule le championnat de chaque joueur à partir de son club (via la table de correspondance club → championnat, alias compris). Utile après un import Wyscout qui a laissé « D1 / D2 » dans le champ championnat.',
+              defaultValue: 'Recalcule le championnat de chaque joueur à partir de son club (via la table de correspondance club → championnat, alias compris). Utile après un import de statistiques qui a laissé « D1 / D2 » dans le champ championnat.',
             })}
           </CardDescription>
         </CardHeader>

@@ -9,6 +9,7 @@ import { Loader2, ChevronLeft, MapPin, User, AlertTriangle, ExternalLink, Play, 
 import { cn } from '@/lib/utils';
 import { useUtcOffset, formatTimeWithOffset } from '@/hooks/use-utc-offset';
 import { useResolvePlayerNames, type PlayerNameMatch } from '@/hooks/use-resolve-player-names';
+import { MatchSquadScout, type DayMatch } from '@/components/match/MatchSquadScout';
 
 const LazyStatsBombMatchDetail = lazy(() => import('@/components/fixtures/StatsBombMatchDetail'));
 
@@ -377,7 +378,7 @@ export default function MatchDetail() {
   const awayEvents = data?.events.filter(e => e.team === 'away').sort((a, b) => a.minute - b.minute) ?? [];
   const allEventsSorted = data?.events.slice().sort((a, b) => a.minute - b.minute) ?? [];
 
-  const [tab, setTab] = useState<'events' | 'stats' | 'lineup' | 'videos'>('events');
+  const [tab, setTab] = useState<'events' | 'stats' | 'lineup' | 'videos' | 'scout'>('events');
 
   // Resolve lineup names against the user's own roster so matched players become clickable
   const lineupNames = data?.lineups.available
@@ -572,6 +573,10 @@ export default function MatchDetail() {
                 </span>
               )}
             </TabsTrigger>
+            <TabsTrigger value="scout" className="flex-1 rounded-lg">
+              <Zap className="w-3 h-3 mr-1" />
+              {t('match_detail.tab_scout')}
+            </TabsTrigger>
           </TabsList>
 
           {/* Events */}
@@ -746,6 +751,27 @@ export default function MatchDetail() {
                 ))}
               </div>
             )}
+          </TabsContent>
+
+          {/* Scout — preview & add players of this fixture (real lineup or full squads) */}
+          <TabsContent value="scout">
+            <MatchSquadScout
+              match={{
+                id: matchId ?? '',
+                home_team: data.home_team,
+                away_team: data.away_team,
+                match_time: data.match_time,
+                score_home: data.score_home,
+                score_away: data.score_away,
+                ht_score_home: data.ht_score_home,
+                ht_score_away: data.ht_score_away,
+                status: data.status,
+                home_badge: data.home_badge,
+                away_badge: data.away_badge,
+                competition: competition,
+                country: data.country || '',
+              } as DayMatch}
+            />
           </TabsContent>
         </Tabs>
       )}

@@ -18,7 +18,7 @@ type WyscoutPlayer = {
   wyscout_season: string | null;
 };
 
-const POSITIONS = ['', 'GB', 'DC', 'DD', 'DG', 'MDC', 'MC', 'MOC', 'AD', 'AG', 'BU'];
+const POSITIONS = ['', 'GK', 'DC', 'LD', 'LG', 'MDef', 'MC', 'MO', 'AD', 'AG', 'ATT'];
 
 function useDebounce<T>(value: T, delay = 250): T {
   const [debounced, setDebounced] = useState(value);
@@ -69,7 +69,7 @@ export function WyscoutCatalogSearch() {
       <CardHeader className="pb-3">
         <CardTitle className="text-base flex items-center gap-2">
           <Database className="w-4 h-4 text-emerald-500" />
-          Base WyScout (partagée)
+          Base de statistiques (partagée)
         </CardTitle>
       </CardHeader>
       <CardContent className="space-y-3">
@@ -155,7 +155,7 @@ export function WyscoutCatalogSearch() {
 
         {!debouncedQ && !position && (
           <p className="text-sm text-muted-foreground text-center py-6">
-            Recherche un joueur de la base WyScout (partagée par tous les comptes).
+            Recherche un joueur de la base de statistiques (partagée par tous les comptes).
           </p>
         )}
       </CardContent>

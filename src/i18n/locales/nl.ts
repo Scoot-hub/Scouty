@@ -213,7 +213,7 @@ export default {
     iso27001_content: "TLS 1.3 · bcrypt-wachtwoorden · 2FA (TOTP/e-mail) · Data-isolatie · Dagelijkse back-ups · Melding datalek binnen 72u (AVG art. 33)",
     enrichment_title: 'Automatische verrijking & Nieuws',
     enrichment_content: "Publieke bronnen: Transfermarkt, TheSportsDB, API-Football. Nieuws via Apify elke 3u (publiek sportnieuws, geen gebruikersdata).",
-    import_title: 'Statistieken importeren (Wyscout / Hudl)',
+    import_title: 'Statistieken importeren',
     import_content: "Tot 130+ statistiekkolommen per speler/seizoen. Opgeslagen in persoonlijke ruimte. Gebruiker is verantwoordelijk voor bestandsinhoud.",
     payment_title: 'Betalingen & Abonnementen',
     payment_content: "Uitsluitend via Stripe Inc. (PCI-DSS Niveau 1). Bankgegevens bereiken nooit Scouty-servers. Beheer: Mijn account → Abonnement.",

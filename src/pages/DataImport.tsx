@@ -23,7 +23,7 @@ const WYSCOUT_FIELD_MAP: { excel: string; db: string; table: string; label: stri
   // Bio → players
   { excel: 'Player',               db: 'name',                    table: 'players',              label: 'Nom du joueur' },
   { excel: 'Team',                 db: 'club',                    table: 'players',              label: 'Club actuel' },
-  { excel: 'Team within selected timeframe', db: 'wyscout_team_in_timeframe', table: 'players', label: 'Club sur la période' },
+  { excel: 'Team within selected timeframe', db: 'team_in_timeframe', table: 'players', label: 'Club sur la période' },
   { excel: 'Position',             db: 'position',                table: 'players',              label: 'Poste (mappé)' },
   { excel: 'Age',                  db: 'generation',              table: 'players',              label: 'Âge → Année naissance' },
   { excel: 'Birth country',        db: 'nationality',             table: 'players',              label: 'Nationalité' },
@@ -68,7 +68,7 @@ const WYSCOUT_FIELD_MAP: { excel: string; db: string; table: string; label: stri
   { excel: 'Dribbles per 90',      db: 'dribbles_per90',          table: 'wyscout_stats',        label: 'Dribbles par 90' },
   { excel: 'Max Speed (km/h)',      db: 'max_speed',               table: 'wyscout_stats',        label: 'Vitesse max (km/h)' },
   { excel: 'Save rate, %',          db: 'save_rate_pct',           table: 'wyscout_stats',        label: '% arrêts (GK)' },
-  { excel: '(+ 90 autres stats per 90…)', db: '…', table: 'wyscout_stats', label: 'Toutes les stats Wyscout' },
+  { excel: '(+ 90 autres stats per 90…)', db: '…', table: 'wyscout_stats', label: 'Toutes les statistiques' },
 ];
 
 type Step = 'upload' | 'preview' | 'importing' | 'done';
@@ -413,7 +413,7 @@ export default function DataImport() {
           </div>
           <div>
             <h2 className="text-sm font-semibold flex items-center gap-2">
-              Import Wyscout
+              Import de statistiques
               <Badge className="text-[10px] px-1.5 py-0 bg-primary/10 text-primary border-primary/20">PRO</Badge>
             </h2>
             <p className="text-xs text-muted-foreground">Réservé aux importateurs qualifiés de données publiques</p>
@@ -460,7 +460,7 @@ export default function DataImport() {
             <div className="flex items-start gap-2.5 p-3 rounded-lg bg-blue-50 dark:bg-blue-950/20 border border-blue-200 dark:border-blue-800/40">
               <Info className="w-4 h-4 text-blue-600 dark:text-blue-400 mt-0.5 shrink-0" />
               <p className="text-xs text-blue-700 dark:text-blue-300">
-                Format supporté : export <strong>Wyscout</strong> (Hudl). Le fichier doit contenir les colonnes
+                Format supporté : <strong>export de statistiques</strong> (Excel). Le fichier doit contenir les colonnes
                 <code className="mx-1 px-1 py-0.5 bg-blue-100 dark:bg-blue-900 rounded text-[10px]">Player</code>,
                 <code className="mx-1 px-1 py-0.5 bg-blue-100 dark:bg-blue-900 rounded text-[10px]">Team</code>,
                 <code className="mx-1 px-1 py-0.5 bg-blue-100 dark:bg-blue-900 rounded text-[10px]">xG</code>,
@@ -509,12 +509,12 @@ export default function DataImport() {
             {isWyscout ? (
               <Badge className="bg-green-500/10 text-green-700 dark:text-green-400 border-green-300 dark:border-green-700">
                 <CheckCircle2 className="w-3.5 h-3.5 mr-1" />
-                Format Wyscout détecté
+                Format de statistiques détecté
               </Badge>
             ) : (
               <Badge variant="destructive">
                 <AlertCircle className="w-3.5 h-3.5 mr-1" />
-                Format non reconnu — colonnes Wyscout manquantes
+                Format non reconnu — colonnes de statistiques manquantes
               </Badge>
             )}
             <Badge variant="secondary">{rows.length} joueur{rows.length > 1 ? 's' : ''}</Badge>
@@ -525,7 +525,7 @@ export default function DataImport() {
             <div className="flex items-start gap-2.5 p-3 rounded-lg bg-destructive/10 border border-destructive/20 text-sm text-destructive">
               <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
               <span>
-                Ce fichier ne correspond pas au format Wyscout attendu. Vérifiez que les colonnes
+                Ce fichier ne correspond pas au format de statistiques attendu. Vérifiez que les colonnes
                 <code className="mx-1 px-1 py-0.5 bg-destructive/10 rounded text-[11px]">Player</code>,
                 <code className="mx-1 px-1 py-0.5 bg-destructive/10 rounded text-[11px]">Team</code>,
                 <code className="mx-1 px-1 py-0.5 bg-destructive/10 rounded text-[11px]">xG</code>,
@@ -583,7 +583,7 @@ export default function DataImport() {
                   <table className="text-xs w-full">
                     <thead className="bg-muted sticky top-0">
                       <tr>
-                        <th className="text-left px-3 py-2 font-medium border-b">Colonne Excel (Wyscout)</th>
+                        <th className="text-left px-3 py-2 font-medium border-b">Colonne Excel</th>
                         <th className="text-left px-3 py-2 font-medium border-b">Table DB</th>
                         <th className="text-left px-3 py-2 font-medium border-b">Champ</th>
                         <th className="text-left px-3 py-2 font-medium border-b">Description</th>
@@ -597,7 +597,7 @@ export default function DataImport() {
                             <td className="px-3 py-1.5 font-mono whitespace-nowrap">{excel}</td>
                             <td className="px-3 py-1.5">
                               <Badge variant={table === 'players' ? 'default' : 'secondary'} className="text-[9px] px-1 py-0 h-4">
-                                {table === 'players' ? 'players' : 'wyscout_stats'}
+                                {table === 'players' ? 'players' : 'stats'}
                               </Badge>
                             </td>
                             <td className="px-3 py-1.5">

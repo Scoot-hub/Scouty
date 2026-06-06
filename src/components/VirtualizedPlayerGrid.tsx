@@ -50,7 +50,7 @@ export function VirtualizedPlayerGrid({
 
   // Rough heights; the virtualizer self-corrects via measureElement once rows mount.
   const estimateSize = useCallback(
-    () => (viewMode === 'detailed' ? 410 : 250) + 12,
+    () => (viewMode === 'detailed' ? 400 : 190) + 12,
     [viewMode],
   );
 

@@ -14,8 +14,10 @@ import {
 import { Button } from '@/components/ui/button';
 
 const API_BASE = (import.meta.env.API_URL || '/api').replace(/\/$/, '');
-const FEEDBACK_DELAY_MS = 5 * 60 * 1000; // 5 minutes
+const FEEDBACK_DELAY_MS = 15 * 60 * 1000; // 15 minutes before first appearance
+const DISMISS_DURATION_MS = 30 * 24 * 60 * 60 * 1000; // don't ask again for 30 days after a dismiss
 const FEEDBACK_STORAGE_KEY = 'scouthub_feedback_dismissed';
+const FEEDBACK_RATED_KEY = 'scouthub_feedback_rated'; // permanent: never show again once a rating is given
 
 export default function FeedbackPopup() {
   const { t } = useTranslation();
@@ -27,6 +29,9 @@ export default function FeedbackPopup() {
   const [sent, setSent] = useState(false);
 
   useEffect(() => {
+    // Once a rating has been given, never show the popup again
+    if (localStorage.getItem(FEEDBACK_RATED_KEY)) return;
+
     const dismissed = localStorage.getItem(FEEDBACK_STORAGE_KEY);
     if (dismissed) return;
 
@@ -39,8 +44,8 @@ export default function FeedbackPopup() {
 
   const dismiss = () => {
     setOpen(false);
-    // Don't ask again for 7 days
-    localStorage.setItem(FEEDBACK_STORAGE_KEY, String(Date.now() + 7 * 24 * 60 * 60 * 1000));
+    // Don't ask again for a while
+    localStorage.setItem(FEEDBACK_STORAGE_KEY, String(Date.now() + DISMISS_DURATION_MS));
   };
 
   // Clear expired dismissal on mount
@@ -79,11 +84,13 @@ export default function FeedbackPopup() {
       }
 
       setSent(true);
+      // A rating was given: never show the popup again
+      localStorage.setItem(FEEDBACK_RATED_KEY, String(Date.now()));
+      localStorage.removeItem(FEEDBACK_STORAGE_KEY);
       toast.success(t('feedback.success'));
       // Auto-close after showing thank you
       setTimeout(() => {
         setOpen(false);
-        localStorage.setItem(FEEDBACK_STORAGE_KEY, String(Date.now() + 30 * 24 * 60 * 60 * 1000));
       }, 2000);
     } catch {
       toast.error(t('feedback.error'));

@@ -429,7 +429,7 @@ export const supabase = {
           form.append('file', file);
           form.append('fileName', _fileName);
 
-          const { data, error } = await apiRequest<{ path: string }>(`/storage/${bucket}/upload`, {
+          const { data, error } = await apiRequest<{ path: string; publicUrl: string }>(`/storage/${bucket}/upload`, {
             method: 'POST',
             body: form,
           });

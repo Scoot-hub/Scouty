@@ -253,6 +253,19 @@ export default function WyscoutPlayerData() {
     staleTime: 5 * 60 * 1000,
   });
 
+  // V2 similarity: server-side z-score (per position group) Euclidean ranking.
+  // Falls back to the client-side cosine below if it returns nothing.
+  const similarQ = useQuery({
+    queryKey: ['wyscout-similar-v2', id],
+    queryFn: async () => {
+      const res = await fetch(`${API_BASE}/wyscout/similar/${id}?limit=8`, { credentials: 'include' });
+      if (!res.ok) return { results: [] };
+      return res.json() as Promise<{ results: Array<{ player_id: string; name: string; position: string | null; club: string | null; similarity: number }>; cohortSize?: number }>;
+    },
+    enabled: !!id,
+    staleTime: 5 * 60 * 1000,
+  });
+
   const [filters, setFilters] = useState<WyscoutFilters>(EMPTY_FILTERS);
   const [statCat, setStatCat] = useState<'all' | StatCat>('all');
   const [collapsed, setCollapsed] = useState<Record<string, boolean>>({});
@@ -305,6 +318,16 @@ export default function WyscoutPlayerData() {
     return findSimilarPlayers(aggregated as WyscoutStatRow, peersForSimilarity, isGKPos, 5);
   }, [aggregated, peersForSimilarity, isGKPos]);
 
+  // Prefer the V2 server ranking; fall back to the client-side cosine result.
+  const similarList = useMemo(() => {
+    const v2 = similarQ.data?.results ?? [];
+    if (v2.length) return v2.map(r => ({ player_id: r.player_id, name: r.name, position: r.position, club: r.club, similarity: r.similarity }));
+    return similarPlayers.map(s => {
+      const peer = peerByPlayerId.get(s.playerId);
+      return { player_id: s.playerId, name: peer?.name ?? '—', position: peer?.player_position ?? null, club: peer?.club ?? null, similarity: s.similarity };
+    });
+  }, [similarQ.data, similarPlayers, peerByPlayerId]);
+
   if (!id) return <div className="p-6">Aucun joueur sélectionné.</div>;
 
   if (playerQ.isLoading) {
@@ -314,7 +337,7 @@ export default function WyscoutPlayerData() {
     return (
       <div className="max-w-2xl mx-auto py-12 text-center space-y-4">
         <h2 className="text-xl font-semibold">Joueur introuvable</h2>
-        <p className="text-sm text-muted-foreground">Ce joueur n'existe pas (ou plus) dans la base WyScout partagée.</p>
+        <p className="text-sm text-muted-foreground">Ce joueur n'existe pas (ou plus) dans la base de statistiques partagée.</p>
         <Button asChild variant="outline"><Link to="/data"><ArrowLeft className="w-4 h-4 mr-2" /> Retour à la base</Link></Button>
       </div>
     );
@@ -344,7 +367,7 @@ export default function WyscoutPlayerData() {
       {/* Back link */}
       <div>
         <Button asChild variant="ghost" size="sm" className="gap-1.5 -ml-2">
-          <Link to="/data"><ArrowLeft className="w-4 h-4" /> Retour à la base WyScout</Link>
+          <Link to="/data"><ArrowLeft className="w-4 h-4" /> Retour à la base de statistiques</Link>
         </Button>
       </div>
 
@@ -412,7 +435,7 @@ export default function WyscoutPlayerData() {
       {!statsQ.isLoading && rows.length === 0 && (
         <Card>
           <CardContent className="py-12 text-center text-sm text-muted-foreground">
-            Pas de statistiques WyScout enregistrées pour ce joueur.
+            Pas de statistiques enregistrées pour ce joueur.
           </CardContent>
         </Card>
       )}
@@ -465,22 +488,22 @@ export default function WyscoutPlayerData() {
               )}
 
               {/* Similar players */}
-              {peersQ.isLoading ? (
+              {(similarQ.isLoading || peersQ.isLoading) ? (
                 <Card><CardContent className="py-6 flex items-center justify-center gap-2 text-xs text-muted-foreground">
                   <Loader2 className="w-3 h-3 animate-spin" /> Recherche des joueurs similaires...
                 </CardContent></Card>
-              ) : similarPlayers.length > 0 && (
+              ) : similarList.length > 0 && (
                 <Card>
                   <CardHeader className="pb-2">
                     <CardTitle className="text-sm flex items-center gap-2">
                       <Users className="w-4 h-4 text-indigo-500" /> Joueurs au profil similaire
                       <span className="text-[11px] font-normal text-muted-foreground">
-                        sur {peerRows.length} joueurs au poste
+                        {similarQ.data?.cohortSize ? `sur ${similarQ.data.cohortSize} joueurs au poste` : `sur ${peerRows.length} joueurs au poste`}
                       </span>
                     </CardTitle>
                   </CardHeader>
                   <CardContent>
-                    <SimilarPlayersList similar={similarPlayers} peerByPlayerId={peerByPlayerId} />
+                    <SimilarPlayersList similar={similarList} />
                   </CardContent>
                 </Card>
               )}
@@ -877,25 +900,22 @@ function DNAPanel({ detection, insights }: {
 }
 
 // ── Similar players list ──────────────────────────────────────────────────
-function SimilarPlayersList({ similar, peerByPlayerId }: {
-  similar: { playerId: string; similarity: number }[];
-  peerByPlayerId: Map<string, PeerRow>;
+function SimilarPlayersList({ similar }: {
+  similar: { player_id: string; name: string; position: string | null; club: string | null; similarity: number }[];
 }) {
   return (
     <ul className="space-y-1.5">
       {similar.map(s => {
-        const peer = peerByPlayerId.get(s.playerId);
-        if (!peer) return null;
-        const pct = Math.round(s.similarity * 100);
+        const pct = Math.max(0, Math.min(100, Math.round(s.similarity)));
         return (
-          <li key={s.playerId} className="flex items-center gap-3 group">
+          <li key={s.player_id} className="flex items-center gap-3 group">
             <Link
-              to={`/data/player/${s.playerId}`}
+              to={`/data/player/${s.player_id}`}
               className="flex-1 flex items-center gap-2 min-w-0 hover:underline"
             >
-              <span className="text-sm font-medium truncate">{peer.name}</span>
-              <Badge variant="outline" className="text-[10px]">{peer.player_position || '—'}</Badge>
-              <span className="text-xs text-muted-foreground truncate">{peer.club || ''}</span>
+              <span className="text-sm font-medium truncate">{s.name}</span>
+              <Badge variant="outline" className="text-[10px]">{s.position || '—'}</Badge>
+              <span className="text-xs text-muted-foreground truncate">{s.club || ''}</span>
             </Link>
             <div className="w-24 h-1.5 bg-muted rounded-full overflow-hidden">
               <div
@@ -954,7 +974,7 @@ function PercentileTable({ aggregated, peers, isGK }: {
   return (
     <div className="grid grid-cols-1 sm:grid-cols-2 gap-1.5">
       {rows.map(({ def, raw, pct }) => {
-        const p = pct === null ? 0 : Math.round(pct * 100);
+        const p = pct === null ? 0 : Math.max(0, Math.min(100, Math.round(pct)));
         const color = pct === null ? 'bg-muted-foreground/40'
           : p >= 80 ? 'bg-emerald-500' : p >= 60 ? 'bg-lime-500' : p >= 40 ? 'bg-amber-500' : p >= 20 ? 'bg-orange-500' : 'bg-red-500';
         return (

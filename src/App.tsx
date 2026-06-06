@@ -9,6 +9,7 @@ import { BrowserRouter, Routes, Route, Navigate, useLocation, useNavigate } from
 import { AuthProvider, useAuth } from "@/contexts/AuthContext";
 import { UiPreferencesProvider } from "@/contexts/UiPreferencesContext";
 import ProtectedRoute from "@/components/layout/ProtectedRoute";
+import DataGuard from "@/components/layout/DataGuard";
 import AppLayout from "@/components/layout/AppLayout";
 import PageLoader from "@/components/PageLoader";
 import CookieBanner from "@/components/CookieBanner";
@@ -97,6 +98,7 @@ const Organization = lazy(() => import("@/pages/Organization"));
 const OrgPlayers = lazy(() => import("@/pages/OrgPlayers"));
 const Squad = lazy(() => import("@/pages/Squad"));
 const Watchlist = lazy(() => import("@/pages/Watchlist"));
+const Transfers = lazy(() => import("@/pages/Transfers"));
 const ShadowTeamPage = lazy(() => import("@/pages/ShadowTeam"));
 const Fixtures = lazy(() => import("@/pages/Fixtures"));
 const MyMatches = lazy(() => import("@/pages/MyMatches"));
@@ -143,6 +145,11 @@ const EditorialView = lazy(() => import("@/pages/EditorialView"));
 const EditorialShare = lazy(() => import("@/pages/EditorialShare"));
 const PlayerCompare = lazy(() => import("@/pages/PlayerCompare"));
 const WyscoutPlayerData = lazy(() => import("@/pages/WyscoutPlayerData"));
+const DataHub = lazy(() => import("@/pages/DataHub"));
+const DataExplore = lazy(() => import("@/pages/DataExplore"));
+const DataScatter = lazy(() => import("@/pages/DataScatter"));
+const DataProfile = lazy(() => import("@/pages/DataProfile"));
+const DataProjection = lazy(() => import("@/pages/DataProjection"));
 const Banned = lazy(() => import("@/pages/Banned"));
 const NotFound = lazy(() => import("@/pages/NotFound"));
 const SecurityBlock = lazy(() => import("@/pages/SecurityBlock"));
@@ -206,6 +213,7 @@ const App = () => {
                 <Route path="/player/:id" element={<PlayerProfile />} />
                 <Route path="/player/:id/edit" element={<EditPlayer />} />
                 <Route path="/watchlist" element={<Watchlist />} />
+                <Route path="/transfers" element={<Transfers />} />
                 <Route path="/shadow-team" element={<ShadowTeamPage />} />
                 <Route path="/fixtures" element={<Fixtures />} />
                 <Route path="/match/:matchId" element={<MatchDetail />} />
@@ -247,9 +255,16 @@ const App = () => {
                 <Route path="/club" element={<ClubProfile />} />
                 <Route path="/my-clubs" element={<MyClubs />} />
                 <Route path="/championships" element={<Championships />} />
-                <Route path="/data" element={<PlayerCompare />} />
-                <Route path="/data/player/:id" element={<WyscoutPlayerData />} />
-                <Route path="/compare" element={<Navigate to="/data" replace />} />
+                <Route element={<DataGuard />}>
+                  <Route path="/data" element={<DataHub />} />
+                  <Route path="/data/explore" element={<DataExplore />} />
+                  <Route path="/data/scatter" element={<DataScatter />} />
+                  <Route path="/data/profile" element={<DataProfile />} />
+                  <Route path="/data/projection" element={<DataProjection />} />
+                  <Route path="/data/compare" element={<PlayerCompare />} />
+                  <Route path="/data/player/:id" element={<WyscoutPlayerData />} />
+                </Route>
+                <Route path="/compare" element={<Navigate to="/data/compare" replace />} />
                 <Route path="/map" element={<MapView />} />
                 <Route path="/checkout" element={<Checkout />} />
                 <Route path="/affiliate" element={<Affiliate />} />

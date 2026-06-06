@@ -1,10 +1,9 @@
 import { useState, useMemo, useEffect, useCallback, useRef } from 'react';
 import { useTranslation } from 'react-i18next';
-import { useQuery } from '@tanstack/react-query';
-import { usePlayers } from '@/hooks/use-players';
-import { useWyscoutStats, type WyscoutStatRow } from '@/hooks/use-wyscout-stats';
-import { useIsAdmin } from '@/hooks/use-admin';
-import { supabase } from '@/integrations/supabase/client';
+import { useQuery, useQueries } from '@tanstack/react-query';
+import { useWyscoutCatalogStats, type WyscoutStatRow } from '@/hooks/use-wyscout-stats';
+import { useMetricLabel, percentileColor, groupForPosition } from '@/lib/wyscout-metrics';
+import { percentileInGroup } from '@/lib/wyscout-benchmarks';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -20,15 +19,14 @@ import {
   ScatterChart, Scatter, ZAxis,
 } from 'recharts';
 import {
-  GitCompareArrows, Search, FileSpreadsheet, Crown, Loader2, Plus, X,
+  GitCompareArrows, Search, FileSpreadsheet, Loader2, Plus, X,
   Settings2, Download, Trophy, Palette, ArrowUpDown, ArrowUp, ArrowDown,
   Image as ImageIcon, GripVertical, Save, Share2, Link2, Users,
   AlertTriangle, Activity, BarChart3, Radar as RadarIcon, Scaling, ArrowLeftRight,
-  Trash2, FileSpreadsheet as XlsxIcon, Star,
+  Trash2, FileSpreadsheet as XlsxIcon, Star, ArrowLeft, Percent,
 } from 'lucide-react';
 import { useToast } from '@/hooks/use-toast';
 import { cn } from '@/lib/utils';
-import type { Player } from '@/types/player';
 import { Link } from 'react-router-dom';
 import {
   DndContext, closestCenter, KeyboardSensor, PointerSensor,
@@ -183,13 +181,31 @@ function isFresh(row: WyscoutStatRow | null): { fresh: boolean; ageMonths: numbe
   return { fresh: ageMonths <= 18, ageMonths };
 }
 
+const API_BASE = (import.meta.env.API_URL || '/api').replace(/\/$/, '');
+
+// ────────────────────────────────────────────────────────────────────────────
+// Shared WyScout catalogue player — lightweight identity drawn from
+// /api/wyscout/search (wyscout_players), NOT the user's own players table.
+// ────────────────────────────────────────────────────────────────────────────
+type WyscoutCatalogPlayer = {
+  id: string;
+  name: string;
+  club: string | null;
+  position: string | null;
+  league?: string | null;
+  photo_url?: string | null;
+};
+
+// Positions available in the shared catalogue (mirrors CatalogSearch).
+const CATALOG_POSITIONS = ['GB', 'DC', 'DD', 'DG', 'MDC', 'MC', 'MOC', 'AD', 'AG', 'BU'];
+
 // ────────────────────────────────────────────────────────────────────────────
 // Entry types — discriminated union, allows duplicates of same player
 // ────────────────────────────────────────────────────────────────────────────
 type CompareEntry =
   | {
       entryId: string; kind: 'player';
-      player: Player; rowId: string; stats: WyscoutStatRow | null; color: string;
+      player: WyscoutCatalogPlayer; rowId: string; stats: WyscoutStatRow | null; color: string;
       minutesMin: number;
     }
   | {
@@ -202,7 +218,7 @@ type CompareEntry =
 
 type BenchmarkFilters = { position?: string; club?: string; league?: string; minutesMin?: number };
 
-type ChartMode = 'radar' | 'bars' | 'scatter' | 'diverging';
+type ChartMode = 'radar' | 'bars' | 'scatter' | 'diverging' | 'percentiles';
 
 // ────────────────────────────────────────────────────────────────────────────
 // Sortable row wrapper
@@ -244,7 +260,7 @@ function PlayerEntryCard({
   onMinutesChange: (mins: number) => void;
   onToggleSpotlight: () => void;
 }) {
-  const { data: rows = [], isLoading } = useWyscoutStats(entry.player.id);
+  const { data: rows = [], isLoading } = useWyscoutCatalogStats(entry.player.id);
 
   // Apply min-minutes filter on the picker only (for safety: still let an existing row stay even if it falls under the threshold)
   const visibleRows = useMemo(
@@ -309,7 +325,7 @@ function PlayerEntryCard({
             </span>
           )}
         </div>
-        <p className="text-[10px] text-muted-foreground truncate">{entry.player.club} · {entry.player.position}</p>
+        <p className="text-[10px] text-muted-foreground truncate">{entry.player.club || 'Sans club'} · {entry.player.position || '—'}</p>
       </div>
 
       {/* Min minutes filter */}
@@ -407,77 +423,45 @@ function PlayerEntryCard({
 // Benchmark entry card — virtual "average for position"
 // ────────────────────────────────────────────────────────────────────────────
 function BenchmarkEntryCard({
-  entry, isSpotlight, allPlayers, onUpdate, onRemove, onColorChange, onToggleSpotlight,
+  entry, isSpotlight, onUpdate, onRemove, onColorChange, onToggleSpotlight,
 }: {
   entry: Extract<CompareEntry, { kind: 'benchmark' }>;
   isSpotlight: boolean;
-  allPlayers: Player[];
   onUpdate: (patch: Partial<Extract<CompareEntry, { kind: 'benchmark' }>>) => void;
   onRemove: () => void;
   onColorChange: (color: string) => void;
   onToggleSpotlight: () => void;
 }) {
-  const { data: summaries = [], isLoading } = useQuery<WyscoutStatRow[]>({
-    queryKey: ['players-wyscout-summary'],
+  // Server-side benchmark over the SHARED WyScout catalogue (averaged across
+  // wyscout_player_stats), filtered by position + minimum minutes.
+  const { data, isLoading } = useQuery<{ sample_size: number; benchmark: Record<string, number | null> }>({
+    queryKey: ['wyscout-benchmark', entry.position, entry.minutesMin],
     queryFn: async () => {
-      const API = (import.meta.env.API_URL || '/api').replace(/\/$/, '');
-      const res = await fetch(`${API}/players-wyscout-summary`, { credentials: 'include' });
-      return res.ok ? res.json() : [];
+      const params = new URLSearchParams();
+      if (entry.position) params.set('position', entry.position);
+      params.set('minMinutes', String(entry.minutesMin));
+      const res = await fetch(`${API_BASE}/wyscout/benchmarks?${params}`, { credentials: 'include' });
+      if (!res.ok) return { sample_size: 0, benchmark: {} };
+      return res.json();
     },
     staleTime: 5 * 60 * 1000,
   });
 
-  // Compute aggregated row whenever inputs change
+  // Push the aggregated row up to the parent whenever the benchmark changes.
   useEffect(() => {
-    if (!summaries.length || !allPlayers.length) return;
-    const playerById = new Map(allPlayers.map(p => [p.id, p]));
-    const filtered = summaries.filter(s => {
-      const p = playerById.get(s.player_id);
-      if (!p) return false;
-      if (entry.position && p.position !== entry.position) return false;
-      if (entry.club && p.club !== entry.club) return false;
-      if (entry.league && p.league !== entry.league) return false;
-      if ((num(s.minutes_played) ?? 0) < entry.minutesMin) return false;
-      return true;
-    });
-    if (filtered.length === 0) {
-      onUpdate({ stats: null });
-      return;
-    }
-    const avgRow = { ...filtered[0] } as Record<string, unknown>;
-    const keys = Object.keys(filtered[0]);
-    for (const k of keys) {
-      const vals = filtered.map(r => num((r as Record<string, unknown>)[k])).filter((v): v is number => v != null);
-      if (vals.length > 0 && typeof (filtered[0] as Record<string, unknown>)[k] !== 'string') {
-        avgRow[k] = vals.reduce((a, b) => a + b, 0) / vals.length;
-      }
-    }
+    if (!data) return;
+    if (!data.sample_size) { onUpdate({ stats: null }); return; }
+    const avgRow: Record<string, unknown> = { ...data.benchmark };
     avgRow.id = `bench-${entry.entryId}`;
-    avgRow.season = `Moyenne (${filtered.length} joueurs)`;
-    avgRow.division = [entry.club, entry.league, entry.position].filter(Boolean).join(' · ') || 'Tous joueurs';
+    avgRow.player_id = `bench-${entry.entryId}`;
+    avgRow.season = `Moyenne (${data.sample_size} joueurs)`;
+    avgRow.division = entry.position || 'Tous postes';
     avgRow.team = '—';
     onUpdate({ stats: avgRow as unknown as WyscoutStatRow });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [summaries, allPlayers, entry.position, entry.club, entry.league, entry.minutesMin]);
+  }, [data, entry.position]);
 
-  const positions = useMemo(() => {
-    const set = new Set<string>();
-    allPlayers.forEach(p => p.position && set.add(p.position));
-    return Array.from(set).sort();
-  }, [allPlayers]);
-  const clubs = useMemo(() => {
-    const set = new Set<string>();
-    allPlayers.forEach(p => p.club && set.add(p.club));
-    return Array.from(set).sort();
-  }, [allPlayers]);
-  const leagues = useMemo(() => {
-    const set = new Set<string>();
-    allPlayers.forEach(p => p.league && set.add(p.league));
-    return Array.from(set).sort();
-  }, [allPlayers]);
-
-  const labelParts = [entry.club, entry.league, entry.position].filter(Boolean);
-  const titleLabel = labelParts.length ? `Moy. ${labelParts.join(' · ')}` : 'Moy. tous joueurs';
+  const titleLabel = entry.position ? `Moy. ${entry.position}` : 'Moy. tous postes';
 
   return (
     <div className="flex items-center gap-2 p-2 rounded-lg border border-dashed border-border/80 bg-muted/20">
@@ -510,27 +494,11 @@ function BenchmarkEntryCard({
         </p>
       </div>
 
-      <Select value={entry.club || '__all__'} onValueChange={v => onUpdate({ club: v === '__all__' ? '' : v })}>
-        <SelectTrigger className="w-28 h-7 text-[10px] rounded-md" title="Filtrer par club"><SelectValue /></SelectTrigger>
-        <SelectContent>
-          <SelectItem value="__all__" className="text-[10px]">Tous clubs</SelectItem>
-          {clubs.map(c => <SelectItem key={c} value={c} className="text-[10px]">{c}</SelectItem>)}
-        </SelectContent>
-      </Select>
-
-      <Select value={entry.league || '__all__'} onValueChange={v => onUpdate({ league: v === '__all__' ? '' : v })}>
-        <SelectTrigger className="w-28 h-7 text-[10px] rounded-md" title="Filtrer par championnat"><SelectValue /></SelectTrigger>
-        <SelectContent>
-          <SelectItem value="__all__" className="text-[10px]">Tous champ.</SelectItem>
-          {leagues.map(l => <SelectItem key={l} value={l} className="text-[10px]">{l}</SelectItem>)}
-        </SelectContent>
-      </Select>
-
       <Select value={entry.position || '__all__'} onValueChange={v => onUpdate({ position: v === '__all__' ? '' : v })}>
-        <SelectTrigger className="w-24 h-7 text-[10px] rounded-md" title="Filtrer par poste"><SelectValue /></SelectTrigger>
+        <SelectTrigger className="w-28 h-7 text-[10px] rounded-md" title="Filtrer par poste"><SelectValue /></SelectTrigger>
         <SelectContent>
           <SelectItem value="__all__" className="text-[10px]">Tous postes</SelectItem>
-          {positions.map(p => <SelectItem key={p} value={p} className="text-[10px]">{p}</SelectItem>)}
+          {CATALOG_POSITIONS.map(p => <SelectItem key={p} value={p} className="text-[10px]">{p}</SelectItem>)}
         </SelectContent>
       </Select>
 
@@ -571,222 +539,147 @@ function BenchmarkEntryCard({
 }
 
 // ────────────────────────────────────────────────────────────────────────────
-// Add-player popover — tabs: Joueur / Club / Championnat / Poste
+// Add-player popover — server-side search over the SHARED WyScout catalogue
+// (/api/wyscout/search → wyscout_players), plus position-average benchmarks.
 // ────────────────────────────────────────────────────────────────────────────
-type AddMode = 'player' | 'club' | 'league' | 'position';
-
 function AddPlayerPopover({
-  players, isLoading, onAdd, onAddMany, onAddBenchmark,
+  onAdd, onAddMany, onAddBenchmark,
 }: {
-  players: Player[]; isLoading: boolean;
-  onAdd: (p: Player) => void;
-  onAddMany: (ps: Player[]) => void;
+  onAdd: (p: WyscoutCatalogPlayer) => void;
+  onAddMany: (ps: WyscoutCatalogPlayer[]) => void;
   onAddBenchmark: (filters: BenchmarkFilters) => void;
 }) {
   const [open, setOpen] = useState(false);
-  const [mode, setMode] = useState<AddMode>('player');
   const [q, setQ] = useState('');
-  const [selectedClub, setSelectedClub] = useState('');
-  const [selectedLeague, setSelectedLeague] = useState('');
-  const [selectedPosition, setSelectedPosition] = useState('');
+  const [debouncedQ, setDebouncedQ] = useState('');
+  const [position, setPosition] = useState('');
 
-  // Derived option lists
-  const { clubs, leagues, positions } = useMemo(() => {
-    const c = new Set<string>(), l = new Set<string>(), p = new Set<string>();
-    players.forEach(pl => {
-      if (pl.club) c.add(pl.club);
-      if (pl.league) l.add(pl.league);
-      if (pl.position) p.add(pl.position);
-    });
-    return {
-      clubs: Array.from(c).sort(),
-      leagues: Array.from(l).sort(),
-      positions: Array.from(p).sort(),
-    };
-  }, [players]);
+  // Debounce the text query so we don't hammer the search endpoint.
+  useEffect(() => {
+    const t = setTimeout(() => setDebouncedQ(q), 250);
+    return () => clearTimeout(t);
+  }, [q]);
 
-  // Player tab: text search
-  const filteredPlayers = useMemo(() => {
-    const s = q.toLowerCase();
-    return players
-      .filter(p =>
-        !s || p.name.toLowerCase().includes(s) ||
-        (p.club || '').toLowerCase().includes(s) ||
-        (p.position || '').toLowerCase().includes(s)
-      )
-      .slice(0, 50);
-  }, [players, q]);
+  const { data, isFetching } = useQuery<{ results: WyscoutCatalogPlayer[]; total: number }>({
+    queryKey: ['wyscout-add-search', debouncedQ, position],
+    queryFn: async () => {
+      const params = new URLSearchParams();
+      if (debouncedQ) params.set('q', debouncedQ);
+      if (position) params.set('position', position);
+      params.set('limit', '50');
+      const res = await fetch(`${API_BASE}/wyscout/search?${params}`, { credentials: 'include' });
+      if (!res.ok) return { results: [], total: 0 };
+      return res.json();
+    },
+    enabled: open && (debouncedQ.length > 0 || !!position),
+    staleTime: 60 * 1000,
+  });
 
-  // Group tab: matching players
-  const matchingPlayers = useMemo(() => {
-    if (mode === 'club' && selectedClub) return players.filter(p => p.club === selectedClub);
-    if (mode === 'league' && selectedLeague) return players.filter(p => p.league === selectedLeague);
-    if (mode === 'position' && selectedPosition) return players.filter(p => p.position === selectedPosition);
-    return [];
-  }, [mode, players, selectedClub, selectedLeague, selectedPosition]);
-
-  const close = () => { setOpen(false); setQ(''); };
-
-  const groupOptions: { value: string; setter: (v: string) => void; list: string[]; placeholder: string; label: string } = (() => {
-    if (mode === 'club') return { value: selectedClub, setter: setSelectedClub, list: clubs, placeholder: 'Choisir un club…', label: 'Club' };
-    if (mode === 'league') return { value: selectedLeague, setter: setSelectedLeague, list: leagues, placeholder: 'Choisir un championnat…', label: 'Championnat' };
-    return { value: selectedPosition, setter: setSelectedPosition, list: positions, placeholder: 'Choisir un poste…', label: 'Poste' };
-  })();
-
-  const benchmarkFiltersForMode = (): BenchmarkFilters => {
-    if (mode === 'club') return { club: selectedClub };
-    if (mode === 'league') return { league: selectedLeague };
-    if (mode === 'position') return { position: selectedPosition };
-    return {};
-  };
+  const results = data?.results ?? [];
+  const total = data?.total ?? 0;
+  const close = () => { setOpen(false); setQ(''); setDebouncedQ(''); setPosition(''); };
 
   return (
-    <Popover open={open} onOpenChange={setOpen}>
+    <Popover open={open} onOpenChange={v => { setOpen(v); if (!v) close(); }}>
       <PopoverTrigger asChild>
         <Button variant="outline" size="sm" className="gap-1 h-8">
           <Plus className="w-3.5 h-3.5" /> Ajouter
         </Button>
       </PopoverTrigger>
       <PopoverContent className="w-96 p-2" align="end">
-        <Tabs value={mode} onValueChange={v => setMode(v as AddMode)} className="w-full">
-          <TabsList className="grid grid-cols-4 h-8 mb-2">
-            <TabsTrigger value="player" className="text-[10px] gap-1 h-6"><Search className="w-3 h-3" /> Joueur</TabsTrigger>
-            <TabsTrigger value="club" className="text-[10px] gap-1 h-6"><Users className="w-3 h-3" /> Club</TabsTrigger>
-            <TabsTrigger value="league" className="text-[10px] gap-1 h-6"><Trophy className="w-3 h-3" /> Champ.</TabsTrigger>
-            <TabsTrigger value="position" className="text-[10px] gap-1 h-6"><Activity className="w-3 h-3" /> Poste</TabsTrigger>
-          </TabsList>
-        </Tabs>
+        <div className="flex items-center gap-1.5 mb-2 text-[10px] text-muted-foreground">
+          <FileSpreadsheet className="w-3 h-3 text-emerald-500" /> Base de statistiques partagée
+        </div>
 
-        {/* Player tab */}
-        {mode === 'player' && (
-          <>
-            <div className="relative mb-2">
-              <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-muted-foreground" />
-              <input
-                autoFocus
-                value={q}
-                onChange={e => setQ(e.target.value)}
-                placeholder={isLoading ? 'Chargement…' : 'Rechercher un joueur…'}
-                className="w-full pl-8 pr-2 py-1.5 text-xs rounded-md border border-input bg-background focus:outline-none focus:ring-1 focus:ring-ring"
-              />
-            </div>
-            <button
-              onClick={() => { onAddBenchmark({}); close(); }}
-              className="w-full text-left px-2 py-2 mb-1 rounded border border-dashed border-primary/40 bg-primary/5 hover:bg-primary/10 transition-colors flex items-center gap-2 text-xs"
-            >
-              <Users className="w-3.5 h-3.5 text-primary" />
-              <span className="font-medium">Ajouter « Moyenne tous joueurs »</span>
-            </button>
-            <div className="max-h-64 overflow-y-auto overscroll-contain pr-1">
-              {filteredPlayers.length === 0 ? (
-                <p className="p-3 text-xs text-muted-foreground text-center">Aucun joueur</p>
-              ) : (
-                <div className="space-y-0.5">
-                  {filteredPlayers.map(p => (
-                    <button
-                      key={p.id}
-                      onClick={() => { onAdd(p); close(); }}
-                      className="w-full text-left px-2 py-1.5 rounded hover:bg-muted transition-colors flex items-center gap-2"
-                    >
-                      {p.photo_url ? (
-                        <img src={p.photo_url} alt="" className="w-6 h-6 rounded-full object-cover shrink-0" />
-                      ) : (
-                        <div className="w-6 h-6 rounded-full bg-muted flex items-center justify-center text-[8px] font-bold text-muted-foreground shrink-0">
-                          {p.name.split(' ').map(s => s[0]).join('').slice(0, 2).toUpperCase()}
-                        </div>
-                      )}
-                      <div className="min-w-0 flex-1">
-                        <p className="text-xs font-medium truncate">{p.name}</p>
-                        <p className="text-[10px] text-muted-foreground truncate">{p.club} · {p.position}</p>
-                      </div>
-                    </button>
-                  ))}
-                </div>
-              )}
-            </div>
-          </>
+        <div className="flex gap-1.5 mb-2">
+          <div className="relative flex-1">
+            <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-muted-foreground" />
+            <input
+              autoFocus
+              value={q}
+              onChange={e => setQ(e.target.value)}
+              placeholder="Rechercher un joueur ou un club…"
+              className="w-full pl-8 pr-2 py-1.5 text-xs rounded-md border border-input bg-background focus:outline-none focus:ring-1 focus:ring-ring"
+            />
+          </div>
+          <Select value={position || '__all__'} onValueChange={v => setPosition(v === '__all__' ? '' : v)}>
+            <SelectTrigger className="w-24 h-8 text-[10px]" title="Filtrer par poste"><SelectValue placeholder="Poste" /></SelectTrigger>
+            <SelectContent>
+              <SelectItem value="__all__" className="text-[10px]">Tous postes</SelectItem>
+              {CATALOG_POSITIONS.map(p => <SelectItem key={p} value={p} className="text-[10px]">{p}</SelectItem>)}
+            </SelectContent>
+          </Select>
+        </div>
+
+        {/* Benchmark shortcuts */}
+        <div className="grid grid-cols-2 gap-2 mb-2">
+          <button
+            onClick={() => { onAddBenchmark({}); close(); }}
+            className="text-[11px] px-2 py-2 rounded border border-dashed border-primary/40 bg-primary/5 hover:bg-primary/10 transition-colors flex flex-col items-center gap-0.5"
+          >
+            <Users className="w-3.5 h-3.5 text-primary" />
+            <span className="font-medium">Moyenne tous postes</span>
+            <span className="text-[9px] text-muted-foreground">une seule entrée</span>
+          </button>
+          <button
+            onClick={() => { onAddBenchmark({ position }); close(); }}
+            disabled={!position}
+            className="text-[11px] px-2 py-2 rounded border border-dashed border-primary/40 bg-primary/5 hover:bg-primary/10 transition-colors disabled:opacity-40 disabled:cursor-not-allowed flex flex-col items-center gap-0.5"
+          >
+            <BarChart3 className="w-3.5 h-3.5 text-primary" />
+            <span className="font-medium">Moyenne {position || 'poste'}</span>
+            <span className="text-[9px] text-muted-foreground">choisir un poste</span>
+          </button>
+        </div>
+
+        {(debouncedQ || position) && (
+          <div className="flex items-center justify-between mb-1 px-1">
+            <span className="text-[10px] text-muted-foreground">
+              {isFetching ? 'Recherche…' : `${total} résultat${total > 1 ? 's' : ''} — ${results.length} affiché${results.length > 1 ? 's' : ''}`}
+            </span>
+            {results.length > 0 && (
+              <button
+                onClick={() => { onAddMany(results); close(); }}
+                className="text-[10px] px-1.5 py-0.5 rounded border border-primary/40 hover:bg-primary/10 transition-colors font-medium"
+                title="Ajouter tous les résultats affichés"
+              >
+                + Tous ({results.length})
+              </button>
+            )}
+          </div>
         )}
 
-        {/* Group tabs (club / league / position) */}
-        {mode !== 'player' && (
-          <>
-            <div className="mb-2">
-              <Select value={groupOptions.value} onValueChange={groupOptions.setter}>
-                <SelectTrigger className="h-8 text-xs">
-                  <SelectValue placeholder={groupOptions.placeholder} />
-                </SelectTrigger>
-                <SelectContent>
-                  {groupOptions.list.length === 0 ? (
-                    <div className="px-2 py-3 text-xs text-muted-foreground text-center">Aucun {groupOptions.label.toLowerCase()}</div>
-                  ) : groupOptions.list.map(opt => (
-                    <SelectItem key={opt} value={opt} className="text-xs">{opt}</SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </div>
-
-            {groupOptions.value && (
-              <>
-                <div className="grid grid-cols-2 gap-2 mb-2">
-                  <button
-                    onClick={() => { onAddMany(matchingPlayers); close(); }}
-                    disabled={matchingPlayers.length === 0}
-                    className="text-[11px] px-2 py-2 rounded border border-primary/40 bg-primary/5 hover:bg-primary/10 transition-colors disabled:opacity-40 disabled:cursor-not-allowed flex flex-col items-center gap-0.5"
-                  >
-                    <Users className="w-3.5 h-3.5 text-primary" />
-                    <span className="font-medium">Tous ({matchingPlayers.length})</span>
-                    <span className="text-[9px] text-muted-foreground">individuellement</span>
-                  </button>
-                  <button
-                    onClick={() => { onAddBenchmark(benchmarkFiltersForMode()); close(); }}
-                    className="text-[11px] px-2 py-2 rounded border border-dashed border-primary/40 bg-primary/5 hover:bg-primary/10 transition-colors flex flex-col items-center gap-0.5"
-                  >
-                    <BarChart3 className="w-3.5 h-3.5 text-primary" />
-                    <span className="font-medium">Moyenne</span>
-                    <span className="text-[9px] text-muted-foreground">une seule entrée</span>
-                  </button>
-                </div>
-
-                <p className="text-[10px] text-muted-foreground uppercase tracking-wide font-semibold mb-1 px-1">Aperçu</p>
-                <div className="max-h-52 overflow-y-auto overscroll-contain pr-1">
-                  {matchingPlayers.length === 0 ? (
-                    <p className="p-3 text-xs text-muted-foreground text-center">Aucun joueur</p>
+        <div className="max-h-64 overflow-y-auto overscroll-contain pr-1">
+          {!debouncedQ && !position ? (
+            <p className="p-4 text-xs text-muted-foreground text-center">Tape un nom de joueur ou de club, ou filtre par poste.</p>
+          ) : isFetching && results.length === 0 ? (
+            <p className="p-3 text-xs text-muted-foreground text-center flex items-center justify-center gap-1"><Loader2 className="w-3 h-3 animate-spin" /> Recherche…</p>
+          ) : results.length === 0 ? (
+            <p className="p-3 text-xs text-muted-foreground text-center">Aucun joueur trouvé</p>
+          ) : (
+            <div className="space-y-0.5">
+              {results.map(p => (
+                <button
+                  key={p.id}
+                  onClick={() => { onAdd(p); close(); }}
+                  className="w-full text-left px-2 py-1.5 rounded hover:bg-muted transition-colors flex items-center gap-2"
+                >
+                  {p.photo_url ? (
+                    <img src={p.photo_url} alt="" className="w-6 h-6 rounded-full object-cover shrink-0" />
                   ) : (
-                    <div className="space-y-0.5">
-                      {matchingPlayers.slice(0, 30).map(p => (
-                        <button
-                          key={p.id}
-                          onClick={() => { onAdd(p); close(); }}
-                          className="w-full text-left px-2 py-1 rounded hover:bg-muted transition-colors flex items-center gap-2"
-                          title="Ajouter ce joueur seul"
-                        >
-                          {p.photo_url ? (
-                            <img src={p.photo_url} alt="" className="w-5 h-5 rounded-full object-cover shrink-0" />
-                          ) : (
-                            <div className="w-5 h-5 rounded-full bg-muted flex items-center justify-center text-[8px] font-bold text-muted-foreground shrink-0">
-                              {p.name.split(' ').map(s => s[0]).join('').slice(0, 2).toUpperCase()}
-                            </div>
-                          )}
-                          <div className="min-w-0 flex-1">
-                            <p className="text-[11px] font-medium truncate">{p.name}</p>
-                            <p className="text-[9px] text-muted-foreground truncate">{p.club} · {p.position}</p>
-                          </div>
-                        </button>
-                      ))}
-                      {matchingPlayers.length > 30 && (
-                        <p className="text-[10px] text-muted-foreground text-center py-1">+ {matchingPlayers.length - 30} autres</p>
-                      )}
+                    <div className="w-6 h-6 rounded-full bg-muted flex items-center justify-center text-[8px] font-bold text-muted-foreground shrink-0">
+                      {p.name.split(' ').map(s => s[0]).join('').slice(0, 2).toUpperCase()}
                     </div>
                   )}
-                </div>
-              </>
-            )}
-
-            {!groupOptions.value && (
-              <p className="text-xs text-muted-foreground text-center py-6">Sélectionnez {groupOptions.label.toLowerCase() === 'club' ? 'un club' : groupOptions.label.toLowerCase() === 'championnat' ? 'un championnat' : 'un poste'} pour voir les options</p>
-            )}
-          </>
-        )}
+                  <div className="min-w-0 flex-1">
+                    <p className="text-xs font-medium truncate">{p.name}</p>
+                    <p className="text-[10px] text-muted-foreground truncate">{p.club || 'Sans club'} · {p.position || '—'}</p>
+                  </div>
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
       </PopoverContent>
     </Popover>
   );
@@ -801,6 +694,7 @@ function StatPickerDialog({
   open: boolean; onOpenChange: (b: boolean) => void;
   selected: string[]; onChange: (s: string[]) => void;
 }) {
+  const { label: mLabel, catLabel } = useMetricLabel();
   const [draft, setDraft] = useState<string[]>(selected);
   useEffect(() => { if (open) setDraft(selected); }, [open, selected]);
 
@@ -846,7 +740,7 @@ function StatPickerDialog({
                 <div key={cat}>
                   <button onClick={() => toggleCat(cat)}
                     className="w-full flex items-center justify-between text-xs font-bold uppercase tracking-wide text-muted-foreground py-1 hover:text-foreground">
-                    <span>{CAT_LABEL[cat]}</span>
+                    <span>{catLabel(cat)}</span>
                     <span className="text-[10px] font-normal">{someOn ? '— partiel —' : allOn ? '— tout sélectionné —' : '— tout sélectionner —'}</span>
                   </button>
                   <div className="grid grid-cols-2 sm:grid-cols-3 gap-1.5">
@@ -855,7 +749,7 @@ function StatPickerDialog({
                         className={cn('flex items-center gap-2 px-2 py-1.5 rounded-md border cursor-pointer transition-colors text-xs',
                           draft.includes(s.key as string) ? 'bg-primary/10 border-primary/40' : 'border-border hover:bg-muted/50')}>
                         <Checkbox checked={draft.includes(s.key as string)} onCheckedChange={() => toggle(s.key as string)} />
-                        <span className="truncate">{s.label}</span>
+                        <span className="truncate">{mLabel(s.key as string)}</span>
                       </label>
                     ))}
                   </div>
@@ -881,11 +775,18 @@ function StatPickerDialog({
 // ────────────────────────────────────────────────────────────────────────────
 interface SerializedEntry {
   kind: 'player' | 'benchmark';
+  // player entry — playerId is a wyscout_players.id; identity is embedded so
+  // restores don't need a global player list (and survive across accounts).
   playerId?: string;
+  name?: string;
+  pos?: string;
+  photoUrl?: string;
   rowId?: string;
+  // benchmark entry filters
   position?: string;
-  club?: string;
   league?: string;
+  // shared: player club OR benchmark club filter
+  club?: string;
   color: string;
   minutesMin: number;
 }
@@ -921,6 +822,40 @@ const decodeState = (str: string): SerializedState | null => {
   catch { return null; }
 };
 
+// Serialize/restore a single compare entry. Player entries embed their full
+// WyScout catalogue identity so restores need no external player list.
+const serializeEntry = (e: CompareEntry): SerializedEntry =>
+  e.kind === 'player'
+    ? {
+        kind: 'player', playerId: e.player.id, name: e.player.name,
+        pos: e.player.position ?? undefined, photoUrl: e.player.photo_url ?? undefined,
+        club: e.player.club ?? undefined, rowId: e.rowId,
+        color: e.color, minutesMin: e.minutesMin,
+      }
+    : {
+        kind: 'benchmark', position: e.position, club: e.club, league: e.league,
+        color: e.color, minutesMin: e.minutesMin,
+      };
+
+const restoreEntry = (e: SerializedEntry): CompareEntry | null => {
+  if (e.kind === 'player') {
+    // Old views referencing the user players table (no embedded identity) are
+    // incompatible with the shared catalogue — skip them cleanly.
+    if (!e.playerId || !e.name) return null;
+    return {
+      entryId: uid(), kind: 'player',
+      player: { id: e.playerId, name: e.name, club: e.club ?? null, position: e.pos ?? null, photo_url: e.photoUrl ?? null },
+      rowId: e.rowId || '', stats: null,
+      color: e.color, minutesMin: e.minutesMin ?? 0,
+    };
+  }
+  return {
+    entryId: uid(), kind: 'benchmark', label: 'Moyenne du poste',
+    position: e.position || '', club: e.club || '', league: e.league || '',
+    minutesMin: e.minutesMin ?? 0, stats: null, color: e.color,
+  };
+};
+
 // ────────────────────────────────────────────────────────────────────────────
 // Heatmap color helper
 // ────────────────────────────────────────────────────────────────────────────
@@ -938,21 +873,12 @@ function heatmapColor(v: number | null, min: number, max: number, higherIsBetter
 // Main page
 // ────────────────────────────────────────────────────────────────────────────
 export default function PlayerCompare() {
-  const { t: _t } = useTranslation();
+  const { t } = useTranslation();
+  const { label: mLabel } = useMetricLabel();
   const { toast } = useToast();
-  const { data: players = [], isLoading: playersLoading } = usePlayers();
-  const { data: isAdmin } = useIsAdmin();
   const radarRef = useRef<HTMLDivElement | null>(null);
 
-  const { data: subData, isLoading: subLoading } = useQuery({
-    queryKey: ['subscription'],
-    queryFn: async () => {
-      const { data } = await supabase.functions.invoke('check-subscription');
-      return data;
-    },
-    staleTime: 5 * 60 * 1000,
-  });
-  const isPremium = !!(subData?.subscribed) || !!isAdmin;
+  // Premium gating is handled centrally by <DataGuard> on every /data/* route.
 
   // ── Hydrate state from URL hash, then localStorage, else defaults ──
   const initialState = useMemo<SerializedState>(() => {
@@ -994,55 +920,25 @@ export default function PlayerCompare() {
   const [saveDialogOpen, setSaveDialogOpen] = useState(false);
   const [newViewName, setNewViewName] = useState('');
 
-  // ── Hydrate entries from initial state once players are loaded ──
+  // ── Hydrate entries from initial state once, on mount ──
   const hydratedRef = useRef(false);
   useEffect(() => {
-    if (hydratedRef.current || players.length === 0) return;
+    if (hydratedRef.current) return;
     hydratedRef.current = true;
     if (initialState.entries?.length) {
-      const playerById = new Map(players.map(p => [p.id, p]));
-      const restored: CompareEntry[] = [];
-      for (const e of initialState.entries) {
-        if (e.kind === 'player' && e.playerId) {
-          const p = playerById.get(e.playerId);
-          if (p) {
-            restored.push({
-              entryId: uid(), kind: 'player',
-              player: p, rowId: e.rowId || '', stats: null,
-              color: e.color, minutesMin: e.minutesMin ?? 0,
-            });
-          }
-        } else if (e.kind === 'benchmark') {
-          restored.push({
-            entryId: uid(), kind: 'benchmark',
-            label: 'Moyenne du poste',
-            position: e.position || '',
-            club: e.club || '',
-            league: e.league || '',
-            minutesMin: e.minutesMin ?? 0,
-            stats: null, color: e.color,
-          });
-        }
-      }
+      const restored = initialState.entries.map(restoreEntry).filter((e): e is CompareEntry => e !== null);
       setEntries(restored);
       const idx = initialState.spotlightIdx;
       if (idx != null && idx >= 0 && idx < restored.length) {
         setSpotlightEntryId(restored[idx].entryId);
       }
     }
-  }, [players, initialState]);
+  }, [initialState]);
 
   // ── Persist current view + URL hash on every change ──
   useEffect(() => {
     const serialized: SerializedState = {
-      entries: entries.map(e => e.kind === 'player' ? {
-        kind: 'player' as const, playerId: e.player.id, rowId: e.rowId,
-        color: e.color, minutesMin: e.minutesMin,
-      } : {
-        kind: 'benchmark' as const,
-        position: e.position, club: e.club, league: e.league,
-        color: e.color, minutesMin: e.minutesMin,
-      }),
+      entries: entries.map(serializeEntry),
       stats: selectedStats, chartMode, scatterX, scatterY,
       highlightWinner, heatmap,
       spotlightIdx: spotlightEntryId ? entries.findIndex(e => e.entryId === spotlightEntryId) : -1,
@@ -1054,7 +950,7 @@ export default function PlayerCompare() {
   const pickColor = (used: Set<string>, fallbackIdx = 0) =>
     COLOR_PALETTE.find(c => !used.has(c)) ?? COLOR_PALETTE[fallbackIdx % COLOR_PALETTE.length];
 
-  const addPlayer = useCallback((p: Player) => {
+  const addPlayer = useCallback((p: WyscoutCatalogPlayer) => {
     setEntries(prev => {
       const used = new Set(prev.map(e => e.color));
       return [...prev, {
@@ -1064,7 +960,7 @@ export default function PlayerCompare() {
     });
   }, []);
 
-  const addPlayers = useCallback((ps: Player[]) => {
+  const addPlayers = useCallback((ps: WyscoutCatalogPlayer[]) => {
     if (!ps.length) return;
     if (ps.length > 15) {
       toast({ title: `${ps.length} joueurs ajoutés`, description: 'Le radar peut être chargé. Pensez à utiliser une « Moyenne » pour synthétiser.' });
@@ -1141,6 +1037,46 @@ export default function PlayerCompare() {
     return `${base} (${e.stats.season})`;
   };
 
+  // ── Percentiles vs position group (for the "Percentiles" chart mode) ──
+  // Fetch one cohort per distinct position-group present among active player
+  // entries; percentile of each value is computed client-side against it.
+  const playerGroups = useMemo(() => {
+    const set = new Set<string>();
+    activeEntries.forEach(e => {
+      if (e.kind === 'player') { const g = groupForPosition(e.player.position)?.key; if (g) set.add(g); }
+    });
+    return Array.from(set);
+  }, [activeEntries]);
+  const cohortQueries = useQueries({
+    queries: playerGroups.map(g => ({
+      queryKey: ['wyscout-cohort', g, 600, ''],
+      queryFn: async () => {
+        const res = await fetch(`${API_BASE}/wyscout/cohort?group=${g}&minMinutes=600&limit=3000`, { credentials: 'include' });
+        if (!res.ok) return { rows: [] };
+        return res.json();
+      },
+      staleTime: 5 * 60 * 1000,
+    })),
+  });
+  const cohortByGroup = useMemo(() => {
+    const m: Record<string, WyscoutStatRow[]> = {};
+    playerGroups.forEach((g, i) => { m[g] = (cohortQueries[i]?.data?.rows ?? []) as WyscoutStatRow[]; });
+    return m;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [playerGroups, cohortQueries.map(q => q.dataUpdatedAt).join(',')]);
+  const cohortLoading = cohortQueries.some(q => q.isLoading);
+  const entryGroup = (e: CompareEntry) => e.kind === 'player' ? (groupForPosition(e.player.position)?.key ?? null) : null;
+  const entryPercentile = (e: CompareEntry, def: StatDef): number | null => {
+    const g = entryGroup(e);
+    if (!g || !e.stats) return null;
+    const rows = cohortByGroup[g];
+    if (!rows || rows.length < 5) return null;
+    const v = num(e.stats[def.key]);
+    if (v == null) return null;
+    const r = percentileInGroup(v, rows, def.key as keyof WyscoutStatRow, def.higherIsBetter === false);
+    return r ? r.percentile : null;
+  };
+
   // ── Radar data ──
   const radarData = useMemo(() => {
     if (!activeEntries.length || !selectedStats.length) return [];
@@ -1148,7 +1084,7 @@ export default function PlayerCompare() {
       .map(k => STAT_BY_KEY[k])
       .filter(Boolean)
       .map(def => {
-        const row: Record<string, number | string> = { axis: def.label };
+        const row: Record<string, number | string> = { axis: mLabel(def.key as string) };
         activeEntries.forEach(e => {
           const raw = num(e.stats![def.key]) ?? 0;
           row[entryLabel(e)] = Math.min(100, Math.round((raw / def.max) * 100));
@@ -1164,7 +1100,7 @@ export default function PlayerCompare() {
       .map(k => STAT_BY_KEY[k])
       .filter(Boolean)
       .map(def => {
-        const row: Record<string, number | string> = { stat: def.label };
+        const row: Record<string, number | string> = { stat: mLabel(def.key as string) };
         activeEntries.forEach(e => {
           row[entryLabel(e)] = num(e.stats![def.key]) ?? 0;
         });
@@ -1184,7 +1120,7 @@ export default function PlayerCompare() {
         const av = num(a.stats![def.key]) ?? 0;
         const bv = num(b.stats![def.key]) ?? 0;
         return {
-          stat: def.label,
+          stat: mLabel(def.key as string),
           [entryLabel(a)]: -av,
           [entryLabel(b)]: bv,
           aRaw: av, bRaw: bv,
@@ -1248,12 +1184,7 @@ export default function PlayerCompare() {
   const saveCurrentView = (name: string) => {
     if (!name.trim()) return;
     const payload: SerializedState = {
-      entries: entries.map(e => e.kind === 'player' ? {
-        kind: 'player', playerId: e.player.id, rowId: e.rowId, color: e.color, minutesMin: e.minutesMin,
-      } : {
-        kind: 'benchmark', position: e.position, club: e.club, league: e.league,
-        color: e.color, minutesMin: e.minutesMin,
-      }),
+      entries: entries.map(serializeEntry),
       stats: selectedStats, chartMode, scatterX, scatterY, highlightWinner, heatmap,
       spotlightIdx: spotlightEntryId ? entries.findIndex(e => e.entryId === spotlightEntryId) : -1,
     };
@@ -1265,26 +1196,7 @@ export default function PlayerCompare() {
     setNewViewName('');
   };
   const loadView = (v: SavedView) => {
-    const playerById = new Map(players.map(p => [p.id, p]));
-    const restored: CompareEntry[] = [];
-    for (const e of v.payload.entries) {
-      if (e.kind === 'player' && e.playerId) {
-        const p = playerById.get(e.playerId);
-        if (p) restored.push({
-          entryId: uid(), kind: 'player', player: p, rowId: e.rowId || '', stats: null,
-          color: e.color, minutesMin: e.minutesMin ?? 0,
-        });
-      } else if (e.kind === 'benchmark') {
-        restored.push({
-          entryId: uid(), kind: 'benchmark', label: 'Moyenne du poste',
-          position: e.position || '',
-          club: e.club || '',
-          league: e.league || '',
-          minutesMin: e.minutesMin ?? 0,
-          stats: null, color: e.color,
-        });
-      }
-    }
+    const restored = v.payload.entries.map(restoreEntry).filter((e): e is CompareEntry => e !== null);
     setEntries(restored);
     setSelectedStats(v.payload.stats);
     setChartMode(v.payload.chartMode);
@@ -1303,12 +1215,7 @@ export default function PlayerCompare() {
   };
   const copyShareLink = async () => {
     const payload: SerializedState = {
-      entries: entries.map(e => e.kind === 'player' ? {
-        kind: 'player', playerId: e.player.id, rowId: e.rowId, color: e.color, minutesMin: e.minutesMin,
-      } : {
-        kind: 'benchmark', position: e.position, club: e.club, league: e.league,
-        color: e.color, minutesMin: e.minutesMin,
-      }),
+      entries: entries.map(serializeEntry),
       stats: selectedStats, chartMode, scatterX, scatterY, highlightWinner, heatmap,
       spotlightIdx: spotlightEntryId ? entries.findIndex(e => e.entryId === spotlightEntryId) : -1,
     };
@@ -1426,39 +1333,24 @@ export default function PlayerCompare() {
     XLSX.writeFile(wb, `comparaison-${new Date().toISOString().slice(0, 10)}.xlsx`);
   };
 
-  // ── Premium gate ──
-  if (subLoading) {
-    return <div className="flex items-center justify-center min-h-[60vh]"><Loader2 className="w-6 h-6 animate-spin text-muted-foreground" /></div>;
-  }
-  if (!isPremium) {
-    return (
-      <div className="flex flex-col items-center justify-center min-h-[60vh] gap-5 text-center max-w-md mx-auto">
-        <div className="w-16 h-16 rounded-2xl bg-amber-100 dark:bg-amber-900/20 flex items-center justify-center"><Crown className="w-8 h-8 text-amber-500" /></div>
-        <div>
-          <h2 className="text-xl font-bold">Fonctionnalité Premium</h2>
-          <p className="text-sm text-muted-foreground mt-2">Le comparateur de joueurs est réservé aux abonnés Premium.</p>
-        </div>
-        <Link to="/pricing"><Button className="gap-2"><Crown className="w-4 h-4" /> Passer à Premium</Button></Link>
-        <Link to="/players" className="text-xs text-muted-foreground hover:underline">Retour aux joueurs</Link>
-      </div>
-    );
-  }
-
   const canCompare = activeEntries.length >= 1 && selectedStats.length > 0;
 
   return (
     <div className="max-w-6xl mx-auto space-y-5">
       {/* Header */}
       <div className="flex items-center gap-3 flex-wrap">
+        <Button asChild variant="ghost" size="sm" className="gap-1.5 -ml-2">
+          <Link to="/data"><ArrowLeft className="w-4 h-4" /> Data</Link>
+        </Button>
         <div className="w-10 h-10 rounded-xl bg-violet-500/10 flex items-center justify-center">
           <GitCompareArrows className="w-5 h-5 text-violet-500" />
         </div>
         <div>
-          <h1 className="text-2xl font-extrabold tracking-tight">Data</h1>
-          <p className="text-sm text-muted-foreground">Base WyScout partagée — recherche, fiche joueur, comparaison</p>
+          <h1 className="text-2xl font-extrabold tracking-tight">Comparateur</h1>
+          <p className="text-sm text-muted-foreground">Comparez joueurs et saisons — radar, barres, scatter, table</p>
         </div>
         <div className="ml-auto flex items-center gap-2 flex-wrap">
-          <Badge variant="outline" className="text-[10px] gap-1"><FileSpreadsheet className="w-3 h-3 text-emerald-500" /> WyScout</Badge>
+          <Badge variant="outline" className="text-[10px] gap-1"><FileSpreadsheet className="w-3 h-3 text-emerald-500" /> Stats</Badge>
           <Badge variant="outline" className="text-[10px]">{entries.length} entrée{entries.length > 1 ? 's' : ''}</Badge>
 
           {/* Saved views menu */}
@@ -1519,8 +1411,6 @@ export default function PlayerCompare() {
           <div className="flex items-center justify-between flex-wrap gap-2">
             <CardTitle className="text-sm">Joueurs à comparer</CardTitle>
             <AddPlayerPopover
-              players={players}
-              isLoading={playersLoading}
               onAdd={addPlayer}
               onAddMany={addPlayers}
               onAddBenchmark={addBenchmark}
@@ -1555,7 +1445,6 @@ export default function PlayerCompare() {
                         <BenchmarkEntryCard
                           entry={e}
                           isSpotlight={spotlightEntryId === e.entryId}
-                          allPlayers={players}
                           onUpdate={patch => updateEntry(e.entryId, patch as Partial<CompareEntry>)}
                           onRemove={() => removeEntry(e.entryId)}
                           onColorChange={c => updateEntry(e.entryId, { color: c })}
@@ -1637,6 +1526,7 @@ export default function PlayerCompare() {
                     <TabsTrigger value="radar" className="text-xs gap-1 h-6"><RadarIcon className="w-3 h-3" /> Radar</TabsTrigger>
                     <TabsTrigger value="bars" className="text-xs gap-1 h-6"><BarChart3 className="w-3 h-3" /> Barres</TabsTrigger>
                     <TabsTrigger value="scatter" className="text-xs gap-1 h-6"><Activity className="w-3 h-3" /> Scatter</TabsTrigger>
+                    <TabsTrigger value="percentiles" className="text-xs gap-1 h-6"><Percent className="w-3 h-3" /> {t('data.tab_percentiles', 'Percentiles')}</TabsTrigger>
                     <TabsTrigger value="diverging" disabled={activeEntries.length !== 2} className="text-xs gap-1 h-6">
                       <ArrowLeftRight className="w-3 h-3" /> Divergent
                     </TabsTrigger>
@@ -1710,26 +1600,26 @@ export default function PlayerCompare() {
                       <Select value={scatterX} onValueChange={setScatterX}>
                         <SelectTrigger className="h-7 w-48 text-[11px]"><SelectValue /></SelectTrigger>
                         <SelectContent>
-                          {STATS.map(s => <SelectItem key={s.key as string} value={s.key as string} className="text-[11px]">{s.label}</SelectItem>)}
+                          {STATS.map(s => <SelectItem key={s.key as string} value={s.key as string} className="text-[11px]">{mLabel(s.key as string)}</SelectItem>)}
                         </SelectContent>
                       </Select>
                       <span className="text-xs text-muted-foreground">×</span>
                       <Select value={scatterY} onValueChange={setScatterY}>
                         <SelectTrigger className="h-7 w-48 text-[11px]"><SelectValue /></SelectTrigger>
                         <SelectContent>
-                          {STATS.map(s => <SelectItem key={s.key as string} value={s.key as string} className="text-[11px]">{s.label}</SelectItem>)}
+                          {STATS.map(s => <SelectItem key={s.key as string} value={s.key as string} className="text-[11px]">{mLabel(s.key as string)}</SelectItem>)}
                         </SelectContent>
                       </Select>
                     </div>
                     <ResponsiveContainer width="100%" height={400}>
                       <ScatterChart margin={{ top: 20, right: 30, bottom: 30, left: 30 }}>
                         <CartesianGrid stroke="hsl(var(--border))" strokeOpacity={0.5} />
-                        <XAxis type="number" dataKey="x" name={scatterDef?.label}
+                        <XAxis type="number" dataKey="x" name={mLabel(scatterX)}
                           tick={{ fontSize: 10, fill: 'hsl(var(--muted-foreground))' }}
-                          label={{ value: scatterDef?.label, position: 'insideBottom', offset: -10, fontSize: 10, fill: 'hsl(var(--muted-foreground))' }} />
-                        <YAxis type="number" dataKey="y" name={scatterDefY?.label}
+                          label={{ value: mLabel(scatterX), position: 'insideBottom', offset: -10, fontSize: 10, fill: 'hsl(var(--muted-foreground))' }} />
+                        <YAxis type="number" dataKey="y" name={mLabel(scatterY)}
                           tick={{ fontSize: 10, fill: 'hsl(var(--muted-foreground))' }}
-                          label={{ value: scatterDefY?.label, angle: -90, position: 'insideLeft', fontSize: 10, fill: 'hsl(var(--muted-foreground))' }} />
+                          label={{ value: mLabel(scatterY), angle: -90, position: 'insideLeft', fontSize: 10, fill: 'hsl(var(--muted-foreground))' }} />
                         <ZAxis type="number" dataKey="size" range={[60, 240]} />
                         <Tooltip
                           cursor={{ strokeDasharray: '3 3' }}
@@ -1743,10 +1633,10 @@ export default function PlayerCompare() {
                                   {p.name}
                                 </div>
                                 <div className="text-[11px] text-muted-foreground">
-                                  {scatterDef?.label}: <span className="text-foreground font-medium tabular-nums">{scatterDef ? fmtVal(p.x, scatterDef) : p.x}</span>
+                                  {mLabel(scatterX)}: <span className="text-foreground font-medium tabular-nums">{scatterDef ? fmtVal(p.x, scatterDef) : p.x}</span>
                                 </div>
                                 <div className="text-[11px] text-muted-foreground">
-                                  {scatterDefY?.label}: <span className="text-foreground font-medium tabular-nums">{scatterDefY ? fmtVal(p.y, scatterDefY) : p.y}</span>
+                                  {mLabel(scatterY)}: <span className="text-foreground font-medium tabular-nums">{scatterDefY ? fmtVal(p.y, scatterDefY) : p.y}</span>
                                 </div>
                               </div>
                             );
@@ -1801,11 +1691,55 @@ export default function PlayerCompare() {
                     </BarChart>
                   </ResponsiveContainer>
                 )}
+                {chartMode === 'percentiles' && (
+                  cohortLoading ? (
+                    <p className="text-xs text-muted-foreground text-center py-12 flex items-center justify-center gap-2"><Loader2 className="w-4 h-4 animate-spin" /> {t('data.computing', 'Calcul des percentiles…')}</p>
+                  ) : (
+                    <div className="overflow-x-auto rounded-lg border border-border/50">
+                      <table className="w-full text-xs">
+                        <thead>
+                          <tr className="bg-muted/50 text-muted-foreground">
+                            <th className="text-left px-3 py-2 font-semibold">Stat</th>
+                            {activeEntries.map(e => (
+                              <th key={e.entryId} className="text-center px-2 py-2 font-semibold">
+                                <div className="flex items-center justify-center gap-1">
+                                  <span className="w-2 h-2 rounded-full inline-block shrink-0" style={{ backgroundColor: effectiveColor(e) }} />
+                                  <span className="truncate max-w-[110px]">{entryLabel(e, false)}</span>
+                                </div>
+                              </th>
+                            ))}
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {selectedStats.map(k => STAT_BY_KEY[k]).filter(Boolean).map(def => (
+                            <tr key={def.key as string} className="border-t border-border/30">
+                              <td className="px-3 py-2 font-medium">{mLabel(def.key as string)}</td>
+                              {activeEntries.map(e => {
+                                const p = entryPercentile(e, def);
+                                return (
+                                  <td key={e.entryId} className="px-2 py-2">
+                                    <div className="flex items-center justify-center gap-1.5">
+                                      <div className="w-14 h-1.5 bg-muted rounded-full overflow-hidden">
+                                        <div className={cn('h-full', percentileColor(p))} style={{ width: p == null ? '0%' : `${p}%` }} />
+                                      </div>
+                                      <span className="tabular-nums w-6 text-right font-medium">{p ?? '—'}</span>
+                                    </div>
+                                  </td>
+                                );
+                              })}
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  )
+                )}
               </div>
               <p className="text-[9px] text-muted-foreground/50 text-center mt-2">
                 {chartMode === 'radar' && '100% = max de référence de la catégorie'}
                 {chartMode === 'bars' && 'Valeurs absolues — comparaison directe par stat'}
                 {chartMode === 'scatter' && 'Chaque point = une entrée, position = (X, Y)'}
+                {chartMode === 'percentiles' && t('data.percentile_vs_pos', 'Percentile vs joueurs du même poste (≥ 600 min)')}
                 {chartMode === 'diverging' && 'Barres opposées — gauche / droite à partir de zéro'}
               </p>
             </CardContent>
@@ -1864,7 +1798,7 @@ export default function PlayerCompare() {
                             def.cat === 'gk' && 'bg-indigo-400',
                             def.cat === 'physical' && 'bg-fuchsia-400',
                           )} />
-                          {def.label}
+                          {mLabel(def.key as string)}
                         </td>
                         {values.map((v, i) => {
                           const colEntry = activeEntries[i];
@@ -1907,12 +1841,12 @@ export default function PlayerCompare() {
             <p className="text-sm text-muted-foreground">
               {selectedStats.length === 0
                 ? 'Sélectionnez au moins une statistique pour comparer'
-                : 'En attente de données WyScout pour les entrées sélectionnées'}
+                : 'En attente de données statistiques pour les entrées sélectionnées'}
             </p>
             {entries.some(e => e.kind === 'player' && !e.stats) && (
               <Link to="/data-import">
                 <Button size="sm" variant="outline" className="mt-3 gap-2">
-                  <FileSpreadsheet className="w-3.5 h-3.5" /> Importer des données WyScout
+                  <FileSpreadsheet className="w-3.5 h-3.5" /> Importer des données statistiques
                 </Button>
               </Link>
             )}
@@ -1948,7 +1882,7 @@ export default function PlayerCompare() {
       </Dialog>
 
       <p className="text-[10px] text-muted-foreground/50 text-center flex items-center justify-center gap-1">
-        <Share2 className="w-2.5 h-2.5" /> Source : fichiers Excel WyScout importés
+        <Share2 className="w-2.5 h-2.5" /> Source : fichiers Excel de statistiques importés
       </p>
     </div>
   );
