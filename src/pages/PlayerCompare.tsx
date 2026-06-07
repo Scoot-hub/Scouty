@@ -5,6 +5,7 @@ import { useWyscoutCatalogStats, type WyscoutStatRow } from '@/hooks/use-wyscout
 import { useMetricLabel, percentileColor, groupForPosition } from '@/lib/wyscout-metrics';
 import { percentileInGroup } from '@/lib/wyscout-benchmarks';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
+import { ExportableCard } from '@/components/data/ExportableCard';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
@@ -26,6 +27,7 @@ import {
   Trash2, FileSpreadsheet as XlsxIcon, Star, ArrowLeft, Percent,
 } from 'lucide-react';
 import { useToast } from '@/hooks/use-toast';
+import { useIsMobile } from '@/hooks/use-mobile';
 import { cn } from '@/lib/utils';
 import { Link } from 'react-router-dom';
 import {
@@ -281,7 +283,7 @@ function PlayerEntryCard({
   const freshness = isFresh(entry.stats);
 
   return (
-    <div className="flex items-center gap-2 p-2 rounded-lg border border-border/60 bg-card">
+    <div className="flex items-center gap-2 p-2 rounded-lg border border-border/60 bg-card flex-wrap">
       {/* Color swatch / avatar */}
       <Popover>
         <PopoverTrigger asChild>
@@ -464,7 +466,7 @@ function BenchmarkEntryCard({
   const titleLabel = entry.position ? `Moy. ${entry.position}` : 'Moy. tous postes';
 
   return (
-    <div className="flex items-center gap-2 p-2 rounded-lg border border-dashed border-border/80 bg-muted/20">
+    <div className="flex items-center gap-2 p-2 rounded-lg border border-dashed border-border/80 bg-muted/20 flex-wrap">
       <Popover>
         <PopoverTrigger asChild>
           <button
@@ -586,7 +588,7 @@ function AddPlayerPopover({
           <Plus className="w-3.5 h-3.5" /> Ajouter
         </Button>
       </PopoverTrigger>
-      <PopoverContent className="w-96 p-2" align="end">
+      <PopoverContent className="w-[min(24rem,calc(100vw-2rem))] p-2" align="end">
         <div className="flex items-center gap-1.5 mb-2 text-[10px] text-muted-foreground">
           <FileSpreadsheet className="w-3 h-3 text-emerald-500" /> Base de statistiques partagée
         </div>
@@ -877,6 +879,10 @@ export default function PlayerCompare() {
   const { label: mLabel } = useMetricLabel();
   const { toast } = useToast();
   const radarRef = useRef<HTMLDivElement | null>(null);
+  const isMobile = useIsMobile();
+  // Vertical bar/diverging charts reserve space for stat labels on the Y axis;
+  // shrink it on mobile so the plotting area isn't crushed.
+  const yAxisW = isMobile ? 80 : 120;
 
   // Premium gating is handled centrally by <DataGuard> on every /data/* route.
 
@@ -1518,28 +1524,30 @@ export default function PlayerCompare() {
       {canCompare ? (
         <>
           {/* Chart card with mode tabs */}
-          <Card className="card-warm">
-            <CardHeader className="pb-2">
-              <div className="flex items-center justify-between flex-wrap gap-2">
-                <Tabs value={chartMode} onValueChange={v => setChartMode(v as ChartMode)}>
-                  <TabsList className="h-8">
-                    <TabsTrigger value="radar" className="text-xs gap-1 h-6"><RadarIcon className="w-3 h-3" /> Radar</TabsTrigger>
-                    <TabsTrigger value="bars" className="text-xs gap-1 h-6"><BarChart3 className="w-3 h-3" /> Barres</TabsTrigger>
-                    <TabsTrigger value="scatter" className="text-xs gap-1 h-6"><Activity className="w-3 h-3" /> Scatter</TabsTrigger>
-                    <TabsTrigger value="percentiles" className="text-xs gap-1 h-6"><Percent className="w-3 h-3" /> {t('data.tab_percentiles', 'Percentiles')}</TabsTrigger>
-                    <TabsTrigger value="diverging" disabled={activeEntries.length !== 2} className="text-xs gap-1 h-6">
-                      <ArrowLeftRight className="w-3 h-3" /> Divergent
-                    </TabsTrigger>
-                  </TabsList>
-                </Tabs>
-                {chartMode === 'radar' && selectedStats.length >= 3 && (
-                  <Button variant="ghost" size="sm" className="h-7 gap-1.5 text-[11px]" onClick={downloadRadarPng}>
-                    <ImageIcon className="w-3.5 h-3.5" /> PNG
-                  </Button>
-                )}
-              </div>
-            </CardHeader>
-            <CardContent>
+          <div className="space-y-2">
+            <div className="flex items-center justify-between flex-wrap gap-2">
+              <Tabs value={chartMode} onValueChange={v => setChartMode(v as ChartMode)}>
+                <TabsList className="h-8">
+                  <TabsTrigger value="radar" className="text-xs gap-1 h-6"><RadarIcon className="w-3 h-3" /> Radar</TabsTrigger>
+                  <TabsTrigger value="bars" className="text-xs gap-1 h-6"><BarChart3 className="w-3 h-3" /> Barres</TabsTrigger>
+                  <TabsTrigger value="scatter" className="text-xs gap-1 h-6"><Activity className="w-3 h-3" /> Scatter</TabsTrigger>
+                  <TabsTrigger value="percentiles" className="text-xs gap-1 h-6"><Percent className="w-3 h-3" /> {t('data.tab_percentiles', 'Percentiles')}</TabsTrigger>
+                  <TabsTrigger value="diverging" disabled={activeEntries.length !== 2} className="text-xs gap-1 h-6">
+                    <ArrowLeftRight className="w-3 h-3" /> Divergent
+                  </TabsTrigger>
+                </TabsList>
+              </Tabs>
+              {chartMode === 'radar' && selectedStats.length >= 3 && (
+                <Button variant="ghost" size="sm" className="h-7 gap-1.5 text-[11px]" onClick={downloadRadarPng}>
+                  <ImageIcon className="w-3.5 h-3.5" /> PNG
+                </Button>
+              )}
+            </div>
+            <ExportableCard
+              title={`${t('data.compare', 'Comparaison')} — ${chartMode === 'radar' ? 'Radar' : chartMode === 'bars' ? t('data.tab_bars', 'Barres') : chartMode === 'scatter' ? 'Scatter' : chartMode === 'percentiles' ? t('data.tab_percentiles', 'Percentiles') : t('data.tab_diverging', 'Divergent')}`}
+              subtitle={activeEntries.map(e => entryLabel(e, false)).join(' · ') || undefined}
+              fileName={`scouty_compare_${chartMode}`}
+            >
               <div ref={radarRef}>
                 {chartMode === 'radar' && (
                   selectedStats.length < 3 ? (
@@ -1575,10 +1583,10 @@ export default function PlayerCompare() {
                 )}
                 {chartMode === 'bars' && (
                   <ResponsiveContainer width="100%" height={Math.max(300, selectedStats.length * 32 + 80)}>
-                    <BarChart data={barData} layout="vertical" margin={{ top: 10, right: 20, bottom: 10, left: 120 }}>
+                    <BarChart data={barData} layout="vertical" margin={{ top: 10, right: 20, bottom: 10, left: yAxisW }}>
                       <CartesianGrid stroke="hsl(var(--border))" strokeOpacity={0.5} horizontal={false} />
                       <XAxis type="number" tick={{ fontSize: 10, fill: 'hsl(var(--muted-foreground))' }} />
-                      <YAxis type="category" dataKey="stat" tick={{ fontSize: 10, fill: 'hsl(var(--muted-foreground))' }} width={120} />
+                      <YAxis type="category" dataKey="stat" tick={{ fontSize: 10, fill: 'hsl(var(--muted-foreground))' }} width={yAxisW} />
                       <Tooltip contentStyle={{ fontSize: 11, borderRadius: 8, border: '1px solid hsl(var(--border))', background: 'hsl(var(--background))' }} />
                       <Legend iconSize={8} wrapperStyle={{ fontSize: 10 }} />
                       {activeEntries.map(e => (
@@ -1666,11 +1674,11 @@ export default function PlayerCompare() {
                 )}
                 {chartMode === 'diverging' && activeEntries.length === 2 && (
                   <ResponsiveContainer width="100%" height={Math.max(300, selectedStats.length * 32 + 80)}>
-                    <BarChart data={divergingData} layout="vertical" stackOffset="sign" margin={{ top: 10, right: 20, bottom: 10, left: 120 }}>
+                    <BarChart data={divergingData} layout="vertical" stackOffset="sign" margin={{ top: 10, right: 20, bottom: 10, left: yAxisW }}>
                       <CartesianGrid stroke="hsl(var(--border))" strokeOpacity={0.5} horizontal={false} />
                       <XAxis type="number" tick={{ fontSize: 10, fill: 'hsl(var(--muted-foreground))' }}
                         tickFormatter={v => Math.abs(v).toString()} />
-                      <YAxis type="category" dataKey="stat" tick={{ fontSize: 10, fill: 'hsl(var(--muted-foreground))' }} width={120} />
+                      <YAxis type="category" dataKey="stat" tick={{ fontSize: 10, fill: 'hsl(var(--muted-foreground))' }} width={yAxisW} />
                       <Tooltip
                         contentStyle={{ fontSize: 11, borderRadius: 8, border: '1px solid hsl(var(--border))', background: 'hsl(var(--background))' }}
                         formatter={(value: number) => Math.abs(value).toFixed(2)}
@@ -1742,15 +1750,15 @@ export default function PlayerCompare() {
                 {chartMode === 'percentiles' && t('data.percentile_vs_pos', 'Percentile vs joueurs du même poste (≥ 600 min)')}
                 {chartMode === 'diverging' && 'Barres opposées — gauche / droite à partir de zéro'}
               </p>
-            </CardContent>
-          </Card>
+            </ExportableCard>
+          </div>
 
           {/* Detail table */}
-          <Card className="card-warm">
-            <CardHeader className="pb-2">
-              <CardTitle className="text-sm">Statistiques détaillées</CardTitle>
-            </CardHeader>
-            <CardContent className="pt-0">
+          <ExportableCard
+            title={t('data.detailed_stats', 'Statistiques détaillées')}
+            subtitle={activeEntries.map(e => entryLabel(e, false)).join(' · ') || undefined}
+            fileName="scouty_compare_table"
+          >
               <div className="overflow-x-auto rounded-lg border border-border/50">
                 <table className="w-full text-xs">
                   <thead>
@@ -1831,8 +1839,7 @@ export default function PlayerCompare() {
                   </tbody>
                 </table>
               </div>
-            </CardContent>
-          </Card>
+          </ExportableCard>
         </>
       ) : entries.length > 0 ? (
         <Card className="card-warm">

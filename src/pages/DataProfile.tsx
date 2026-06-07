@@ -3,6 +3,7 @@ import { Link } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
+import { ExportableCard } from '@/components/data/ExportableCard';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
@@ -142,6 +143,12 @@ function RoleRanksTab() {
       ) : ranked.length === 0 ? (
         <p className="text-sm text-muted-foreground text-center py-12">{t('data.no_results', 'Aucun joueur ne correspond.')}</p>
       ) : (
+        <ExportableCard
+          title={roleLabel(role.key, role.label)}
+          subtitle={roleDesc || undefined}
+          fileName={`scouty_role_${role.key}`}
+          headerRight={<Badge variant="outline" className="text-[10px]">{ranked.length}</Badge>}
+        >
         <div className="overflow-x-auto rounded-lg border border-border/50">
           <table className="w-full text-xs">
             <thead>
@@ -182,6 +189,7 @@ function RoleRanksTab() {
             </tbody>
           </table>
         </div>
+        </ExportableCard>
       )}
     </div>
   );
@@ -311,6 +319,12 @@ function CustomRoleTab() {
       ) : results.length === 0 ? (
         <p className="text-sm text-muted-foreground text-center py-10">{t('data.no_results', 'Aucun résultat.')}</p>
       ) : (
+        <ExportableCard
+          title={t('data.tab_custom', 'Rôle personnalisé')}
+          subtitle={activeMetrics.map(m => mLabel(m)).join(' · ') || undefined}
+          fileName={`scouty_custom_role_${group}`}
+          headerRight={<Badge variant="outline" className="text-[10px]">{results.length}</Badge>}
+        >
         <div className="overflow-x-auto rounded-lg border border-border/50">
           <table className="w-full text-xs">
             <thead>
@@ -354,6 +368,7 @@ function CustomRoleTab() {
             </tbody>
           </table>
         </div>
+        </ExportableCard>
       )}
 
       <StatPickerDialog open={pickerOpen} onOpenChange={setPickerOpen} selected={metrics} onChange={onPick} title={t('data.choose_criteria', 'Choisir les critères du rôle')} />

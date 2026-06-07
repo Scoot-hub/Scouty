@@ -7,6 +7,7 @@ import {
   LineChart, Line, XAxis, YAxis, CartesianGrid,
 } from 'recharts';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
+import { ExportableCard } from '@/components/data/ExportableCard';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
@@ -454,22 +455,15 @@ export default function WyscoutPlayerData() {
           </div>
 
           {/* Radar (both modes) */}
-          <Card>
-            <CardHeader className="pb-2">
-              <CardTitle className="text-sm flex items-center gap-2">
-                <Activity className="w-4 h-4 text-violet-500" />
-                Radar (percentile / 100)
-                {benchmarkQ.data && benchmarkQ.data.sample_size > 0 && (
-                  <span className="text-[11px] font-normal text-muted-foreground">
-                    vs moyenne {benchmarkQ.data.position || 'poste'} (n={benchmarkQ.data.sample_size})
-                  </span>
-                )}
-              </CardTitle>
-            </CardHeader>
-            <CardContent>
-              <RadarBlock isGK={isGK} aggregated={aggregated} benchmark={benchmarkQ.data ?? null} />
-            </CardContent>
-          </Card>
+          <ExportableCard
+            title={`Radar — ${player.name}`}
+            subtitle={benchmarkQ.data && benchmarkQ.data.sample_size > 0
+              ? `vs moyenne ${benchmarkQ.data.position || 'poste'} (n=${benchmarkQ.data.sample_size})`
+              : 'Percentile / 100'}
+            fileName={`scouty_radar_${player.name}`}
+          >
+            <RadarBlock isGK={isGK} aggregated={aggregated} benchmark={benchmarkQ.data ?? null} />
+          </ExportableCard>
 
           {viewMode === 'synthese' && (
             <>
@@ -510,19 +504,13 @@ export default function WyscoutPlayerData() {
 
               {/* Percentile table */}
               {peerStatRowsForPercentile.length >= 3 && (
-                <Card>
-                  <CardHeader className="pb-2">
-                    <CardTitle className="text-sm flex items-center gap-2">
-                      <TrendingUp className="w-4 h-4 text-emerald-500" /> Percentiles par stat
-                      <span className="text-[11px] font-normal text-muted-foreground">
-                        vs {peerStatRowsForPercentile.length} joueurs au poste {playerPos}
-                      </span>
-                    </CardTitle>
-                  </CardHeader>
-                  <CardContent>
-                    <PercentileTable aggregated={aggregated} peers={peerStatRowsForPercentile} isGK={isGK} />
-                  </CardContent>
-                </Card>
+                <ExportableCard
+                  title={`Percentiles — ${player.name}`}
+                  subtitle={`vs ${peerStatRowsForPercentile.length} joueurs au poste ${playerPos}`}
+                  fileName={`scouty_percentiles_${player.name}`}
+                >
+                  <PercentileTable aggregated={aggregated} peers={peerStatRowsForPercentile} isGK={isGK} />
+                </ExportableCard>
               )}
             </>
           )}
@@ -531,12 +519,12 @@ export default function WyscoutPlayerData() {
             <>
               {/* Season evolution */}
               {rows.length >= 2 && (
-                <Card>
-                  <CardHeader className="pb-2">
-                    <div className="flex items-center justify-between gap-2 flex-wrap">
-                      <CardTitle className="text-sm flex items-center gap-2">
-                        <LineChartIcon className="w-4 h-4 text-violet-500" /> Évolution par saison
-                      </CardTitle>
+                <ExportableCard
+                  title={`Évolution par saison — ${player.name}`}
+                  subtitle={SEASON_CHART_STATS.find(s => s.key === seasonChartStat)?.label}
+                  fileName={`scouty_evolution_${player.name}`}
+                  headerRight={
+                    <div data-export-ignore="">
                       <Select value={seasonChartStat as string} onValueChange={v => setSeasonChartStat(v as keyof WyscoutStatRow)}>
                         <SelectTrigger className="h-8 w-56 text-xs"><SelectValue /></SelectTrigger>
                         <SelectContent>
@@ -546,18 +534,18 @@ export default function WyscoutPlayerData() {
                         </SelectContent>
                       </Select>
                     </div>
-                  </CardHeader>
-                  <CardContent>
-                    <SeasonEvolutionChart rows={rows} statKey={seasonChartStat} />
-                  </CardContent>
-                </Card>
+                  }
+                >
+                  <SeasonEvolutionChart rows={rows} statKey={seasonChartStat} />
+                </ExportableCard>
               )}
 
               {/* Stat category tabs */}
-              <Card>
-                <CardHeader className="pb-2">
-                  <div className="flex items-center justify-between gap-2 flex-wrap">
-                    <CardTitle className="text-sm">Statistiques détaillées</CardTitle>
+              <ExportableCard
+                title={`Statistiques détaillées — ${player.name}`}
+                fileName={`scouty_stats_${player.name}`}
+                headerRight={
+                  <div data-export-ignore="">
                     <Tabs value={statCat} onValueChange={v => setStatCat(v as 'all' | StatCat)}>
                       <TabsList className="h-8">
                         <TabsTrigger value="all" className="text-xs h-7">Tout</TabsTrigger>
@@ -565,8 +553,9 @@ export default function WyscoutPlayerData() {
                       </TabsList>
                     </Tabs>
                   </div>
-                </CardHeader>
-                <CardContent className="space-y-3">
+                }
+              >
+                <div className="space-y-3">
                   {visibleCats.map(cat => (
                     <CategoryBlock
                       key={cat}
@@ -578,8 +567,8 @@ export default function WyscoutPlayerData() {
                       onToggle={() => setCollapsed(c => ({ ...c, [cat]: !c[cat] }))}
                     />
                   ))}
-                </CardContent>
-              </Card>
+                </div>
+              </ExportableCard>
             </>
           )}
         </>
@@ -592,8 +581,8 @@ export default function WyscoutPlayerData() {
             <CardTitle className="text-sm">Saisons enregistrées</CardTitle>
           </CardHeader>
           <CardContent>
-            <div className="border rounded-lg overflow-hidden">
-              <table className="w-full text-sm">
+            <div className="border rounded-lg overflow-x-auto">
+              <table className="w-full min-w-[480px] text-sm">
                 <thead className="bg-muted/50">
                   <tr>
                     <th className="text-left px-3 py-2 font-medium">Saison</th>

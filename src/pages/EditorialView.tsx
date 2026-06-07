@@ -323,13 +323,14 @@ export default function EditorialView() {
 
       {/* Rich text content */}
       <div
-        className="prose prose-sm dark:prose-invert max-w-none
+        className="prose prose-sm dark:prose-invert max-w-none break-words
           prose-headings:font-bold prose-headings:tracking-tight
           prose-h1:text-2xl prose-h2:text-xl prose-h3:text-lg
           prose-a:text-primary prose-a:underline
           prose-blockquote:border-l-4 prose-blockquote:border-primary/40 prose-blockquote:pl-4 prose-blockquote:italic
           prose-img:rounded-xl prose-img:shadow-md
           prose-code:bg-muted prose-code:px-1.5 prose-code:py-0.5 prose-code:rounded
+          [&_img]:max-w-full [&_table]:block [&_table]:overflow-x-auto [&_pre]:overflow-x-auto
           mb-12"
         dangerouslySetInnerHTML={{ __html: article.content }}
       />

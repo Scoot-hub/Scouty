@@ -216,11 +216,11 @@ export function CustomFieldsDisplay({ playerId, editable = false }: Props) {
 
         return (
           <div key={field.id} className={cn(
-            'flex items-center justify-between p-3 rounded-xl transition-colors duration-300',
+            'flex items-center justify-between gap-2 flex-wrap p-3 rounded-xl transition-colors duration-300',
             isSaved ? 'bg-emerald-500/10' : 'bg-muted/40',
           )}>
             <FieldLabel field={field} isSaved={isSaved} />
-            <div className="flex items-center gap-1 text-right min-w-0 ml-3">
+            <div className="flex items-center gap-1 text-right min-w-0">
               {editable
                 ? <EditableField field={field} value={getValue(field.id)} onChange={v => handleChange(field.id, v)} dateFormat={dateFormat} timeFormat={timeFormat} timezone={timezone} currency={currency} />
                 : <ReadonlyField field={field} value={getValue(field.id)} dateFormat={dateFormat} timeFormat={timeFormat} timezone={timezone} currency={currency} />

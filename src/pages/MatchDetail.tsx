@@ -682,7 +682,7 @@ export default function MatchDetail() {
             ) : (
               <Card>
                 <CardContent className="p-4">
-                  <div className="flex gap-6">
+                  <div className="flex gap-3 sm:gap-6">
                     <LineupColumn
                       team={data.home_team}
                       formation={data.lineups.home.formation}

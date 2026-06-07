@@ -188,6 +188,13 @@ export default function PlayerProfile() {
   const handleEnrich = async (tmUrl?: string) => {
     if (!player) return;
 
+    // Non-premium (free/starter) → pitch the upgrade up-front instead of a failed
+    // server round-trip. The dialog shows the quota they'd unlock + a direct checkout.
+    if (!isPremium && !isAdmin) {
+      setShowCreditLimit(true);
+      return;
+    }
+
     // Cooldown guard — skip scraping if enriched recently (unless providing a new TM URL or admin)
     if (!isAdmin && !tmUrl && player.external_data_fetched_at) {
       const lastEnrich = new Date(player.external_data_fetched_at).getTime();
@@ -444,7 +451,7 @@ export default function PlayerProfile() {
     evaluation: () => (
       <CardContent className="p-5">
         <h3 className="text-xs font-bold uppercase tracking-wider text-muted-foreground mb-5">{t('profile.evaluation')}</h3>
-        <div className="flex items-center justify-center gap-10">
+        <div className="flex items-center justify-center gap-6 sm:gap-10">
           <CircularGauge value={player.current_level} variant="success" label={t('profile.level')} size={130} />
           <Tooltip>
             <TooltipTrigger asChild>
@@ -1058,26 +1065,26 @@ export default function PlayerProfile() {
           <TabsTrigger value="videos" className="gap-2">
             <Video className="w-4 h-4" />
             <span className="hidden sm:inline">{t('profile.tab_videos')}</span>
-            {videos.length > 0 && <Badge variant="secondary" className="ml-1 text-[10px] h-4 px-1">{videos.length}</Badge>}
+            {videos.length > 0 && <Badge variant="secondary" className="ml-1 text-[10px] h-4 px-1 hidden sm:inline-flex">{videos.length}</Badge>}
           </TabsTrigger>
           <TabsTrigger value="data" className="gap-2">
             <Activity className="w-4 h-4" />
             <span className="hidden sm:inline">{t('profile.tab_data')}</span>
             {wyscoutRows.length > 0 && (
-              <Badge variant="secondary" className="ml-1 text-[10px] h-4 px-1 bg-primary/15 text-primary">WY</Badge>
+              <Badge variant="secondary" className="ml-1 text-[10px] h-4 px-1 bg-primary/15 text-primary hidden sm:inline-flex">PRO</Badge>
             )}
           </TabsTrigger>
           <TabsTrigger value="injuries" className="gap-2">
             <HeartPulse className="w-4 h-4" />
             <span className="hidden sm:inline">{t('profile.tab_injuries')}</span>
             {injuriesData?.injuries?.length ? (
-              <Badge variant="secondary" className="ml-1 text-[10px] h-4 px-1">{injuriesData.injuries.length}</Badge>
+              <Badge variant="secondary" className="ml-1 text-[10px] h-4 px-1 hidden sm:inline-flex">{injuriesData.injuries.length}</Badge>
             ) : null}
           </TabsTrigger>
           <TabsTrigger value="links" className="gap-2">
             <Link2 className="w-4 h-4" />
             <span className="hidden sm:inline">{t('profile.tab_links')}</span>
-            {research.length > 0 && <Badge variant="secondary" className="ml-1 text-[10px] h-4 px-1">{research.length}</Badge>}
+            {research.length > 0 && <Badge variant="secondary" className="ml-1 text-[10px] h-4 px-1 hidden sm:inline-flex">{research.length}</Badge>}
           </TabsTrigger>
           {sbData?.players.length ? (
             <TabsTrigger value="statsbomb" className="gap-2">
@@ -1138,7 +1145,7 @@ export default function PlayerProfile() {
                 <p className="text-xs font-semibold text-primary">{t('profile.wyscout_available', { count: wyscoutRows.length })}</p>
                 <p className="text-[11px] text-muted-foreground">{t('profile.wyscout_available_desc')}</p>
               </div>
-              <Badge className="shrink-0 bg-primary/15 text-primary text-[10px] border-0">WY</Badge>
+              <Badge className="shrink-0 bg-primary/15 text-primary text-[10px] border-0">PRO</Badge>
             </button>
           )}
 

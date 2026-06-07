@@ -181,6 +181,7 @@ export default function Admin() {
   // ── Roles section state ──
   const [selectedRole, setSelectedRole] = useState('user');
   const [searchTerm, setSearchTerm] = useState('');
+  const [userFilter, setUserFilter] = useState<'all' | 'banned' | 'premium' | 'suspicious'>('all');
   const [updatingUser, setUpdatingUser] = useState<string | null>(null);
   const [updatingPerm, setUpdatingPerm] = useState<string | null>(null);
   const [newRoleName, setNewRoleName] = useState('');
@@ -282,10 +283,20 @@ export default function Admin() {
   }, [roles]);
 
   const filteredUsers = useMemo(() => {
-    if (!searchTerm.trim()) return users;
-    const q = searchTerm.toLowerCase();
-    return users.filter(u => u.email.toLowerCase().includes(q));
-  }, [users, searchTerm]);
+    const q = searchTerm.trim().toLowerCase();
+    return users.filter(u => {
+      if (q) {
+        const name = `${u.first_name || ''} ${u.last_name || ''}`.toLowerCase();
+        if (!u.email.toLowerCase().includes(q) && !name.includes(q)) return false;
+      }
+      if (userFilter === 'banned' && !u.is_banned) return false;
+      if (userFilter === 'premium' && !u.is_premium) return false;
+      if (userFilter === 'suspicious' && !u.suspicious_referral) return false;
+      return true;
+    });
+  }, [users, searchTerm, userFilter]);
+
+  const bannedCount = useMemo(() => users.filter(u => u.is_banned).length, [users]);
 
   // ── Users handlers ──
   const togglePremium = async (userId: string, current: boolean) => {
@@ -748,6 +759,40 @@ export default function Admin() {
             </Card>
           </div>
 
+          {/* Search + filters */}
+          <div className="flex flex-col sm:flex-row gap-2 sm:items-center">
+            <div className="relative flex-1">
+              <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground pointer-events-none" />
+              <Input
+                value={searchTerm}
+                onChange={e => setSearchTerm(e.target.value)}
+                placeholder="Rechercher par email ou nom…"
+                className="pl-9"
+              />
+            </div>
+            <div className="flex items-center gap-1.5 flex-wrap">
+              {([
+                { value: 'all', label: 'Tous' },
+                { value: 'banned', label: `Bannis${bannedCount ? ` (${bannedCount})` : ''}` },
+                { value: 'premium', label: 'Premium' },
+                { value: 'suspicious', label: 'Suspects' },
+              ] as const).map(f => (
+                <button
+                  key={f.value}
+                  onClick={() => setUserFilter(f.value)}
+                  className={cn(
+                    'px-3 py-1.5 rounded-lg text-xs font-medium border transition-colors',
+                    userFilter === f.value
+                      ? 'bg-primary text-primary-foreground border-primary'
+                      : 'bg-background text-muted-foreground border-border hover:bg-muted',
+                  )}
+                >
+                  {f.label}
+                </button>
+              ))}
+            </div>
+          </div>
+
           {/* Users table */}
           <Card className="border-none card-warm overflow-hidden">
             <CardContent className="p-0 overflow-x-auto">
@@ -766,7 +811,13 @@ export default function Admin() {
                     </TableRow>
                   </TableHeader>
                   <TableBody>
-                    {users.map(u => (
+                    {filteredUsers.length === 0 ? (
+                      <TableRow>
+                        <TableCell colSpan={6} className="py-8 text-center text-muted-foreground">
+                          Aucun utilisateur trouvé.
+                        </TableCell>
+                      </TableRow>
+                    ) : filteredUsers.map(u => (
                       <TableRow key={u.id}>
                         <TableCell className="font-medium whitespace-nowrap">
                           <div className="flex items-center gap-2">

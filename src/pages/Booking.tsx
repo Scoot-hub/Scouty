@@ -189,7 +189,7 @@ VITE_CAL_URL=https://www.cal.eu     # ou https://cal.com`}
       <div className="max-w-5xl mx-auto py-8 px-4 space-y-10">
 
         {/* ── Hero ── */}
-        <div className="relative overflow-hidden rounded-3xl bg-gradient-to-br from-primary/8 via-background to-indigo-500/5 border px-8 py-10">
+        <div className="relative overflow-hidden rounded-3xl bg-gradient-to-br from-primary/8 via-background to-indigo-500/5 border px-5 sm:px-8 py-8 sm:py-10">
           {/* Decorative blobs */}
           <div className="pointer-events-none absolute -top-16 -right-16 w-64 h-64 rounded-full bg-primary/6 blur-3xl" />
           <div className="pointer-events-none absolute -bottom-12 -left-12 w-48 h-48 rounded-full bg-indigo-500/6 blur-3xl" />

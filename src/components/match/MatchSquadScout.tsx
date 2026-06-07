@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { useQuery } from '@tanstack/react-query';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import { supabase } from '@/integrations/supabase/client';
 import { Card, CardContent } from '@/components/ui/card';
@@ -261,6 +261,7 @@ function MatchTeamSection({ players, fallbackName, badge, isHome, lang, t, addin
 export function MatchSquadScout({ match }: { match: DayMatch }) {
   const { t, i18n } = useTranslation();
   const [adding, setAdding] = useState<string | null>(null);
+  const queryClient = useQueryClient();
 
   const { data, isLoading } = useQuery({
     queryKey: ['discover-match-players', match.id, match.home_team, match.away_team],
@@ -289,6 +290,11 @@ export function MatchSquadScout({ match }: { match: DayMatch }) {
         photo_url: player.photo,
       });
       if (error) throw error;
+      // Refresh player caches (incl. the facets that drive the Players empty-state)
+      // so a freshly-added player shows up without a hard refresh.
+      queryClient.invalidateQueries({ queryKey: ['players'] });
+      queryClient.invalidateQueries({ queryKey: ['players-paginated'] });
+      queryClient.invalidateQueries({ queryKey: ['player-facets'] });
       toast.success(t('discover.player_added', { name: player.name }));
     } catch (err: unknown) {
       toast.error(err instanceof Error ? err.message : t('common.error'));

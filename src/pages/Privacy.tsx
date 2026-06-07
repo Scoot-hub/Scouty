@@ -562,8 +562,8 @@ const content = {
       { label: 'SocialData', desc: 'Daten aus öffentlichen sozialen Netzwerken (wenn API-Schlüssel angegeben)' },
     ],
     art2_4_note: 'Die Aktivierung dieser Module ist vollständig freiwillig.',
-    art2_5_title: '2.5 Daten aus dem Wyscout-Dateiimport',
-    art2_5_p: 'Nutzer mit der Rolle „Importeur" können Excel-Dateien (Wyscout-Format) mit Spielerstatistiken hochladen. Diese Daten (bis zu 130 Spalten pro Spieler) werden in der Tabelle player_wyscout_stats gespeichert und sind mit bestehenden Spielerprofilen verknüpft.',
+    art2_5_title: '2.5 Daten aus dem Import von Statistikdateien',
+    art2_5_p: 'Nutzer mit der Rolle „Importeur" können Excel-Dateien mit Spielerstatistiken hochladen. Diese statistischen Daten (bis zu 130 Spalten pro Spieler: Tore, Vorlagen, zurückgelegte Distanz usw.) werden in einer dedizierten Statistiktabelle gespeichert und mit bestehenden oder neu erstellten Spielerprofilen verknüpft. Diese Daten werden ausschließlich auf den Servern der Plattform verarbeitet und gespeichert und nicht an Dritte weitergegeben.',
     art2_6_title: '2.6 Credits-System und Empfehlungsprogramm',
     art2_6_p: 'Scouty verfügt über ein Credits-System für erweiterte Funktionen. Credit-Ereignisse werden in user_credit_events protokolliert. Das Empfehlungsprogramm vergibt jedem Nutzer einen eindeutigen Code und verfolgt Affiliierungen in der Tabelle referrals.',
     art2_7_title: '2.7 Schnittstelleneinstellungen (nur lokale Speicherung)',
@@ -583,7 +583,7 @@ const content = {
       ['Sicherheit und Betrugsprävention', 'Gesetzliche Verpflichtung / Berechtigtes Interesse'],
       ['Empfehlungsprogramm und Credits-Verwaltung', 'Vertragserfüllung / Berechtigtes Interesse'],
       ['Profilanreicherung über Drittmodule (Perplexity, Pappers usw.)', 'Einwilligung (freiwillige Aktivierung durch den Nutzer)'],
-      ['Import von Statistikdaten (Wyscout-Dateien)', 'Vertragserfüllung'],
+      ['Import von Statistikdaten', 'Vertragserfüllung'],
       ['Verwaltung von Rollen und Berechtigungen', 'Vertragserfüllung'],
       ['Automatische Anreicherung über öffentliche Quellen (Wikidata, TheSportsDB)', 'Berechtigtes Interesse'],
     ],
@@ -791,7 +791,8 @@ export default function Privacy() {
           {/* Article 3 */}
           <section>
             <h2 className="text-lg font-bold">{c.art3_title}</h2>
-            <table className="w-full text-sm border-collapse">
+            <div className="overflow-x-auto">
+            <table className="w-full min-w-[420px] text-sm border-collapse">
               <thead>
                 <tr className="border-b border-border">
                   <th className="text-left py-2 pr-4 font-semibold">{c.art3_headers[0]}</th>
@@ -807,6 +808,7 @@ export default function Privacy() {
                 ))}
               </tbody>
             </table>
+            </div>
           </section>
 
           {/* Article 4 */}
@@ -823,7 +825,8 @@ export default function Privacy() {
           <section>
             <h2 className="text-lg font-bold">{c.art5_title}</h2>
             <p>{c.art5_p1}</p>
-            <table className="w-full text-sm border-collapse">
+            <div className="overflow-x-auto">
+            <table className="w-full min-w-[520px] text-sm border-collapse">
               <thead>
                 <tr className="border-b border-border">
                   <th className="text-left py-2 pr-4 font-semibold">{c.art5_headers[0]}</th>
@@ -841,6 +844,7 @@ export default function Privacy() {
                 ))}
               </tbody>
             </table>
+            </div>
             <p className="mt-3">{c.art5_p2}</p>
           </section>
 
@@ -892,7 +896,8 @@ export default function Privacy() {
           <section>
             <h2 className="text-lg font-bold">{c.art8_title}</h2>
             <h3 className="text-base font-semibold mt-4">{c.art8_1_title}</h3>
-            <table className="w-full text-sm border-collapse">
+            <div className="overflow-x-auto">
+            <table className="w-full min-w-[560px] text-sm border-collapse">
               <thead>
                 <tr className="border-b border-border">
                   {c.art8_cookie_headers.map((h, i) => (
@@ -911,6 +916,7 @@ export default function Privacy() {
                 ))}
               </tbody>
             </table>
+            </div>
 
             <h3 className="text-base font-semibold mt-4">{c.art8_2_title}</h3>
             <ul>

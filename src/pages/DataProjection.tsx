@@ -2,7 +2,8 @@ import { useState, useMemo, useEffect } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
+import { Card, CardContent } from '@/components/ui/card';
+import { ExportableCard } from '@/components/data/ExportableCard';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Input } from '@/components/ui/input';
@@ -219,26 +220,21 @@ export default function DataProjection() {
       ) : isFetching && !data ? (
         <div className="flex items-center justify-center py-12"><Loader2 className="w-5 h-5 animate-spin" /></div>
       ) : data ? (
-        <Card className="card-warm">
-          <CardHeader className="pb-2">
-            <div className="flex items-center justify-between flex-wrap gap-2">
-              <CardTitle className="text-sm">
-                {data.player.name} <span className="text-muted-foreground">→ {data.targetDivision}</span>
-              </CardTitle>
-              <div className="flex items-center gap-2">
-                {data.avgFit != null && (
-                  <Badge variant="outline" className="text-[11px] gap-1">
-                    {t('data.avg_fit', 'Adéquation moyenne')} : <span className={cn('font-bold', data.avgFit >= 60 ? 'text-emerald-600' : data.avgFit >= 40 ? 'text-amber-600' : 'text-red-500')}>{data.avgFit}</span>
-                  </Badge>
-                )}
-                <Badge variant="outline" className="text-[10px]">{t('data.cohort_n', 'n={{n}}', { n: data.cohortSize })}</Badge>
-              </div>
+        <ExportableCard
+          title={`${data.player.name} → ${data.targetDivision}`}
+          subtitle={t('data.projection_player_ctx', 'Données de référence : {{season}} · {{div}}', { season: data.player.season || '—', div: data.player.division || data.player.league || '—' })}
+          fileName={`scouty_projection_${data.player.name}_${data.targetDivision}`}
+          headerRight={
+            <div className="flex items-center gap-2">
+              {data.avgFit != null && (
+                <Badge variant="outline" className="text-[11px] gap-1">
+                  {t('data.avg_fit', 'Adéquation moyenne')} : <span className={cn('font-bold', data.avgFit >= 60 ? 'text-emerald-600' : data.avgFit >= 40 ? 'text-amber-600' : 'text-red-500')}>{data.avgFit}</span>
+                </Badge>
+              )}
+              <Badge variant="outline" className="text-[10px]">{t('data.cohort_n', 'n={{n}}', { n: data.cohortSize })}</Badge>
             </div>
-            <p className="text-[11px] text-muted-foreground">
-              {t('data.projection_player_ctx', 'Données de référence : {{season}} · {{div}}', { season: data.player.season || '—', div: data.player.division || data.player.league || '—' })}
-            </p>
-          </CardHeader>
-          <CardContent>
+          }
+        >
             {data.cohortSize === 0 ? (
               <p className="text-sm text-muted-foreground text-center py-8">{t('data.projection_no_cohort', 'Pas assez de données dans ce championnat pour ce poste.')}</p>
             ) : (
@@ -276,8 +272,7 @@ export default function DataProjection() {
                 </table>
               </div>
             )}
-          </CardContent>
-        </Card>
+        </ExportableCard>
       ) : null}
     </div>
   );
