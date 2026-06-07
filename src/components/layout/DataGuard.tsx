@@ -1,10 +1,10 @@
-import { Outlet, Link } from 'react-router-dom';
+import { Outlet } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import { supabase } from '@/integrations/supabase/client';
 import { useIsAdmin } from '@/hooks/use-admin';
-import { Button } from '@/components/ui/button';
-import { Crown, Loader2 } from 'lucide-react';
+import PremiumLock from '@/components/premium/PremiumLock';
+import { Loader2 } from 'lucide-react';
 
 /**
  * Premium gate for the whole /data section. Every /data/* route is nested under
@@ -34,19 +34,18 @@ export default function DataGuard() {
 
   if (!isPremium) {
     return (
-      <div className="flex flex-col items-center justify-center min-h-[60vh] gap-5 text-center max-w-md mx-auto">
-        <div className="w-16 h-16 rounded-2xl bg-amber-100 dark:bg-amber-900/20 flex items-center justify-center">
-          <Crown className="w-8 h-8 text-amber-500" />
-        </div>
-        <div>
-          <h2 className="text-xl font-bold">{t('data.premium_title', 'Fonctionnalité Premium')}</h2>
-          <p className="text-sm text-muted-foreground mt-2">
-            {t('data.premium_desc', 'La base de données et les outils d\'analyse sont réservés aux abonnés Premium.')}
-          </p>
-        </div>
-        <Link to="/pricing"><Button className="gap-2"><Crown className="w-4 h-4" /> {t('data.premium_cta', 'Passer à Premium')}</Button></Link>
-        <Link to="/players" className="text-xs text-muted-foreground hover:underline">{t('data.back_players', 'Retour aux joueurs')}</Link>
-      </div>
+      <PremiumLock
+        variant="page"
+        title={t('data.premium_title', 'Fonctionnalité Premium')}
+        desc={t('data.premium_desc', 'La base de données et les outils d\'analyse sont réservés aux abonnés Premium.')}
+        benefits={[
+          t('data.premium_b1'),
+          t('data.premium_b2'),
+          t('data.premium_b3'),
+        ]}
+        plan="pro"
+        backLink={{ to: '/players', label: t('data.back_players', 'Retour aux joueurs') }}
+      />
     );
   }
 

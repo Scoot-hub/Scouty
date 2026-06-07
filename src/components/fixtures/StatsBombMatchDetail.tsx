@@ -231,7 +231,7 @@ export default function StatsBombMatchDetail({ matchId }: { matchId: number }) {
 
         {/* Lineups */}
         <TabsContent value="lineups" className="mt-4">
-          <div className="grid grid-cols-2 gap-4">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
             <Card className="card-warm">
               <CardHeader className="pb-2">
                 <CardTitle className="text-sm truncate">{match.home_team}</CardTitle>

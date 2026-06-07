@@ -635,7 +635,7 @@ export default function MapView() {
           </h1>
           <p className="text-sm text-muted-foreground">{t('map.subtitle')}</p>
         </div>
-        <div className="flex items-center gap-3">
+        <div className="flex items-center gap-3 flex-wrap">
           <div className="flex items-center gap-1 bg-muted/50 rounded-xl p-1">
             <button onClick={() => setDayOffset(d => d - 1)} className="p-1.5 rounded-lg hover:bg-muted transition-colors">
               <ChevronLeft className="w-4 h-4" />
@@ -716,7 +716,7 @@ export default function MapView() {
               </span>
             </div>
           )}
-          <div className="relative w-64">
+          <div className="relative w-full sm:w-64">
             <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
             <Input
               value={search}

@@ -80,7 +80,7 @@ export default function OrgTabBar({ orgName }: OrgTabBarProps) {
 
       {/* ── Tab navigation ── */}
       <TooltipProvider delayDuration={200}>
-        <div className="flex items-center gap-1 border-b border-border pb-0 -mx-1 px-1">
+        <div className="flex items-center gap-1 border-b border-border pb-0 -mx-1 px-1 overflow-x-auto">
           {TABS.map(({ key, label, icon: Icon, path }) => {
             const href = `${base}/${path}`;
             const active = pathname.startsWith(`${base}/${path}`);
@@ -91,7 +91,7 @@ export default function OrgTabBar({ orgName }: OrgTabBarProps) {
                 <Tooltip key={key}>
                   <TooltipTrigger asChild>
                     <span
-                      className="flex items-center gap-1.5 px-3 py-2.5 text-sm font-medium whitespace-nowrap border-b-2 -mb-px border-transparent text-muted-foreground/40 cursor-not-allowed select-none"
+                      className="flex items-center gap-1.5 px-3 py-2.5 text-sm font-medium whitespace-nowrap shrink-0 border-b-2 -mb-px border-transparent text-muted-foreground/40 cursor-not-allowed select-none"
                     >
                       <Icon className="w-4 h-4" />
                       {label}
@@ -110,7 +110,7 @@ export default function OrgTabBar({ orgName }: OrgTabBarProps) {
                 key={key}
                 to={href}
                 className={cn(
-                  'flex items-center gap-1.5 px-3 py-2.5 text-sm font-medium whitespace-nowrap border-b-2 -mb-px transition-colors',
+                  'flex items-center gap-1.5 px-3 py-2.5 text-sm font-medium whitespace-nowrap shrink-0 border-b-2 -mb-px transition-colors',
                   active
                     ? 'border-primary text-primary'
                     : 'border-transparent text-muted-foreground hover:text-foreground hover:border-border'

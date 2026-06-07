@@ -89,12 +89,12 @@ export function AddToWatchlistDialog({ playerIds, onDone, open: externalOpen, on
 
           <div className="border-t border-border/40 pt-3">
             {creatingNew ? (
-              <div className="flex items-center gap-2">
+              <div className="flex items-center gap-2 flex-wrap">
                 <Input
                   placeholder={t('watchlist.new_list_placeholder')}
                   value={newName}
                   onChange={e => setNewName(e.target.value)}
-                  className="rounded-xl"
+                  className="rounded-xl flex-1 min-w-[160px]"
                   autoFocus
                   onKeyDown={e => e.key === 'Enter' && handleCreateAndAdd()}
                 />

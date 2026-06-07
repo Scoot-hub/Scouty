@@ -3,6 +3,7 @@ import { useSearchParams, Link } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
+import { ExportableCard } from '@/components/data/ExportableCard';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Input } from '@/components/ui/input';
@@ -327,19 +328,12 @@ export default function DataExplore() {
       </Card>
 
       {/* Results */}
-      <Card className="card-warm">
-        <CardHeader className="pb-2">
-          <div className="flex items-center justify-between flex-wrap gap-2">
-            <CardTitle className="text-sm flex items-center gap-2">
-              {t('data.results', 'Résultats')}
-              {isFetching ? <Loader2 className="w-3.5 h-3.5 animate-spin text-muted-foreground" /> : <Badge variant="outline" className="text-[10px]">{total}</Badge>}
-            </CardTitle>
-            <span className="text-[10px] text-muted-foreground">
-              {data?.cohortSize ? t('data.cohort_info', 'Percentiles vs {{n}} joueurs au poste', { n: data.cohortSize }) : ''}
-            </span>
-          </div>
-        </CardHeader>
-        <CardContent className="pt-0">
+      <ExportableCard
+        title={t('data.results', 'Résultats')}
+        subtitle={data?.cohortSize ? t('data.cohort_info', 'Percentiles vs {{n}} joueurs au poste', { n: data.cohortSize }) : undefined}
+        fileName={`scouty_explore_${state.group}_p${page}`}
+        headerRight={isFetching ? <Loader2 className="w-3.5 h-3.5 animate-spin text-muted-foreground" /> : <Badge variant="outline" className="text-[10px]">{total}</Badge>}
+      >
           {isError ? (
             <p className="text-sm text-muted-foreground text-center py-10">{t('data.error', 'Erreur lors de la recherche.')}</p>
           ) : results.length === 0 && !isFetching ? (
@@ -415,7 +409,7 @@ export default function DataExplore() {
 
           {/* Pagination */}
           {total > PAGE_SIZE && (
-            <div className="flex items-center justify-between mt-3">
+            <div className="flex items-center justify-between mt-3" data-export-ignore="">
               <Button size="sm" variant="outline" className="h-8 gap-1 text-xs" disabled={page <= 1} onClick={() => setPage(p => Math.max(1, p - 1))}>
                 <ChevronLeft className="w-3.5 h-3.5" /> {t('data.prev', 'Précédent')}
               </Button>
@@ -425,8 +419,7 @@ export default function DataExplore() {
               </Button>
             </div>
           )}
-        </CardContent>
-      </Card>
+      </ExportableCard>
 
       <StatPickerDialog open={pickerOpen} onOpenChange={setPickerOpen} selected={state.selectedStats} onChange={onPickStats} title={t('data.choose_stats', 'Choisir les stats')} />
     </div>

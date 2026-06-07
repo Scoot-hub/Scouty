@@ -157,7 +157,7 @@ export default function EditorialEditor() {
   return (
     <div className="max-w-4xl mx-auto space-y-5">
       {/* Header */}
-      <div className="flex items-center justify-between gap-3">
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
         <div className="flex items-center gap-3">
           <Button variant="ghost" size="icon" onClick={() => navigate('/editorial')} className="rounded-xl">
             <ChevronLeft className="w-5 h-5" />
@@ -169,7 +169,7 @@ export default function EditorialEditor() {
             <p className="text-xs text-muted-foreground">{t('editorial.editor_hint')}</p>
           </div>
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2 flex-wrap">
           <Select value={articleLang} onValueChange={setArticleLang}>
             <SelectTrigger className="rounded-xl gap-1.5 h-9 w-auto text-xs border-dashed">
               <Globe className="w-3.5 h-3.5 text-muted-foreground" />
@@ -326,7 +326,7 @@ export default function EditorialEditor() {
       </Card>
 
       {/* Bottom save bar */}
-      <div className="flex items-center justify-between gap-2 pb-8">
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-8">
         <div className="flex items-center gap-2 text-xs text-muted-foreground">
           <Globe className="w-3.5 h-3.5" />
           {t('editorial.post_lang')} :
@@ -341,7 +341,7 @@ export default function EditorialEditor() {
             </SelectContent>
           </Select>
         </div>
-        <div className="flex gap-2">
+        <div className="flex gap-2 flex-wrap">
           <Button variant="outline" onClick={() => navigate('/editorial')} className="rounded-xl">
             {t('common.cancel')}
           </Button>

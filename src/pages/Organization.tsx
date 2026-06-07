@@ -475,9 +475,9 @@ function OrganizationDashboard({ org, userId }: { org: Record<string, unknown>; 
                   <Building2 className="w-7 h-7 text-primary/60" />
                 )}
               </div>
-              <div className="space-y-1.5">
+              <div className="space-y-1.5 min-w-0">
                 <p className="text-sm font-medium">{t('org.logo')}</p>
-                <div className="flex items-center gap-2">
+                <div className="flex items-center gap-2 flex-wrap">
                   <label className="cursor-pointer">
                     <span className="inline-flex items-center gap-1.5 text-xs font-medium px-3 py-1.5 rounded-lg border border-border bg-background hover:bg-accent/50 transition-colors">
                       {uploadLogo.isPending ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Camera className="w-3.5 h-3.5" />}
@@ -624,7 +624,7 @@ function OrganizationDashboard({ org, userId }: { org: Record<string, unknown>; 
               const ItemIcon = item.icon;
               return (
                 <div key={item.key} className="flex items-start justify-between gap-3 rounded-xl border border-border/60 bg-muted/20 p-3">
-                  <div className="min-w-0">
+                  <div className="min-w-0 flex-1">
                     <div className="flex items-center gap-2 text-sm font-medium">
                       <ItemIcon className="w-4 h-4 text-primary shrink-0" />
                       <span>{item.title}</span>
@@ -978,12 +978,12 @@ function OrganizationDashboard({ org, userId }: { org: Record<string, unknown>; 
       {!isOwner && (
         <Card className="border-destructive/30">
           <CardContent className="pt-6">
-            <div className="flex items-center justify-between">
+            <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
               <div>
                 <p className="text-sm font-medium">{t('org.leave_title')}</p>
                 <p className="text-xs text-muted-foreground">{t('org.leave_desc')}</p>
               </div>
-              <Button variant="destructive" size="sm" onClick={handleLeave} disabled={leaveOrg.isPending}>
+              <Button variant="destructive" size="sm" onClick={handleLeave} disabled={leaveOrg.isPending} className="shrink-0 self-start sm:self-auto">
                 {leaveOrg.isPending ? <Loader2 className="w-4 h-4 animate-spin mr-2" /> : <LogOut className="w-4 h-4 mr-2" />}
                 {t('org.leave_btn')}
               </Button>

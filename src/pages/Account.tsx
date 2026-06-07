@@ -611,7 +611,7 @@ export default function Account() {
           <Separator />
 
           {/* Civility + first/last name */}
-          <div className="grid grid-cols-3 gap-3">
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
             <div>
               <label className="text-xs font-medium text-muted-foreground">{t('account.civility')}</label>
               <Select value={civility} onValueChange={setCivility}>

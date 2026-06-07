@@ -1113,7 +1113,7 @@ export default function Players() {
             </p>
           </div>
         </div>
-        <div className="flex items-center gap-2 shrink-0">
+        <div className="flex items-center gap-2 shrink-0 flex-wrap">
           <Button
             variant={showArchived ? 'default' : 'outline'}
             size="sm"

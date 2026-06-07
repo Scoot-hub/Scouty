@@ -889,7 +889,7 @@ export function ImportPlayersDialog({ externalOpen, onExternalOpenChange }: { ex
 
         {step === 'upload' && (
           <div
-            className="flex flex-col items-center justify-center border-2 border-dashed border-muted rounded-xl p-12 cursor-pointer hover:border-primary/50 hover:bg-muted/20 transition-all"
+            className="flex flex-col items-center justify-center border-2 border-dashed border-muted rounded-xl p-6 sm:p-12 cursor-pointer hover:border-primary/50 hover:bg-muted/20 transition-all"
             onDrop={handleDrop}
             onDragOver={(e) => e.preventDefault()}
             onClick={() => fileRef.current?.click()}
@@ -1193,7 +1193,7 @@ export function ImportPlayersDialog({ externalOpen, onExternalOpenChange }: { ex
               </div>
             </div>
 
-            <div className="flex justify-between items-center gap-3 pt-4 border-t">
+            <div className="flex flex-wrap justify-between items-center gap-3 pt-4 border-t">
               <div className="flex items-center gap-3">
                 <Button variant="outline" size="sm" onClick={() => setStep('mapping')}>{t('import.back_mapping')}</Button>
                 <span className="text-xs text-muted-foreground">

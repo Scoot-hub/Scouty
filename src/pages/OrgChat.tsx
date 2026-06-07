@@ -483,7 +483,7 @@ export default function OrgChat() {
     <div className="space-y-4">
       <OrgTabBar orgName={org.name as string} />
 
-      <div className="flex flex-col h-[calc(100vh-260px)] min-h-[400px] border border-border rounded-2xl overflow-hidden bg-card">
+      <div className="relative flex flex-col h-[calc(100dvh-260px)] min-h-[400px] border border-border rounded-2xl overflow-hidden bg-card">
         {/* Messages area */}
         <div
           ref={containerRef}

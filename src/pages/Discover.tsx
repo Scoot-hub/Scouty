@@ -1,7 +1,7 @@
 import { useMemo, useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, Link } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
-import { useMutation } from '@tanstack/react-query';
+import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { supabase } from '@/integrations/supabase/client';
 import { useAllEventsForDay } from '@/hooks/use-api-football';
 import { MatchSquadScout, MatchPickerCard, type DayMatch } from '@/components/match/MatchSquadScout';
@@ -11,9 +11,11 @@ import { Input } from '@/components/ui/input';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Badge } from '@/components/ui/badge';
 import { toast } from 'sonner';
-import { Search, Loader2, UserPlus, ExternalLink, Filter, Globe, Euro, Calendar, Crosshair, Users, FilePlus, Swords } from 'lucide-react';
+import { Search, Loader2, UserPlus, ExternalLink, Filter, Globe, Euro, Calendar, Crosshair, Users, FilePlus, Swords, Crown } from 'lucide-react';
 import { translateCountry } from '@/types/player';
 import { useAuth } from '@/contexts/AuthContext';
+import { useIsPremium, useIsAdmin } from '@/hooks/use-admin';
+import { UpgradeCTA } from '@/components/premium/PremiumLock';
 
 interface DiscoveredPlayer {
   name: string;
@@ -73,10 +75,113 @@ const normalizeStr = (s: string) =>
 const playerKey = (p: DiscoveredPlayer) =>
   p.tmId || `${p.team || ''}-${p.name}`;
 
+// Full-page premium gate shown to free users hitting /discover. Mirrors the
+// community gate: gradient header, value bullets, direct-checkout CTA, and a
+// blurred preview of discovered players so they see exactly what they're missing.
+function DiscoverGate() {
+  const { t } = useTranslation();
+  const features = [
+    { icon: Search,    label: t('discover.premium_b1') },
+    { icon: Crosshair, label: t('discover.premium_b2') },
+    { icon: UserPlus,  label: t('discover.premium_b3') },
+  ];
+  const fakePlayers = [
+    { name: 'Lucas D.',  pos: t('discover.pos_mid'),  club: 'OGC Nice',       age: 19, val: '4,5 M€' },
+    { name: 'Mateo R.',  pos: t('discover.pos_wing'), club: 'RC Lens',        age: 21, val: '8 M€'   },
+    { name: 'Adam K.',   pos: t('discover.pos_def'),  club: 'Toulouse FC',    age: 20, val: '3 M€'   },
+    { name: 'Noah B.',   pos: t('discover.pos_fwd'),  club: 'Le Havre AC',    age: 18, val: '2,5 M€' },
+    { name: 'Eliot M.',  pos: t('discover.pos_def'),  club: 'FC Metz',        age: 22, val: '5 M€'   },
+    { name: 'Sami T.',   pos: t('discover.pos_gk'),   club: 'Stade Brestois', age: 23, val: '6 M€'   },
+  ];
+
+  return (
+    <div className="max-w-3xl mx-auto space-y-4">
+      {/* Header */}
+      <div className="relative overflow-hidden rounded-2xl bg-gradient-to-br from-primary to-accent p-6 text-primary-foreground shadow-lg">
+        <div className="relative flex items-center gap-3 mb-4">
+          <div className="w-12 h-12 rounded-xl bg-white/20 backdrop-blur-sm flex items-center justify-center shrink-0 shadow-lg">
+            <Search className="w-6 h-6 text-white" />
+          </div>
+          <div>
+            <div className="flex items-center gap-2">
+              <h1 className="text-xl font-extrabold tracking-tight">{t('discover.title')}</h1>
+              <span className="px-2 py-0.5 rounded-full bg-white/20 text-[11px] font-bold uppercase tracking-wide">PRO</span>
+            </div>
+            <p className="text-primary-foreground/70 text-sm mt-0.5">{t('discover.subtitle')}</p>
+          </div>
+        </div>
+        <p className="text-base font-semibold text-white/90 leading-relaxed">{t('discover.premium_title')}</p>
+        <p className="text-sm text-primary-foreground/75 mt-1 leading-relaxed">{t('discover.premium_desc')}</p>
+      </div>
+
+      {/* Features + CTA */}
+      <div className="rounded-2xl border border-border bg-card p-6 shadow-sm space-y-5">
+        <div className="space-y-3">
+          <p className="text-xs font-bold uppercase tracking-wider text-muted-foreground">{t('premium.whats_inside')}</p>
+          {features.map(({ icon: Icon, label }) => (
+            <div key={label} className="flex items-start gap-3">
+              <div className="w-7 h-7 rounded-lg bg-primary/10 flex items-center justify-center shrink-0 mt-0.5">
+                <Icon className="w-3.5 h-3.5 text-primary" />
+              </div>
+              <p className="text-sm text-foreground leading-snug">{label}</p>
+            </div>
+          ))}
+        </div>
+        <div className="border-t border-border/60 pt-5 flex flex-col items-center gap-3">
+          <UpgradeCTA plan="pro" />
+          <Link
+            to="/players"
+            className="inline-flex items-center justify-center gap-1.5 rounded-xl border border-border px-6 py-2 text-sm font-medium text-muted-foreground hover:bg-muted transition-colors"
+          >
+            {t('discover.back_players', 'Retour à mes joueurs')}
+          </Link>
+        </div>
+      </div>
+
+      {/* Blurred preview of discovered players */}
+      <div className="rounded-2xl border border-border overflow-hidden relative select-none pointer-events-none" aria-hidden="true">
+        <div className="absolute inset-0 z-10 flex items-center justify-center bg-background/60 backdrop-blur-[3px]">
+          <div className="flex items-center gap-2 px-4 py-2 rounded-xl bg-card/90 border border-border shadow-lg">
+            <Crown className="w-4 h-4 text-primary" />
+            <span className="text-sm font-semibold text-foreground">{t('premium.preview', { plan: 'Pro' })}</span>
+          </div>
+        </div>
+        <div className="p-4 grid grid-cols-2 sm:grid-cols-3 gap-3">
+          {fakePlayers.map((p, i) => (
+            <div key={i} className="rounded-xl border border-border bg-muted/40 p-3 space-y-2">
+              <div className="w-10 h-10 rounded-full bg-primary/20 flex items-center justify-center text-sm font-bold text-primary">{p.name[0]}</div>
+              <div>
+                <p className="text-xs font-bold truncate">{p.name}</p>
+                <p className="text-[10px] text-muted-foreground truncate">{p.pos} · {p.age} ans</p>
+              </div>
+              <div className="flex items-center justify-between gap-1">
+                <span className="text-[10px] text-muted-foreground truncate">{p.club}</span>
+                <span className="text-[10px] font-bold text-primary shrink-0">{p.val}</span>
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export default function Discover() {
   const { t, i18n } = useTranslation();
   const navigate = useNavigate();
   const { user } = useAuth();
+  const { data: isPremium } = useIsPremium();
+  const { data: isAdmin } = useIsAdmin();
+  const queryClient = useQueryClient();
+
+  // After inserting a player straight into the DB (bypassing useUpsertPlayer),
+  // refresh the player caches so the Players page — including its zero-players
+  // welcome screen — updates without needing a hard refresh.
+  const invalidatePlayerCaches = () => {
+    queryClient.invalidateQueries({ queryKey: ['players'] });
+    queryClient.invalidateQueries({ queryKey: ['players-paginated'] });
+    queryClient.invalidateQueries({ queryKey: ['player-facets'] });
+  };
 
   const [searchMode, setSearchMode] = useState<SearchMode>('player');
   const [firstName, setFirstName] = useState('');
@@ -227,6 +332,7 @@ export default function Discover() {
         photo_url: player.photo,
       });
       if (error) throw error;
+      invalidatePlayerCaches();
       toast.success(t('discover.player_added', { name: player.name }));
     } catch (err: unknown) {
       toast.error(err instanceof Error ? err.message : t('common.error'));
@@ -254,6 +360,7 @@ export default function Discover() {
         general_opinion: player.general_opinion,
       });
       if (error) throw error;
+      invalidatePlayerCaches();
       toast.success(t('discover.player_added', { name: player.name }));
     } catch (err: unknown) {
       toast.error(err instanceof Error ? err.message : t('common.error'));
@@ -283,6 +390,10 @@ export default function Discover() {
       </Button>
     </div>
   );
+
+  // Premium gate — Discover (advanced Transfermarkt + by-match search) is Pro-only.
+  // Free users get a teaser: the value pitch + a blurred preview of what they'd find.
+  if (isPremium === false && !isAdmin) return <DiscoverGate />;
 
   return (
     <div className="max-w-6xl mx-auto space-y-6">
