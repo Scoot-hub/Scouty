@@ -433,22 +433,22 @@ export default function Squad() {
       </div>
 
       {/* KPIs — main */}
-      <div className="grid grid-cols-3 gap-4">
+      <div className="grid grid-cols-3 gap-2 sm:gap-4">
         <Card className="card-warm">
-          <CardContent className="p-5 text-center">
-            <p className="text-3xl font-extrabold tracking-tight">{kpis.total}</p>
+          <CardContent className="p-3 sm:p-5 text-center">
+            <p className="text-2xl sm:text-3xl font-extrabold tracking-tight">{kpis.total}</p>
             <p className="text-xs text-muted-foreground mt-1">{t('squad.kpi_total')}</p>
           </CardContent>
         </Card>
         <Card className="card-warm">
-          <CardContent className="p-5 text-center">
-            <p className="text-3xl font-extrabold tracking-tight">{kpis.avgAge !== null ? kpis.avgAge.toFixed(1) : '—'}</p>
+          <CardContent className="p-3 sm:p-5 text-center">
+            <p className="text-2xl sm:text-3xl font-extrabold tracking-tight">{kpis.avgAge !== null ? kpis.avgAge.toFixed(1) : '—'}</p>
             <p className="text-xs text-muted-foreground mt-1">{t('squad.kpi_avg_age')}</p>
           </CardContent>
         </Card>
         <Card className="card-warm">
-          <CardContent className="p-5 text-center">
-            <p className={cn('text-3xl font-extrabold tracking-tight', kpis.contract12m > 0 && 'text-destructive')}>{kpis.contract12m}</p>
+          <CardContent className="p-3 sm:p-5 text-center">
+            <p className={cn('text-2xl sm:text-3xl font-extrabold tracking-tight', kpis.contract12m > 0 && 'text-destructive')}>{kpis.contract12m}</p>
             <p className="text-xs text-muted-foreground mt-1">{t('squad.kpi_expiring_12m')}</p>
           </CardContent>
         </Card>

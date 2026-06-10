@@ -26,6 +26,7 @@ import {
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from '@/components/ui/dialog';
 import { moderateFields } from '@/lib/content-moderation';
 import { LeagueLogo } from '@/components/ui/league-logo';
+import { UpgradeCTA } from '@/components/premium/PremiumLock';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -511,26 +512,15 @@ function CommunityGate() {
             </div>
           ))}
         </div>
-        <div className="border-t border-border/60 pt-5 flex flex-col sm:flex-row items-center gap-3">
-          <a
-            href="/pricing"
-            target="_blank"
-            rel="noopener noreferrer"
-            className="inline-flex items-center justify-center gap-2 w-full sm:w-auto rounded-xl bg-primary px-6 py-2.5 text-sm font-bold text-primary-foreground hover:bg-primary/90 transition-colors shadow-md shadow-primary/20"
-          >
-            <Sparkles className="w-4 h-4" />
-            {t('community.see_plans')}
-          </a>
+        <div className="border-t border-border/60 pt-5 flex flex-col items-center gap-3">
+          <UpgradeCTA plan="pro" />
           <Link
             to="/players"
-            className="inline-flex items-center justify-center gap-1.5 w-full sm:w-auto rounded-xl border border-border px-6 py-2.5 text-sm font-medium text-muted-foreground hover:bg-muted transition-colors"
+            className="inline-flex items-center justify-center gap-1.5 rounded-xl border border-border px-6 py-2 text-sm font-medium text-muted-foreground hover:bg-muted transition-colors"
           >
-            Retour à mes joueurs
+            {t('community.back_players', 'Retour à mes joueurs')}
           </Link>
         </div>
-        <p className="text-[11px] text-muted-foreground/60 text-center -mt-1">
-          Les offres s'ouvriront dans un nouvel onglet — votre navigation reste intacte.
-        </p>
       </div>
 
       {/* Blurred preview */}
@@ -1276,8 +1266,8 @@ function CommunityFull() {
         <Card className="animate-in slide-in-from-top-2 fade-in duration-300">
           <CardContent className="p-5 space-y-4">
             <h3 className="text-sm font-bold">{t('community.compose_title')}</h3>
-            <div className="flex gap-3">
-              <div className="flex-1">
+            <div className="flex flex-wrap gap-3">
+              <div className="w-full sm:flex-1">
                 <Input
                   value={title}
                   onChange={e => setTitle(e.target.value)}
@@ -2014,7 +2004,7 @@ function CommunityFull() {
                         </div>
 
                         {/* Stats + actions row */}
-                        <div className="flex items-center gap-3 mt-3">
+                        <div className="flex items-center gap-3 mt-3 flex-wrap">
                           {/* Like */}
                           <div className="relative">
                             <button onClick={() => likePost.mutate(post)}

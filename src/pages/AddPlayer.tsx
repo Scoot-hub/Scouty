@@ -21,7 +21,8 @@ import { Textarea } from '@/components/ui/textarea';
 import { PhotoUpload } from '@/components/ui/photo-upload';
 import DateInput from '@/components/ui/date-input';
 import { useToast } from '@/hooks/use-toast';
-import { ArrowLeft, ArrowRight, Check, Search, LinkIcon, Loader2, Sparkles, Crown } from 'lucide-react';
+import { ArrowLeft, ArrowRight, Check, Search, LinkIcon, Loader2, Sparkles } from 'lucide-react';
+import PremiumLock from '@/components/premium/PremiumLock';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { type Opinion, ALL_OPINIONS, getOpinionTranslationKey } from '@/types/player';
@@ -350,7 +351,7 @@ export default function AddPlayer() {
 
   return (
     <div className="max-w-3xl mx-auto">
-      <h1 className="text-3xl font-extrabold tracking-tight mb-6">{t('player_form.add_title')}</h1>
+      <h1 className="text-2xl sm:text-3xl font-extrabold tracking-tight mb-6">{t('player_form.add_title')}</h1>
 
       {/* Progress */}
       <div className="flex items-center gap-1 mb-8">
@@ -369,22 +370,15 @@ export default function AddPlayer() {
       <Card className="border-none shadow-sm">
         <CardContent className="p-6 space-y-5">
           {step === 0 && (<>
-            {/* Transfermarkt import */}
-            <div className={`rounded-xl border border-dashed p-4 space-y-3 ${isPremium ? 'border-primary/30 bg-primary/5' : 'border-muted-foreground/20 bg-muted/30'}`}>
-              <div className="flex items-center gap-2">
-                <LinkIcon className={`w-4 h-4 ${isPremium ? 'text-primary' : 'text-muted-foreground'}`} />
-                <span className="text-sm font-semibold">{t('player_form.tm_import_title')}</span>
-                {!isPremium && (
-                  <Badge variant="outline" className="text-[10px] gap-1 text-amber-600 border-amber-300 dark:border-amber-700">
-                    <Crown className="w-3 h-3" /> Premium
-                  </Badge>
-                )}
-                {tmImported && <Badge variant="secondary" className="text-[10px] gap-1"><Check className="w-3 h-3" /> {t('player_form.tm_imported')}</Badge>}
-              </div>
-              <p className="text-xs text-muted-foreground">
-                {isPremium ? t('player_form.tm_import_desc') : t('player_form.tm_premium_desc')}
-              </p>
-              {isPremium && (
+            {/* Transfermarkt import — Premium. Free users see the real tool blurred behind a teaser. */}
+            {isPremium ? (
+              <div className="rounded-xl border border-dashed border-primary/30 bg-primary/5 p-4 space-y-3">
+                <div className="flex items-center gap-2">
+                  <LinkIcon className="w-4 h-4 text-primary" />
+                  <span className="text-sm font-semibold">{t('player_form.tm_import_title')}</span>
+                  {tmImported && <Badge variant="secondary" className="text-[10px] gap-1"><Check className="w-3 h-3" /> {t('player_form.tm_imported')}</Badge>}
+                </div>
+                <p className="text-xs text-muted-foreground">{t('player_form.tm_import_desc')}</p>
                 <div className="flex gap-2">
                   <Input
                     value={tmUrl}
@@ -405,8 +399,29 @@ export default function AddPlayer() {
                     {tmLoading ? t('player_form.tm_loading') : t('player_form.tm_import_btn')}
                   </Button>
                 </div>
-              )}
-            </div>
+              </div>
+            ) : (
+              <PremiumLock
+                variant="overlay"
+                title={t('player_form.tm_import_title')}
+                desc={t('player_form.tm_b1')}
+                plan="pro"
+              >
+                <div className="rounded-xl border border-dashed border-primary/30 bg-primary/5 p-4 space-y-3">
+                  <div className="flex items-center gap-2">
+                    <LinkIcon className="w-4 h-4 text-primary" />
+                    <span className="text-sm font-semibold">{t('player_form.tm_import_title')}</span>
+                  </div>
+                  <p className="text-xs text-muted-foreground">{t('player_form.tm_import_desc')}</p>
+                  <div className="flex gap-2">
+                    <Input value="" readOnly tabIndex={-1} placeholder="https://www.transfermarkt.fr/joueur/profil/spieler/123456" className="flex-1 text-sm" />
+                    <Button type="button" size="sm" tabIndex={-1} className="shrink-0 gap-1.5">
+                      <Sparkles className="w-4 h-4" />{t('player_form.tm_import_btn')}
+                    </Button>
+                  </div>
+                </div>
+              </PremiumLock>
+            )}
 
             <div className="relative flex items-center gap-3 py-1">
               <div className="flex-1 h-px bg-border" />
@@ -474,13 +489,13 @@ export default function AddPlayer() {
               </Select>
             </div>
             <div><Label>{t('player_form.role')}</Label><Input value={role} onChange={e => setRole(e.target.value)} placeholder={t('player_form.role_placeholder')} className="mt-1" /></div>
-            <div><Label>{t('player_form.strong_foot')}</Label><div className="flex gap-3 mt-1">{(['Gaucher', 'Droitier', 'Ambidextre'] as Foot[]).map(f => (<Button key={f} type="button" variant={foot === f ? 'default' : 'outline'} size="sm" onClick={() => setFoot(f)} disabled={tmImported}>{t(getFootTranslationKey(f)!)}</Button>))}</div></div>
+            <div><Label>{t('player_form.strong_foot')}</Label><div className="flex flex-wrap gap-3 mt-1">{(['Gaucher', 'Droitier', 'Ambidextre'] as Foot[]).map(f => (<Button key={f} type="button" variant={foot === f ? 'default' : 'outline'} size="sm" onClick={() => setFoot(f)} disabled={tmImported}>{t(getFootTranslationKey(f)!)}</Button>))}</div></div>
             <div><Label>{t('player_form.contract_end')}</Label><DateInput value={contractEnd} onChange={setContractEnd} className="mt-1" disabled={tmImported && !!contractEnd} /></div>
           </>)}
           {step === 2 && (<>
             <div><Label>{t('player_form.current_level')} <span className="font-mono font-bold">{level[0]}</span>/10</Label><Slider value={level} onValueChange={setLevel} min={0} max={10} step={0.5} className="mt-3" /></div>
             <div><Label>{t('player_form.potential')} <span className="font-mono font-bold">{potential[0]}</span>/10</Label><Slider value={potential} onValueChange={setPotential} min={0} max={10} step={0.5} className="mt-3" /><p className="text-xs text-muted-foreground mt-2 italic">{getPotentialLabel(potential[0])}</p></div>
-            <div><Label>{t('player_form.task')}</Label><div className="flex gap-3 mt-1">
+            <div><Label>{t('player_form.task')}</Label><div className="flex flex-wrap gap-3 mt-1">
               <Button type="button" variant={task === '' ? 'default' : 'outline'} size="sm" onClick={() => setTask('')}>{t('player_form.task_none')}</Button>
               {PLAYER_TASKS.map(tk => (<Button key={tk} type="button" variant={task === tk ? 'default' : 'outline'} size="sm" onClick={() => setTask(tk)}>{t(getTaskTranslationKey(tk))}</Button>))}
             </div></div>
@@ -490,7 +505,7 @@ export default function AddPlayer() {
             {addReportFlag && (
               <div className="space-y-4 pl-6 border-l-2 border-primary/20">
                 <div><Label>{t('player_form.report_date')}</Label><DateInput value={reportDate} onChange={setReportDate} className="mt-1" /></div>
-                <div><Label>{t('player_form.report_opinion')}</Label><div className="flex gap-3 mt-1">{ALL_OPINIONS.map(o => (<Button key={o} type="button" variant={reportOpinion === o ? 'default' : 'outline'} size="sm" onClick={() => setReportOpinion(o)}>{t(getOpinionTranslationKey(o))}</Button>))}</div></div>
+                <div><Label>{t('player_form.report_opinion')}</Label><div className="flex flex-wrap gap-3 mt-1">{ALL_OPINIONS.map(o => (<Button key={o} type="button" variant={reportOpinion === o ? 'default' : 'outline'} size="sm" onClick={() => setReportOpinion(o)}>{t(getOpinionTranslationKey(o))}</Button>))}</div></div>
                 <div><Label>{t('player_form.drive_link')}</Label><Input value={driveLink} onChange={e => setDriveLink(e.target.value)} placeholder={t('player_form.drive_placeholder')} className="mt-1" /></div>
 
               </div>

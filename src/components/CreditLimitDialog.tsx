@@ -13,9 +13,9 @@ const PLAN_LABELS: Record<string, string> = {
   elite: 'Elite',
 };
 
-const PLAN_UPGRADES: Record<string, { daily: number; weekly: number; monthly: number; name: string; color: string }> = {
-  starter: { daily: 100,  weekly: 500,   monthly: 2000,     name: 'Pro',   color: 'text-violet-500' },
-  pro:     { daily: -1,   weekly: -1,    monthly: -1,       name: 'Elite', color: 'text-amber-500' },
+const PLAN_UPGRADES: Record<string, { daily: number; weekly: number; monthly: number; name: string; color: string; plan: 'pro' | null }> = {
+  starter: { daily: 100,  weekly: 500,   monthly: 2000,     name: 'Pro',   color: 'text-violet-500', plan: 'pro' },
+  pro:     { daily: -1,   weekly: -1,    monthly: -1,       name: 'Elite', color: 'text-amber-500', plan: null  },
 };
 
 interface Props {
@@ -123,7 +123,7 @@ export function CreditLimitDialog({ open, onClose }: Props) {
           {upgrade && (
             <Button
               className="flex-1 rounded-xl gap-1.5"
-              onClick={() => { onClose(); navigate('/pricing'); }}
+              onClick={() => { onClose(); navigate(upgrade.plan ? `/checkout?plan=${upgrade.plan}&billing=monthly` : '/pricing'); }}
             >
               <Crown className="w-4 h-4" />
               {t('credits.dialog_upgrade_cta', { plan: upgrade.name })}

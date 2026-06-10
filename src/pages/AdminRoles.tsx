@@ -437,7 +437,7 @@ export default function AdminRoles() {
           {/* Permissions matrix with sub-actions */}
           <Card className="border-none card-warm overflow-hidden">
             <CardHeader className="pb-2">
-              <div className="flex items-center justify-between">
+              <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
                 <div>
                   <CardTitle className="text-base capitalize flex items-center gap-2">
                     {(() => {

@@ -142,14 +142,14 @@ export default function StatsBombTacticsTab({ clubName }: { clubName: string }) 
       {selected && (
         <>
           {/* KPIs grid */}
-          <div className="grid grid-cols-4 gap-3">
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
             <KpiCard label="Matchs" value={selected.matches} />
             <KpiCard label="Buts/match" value={(selected.goals / selected.matches).toFixed(2)} accent tooltip="Moyenne de buts marqués par match" />
             <KpiCard label="xG/match" value={selected.xg_per_game.toFixed(2)} tooltip="Expected Goals par match — qualité de création" />
             <KpiCard label="Tirs/match" value={selected.shots_per_game} tooltip="Nombre de tirs par match" />
           </div>
 
-          <div className="grid grid-cols-2 gap-4">
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
             {/* Radar tactique */}
             <Card className="card-warm">
               <CardHeader className="pb-1">

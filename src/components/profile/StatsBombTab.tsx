@@ -139,7 +139,7 @@ export default function StatsBombTab({ player }: Props) {
       {/* Career summary KPIs */}
       <div>
         <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wide mb-3">{t('statsbomb.career_summary')}</p>
-        <div className="grid grid-cols-4 gap-3">
+        <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
           <StatCard label={t('statsbomb.matches')} value={totalMatches} tooltip="Nombre total de matchs dans les données StatsBomb" />
           <StatCard label="Buts" value={totalGoals} accent tooltip="Buts marqués au total" />
           <StatCard label="xG total" value={totalXg.toFixed(1)} tooltip="Expected Goals — qualité des tirs convertis en probabilité de but" />
@@ -148,7 +148,7 @@ export default function StatsBombTab({ player }: Props) {
       </div>
 
       {/* Season selector */}
-      <div className="flex items-center gap-3">
+      <div className="flex items-center gap-3 flex-wrap">
         <Select
           value={selectedKey || (seasonOptions[0]?.key ?? '')}
           onValueChange={setSelectedKey}
@@ -172,7 +172,7 @@ export default function StatsBombTab({ player }: Props) {
       {selected && (
         <>
           {/* Stats grid — season */}
-          <div className="grid grid-cols-2 gap-4">
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
 
             {/* Attaque */}
             <Card className="card-warm">

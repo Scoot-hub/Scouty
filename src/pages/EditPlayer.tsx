@@ -257,7 +257,7 @@ export default function EditPlayer() {
                 </Select>
               </div>
               <div><Label>{t('player_form.role')}</Label><Input value={role} onChange={e => setRole(e.target.value)} placeholder={t('player_form.role_placeholder')} className="mt-1" /></div>
-              <div><Label>{t('player_form.strong_foot')}</Label><div className="flex gap-2 mt-1">{(['Gaucher', 'Droitier', 'Ambidextre'] as Foot[]).map(f => (<Button key={f} type="button" variant={foot === f ? 'default' : 'outline'} size="sm" onClick={() => setFoot(f)}>{t(getFootTranslationKey(f)!)}</Button>))}</div></div>
+              <div><Label>{t('player_form.strong_foot')}</Label><div className="flex flex-wrap gap-2 mt-1">{(['Gaucher', 'Droitier', 'Ambidextre'] as Foot[]).map(f => (<Button key={f} type="button" variant={foot === f ? 'default' : 'outline'} size="sm" onClick={() => setFoot(f)}>{t(getFootTranslationKey(f)!)}</Button>))}</div></div>
             </div>
           </CardContent>
         </Card>
@@ -268,7 +268,7 @@ export default function EditPlayer() {
             <div><Label>{t('player_form.current_level')} <span className="font-mono font-bold">{level[0]}</span>/10</Label><Slider value={level} onValueChange={setLevel} min={0} max={10} step={0.5} className="mt-3" /></div>
             <div><Label>{t('player_form.potential')} <span className="font-mono font-bold">{potential[0]}</span>/10</Label><Slider value={potential} onValueChange={setPotential} min={0} max={10} step={0.5} className="mt-3" /><p className="text-xs text-muted-foreground mt-2 italic">{getPotentialLabel(potential[0])}</p></div>
             <div><Label>{t('player_form.contract_end')}</Label><DateInput value={contractEnd} onChange={setContractEnd} className="mt-1" /></div>
-            <div><Label>{t('player_form.task')}</Label><div className="flex gap-3 mt-1">
+            <div><Label>{t('player_form.task')}</Label><div className="flex flex-wrap gap-3 mt-1">
               <Button type="button" variant={task === '' ? 'default' : 'outline'} size="sm" onClick={() => setTask('')}>{t('player_form.task_none')}</Button>
               {PLAYER_TASKS.map(tk => (<Button key={tk} type="button" variant={task === tk ? 'default' : 'outline'} size="sm" onClick={() => setTask(tk)}>{t(getTaskTranslationKey(tk))}</Button>))}
             </div></div>

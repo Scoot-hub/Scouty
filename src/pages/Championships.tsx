@@ -663,7 +663,7 @@ function ManualStandingsModal({
         </div>
 
         {/* Season display name */}
-        <div className="px-6 py-3 border-b shrink-0 flex items-center gap-3">
+        <div className="px-6 py-3 border-b shrink-0 flex items-center gap-3 flex-wrap">
           <label className="text-sm font-medium whitespace-nowrap">Nom de la saison :</label>
           <input
             value={seasonDisplay}
@@ -1141,7 +1141,7 @@ function ChampionshipDetail({
       </button>
 
       {/* Header */}
-      <div className="flex items-center gap-4">
+      <div className="flex items-center gap-4 flex-wrap">
         <div className="w-14 h-14 flex items-center justify-center shrink-0">
           <LeagueLogo league={champ.name} size="lg" />
         </div>
@@ -1212,11 +1212,11 @@ function ChampionshipDetail({
       </div>
 
       {/* Tabs */}
-      <div className="flex gap-1 border-b">
+      <div className="flex gap-1 border-b overflow-x-auto">
         <button
           onClick={() => setTab('standings')}
           className={cn(
-            'px-4 py-2 text-sm font-medium border-b-2 transition-colors -mb-px',
+            'shrink-0 whitespace-nowrap px-4 py-2 text-sm font-medium border-b-2 transition-colors -mb-px',
             tab === 'standings' ? 'border-primary text-foreground' : 'border-transparent text-muted-foreground hover:text-foreground',
           )}
         >
@@ -1226,7 +1226,7 @@ function ChampionshipDetail({
         <button
           onClick={() => setTab('clubs')}
           className={cn(
-            'px-4 py-2 text-sm font-medium border-b-2 transition-colors -mb-px',
+            'shrink-0 whitespace-nowrap px-4 py-2 text-sm font-medium border-b-2 transition-colors -mb-px',
             tab === 'clubs' ? 'border-primary text-foreground' : 'border-transparent text-muted-foreground hover:text-foreground',
           )}
         >
@@ -1236,7 +1236,7 @@ function ChampionshipDetail({
         <button
           onClick={() => setTab('players')}
           className={cn(
-            'px-4 py-2 text-sm font-medium border-b-2 transition-colors -mb-px',
+            'shrink-0 whitespace-nowrap px-4 py-2 text-sm font-medium border-b-2 transition-colors -mb-px',
             tab === 'players' ? 'border-primary text-foreground' : 'border-transparent text-muted-foreground hover:text-foreground',
           )}
         >
@@ -1246,7 +1246,7 @@ function ChampionshipDetail({
         <button
           onClick={() => setTab('notes')}
           className={cn(
-            'px-4 py-2 text-sm font-medium border-b-2 transition-colors -mb-px flex items-center gap-1.5',
+            'shrink-0 whitespace-nowrap px-4 py-2 text-sm font-medium border-b-2 transition-colors -mb-px flex items-center gap-1.5',
             tab === 'notes' ? 'border-primary text-foreground' : 'border-transparent text-muted-foreground hover:text-foreground',
           )}
         >
@@ -1259,7 +1259,7 @@ function ChampionshipDetail({
         <button
           onClick={() => setTab('calendar')}
           className={cn(
-            'px-4 py-2 text-sm font-medium border-b-2 transition-colors -mb-px',
+            'shrink-0 whitespace-nowrap px-4 py-2 text-sm font-medium border-b-2 transition-colors -mb-px',
             tab === 'calendar' ? 'border-primary text-foreground' : 'border-transparent text-muted-foreground hover:text-foreground',
           )}
         >

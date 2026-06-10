@@ -1,5 +1,6 @@
 import { createContext, useContext, useEffect, useRef, useState, useCallback, ReactNode } from 'react';
 import { supabase } from '@/integrations/supabase/client';
+import { queryClient } from '@/lib/query-client';
 import { toast } from 'sonner';
 
 interface User {
@@ -59,7 +60,15 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     // Listen FIRST, then get session
-    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((event, session) => {
+      // L'identité change (connexion/déconnexion) : on vide tout le cache React Query
+      // pour qu'un nouveau compte ne voie jamais les données du compte précédent
+      // (joueurs, organisation, etc.) tant qu'il n'a pas rafraîchi. TOKEN_REFRESHED
+      // (chargement de page / renouvellement de token) garde le cache chaud et ne doit
+      // PAS déclencher de purge.
+      if (event === 'SIGNED_IN' || event === 'SIGNED_OUT') {
+        queryClient.clear();
+      }
       setSession(session);
       setUser(session?.user ?? null);
       setLoading(false);

@@ -396,7 +396,7 @@ export default function ChatBot() {
           'fixed bottom-24 right-6 z-50 w-[380px] max-w-[calc(100vw-2rem)] rounded-2xl border border-border bg-card shadow-2xl flex flex-col overflow-hidden transition-all duration-300 origin-bottom-right',
           open ? 'scale-100 opacity-100 pointer-events-auto' : 'scale-95 opacity-0 pointer-events-none'
         )}
-        style={{ height: '520px' }}
+        style={{ height: 'min(520px, calc(100dvh - 7rem))' }}
       >
         {/* Header */}
         <div className="px-5 py-4 border-b border-border bg-gradient-to-r from-primary/10 to-accent/10">

@@ -7,6 +7,7 @@ import { useCustomFields, useDeleteCustomField } from '@/hooks/use-custom-fields
 import { useIsPremium, useIsAdmin } from '@/hooks/use-admin';
 import { useCredits } from '@/hooks/use-credits';
 import { useIntegrations, useSaveIntegration, useDeleteIntegration, useTestIntegration } from '@/hooks/use-integrations';
+import PremiumLock from '@/components/premium/PremiumLock';
 import { useNotificationPrefs, useSaveNotificationPrefs } from '@/hooks/use-notification-prefs';
 import { usePushSubscription } from '@/hooks/use-push-subscription';
 import {
@@ -1201,15 +1202,21 @@ export default function Settings() {
                   </CardTitle>
                   <CardDescription className="mt-0.5">{t('settings.modules_desc')}</CardDescription>
                 </div>
-                {!isPremium && (
-                  <Button size="sm" variant="outline" className="shrink-0 gap-1.5 text-primary border-primary/30" onClick={() => window.location.href = '/pricing'}>
-                    <Crown className="w-3.5 h-3.5" />
-                    {t('settings.modules_upgrade')}
-                  </Button>
-                )}
               </div>
             </CardHeader>
             <CardContent className="p-0">
+              {!isPremium && (
+                <div className="p-5 pb-1">
+                  <PremiumLock
+                    variant="card"
+                    title={t('settings.modules_title')}
+                    desc={t('settings.modules_premium_desc')}
+                    benefits={[t('settings.modules_b1'), t('settings.modules_b2'), t('settings.modules_b3')]}
+                    plan="pro"
+                    icon={Plug}
+                  />
+                </div>
+              )}
               <div className="divide-y divide-border/60">
                 {INTEGRATION_MODULES.map(mod => {
                   const status = getStatus(mod.id);

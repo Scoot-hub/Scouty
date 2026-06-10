@@ -710,7 +710,7 @@ export default function OrgChat() {
             <DialogTitle>Profil du membre</DialogTitle>
           </DialogHeader>
           {mentionProfile && (
-            <div className="flex flex-col items-center gap-3 py-2">
+            <div className="relative flex flex-col items-center gap-3 py-2">
               <Avatar className="w-16 h-16">
                 <AvatarImage src={mentionProfile.photo_url ?? undefined} />
                 <AvatarFallback className="text-lg font-semibold bg-violet-100 dark:bg-violet-900/40 text-violet-700 dark:text-violet-300">
@@ -749,7 +749,7 @@ export default function OrgChat() {
         </DialogContent>
       </Dialog>
 
-      <div className="flex h-[calc(100vh-260px)] min-h-[400px] border border-border rounded-2xl overflow-hidden bg-card">
+      <div className="flex h-[calc(100dvh-260px)] min-h-[400px] border border-border rounded-2xl overflow-hidden bg-card">
         {/* Channel sidebar — only when advanced chat is enabled */}
         {advancedChatEnabled && <div className="w-44 shrink-0 border-r border-border flex flex-col bg-muted/20">
           <div className="px-3 pt-3 pb-2 flex items-center justify-between">

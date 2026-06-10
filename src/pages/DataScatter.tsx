@@ -7,6 +7,7 @@ import {
   CartesianGrid, Tooltip, ReferenceLine, Cell,
 } from 'recharts';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
+import { ExportableCard } from '@/components/data/ExportableCard';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Input } from '@/components/ui/input';
@@ -270,18 +271,15 @@ export default function DataScatter() {
       </Card>
 
       {/* Chart */}
-      <Card className="card-warm">
-        <CardHeader className="pb-2">
-          <div className="flex items-center justify-between flex-wrap gap-2">
-            <CardTitle className="text-sm">{mLabel(xKey)} <span className="text-muted-foreground">×</span> {mLabel(yKey)}</CardTitle>
-            {isFetching ? <Loader2 className="w-4 h-4 animate-spin text-muted-foreground" /> : (
-              <Badge variant="outline" className="text-[10px]">
-                {points.length}{(data?.count ?? 0) > points.length ? ` / ${data?.count}` : ''} {t('data.players', 'joueurs')}
-              </Badge>
-            )}
-          </div>
-        </CardHeader>
-        <CardContent>
+      <ExportableCard
+        title={`${mLabel(xKey)} × ${mLabel(yKey)}`}
+        fileName={`scouty_scatter_${xKey}_${yKey}`}
+        headerRight={isFetching ? <Loader2 className="w-4 h-4 animate-spin text-muted-foreground" /> : (
+          <Badge variant="outline" className="text-[10px]">
+            {points.length}{(data?.count ?? 0) > points.length ? ` / ${data?.count}` : ''} {t('data.players', 'joueurs')}
+          </Badge>
+        )}
+      >
           {isError ? (
             <p className="text-sm text-muted-foreground text-center py-16">{t('data.error', 'Erreur lors du chargement.')}</p>
           ) : points.length === 0 && !isFetching ? (
@@ -344,8 +342,7 @@ export default function DataScatter() {
               </p>
             </>
           )}
-        </CardContent>
-      </Card>
+      </ExportableCard>
     </div>
   );
 }

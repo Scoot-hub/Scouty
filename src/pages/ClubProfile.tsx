@@ -794,7 +794,7 @@ export default function ClubProfile() {
               </div>
             )}
             <CardContent className={`p-6 ${team.strStadiumThumb ? '-mt-12 relative z-10' : ''}`}>
-              <div className="flex items-start gap-5">
+              <div className="flex flex-col sm:flex-row items-start gap-4 sm:gap-5">
                 <div className="w-20 h-20 rounded-xl bg-card border-2 border-border shadow-lg overflow-hidden shrink-0 flex items-center justify-center">
                   {displayBadge ? (
                     <img src={displayBadge} alt={team.strTeam} className="w-16 h-16 object-contain" />
@@ -844,7 +844,7 @@ export default function ClubProfile() {
                     </div>
                   )}
                 </div>
-                <div className="flex items-center gap-2 shrink-0">
+                <div className="flex items-center gap-2 shrink-0 flex-wrap">
                   {/* Primary action: follow */}
                   {followedEntry ? (
                     <Button variant="outline" size="sm" onClick={() => unfollowClub.mutate(followedEntry.id)} className="gap-1.5" disabled={unfollowClub.isPending}>

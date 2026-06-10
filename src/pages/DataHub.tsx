@@ -79,7 +79,7 @@ export default function DataHub() {
           </p>
         </div>
         <Badge variant="outline" className="ml-auto text-[10px] gap-1">
-          <FileSpreadsheet className="w-3 h-3 text-emerald-500" /> WyScout
+          <FileSpreadsheet className="w-3 h-3 text-emerald-500" /> {t('data.hub_badge', 'Données avancées')}
         </Badge>
       </div>
 
@@ -112,7 +112,7 @@ export default function DataHub() {
       </div>
 
       <p className="text-[10px] text-muted-foreground/50 text-center">
-        {t('data.hub_footer', 'Source : fichiers de statistiques WyScout importés.')}
+        {t('data.hub_footer', 'Source : fichiers de statistiques importés.')}
       </p>
     </div>
   );

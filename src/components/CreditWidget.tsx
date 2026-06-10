@@ -1,7 +1,9 @@
 import { useTranslation } from 'react-i18next';
 import { useCredits } from '@/hooks/use-credits';
-import { Zap } from 'lucide-react';
-import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
+import { Zap, CreditCard, ArrowRight } from 'lucide-react';
+import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
+import { Button } from '@/components/ui/button';
+import { UpgradeCTA } from '@/components/premium/PremiumLock';
 import { cn } from '@/lib/utils';
 import { Link } from 'react-router-dom';
 import { useEffect, useRef, useState } from 'react';
@@ -132,6 +134,7 @@ export default function CreditWidget() {
   const { t } = useTranslation();
   const { data } = useCredits();
 
+  const [open, setOpen] = useState(false);
   const prevRemainingRef = useRef<number | null>(null);
   const [consumeAnim, setConsumeAnim] = useState(false);
   const [sparks, setSparks] = useState(false);
@@ -193,11 +196,12 @@ export default function CreditWidget() {
   const remainingLabel = unlimited ? '∞' : `${remainingNum}/${quotas.daily}`;
 
   return (
-    <Tooltip>
-      <TooltipTrigger asChild>
-        <Link
-          to="/account#credits"
-          className="flex items-center gap-1.5 px-2 py-1 rounded-lg hover:bg-muted/60 transition-colors"
+    <Popover open={open} onOpenChange={setOpen}>
+      <PopoverTrigger asChild>
+        <button
+          type="button"
+          aria-label={t('credits.widget_title')}
+          className="flex items-center gap-1.5 px-2 py-1 rounded-lg hover:bg-muted/60 transition-colors outline-none focus-visible:ring-2 focus-visible:ring-ring"
         >
           {/* Icon with sparks */}
           <span className="relative flex items-center justify-center">
@@ -230,21 +234,26 @@ export default function CreditWidget() {
             )}
             <FloatingDelta events={deltaEvents} />
           </span>
-        </Link>
-      </TooltipTrigger>
+        </button>
+      </PopoverTrigger>
 
-      <TooltipContent side="bottom" className="w-52 space-y-2 p-3">
-        <p className="text-xs font-semibold mb-2">{t('credits.widget_title')}</p>
+      <PopoverContent side="bottom" align="end" className="w-64 p-3 space-y-3">
+        {/* Header: title + current plan */}
+        <div className="flex items-center justify-between gap-2">
+          <p className="text-xs font-semibold">{t('credits.widget_title')}</p>
+          <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-muted font-bold">
+            {t(`credits.plan_${data.plan_type}`, data.plan_type)}
+          </span>
+        </div>
+
+        {/* Usage */}
         {unlimited ? (
-          <>
-            <p className="text-xs text-muted-foreground">{t('credits.unlimited')}</p>
-            <p className="text-[11px] text-violet-600 dark:text-violet-400 flex items-center gap-1 pt-1 border-t border-border/40">
-              <Zap className="w-3 h-3" />
-              Profil administrateur — aucun crédit consommé
-            </p>
-          </>
+          <p className="text-xs text-muted-foreground flex items-center gap-1.5">
+            <Zap className="w-3.5 h-3.5 text-yellow-500 shrink-0" />
+            {t('credits.unlimited_desc')}
+          </p>
         ) : (
-          <>
+          <div className="space-y-2">
             {(['daily', 'weekly', 'monthly'] as const).map(period => {
               const used = usage[period];
               const quota = quotas[period];
@@ -262,18 +271,51 @@ export default function CreditWidget() {
                 </div>
               );
             })}
-          </>
+          </div>
         )}
+
         {(usage.earned_total ?? 0) > 0 && (
           <p className="text-[11px] text-yellow-600 dark:text-yellow-400 flex items-center gap-1">
             <Zap className="w-3 h-3" />
             {t('credits.earned_bonus', { count: usage.earned_total })}
           </p>
         )}
-        <p className="text-[10px] text-muted-foreground pt-1 border-t">
-          {t('credits.plan_label', { plan: t(`credits.plan_${data.plan_type}`) })}
-        </p>
-      </TooltipContent>
-    </Tooltip>
+
+        {/* Contextual action — turn "check my credits" into the right next step */}
+        <div className="pt-2 border-t border-border/50">
+          {unlimited ? (
+            <Link
+              to="/account"
+              onClick={() => setOpen(false)}
+              className="flex items-center justify-between text-xs font-medium text-muted-foreground hover:text-foreground transition-colors"
+            >
+              {t('credits.widget_manage')}
+              <ArrowRight className="w-3.5 h-3.5" />
+            </Link>
+          ) : data.plan_type === 'starter' ? (
+            <div className="space-y-2">
+              <p className="text-[11px] text-muted-foreground leading-snug">{t('credits.widget_starter_pitch')}</p>
+              <UpgradeCTA plan="pro" size="sm" onNavigate={() => setOpen(false)} />
+            </div>
+          ) : (
+            <div className="space-y-2">
+              <Button asChild size="sm" className="w-full rounded-xl gap-1.5">
+                <Link to="/buy-credits" onClick={() => setOpen(false)}>
+                  <CreditCard className="w-4 h-4" />
+                  {t('credits.widget_recharge')}
+                </Link>
+              </Button>
+              <Link
+                to="/pricing"
+                onClick={() => setOpen(false)}
+                className="block text-center text-[11px] text-muted-foreground hover:text-foreground hover:underline transition-colors"
+              >
+                {t('premium.see_all_plans')}
+              </Link>
+            </div>
+          )}
+        </div>
+      </PopoverContent>
+    </Popover>
   );
 }

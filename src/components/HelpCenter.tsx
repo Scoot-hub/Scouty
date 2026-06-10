@@ -463,7 +463,7 @@ export default function HelpCenter() {
       {/* Panel */}
       <div
         className={cn(
-          'fixed z-50 w-[min(400px,calc(100vw-1rem))] rounded-2xl border border-border bg-card shadow-2xl flex flex-col overflow-hidden transition-all duration-300 origin-bottom-right',
+          'fixed z-50 w-[min(400px,calc(100vw-2rem))] rounded-2xl border border-border bg-card shadow-2xl flex flex-col overflow-hidden transition-all duration-300 origin-bottom-right',
           open ? 'scale-100 opacity-100 pointer-events-auto' : 'scale-95 opacity-0 pointer-events-none'
         )}
         style={{
