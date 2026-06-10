@@ -7942,20 +7942,30 @@ app.post("/api/import/wyscout", authMiddleware, wyscoutUploadMiddleware, async (
   if (!roles.includes('admin') && !roles.includes('importateur'))
     return res.status(403).json({ error: "Accès refusé. Rôle importateur requis." });
 
-  if (!req.file)
-    return res.status(400).json({ error: "Fichier requis (xlsx, xls ou csv)." });
-
-  log(`file received: ${req.file.originalname} (${(req.file.size/1024/1024).toFixed(1)} Mo)`);
-
-  // ── Parse Excel ──────────────────────────────────────────────────────────────
+  // ── Resolve rows from either an uploaded file (xlsx/xls/csv) OR a pre-parsed
+  // JSON batch. The client parses the workbook in-browser and POSTs the rows in
+  // chunks, because Vercel caps serverless request bodies at ~4.5 MB: a raw
+  // multipart upload of a large Wyscout export is rejected at the edge with
+  // FUNCTION_PAYLOAD_TOO_LARGE before this handler ever runs. ───────────────────
   let rows;
-  try {
-    const wb = XLSXLib.read(req.file.buffer, { type: 'buffer' });
-    const ws = wb.Sheets[wb.SheetNames[0]];
-    rows = XLSXLib.utils.sheet_to_json(ws, { defval: '' });
-  } catch (e) {
-    log(`XLSX parse error: ${e.message}`);
-    return res.status(400).json({ error: "Impossible de lire le fichier Excel : " + e.message });
+  if (req.file) {
+    log(`file received: ${req.file.originalname} (${(req.file.size/1024/1024).toFixed(1)} Mo)`);
+    try {
+      const wb = XLSXLib.read(req.file.buffer, { type: 'buffer' });
+      const ws = wb.Sheets[wb.SheetNames[0]];
+      rows = XLSXLib.utils.sheet_to_json(ws, { defval: '' });
+    } catch (e) {
+      log(`XLSX parse error: ${e.message}`);
+      return res.status(400).json({ error: "Impossible de lire le fichier Excel : " + e.message });
+    }
+  } else if (Array.isArray(req.body?.rows)) {
+    const b = req.body;
+    log(`JSON batch received: ${b.rows.length} rows` +
+        (b.batchCount ? ` (batch ${Number(b.batchIndex) + 1}/${b.batchCount})` : '') +
+        (b.fileName ? ` from ${b.fileName}` : ''));
+    rows = b.rows;
+  } else {
+    return res.status(400).json({ error: "Fichier requis (xlsx, xls ou csv) ou lignes JSON." });
   }
 
   if (!Array.isArray(rows) || rows.length === 0)
