@@ -78,6 +78,8 @@ interface ImportResult {
   updated: number;
   errors: { name: string; error: string }[];
   total: number;
+  linked?: number;
+  stats?: number;
 }
 
 const API = (import.meta.env.API_URL || '/api').replace(/\/$/, '');
@@ -169,6 +171,7 @@ export default function DataImport() {
   const [result, setResult] = useState<ImportResult | null>(null);
   const [showErrors, setShowErrors] = useState(false);
   const [showMapping, setShowMapping] = useState(false);
+  const [importProgress, setImportProgress] = useState<{ done: number; total: number } | null>(null);
 
   const SIZE_HARD_LIMIT_MB = 30;  // block before even reading
   const SIZE_WARN_MB = 2;
@@ -243,79 +246,122 @@ export default function DataImport() {
     setError('');
     setResult(null);
     setShowErrors(false);
+    setImportProgress(null);
   };
 
   // ── Import submission ────────────────────────────────────────────────────
   const IMPORT_TIMEOUT_MS = 10 * 60 * 1000; // 10 minutes max
+
+  // Vercel rejects any serverless request body over ~4.5 MB at the edge
+  // (FUNCTION_PAYLOAD_TOO_LARGE), so we never upload the raw file. Instead we
+  // send the already-parsed rows as JSON batches kept safely under that cap.
+  const MAX_BATCH_BYTES = 3_000_000; // 3 MB — ~1.5 MB headroom below the 4.5 MB cap
 
   const handleImport = async () => {
     if (!canImport) {
       toast.error("Vous n'avez pas la permission d'importer.");
       return;
     }
-    if (!originalFile) {
-      toast.error('Fichier introuvable. Veuillez recharger le fichier.');
+    if (!rows.length) {
+      toast.error('Aucune ligne à importer. Veuillez recharger le fichier.');
       return;
     }
     setStep('importing');
+    setError('');
 
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), IMPORT_TIMEOUT_MS);
 
+    // Split rows into JSON batches sized by serialized bytes (not row count) so
+    // both slim CSVs and 200-column Wyscout exports stay under the Vercel cap.
+    const batches: Record<string, unknown>[][] = [];
+    let cur: Record<string, unknown>[] = [];
+    let curBytes = 0;
+    for (const row of rows) {
+      const rowBytes = JSON.stringify(row).length + 1;
+      if (cur.length && curBytes + rowBytes > MAX_BATCH_BYTES) {
+        batches.push(cur);
+        cur = [];
+        curBytes = 0;
+      }
+      cur.push(row);
+      curBytes += rowBytes;
+    }
+    if (cur.length) batches.push(cur);
+
+    setImportProgress({ done: 0, total: batches.length });
+
+    // Aggregate per-batch results into a single summary for the "done" screen.
+    const agg: ImportResult = { created: 0, updated: 0, linked: 0, stats: 0, total: 0, errors: [] };
+
     try {
-      const formData = new FormData();
-      formData.append('file', originalFile, originalFile.name);
+      for (let i = 0; i < batches.length; i++) {
+        let res: Response;
+        try {
+          res = await fetch(`${API}/import/wyscout`, {
+            method: 'POST',
+            credentials: 'include',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              rows: batches[i],
+              fileName,
+              batchIndex: i,
+              batchCount: batches.length,
+            }),
+            signal: controller.signal,
+          });
+        } catch (fetchErr: unknown) {
+          // Translate low-level network errors into actionable messages
+          if (fetchErr instanceof DOMException && fetchErr.name === 'AbortError')
+            throw new Error(`Import annulé : délai dépassé (${IMPORT_TIMEOUT_MS / 60000} min). Le fichier est peut-être trop volumineux ou le serveur est surchargé.`);
+          const isOffline = !navigator.onLine;
+          throw new Error(
+            isOffline
+              ? 'Impossible de joindre le serveur : vérifiez votre connexion réseau.'
+              : `Impossible de joindre le serveur d'import. Causes possibles :\n` +
+                `• Le serveur n'est pas démarré (npm run api)\n` +
+                `• Le proxy Vite a expiré (redémarrez le serveur de dev)\n` +
+                `• Erreur réseau (${(fetchErr as Error)?.message ?? 'Unknown'})`
+          );
+        }
 
-      let res: Response;
-      try {
-        res = await fetch(`${API}/import/wyscout`, {
-          method: 'POST',
-          credentials: 'include',
-          body: formData,
-          signal: controller.signal,
-        });
-      } catch (fetchErr: unknown) {
-        // Translate low-level network errors into actionable messages
-        if (fetchErr instanceof DOMException && fetchErr.name === 'AbortError')
-          throw new Error(`Import annulé : délai dépassé (${IMPORT_TIMEOUT_MS / 60000} min). Le fichier est peut-être trop volumineux ou le serveur est surchargé.`);
-        const isOffline = !navigator.onLine;
-        throw new Error(
-          isOffline
-            ? 'Impossible de joindre le serveur : vérifiez votre connexion réseau.'
-            : `Impossible de joindre le serveur d'import. Causes possibles :\n` +
-              `• Le serveur n'est pas démarré (npm run api)\n` +
-              `• Le proxy Vite a expiré (redémarrez le serveur de dev)\n` +
-              `• Erreur réseau (${(fetchErr as Error)?.message ?? 'Unknown'})`
-        );
+        // Guard against HTML error pages (413, 502, nginx errors...)
+        const contentType = res.headers.get('content-type') || '';
+        if (!contentType.includes('application/json')) {
+          const text = await res.text();
+          const statusMsg =
+            res.status === 413 ? 'Lot de données refusé par le serveur (413). Réessayez ; si le problème persiste, réduisez la taille du fichier ou contactez le support.'
+            : res.status === 403 ? 'Accès refusé. Rôle importateur requis.'
+            : res.status === 502 ? 'Le serveur a dépassé le timeout (502). Réessayez avec un fichier plus petit (< 5 000 lignes).'
+            : res.status === 504 ? 'Timeout du serveur (504). Le fichier est trop grand pour un seul import.'
+            : `Erreur serveur HTTP ${res.status}.`;
+          throw new Error(`${statusMsg}\n\nDétail : ${text.slice(0, 300).replace(/<[^>]+>/g, '').trim()}`);
+        }
+
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || `Erreur serveur (${res.status})`);
+
+        agg.created += data.created || 0;
+        agg.updated += data.updated || 0;
+        agg.linked = (agg.linked ?? 0) + (data.linked || 0);
+        agg.stats = (agg.stats ?? 0) + (data.stats || 0);
+        agg.total += data.total || 0;
+        if (Array.isArray(data.errors) && data.errors.length) agg.errors.push(...data.errors);
+
+        setImportProgress({ done: i + 1, total: batches.length });
       }
 
-      // Guard against HTML error pages (413, 502, nginx errors...)
-      const contentType = res.headers.get('content-type') || '';
-      if (!contentType.includes('application/json')) {
-        const text = await res.text();
-        const statusMsg =
-          res.status === 413 ? 'Fichier trop volumineux pour le serveur (limite 25 Mo). Découpez le fichier en plusieurs parties.'
-          : res.status === 403 ? 'Accès refusé. Rôle importateur requis.'
-          : res.status === 502 ? 'Le serveur a dépassé le timeout (502). Réessayez avec un fichier plus petit (< 5 000 lignes).'
-          : res.status === 504 ? 'Timeout du serveur (504). Le fichier est trop grand pour un seul import.'
-          : `Erreur serveur HTTP ${res.status}.`;
-        throw new Error(`${statusMsg}\n\nDétail : ${text.slice(0, 300).replace(/<[^>]+>/g, '').trim()}`);
-      }
-
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || `Erreur serveur (${res.status})`);
-
-      setResult(data);
+      setResult(agg);
       setStep('done');
-      if (!data.errors?.length) {
+      if (!agg.errors.length) {
         const parts = [
-          data.created > 0 && `${data.created} créés`,
-          data.updated > 0 && `${data.updated} mis à jour`,
-          (data.linked ?? 0) > 0 && `${data.linked} liés`,
+          agg.created > 0 && `${agg.created} créés`,
+          agg.updated > 0 && `${agg.updated} mis à jour`,
+          (agg.linked ?? 0) > 0 && `${agg.linked} liés`,
         ].filter(Boolean).join(', ');
         toast.success(`Import terminé : ${parts || 'aucun changement'}.`);
       } else {
-        toast.warning(`Import terminé avec ${data.errors.length} erreur(s).`);
+        toast.warning(`Import terminé avec ${agg.errors.length} erreur(s).`);
       }
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : 'Erreur inconnue';
@@ -324,6 +370,7 @@ export default function DataImport() {
       toast.error(msg.split('\n')[0]); // show first line in toast, full in card
     } finally {
       clearTimeout(timer);
+      setImportProgress(null);
     }
   };
 
@@ -689,6 +736,11 @@ export default function DataImport() {
               <p className="text-sm text-muted-foreground mt-1">
                 Traitement de {rows.length} joueur{rows.length > 1 ? 's' : ''}, veuillez patienter.
               </p>
+              {importProgress && importProgress.total > 1 && (
+                <p className="text-xs text-muted-foreground mt-2">
+                  Lot {importProgress.done} / {importProgress.total}
+                </p>
+              )}
             </div>
           </CardContent>
         </Card>
