@@ -2,6 +2,15 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 
 const API_BASE = (import.meta.env.API_URL || '/api').replace(/\/$/, '');
 
+// Shared channel — exported so AppLayout can listen and broadcast from one place
+export const notifChannel = typeof BroadcastChannel !== 'undefined'
+  ? new BroadcastChannel('scouty-notifications')
+  : null;
+
+export function broadcastNotifChange() {
+  notifChannel?.postMessage({ type: 'NOTIFICATIONS_CHANGED' });
+}
+
 export interface Notification {
   id: string;
   user_id: string;
@@ -23,8 +32,9 @@ export function useNotifications() {
       if (!res.ok) throw new Error('Failed to fetch notifications');
       return res.json();
     },
-    staleTime: 30 * 1000,
-    refetchInterval: 60000,
+    staleTime: 10 * 1000,
+    refetchInterval: 10 * 1000,   // fallback poll every 10 s
+    refetchOnWindowFocus: true,    // instant update when switching back to the tab
   });
 }
 
@@ -44,6 +54,7 @@ export function useMarkAsRead() {
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['notifications'] });
+      broadcastNotifChange();
     },
   });
 }
@@ -59,6 +70,7 @@ export function useMarkAllAsRead() {
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['notifications'] });
+      broadcastNotifChange();
     },
   });
 }
@@ -74,6 +86,7 @@ export function useDeleteNotification() {
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['notifications'] });
+      broadcastNotifChange();
     },
   });
 }

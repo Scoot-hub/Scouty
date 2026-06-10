@@ -226,6 +226,7 @@ export default function Players() {
   const [duplicateDialogOpen, setDuplicateDialogOpen] = useState(false);
   const [dupRulesDialogOpen, setDupRulesDialogOpen] = useState(false);
   const [deletingDuplicates, setDeletingDuplicates] = useState(false);
+  const [dissolvingIds, setDissolvingIds] = useState<Set<string>>(new Set());
   const [filtersOpen, setFiltersOpen] = useState<boolean>(() => loadFilters().filtersOpen ?? false);
   const [viewMode, setViewMode] = useState<'compact' | 'detailed' | 'table'>(() => loadFilters().viewMode ?? 'compact');
   const isMobile = useIsMobile();
@@ -486,7 +487,12 @@ export default function Players() {
     const ok = await tryConsumeCredits(1, 'find_duplicates');
     if (!ok) return;
     try {
-      const resp = await fetch('/api/players/duplicates', { credentials: 'include' });
+      let url = '/api/players/duplicates';
+      if (activeFilterCount > 0 || debouncedSearch) {
+        const ids = await fetchAllPlayerIds(paginatedFilters);
+        if (ids.length > 0) url += `?ids=${ids.join(',')}`;
+      }
+      const resp = await fetch(url, { credentials: 'include' });
       if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
       const body = await resp.json() as { groups: { keep: DupLite; duplicates: DupLite[] }[] };
       setDuplicateGroups(body.groups);
@@ -535,7 +541,19 @@ export default function Players() {
       toast.success(t('players.duplicates_merged', { count }));
       setDuplicateDialogOpen(false);
       setDuplicateGroups([]);
-      refetch();
+
+      // Animate cards that are currently visible in the filtered list
+      const deletedIds = new Set(duplicateGroups.flatMap(g => g.duplicates.map(d => d.id)));
+      const visibleDeletedIds = new Set(Array.from(deletedIds).filter(id => filtered.some(p => p.id === id)));
+      if (visibleDeletedIds.size > 0) {
+        setDissolvingIds(visibleDeletedIds);
+        setTimeout(() => {
+          setDissolvingIds(new Set());
+          refetch();
+        }, 700);
+      } else {
+        refetch();
+      }
     } catch {
       toast.error(t('common.error'));
     } finally {
@@ -2217,6 +2235,7 @@ export default function Players() {
               viewMode={viewMode === 'detailed' ? 'detailed' : 'compact'}
               selectedIds={selectedIds}
               enrichingIds={enrichingIds}
+              dissolvingIds={dissolvingIds}
               hasOrg={hasOrg}
               onToggleSelect={toggleSelect}
               onDismissNews={dismissNews}

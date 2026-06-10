@@ -32,6 +32,30 @@ try {
 } catch {
   console.warn("[warn] nodemailer not installed – email sending disabled. Run: npm install");
 }
+
+// ── Web Push (VAPID) ──────────────────────────────────────────────────────────
+let webpush = null;
+let VAPID_PUBLIC_KEY = null;
+try {
+  webpush = (await import("web-push")).default;
+  VAPID_PUBLIC_KEY = process.env.VAPID_PUBLIC_KEY;
+  let vapidPrivate = process.env.VAPID_PRIVATE_KEY;
+  if (!VAPID_PUBLIC_KEY || !vapidPrivate) {
+    const keys = webpush.generateVAPIDKeys();
+    VAPID_PUBLIC_KEY = keys.publicKey;
+    vapidPrivate = keys.privateKey;
+    console.warn("[web-push] VAPID keys not set in .env — generated temporary keys (subscriptions will break on restart). Add to .env:");
+    console.warn(`VAPID_PUBLIC_KEY=${VAPID_PUBLIC_KEY}`);
+    console.warn(`VAPID_PRIVATE_KEY=${vapidPrivate}`);
+  }
+  webpush.setVapidDetails(
+    `mailto:${process.env.SMTP_USER || 'admin@scouthub.app'}`,
+    VAPID_PUBLIC_KEY,
+    vapidPrivate
+  );
+} catch (e) {
+  console.warn("[warn] web-push not available:", e?.message);
+}
 let Stripe = null;
 let stripe = null;
 try {
@@ -49,6 +73,21 @@ try {
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const ROOT_DIR = path.resolve(__dirname, "..");
+
+// Retry helper for transient DB connection resets (ECONNRESET / fatal:true).
+// Wraps pool.query() with one automatic retry on stale-connection errors so
+// TiDB Cloud idle-timeout drops don't surface as 500s to the client.
+async function dbQuery(sql, params) {
+  const isRetryable = e => e.code === 'ECONNRESET' || e.code === 'PROTOCOL_CONNECTION_LOST' || e.fatal === true;
+  try {
+    return await pool.query(sql, params);
+  } catch (err) {
+    if (isRetryable(err)) {
+      return await pool.query(sql, params);
+    }
+    throw err;
+  }
+}
 const isVercel = process.env.VERCEL === "1";
 const UPLOAD_DIR = isVercel ? "/tmp/uploads" : path.join(ROOT_DIR, "dist", "uploads");
 
@@ -1274,6 +1313,9 @@ async function _legacyRunMigrations() {
   }
 
   // referrals — tracks who referred whom
+  // FK constraints are added via separate ALTER TABLE so a collation mismatch
+  // with users.id (utf8mb4_bin on TiDB vs utf8mb4_unicode_ci elsewhere) never
+  // prevents the table itself from being created.
   try {
     await pool.query(`
       CREATE TABLE IF NOT EXISTS referrals (
@@ -1283,14 +1325,14 @@ async function _legacyRunMigrations() {
         referral_code VARCHAR(50)  NOT NULL DEFAULT '',
         created_at    DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
         UNIQUE KEY uniq_referred (referred_id),
-        INDEX idx_referrals_referrer (referrer_id),
-        FOREIGN KEY (referrer_id) REFERENCES users(id) ON DELETE CASCADE,
-        FOREIGN KEY (referred_id) REFERENCES users(id) ON DELETE CASCADE
-      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+        INDEX idx_referrals_referrer (referrer_id)
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
     `);
   } catch (err) {
     if (!err?.message?.includes('already exists')) console.warn('[migration] referrals:', err?.message);
   }
+  try { await pool.query("ALTER TABLE referrals ADD CONSTRAINT fk_referrals_referrer FOREIGN KEY (referrer_id) REFERENCES users(id) ON DELETE CASCADE"); } catch {}
+  try { await pool.query("ALTER TABLE referrals ADD CONSTRAINT fk_referrals_referred FOREIGN KEY (referred_id) REFERENCES users(id) ON DELETE CASCADE"); } catch {}
 
   // editorial_reactions FKs to editorial_articles, so that table must be InnoDB.
   // Some installs created editorial_articles as MyISAM (no FK support), which made
@@ -1316,14 +1358,14 @@ async function _legacyRunMigrations() {
         reaction   ENUM('like','dislike') NOT NULL,
         created_at DATETIME    NOT NULL DEFAULT CURRENT_TIMESTAMP,
         PRIMARY KEY (user_id, article_id),
-        INDEX idx_er_article (article_id),
-        FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
-        FOREIGN KEY (article_id) REFERENCES editorial_articles(id) ON DELETE CASCADE
-      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+        INDEX idx_er_article (article_id)
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
     `);
   } catch (err) {
     if (!err?.message?.includes('already exists')) console.warn('[migration] editorial_reactions:', err?.message);
   }
+  try { await pool.query("ALTER TABLE editorial_reactions ADD CONSTRAINT fk_er_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE"); } catch {}
+  try { await pool.query("ALTER TABLE editorial_reactions ADD CONSTRAINT fk_er_article FOREIGN KEY (article_id) REFERENCES editorial_articles(id) ON DELETE CASCADE"); } catch {}
 
   // Add geo columns to user_sessions (idempotent)
   for (const col of [
@@ -1349,19 +1391,17 @@ async function _legacyRunMigrations() {
         last_updated  DATETIME   NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
         PRIMARY KEY (user_id, session_id, category),
         INDEX idx_spt_user (user_id),
-        INDEX idx_spt_category (category),
-        FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
-      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+        INDEX idx_spt_category (category)
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
     `);
   } catch (err) {
     if (!err?.message?.includes('already exists')) console.warn('[migration] session_page_time:', err?.message);
   }
+  try { await pool.query("ALTER TABLE session_page_time ADD CONSTRAINT fk_spt_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE"); } catch {}
 
   // Tickets / bug reports + threaded messages.
-  // (Previously defined only in the now-dead _legacyEnsureFixtureTables, so the
-  //  tables were never created. Explicit COLLATE so the CHAR(36) FK matches
-  //  users.id's utf8mb4_unicode_ci — a bare CHARSET=utf8mb4 resolves to
-  //  utf8mb4_0900_ai_ci on MySQL 8.4+ and the FK is rejected as incompatible.)
+  // FK constraints are added via separate ALTER TABLE so collation mismatches
+  // between users.id and CHAR(36) columns never prevent table creation.
   try {
     await pool.query(`
       CREATE TABLE IF NOT EXISTS tickets (
@@ -1376,10 +1416,14 @@ async function _legacyRunMigrations() {
         created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
         updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
         INDEX idx_tickets_user (user_id),
-        INDEX idx_tickets_status (status, created_at),
-        FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
-      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+        INDEX idx_tickets_status (status, created_at)
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
     `);
+  } catch (err) {
+    if (!err?.message?.includes('already exists')) console.warn('[migration] tickets:', err?.message);
+  }
+  try { await pool.query("ALTER TABLE tickets ADD CONSTRAINT fk_tickets_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE"); } catch {}
+  try {
     await pool.query(`
       CREATE TABLE IF NOT EXISTS ticket_messages (
         id CHAR(36) PRIMARY KEY,
@@ -1388,14 +1432,14 @@ async function _legacyRunMigrations() {
         is_admin TINYINT(1) NOT NULL DEFAULT 0,
         body TEXT NOT NULL,
         created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-        INDEX idx_ticket_messages_ticket (ticket_id, created_at),
-        FOREIGN KEY (ticket_id) REFERENCES tickets(id) ON DELETE CASCADE,
-        FOREIGN KEY (sender_id) REFERENCES users(id) ON DELETE CASCADE
-      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+        INDEX idx_ticket_messages_ticket (ticket_id, created_at)
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
     `);
   } catch (err) {
-    if (!err?.message?.includes('already exists')) console.warn('[migration] tickets:', err?.message);
+    if (!err?.message?.includes('already exists')) console.warn('[migration] ticket_messages:', err?.message);
   }
+  try { await pool.query("ALTER TABLE ticket_messages ADD CONSTRAINT fk_tm_ticket FOREIGN KEY (ticket_id) REFERENCES tickets(id) ON DELETE CASCADE"); } catch {}
+  try { await pool.query("ALTER TABLE ticket_messages ADD CONSTRAINT fk_tm_sender FOREIGN KEY (sender_id) REFERENCES users(id) ON DELETE CASCADE"); } catch {}
 
   // Ensure password_reset_tokens table exists
   try {
@@ -2703,6 +2747,22 @@ async function _legacyRunMigrations() {
     `);
   } catch (err) { if (!err?.message?.includes('already exists')) console.warn('[warn] org_message_reads:', err?.message); }
 
+  // user_push_subscriptions — browser push subscription endpoints per user/device
+  try {
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS user_push_subscriptions (
+        id          CHAR(36)      NOT NULL PRIMARY KEY,
+        user_id     CHAR(36)      NOT NULL,
+        endpoint    TEXT          NOT NULL,
+        p256dh      TEXT          NOT NULL,
+        auth        TEXT          NOT NULL,
+        created_at  DATETIME      NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE KEY uniq_endpoint (endpoint(255)),
+        INDEX idx_ups_user (user_id)
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+    `);
+  } catch (err) { if (!err?.message?.includes('already exists')) console.warn('[warn] user_push_subscriptions:', err?.message); }
+
   // org_join_requests — pending membership requests when require_approval_to_join is enabled
   try {
     await pool.query(`
@@ -2929,6 +2989,143 @@ async function _legacyRunMigrations() {
     if (!err?.message?.includes('already exists')) console.warn('[warn] exchange_rates migration:', err?.message);
   }
 
+  // ── player_match_observations — manual match entries for scouting trips ────────────────
+  try {
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS player_match_observations (
+        id           CHAR(36)      NOT NULL PRIMARY KEY,
+        player_id    CHAR(36)      NOT NULL,
+        created_by   CHAR(36)      NOT NULL,
+        competition  VARCHAR(200)  NULL,
+        home_team    VARCHAR(200)  NOT NULL DEFAULT '',
+        away_team    VARCHAR(200)  NOT NULL DEFAULT '',
+        match_date   DATETIME      NULL,
+        venue        VARCHAR(200)  NULL,
+        city         VARCHAR(100)  NULL,
+        lat          DECIMAL(9,6)  NULL,
+        lng          DECIMAL(9,6)  NULL,
+        notes        TEXT          NULL,
+        created_at   DATETIME      NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        INDEX idx_pmo_player (player_id),
+        FOREIGN KEY (player_id)  REFERENCES players(id) ON DELETE CASCADE,
+        FOREIGN KEY (created_by) REFERENCES users(id)   ON DELETE CASCADE
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+    `);
+  } catch (err) {
+    if (!err?.message?.includes('already exists')) console.warn('[warn] player_match_observations migration:', err?.message);
+  }
+  // Add columns that may be missing if the table was created by an older migration
+  for (const col of [
+    "ADD COLUMN IF NOT EXISTS `venue`      VARCHAR(200) NULL",
+    "ADD COLUMN IF NOT EXISTS `city`       VARCHAR(100) NULL",
+    "ADD COLUMN IF NOT EXISTS `lat`        DECIMAL(9,6) NULL",
+    "ADD COLUMN IF NOT EXISTS `lng`        DECIMAL(9,6) NULL",
+    "ADD COLUMN IF NOT EXISTS `notes`      TEXT NULL",
+    "ADD COLUMN IF NOT EXISTS `competition` VARCHAR(200) NULL",
+  ]) {
+    try { await pool.query(`ALTER TABLE player_match_observations ${col}`); } catch (err) {
+      if (err?.errno !== 1060) console.warn('[warn] player_match_observations alter:', err?.message);
+    }
+  }
+
+  // ── player_alert_state — tracks last known club/injury per player for change detection ──
+  try {
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS player_alert_state (
+        player_id        CHAR(36)     NOT NULL PRIMARY KEY,
+        last_known_club  VARCHAR(255) NOT NULL DEFAULT '',
+        is_injured       TINYINT(1)   NOT NULL DEFAULT 0,
+        injury_desc      VARCHAR(255) NULL,
+        injury_return    DATE         NULL,
+        checked_at       DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        FOREIGN KEY (player_id) REFERENCES players(id) ON DELETE CASCADE
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+    `);
+  } catch (err) {
+    if (!err?.message?.includes('already exists')) console.warn('[warn] player_alert_state migration:', err?.message);
+  }
+
+  // ── org_shortlist ──────────────────────────────────────────────────────────
+  try {
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS org_shortlist (
+        id              CHAR(36)     NOT NULL PRIMARY KEY,
+        organization_id CHAR(36)     NOT NULL,
+        player_id       CHAR(36)     NOT NULL,
+        status          ENUM('en_veille','a_observer','en_discussion','approche') NOT NULL DEFAULT 'en_veille',
+        added_by        CHAR(36)     NOT NULL,
+        notes           TEXT         NULL,
+        added_at        DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE KEY uniq_os_org_player (organization_id, player_id),
+        INDEX idx_os_org    (organization_id),
+        INDEX idx_os_player (player_id)
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+    `);
+  } catch (err) {
+    if (!err?.message?.includes('already exists')) console.warn('[warn] org_shortlist migration:', err?.message);
+  }
+
+  // ── org_channels ───────────────────────────────────────────────────────────
+  try {
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS org_channels (
+        id              CHAR(36)      NOT NULL PRIMARY KEY,
+        organization_id CHAR(36)      NOT NULL,
+        name            VARCHAR(100)  NOT NULL,
+        description     VARCHAR(255)  NULL,
+        created_by      CHAR(36)      NOT NULL,
+        is_default      TINYINT(1)    NOT NULL DEFAULT 0,
+        created_at      DATETIME      NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        INDEX idx_oc_org (organization_id)
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+    `);
+  } catch (err) {
+    if (!err?.message?.includes('already exists')) console.warn('[warn] org_channels migration:', err?.message);
+  }
+
+  // ── org_channel_reads (per-channel unread tracking) ───────────────────────
+  try {
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS org_channel_reads (
+        user_id    CHAR(36)  NOT NULL,
+        channel_id CHAR(36)  NOT NULL,
+        last_read_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        PRIMARY KEY (user_id, channel_id)
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+    `);
+  } catch (err) {
+    if (!err?.message?.includes('already exists')) console.warn('[warn] org_channel_reads migration:', err?.message);
+  }
+
+  // ── org_pinned_messages ────────────────────────────────────────────────────
+  try {
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS org_pinned_messages (
+        id          CHAR(36)  NOT NULL PRIMARY KEY,
+        channel_id  CHAR(36)  NOT NULL,
+        message_id  CHAR(36)  NOT NULL,
+        pinned_by   CHAR(36)  NOT NULL,
+        pinned_at   DATETIME  NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE KEY uniq_pin (channel_id, message_id),
+        INDEX idx_pin_chan (channel_id)
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+    `);
+  } catch (err) {
+    if (!err?.message?.includes('already exists')) console.warn('[warn] org_pinned_messages migration:', err?.message);
+  }
+
+  // ── org_messages: add channel_id column ────────────────────────────────────
+  try {
+    await pool.query(`ALTER TABLE org_messages ADD COLUMN channel_id CHAR(36) NULL`);
+  } catch (err) {
+    if (err?.errno !== 1060) console.warn('[warn] org_messages.channel_id migration:', err?.message);
+  }
+  try {
+    await pool.query(`ALTER TABLE org_messages ADD INDEX idx_org_msg_chan (org_id, channel_id, created_at)`);
+  } catch (err) {
+    if (err?.errno !== 1061) console.warn('[warn] org_messages channel index migration:', err?.message);
+  }
+
   console.log("[startup] Legacy migrations complete");
 }
 
@@ -2942,6 +3139,8 @@ const DEFAULT_NOTIF_PREFS = {
   web_bell: true,
   alert_no_report_days: 30,    // 0 = never, 7, 30
   alert_contract_months: 3,    // 0 = never, 3, 6, 12
+  alert_transfer: true,        // notify when a watchlisted player changes club
+  alert_injury: true,          // notify when a watchlisted player gets injured or recovers
 };
 
 app.get("/api/notification-prefs", authMiddleware, async (req, res) => {
@@ -2966,7 +3165,7 @@ app.put("/api/notification-prefs", authMiddleware, async (req, res) => {
     if (row?.notification_prefs) {
       try { Object.assign(existing, JSON.parse(row.notification_prefs)); } catch {}
     }
-    const boolKeys = ['email_match_assigned','email_org_invite','email_community','email_weekly','web_bell'];
+    const boolKeys = ['email_match_assigned','email_org_invite','email_community','email_weekly','web_bell','alert_transfer','alert_injury'];
     const numericKeys = { alert_no_report_days: [0,7,30], alert_contract_months: [0,3,6,12] };
     for (const key of boolKeys) {
       if (key in req.body) existing[key] = Boolean(req.body[key]);
@@ -3034,10 +3233,30 @@ app.get("/api/page-access-info", authMiddleware, async (req, res) => {
 // ── Notification helper ──────────────────────────────────────────────────
 async function createNotification(userId, { type, title, message, icon, link, playerId } = {}) {
   try {
+    const notifId = uuidv4();
     await pool.query(
       `INSERT INTO notifications (id, user_id, type, title, message, icon, link, player_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-      [uuidv4(), userId, type || "system", title, message || null, icon || null, link || null, playerId || null]
+      [notifId, userId, type || "system", title, message || null, icon || null, link || null, playerId || null]
     );
+    // Fire web push if available
+    if (webpush && userId) {
+      const [subs] = await pool.query(
+        "SELECT endpoint, p256dh, auth FROM user_push_subscriptions WHERE user_id = ?",
+        [userId]
+      );
+      const payload = JSON.stringify({ id: notifId, title, message: message || '', link: link || '/', type });
+      for (const sub of subs) {
+        webpush.sendNotification(
+          { endpoint: sub.endpoint, keys: { p256dh: sub.p256dh, auth: sub.auth } },
+          payload
+        ).catch(err => {
+          if (err?.statusCode === 410 || err?.statusCode === 404) {
+            // Subscription expired — clean up
+            pool.query("DELETE FROM user_push_subscriptions WHERE endpoint = ?", [sub.endpoint]).catch(() => {});
+          }
+        });
+      }
+    }
   } catch (err) {
     console.warn("[notification] Failed to create:", err?.message);
   }
@@ -3573,7 +3792,7 @@ app.post("/api/auth/login", rateLimitAuth, async (req, res) => {
   const loginIpHash = loginIp ? hashIp(loginIp) : null;
 
   try {
-    const [rows] = await pool.query("SELECT * FROM users WHERE email = ? LIMIT 1", [email.trim().toLowerCase()]);
+    const [rows] = await dbQuery("SELECT * FROM users WHERE email = ? LIMIT 1", [email.trim().toLowerCase()]);
     const user = rows[0];
     if (!user) {
       return res.status(401).json({ error: "Identifiants invalides." });
@@ -4526,6 +4745,234 @@ app.delete("/api/player-videos/:id", authMiddleware, async (req, res) => {
   }
 });
 
+// ── Player match observations (upcoming matches + manual entries) ─────────────
+
+app.get("/api/player-upcoming-matches/:playerId", authMiddleware, async (req, res) => {
+  const { playerId } = req.params;
+  try {
+    // Get player's club
+    const [[p]] = await pool.query("SELECT club FROM players WHERE id = ?", [playerId]);
+    if (!p) return res.status(404).json({ error: "Player not found" });
+
+    const club = (p.club || '').trim();
+    let calendarMatches = [];
+
+    if (club) {
+      // Exact + accent-insensitive match against home_team_name or away_team_name
+      const [exact] = await pool.query(`
+        SELECT m.id, m.championship_name, m.season_year, m.round_number, m.round_name,
+               m.home_team_name, m.away_team_name, m.home_team_badge, m.away_team_badge,
+               m.home_score, m.away_score, m.finished, m.not_started, m.in_progress,
+               DATE_FORMAT(m.start_date, '%Y-%m-%dT%H:%i:00') AS start_date, m.has_time
+        FROM championship_calendar_matches m
+        WHERE (m.home_team_name = ? COLLATE utf8mb4_general_ci
+            OR m.away_team_name = ? COLLATE utf8mb4_general_ci)
+          AND m.finished = 0
+          AND (m.start_date IS NULL OR m.start_date >= NOW() - INTERVAL 2 HOUR)
+        ORDER BY m.start_date ASC, m.round_number ASC
+        LIMIT 20
+      `, [club, club]);
+
+      calendarMatches = exact;
+
+      // Fallback: partial match on first 8 chars if no exact result
+      if (calendarMatches.length === 0 && club.length >= 4) {
+        const prefix = club.slice(0, 8);
+        const [partial] = await pool.query(`
+          SELECT m.id, m.championship_name, m.season_year, m.round_number, m.round_name,
+                 m.home_team_name, m.away_team_name, m.home_team_badge, m.away_team_badge,
+                 m.home_score, m.away_score, m.finished, m.not_started, m.in_progress,
+                 DATE_FORMAT(m.start_date, '%Y-%m-%dT%H:%i:00') AS start_date, m.has_time
+          FROM championship_calendar_matches m
+          WHERE (m.home_team_name LIKE ? OR m.away_team_name LIKE ?)
+            AND m.finished = 0
+            AND (m.start_date IS NULL OR m.start_date >= NOW() - INTERVAL 2 HOUR)
+          ORDER BY m.start_date ASC, m.round_number ASC
+          LIMIT 20
+        `, [`${prefix}%`, `${prefix}%`]);
+        calendarMatches = partial;
+      }
+    }
+
+    // Resolve home team coordinates from club_directory
+    const [clubDirs] = await pool.query(
+      "SELECT club_name, lat, lng, city FROM club_directory WHERE lat IS NOT NULL AND lng IS NOT NULL"
+    );
+    const coordMap = new Map();
+    for (const cd of clubDirs) {
+      coordMap.set((cd.club_name || '').toLowerCase(), { lat: parseFloat(cd.lat), lng: parseFloat(cd.lng), city: cd.city || null });
+    }
+
+    const findCoords = (teamName) => {
+      if (!teamName) return null;
+      const key = teamName.toLowerCase();
+      if (coordMap.has(key)) return coordMap.get(key);
+      // Partial match: find entry whose key contains or is contained
+      for (const [k, v] of coordMap) {
+        if (k.includes(key.slice(0, 6)) || key.includes(k.slice(0, 6))) return v;
+      }
+      return null;
+    };
+
+    const matches = calendarMatches.map(m => {
+      const homeCoords = findCoords(m.home_team_name);
+      return {
+        id: `cal_${m.id}`,
+        source: 'calendar',
+        championship: m.championship_name,
+        round: m.round_number,
+        roundName: m.round_name,
+        homeTeam: m.home_team_name,
+        awayTeam: m.away_team_name,
+        homeBadge: m.home_team_badge,
+        awayBadge: m.away_team_badge,
+        homeScore: m.home_score,
+        awayScore: m.away_score,
+        startDate: m.start_date,
+        hasTime: !!m.has_time,
+        lat: homeCoords?.lat ?? null,
+        lng: homeCoords?.lng ?? null,
+        city: homeCoords?.city ?? null,
+      };
+    });
+
+    // Manual observations for this player
+    const [obs] = await pool.query(
+      `SELECT id, competition, home_team, away_team, match_date, venue, city, lat, lng, notes, created_at
+       FROM player_match_observations WHERE player_id = ? ORDER BY match_date ASC`,
+      [playerId]
+    );
+    const manual = obs.map(o => {
+      // mysql2 returns DATETIME as JS Date objects; toISOString() throws on
+      // invalid dates (e.g. MySQL "0000-00-00" or a timezone-corrupted value).
+      // Parse defensively so one bad row never crashes the entire endpoint.
+      let startDate = null;
+      try {
+        if (o.match_date) {
+          const d = o.match_date instanceof Date ? o.match_date : new Date(o.match_date);
+          if (!isNaN(d.getTime())) startDate = d.toISOString().slice(0, 16);
+        }
+      } catch {}
+      return {
+        id: `obs_${o.id}`,
+        obsId: o.id,
+        source: 'manual',
+        championship: o.competition || null,
+        homeTeam: o.home_team,
+        awayTeam: o.away_team,
+        startDate,
+        hasTime: !!o.match_date,
+        lat: o.lat ? parseFloat(o.lat) : null,
+        lng: o.lng ? parseFloat(o.lng) : null,
+        city: o.city || null,
+        venue: o.venue || null,
+        notes: o.notes || null,
+      };
+    });
+
+    // Merge and sort (undated entries go last)
+    const all = [...matches, ...manual].sort((a, b) => {
+      if (!a.startDate && !b.startDate) return 0;
+      if (!a.startDate) return 1;
+      if (!b.startDate) return -1;
+      return a.startDate.localeCompare(b.startDate);
+    });
+
+    return res.json({ club, matches: all });
+  } catch (err) {
+    console.error("[player-upcoming-matches] Error:", err.message);
+    return res.status(500).json({ error: "Erreur serveur" });
+  }
+});
+
+// ── Venue/city suggestion for a given club name (home team) ───────────────────
+app.get("/api/club-venue", authMiddleware, async (req, res) => {
+  const club = String(req.query.club || "").trim();
+  if (!club) return res.json({ venue: null, city: null });
+  try {
+    // Most recent observation where this club played at home
+    const [[obs]] = await pool.query(
+      `SELECT venue, city FROM player_match_observations
+       WHERE home_team COLLATE utf8mb4_general_ci = ? AND (venue IS NOT NULL OR city IS NOT NULL)
+       ORDER BY created_at DESC LIMIT 1`,
+      [club]
+    );
+    if (obs?.venue || obs?.city) {
+      return res.json({ venue: obs.venue || null, city: obs.city || null });
+    }
+    // Fallback: partial match (first 6 chars)
+    if (club.length >= 4) {
+      const [[partial]] = await pool.query(
+        `SELECT venue, city FROM player_match_observations
+         WHERE home_team LIKE ? AND (venue IS NOT NULL OR city IS NOT NULL)
+         ORDER BY created_at DESC LIMIT 1`,
+        [`${club.slice(0, 6)}%`]
+      );
+      if (partial?.venue || partial?.city) {
+        return res.json({ venue: partial.venue || null, city: partial.city || null });
+      }
+    }
+    return res.json({ venue: null, city: null });
+  } catch (err) {
+    console.error("[club-venue] error:", err.message);
+    return res.json({ venue: null, city: null });
+  }
+});
+
+app.post("/api/player-match-observations", authMiddleware, async (req, res) => {
+  const { player_id, competition, home_team, away_team, match_date, venue, city, lat, lng, notes } = req.body || {};
+  if (!player_id || (!home_team && !away_team)) return res.status(400).json({ error: "player_id, home_team ou away_team requis" });
+  try {
+    const [[p]] = await pool.query("SELECT id FROM players WHERE id = ?", [player_id]);
+    if (!p) return res.status(404).json({ error: "Player not found" });
+    const id = uuidv4();
+    await pool.query(
+      `INSERT INTO player_match_observations (id, player_id, created_by, competition, home_team, away_team, match_date, venue, city, lat, lng, notes)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [id, player_id, req.user.id,
+       competition || null, home_team || '', away_team || '',
+       match_date || null, venue || null, city || null,
+       lat != null ? parseFloat(lat) : null, lng != null ? parseFloat(lng) : null,
+       notes || null]
+    );
+    // Return the full observation so the client can display it immediately.
+    // id uses the same "obs_" prefix as the GET endpoint so the optimistic cache
+    // entry has the correct key and won't duplicate on the next refetch.
+    return res.status(201).json({
+      id: `obs_${id}`,
+      obsId: id,
+      source: 'manual',
+      championship: competition || null,
+      homeTeam: home_team || '',
+      awayTeam: away_team || '',
+      startDate: match_date ? new Date(match_date).toISOString().slice(0, 16) : null,
+      hasTime: !!match_date,
+      lat: lat != null ? parseFloat(lat) : null,
+      lng: lng != null ? parseFloat(lng) : null,
+      city: city || null,
+      venue: venue || null,
+      notes: notes || null,
+    });
+  } catch (err) {
+    console.error("[player-match-observations] POST error:", err.message);
+    return res.status(500).json({ error: "Erreur serveur" });
+  }
+});
+
+app.delete("/api/player-match-observations/:obsId", authMiddleware, async (req, res) => {
+  try {
+    const [result] = await pool.query(
+      "DELETE FROM player_match_observations WHERE id = ? AND created_by = ?",
+      [req.params.obsId, req.user.id]
+    );
+    if (!result.affectedRows) return res.status(404).json({ error: "Observation introuvable" });
+    return res.json({ ok: true });
+  } catch (err) {
+    console.error("[player-match-observations] DELETE error:", err.message);
+    return res.status(500).json({ error: "Erreur serveur" });
+  }
+});
+
 // ── Followed Clubs CRUD ───────────────────────────────────────────────────
 app.get("/api/followed-clubs", authMiddleware, async (req, res) => {
   try {
@@ -4734,6 +5181,60 @@ app.delete("/api/notifications/:id", authMiddleware, async (req, res) => {
     console.error("[notifications] DELETE error:", err);
     return res.status(500).json({ error: "Erreur serveur" });
   }
+});
+
+// ── Web Push endpoints ────────────────────────────────────────────────────
+
+// GET /api/push/vapid-public-key — return VAPID public key
+app.get("/api/push/vapid-public-key", (req, res) => {
+  if (!VAPID_PUBLIC_KEY) return res.status(503).json({ error: "Push not configured" });
+  return res.json({ publicKey: VAPID_PUBLIC_KEY });
+});
+
+// POST /api/push/subscribe — register a push subscription for current user
+app.post("/api/push/subscribe", authMiddleware, async (req, res) => {
+  if (!webpush) return res.status(503).json({ error: "Push not configured" });
+  const { endpoint, keys } = req.body || {};
+  if (!endpoint || !keys?.p256dh || !keys?.auth) {
+    return res.status(400).json({ error: "endpoint, keys.p256dh et keys.auth requis" });
+  }
+  try {
+    await pool.query(
+      `INSERT INTO user_push_subscriptions (id, user_id, endpoint, p256dh, auth)
+       VALUES (UUID(), ?, ?, ?, ?)
+       ON DUPLICATE KEY UPDATE user_id = ?, p256dh = ?, auth = ?, created_at = NOW()`,
+      [req.user.id, endpoint, keys.p256dh, keys.auth,
+       req.user.id, keys.p256dh, keys.auth]
+    );
+    return res.json({ ok: true });
+  } catch (err) { return res.status(500).json({ error: err?.message }); }
+});
+
+// DELETE /api/push/unsubscribe — remove a push subscription
+app.delete("/api/push/unsubscribe", authMiddleware, async (req, res) => {
+  const { endpoint } = req.body || {};
+  if (!endpoint) return res.status(400).json({ error: "endpoint requis" });
+  try {
+    await pool.query("DELETE FROM user_push_subscriptions WHERE endpoint = ? AND user_id = ?", [endpoint, req.user.id]);
+    return res.json({ ok: true });
+  } catch (err) { return res.status(500).json({ error: err?.message }); }
+});
+
+// POST /api/admin/test-push — send a test push to the requesting admin
+app.post("/api/admin/test-push", authMiddleware, async (req, res) => {
+  if (!webpush) return res.status(503).json({ error: "Web push non configuré (vérifiez VAPID_PUBLIC_KEY / VAPID_PRIVATE_KEY dans .env)" });
+  const [adminRows] = await pool.query("SELECT id FROM user_roles WHERE user_id = ? AND role = 'admin' LIMIT 1", [req.user.id]);
+  if (!adminRows.length) return res.status(403).json({ error: "Accès refusé" });
+
+  // Also create an in-app notification so there's something to show in the popup
+  await createNotification(req.user.id, {
+    type: 'system',
+    title: '🔔 Test de notification push',
+    message: 'Si vous voyez ceci, les notifications push fonctionnent correctement !',
+    icon: 'Bell',
+    link: '/admin/settings',
+  });
+  return res.json({ ok: true, message: 'Notification envoyée.' });
 });
 
 // ── POST /api/report-issue ────────────────────────────────────────────────
@@ -5823,6 +6324,21 @@ function srvFindDuplicates(rows) {
     const n = srvNormalizeName(p.name);
     s += n.split(" ").filter(Boolean).length * 2;
     if (p.generation && p.generation !== 2000) s += 1;
+    // Extra fields — reward the player who has more information filled in
+    if (p.photo_url) s += 4;
+    if (p.date_of_birth) s += 3;
+    if (p.contract_end) s += 2;
+    if (p.general_opinion) s += 2;
+    if (p.notes && p.notes.trim()) s += 2;
+    if (p.market_value) s += 1;
+    if (p.nationality) s += 1;
+    if (p.position) s += 1;
+    if (p.current_level && p.current_level > 0) s += 2;
+    if (p.potential && p.potential > 0) s += 1;
+    try {
+      const ext = p.external_data ? (typeof p.external_data === 'string' ? JSON.parse(p.external_data) : p.external_data) : {};
+      s += Object.keys(ext).filter(k => ext[k]).length;
+    } catch {}
     return s;
   }
   function better(a, b) { return score(a) >= score(b) ? a : b; }
@@ -5894,7 +6410,10 @@ function srvFindDuplicates(rows) {
     }
   }
 
-  // Pass 4 — même initiale + même nom de famille + même club + génération proche
+  // Pass 4 — même initiale + même nom de famille + même club
+  // Si l'un des noms est sous forme initiale (ex: "K. Mbappé"), on n'exige pas
+  // la proximité de génération car l'initiale est une abréviation évidente du prénom complet.
+  // Pour deux prénoms complets, on conserve la contrainte ±1 an.
   const byInitLastClub = new Map();
   for (const r of rows) {
     const n = srvNormalizeName(r.name);
@@ -5906,7 +6425,7 @@ function srvFindDuplicates(rows) {
     if (last.length < 3) continue;
     const key = `${c}|${last}|${parts[0][0]}`;
     if (!byInitLastClub.has(key)) byInitLastClub.set(key, []);
-    byInitLastClub.get(key).push(r);
+    byInitLastClub.get(key).push({ ...r, _firstPart: parts[0] });
   }
   for (const bucket of byInitLastClub.values()) {
     if (bucket.length < 2) continue;
@@ -5914,7 +6433,13 @@ function srvFindDuplicates(rows) {
       for (let j = i + 1; j < bucket.length; j++) {
         if (find(bucket[i].id) === find(bucket[j].id)) continue;
         const a = bucket[i], b = bucket[j];
-        if (Math.abs((a.generation || 0) - (b.generation || 0)) > 1) continue;
+        const aIsInitial = a._firstPart.length === 1;
+        const bIsInitial = b._firstPart.length === 1;
+        // Quand l'un est une initiale (ex: "K."), la correspondance prénom+club suffit
+        // sans contrainte d'âge car l'initiale est probablement une abréviation du prénom.
+        if (!aIsInitial && !bIsInitial) {
+          if (Math.abs((a.generation || 0) - (b.generation || 0)) > 1) continue;
+        }
         const k = better(a, b);
         union(k.id, (k === a ? b : a).id, "initial_last");
       }
@@ -5967,12 +6492,25 @@ app.get("/api/players/duplicates", authMiddleware, antiScrapeMiddleware, async (
     const userId = req.user.id;
     const hasArchivedCol = await playersHasIsArchived();
     const archivedFilter = hasArchivedCol ? " AND `is_archived` = 0" : "";
+
+    // Optional: restrict to a subset of player IDs (used when filters are active on the frontend)
+    const rawIds = req.query.ids ? String(req.query.ids).split(',').map(s => s.trim()).filter(Boolean) : null;
+    let idsFilter = '';
+    const queryParams = [userId];
+    if (rawIds && rawIds.length > 0) {
+      idsFilter = ` AND \`id\` IN (${rawIds.map(() => '?').join(',')})`;
+      queryParams.push(...rawIds);
+    }
+
     const [rows] = await pool.query(
-      `SELECT \`id\`, \`name\`, \`generation\`, \`club\`, \`transfermarkt_id\`
+      `SELECT \`id\`, \`name\`, \`generation\`, \`club\`, \`transfermarkt_id\`,
+              \`photo_url\`, \`date_of_birth\`, \`contract_end\`, \`general_opinion\`,
+              \`notes\`, \`market_value\`, \`nationality\`, \`position\`,
+              \`current_level\`, \`potential\`, \`external_data\`
          FROM \`players\`
-        WHERE \`user_id\` = ?${archivedFilter}
+        WHERE \`user_id\` = ?${archivedFilter}${idsFilter}
         ORDER BY \`name\``,
-      [userId]
+      queryParams
     );
     const groups = srvFindDuplicates(rows);
     return res.json({ groups });
@@ -9577,6 +10115,32 @@ app.get("/api/championship-tm-lookup", authMiddleware, async (req, res) => {
   }
 });
 
+// ── Calendar autocomplete data — distinct championships + team names for form autocomplete ──
+app.get("/api/calendar-autocomplete", authMiddleware, async (req, res) => {
+  try {
+    const [[{ total }]] = await pool.query("SELECT COUNT(*) AS total FROM championship_calendar_matches");
+    if (!total) return res.json({ championships: [], teams: [] });
+
+    const [champs] = await pool.query(
+      "SELECT DISTINCT championship_name FROM championship_calendar_matches ORDER BY championship_name LIMIT 100"
+    );
+    const [homeTeams] = await pool.query(
+      "SELECT DISTINCT home_team_name AS team FROM championship_calendar_matches WHERE home_team_name != '' ORDER BY home_team_name LIMIT 400"
+    );
+    const [awayTeams] = await pool.query(
+      "SELECT DISTINCT away_team_name AS team FROM championship_calendar_matches WHERE away_team_name != '' ORDER BY away_team_name LIMIT 400"
+    );
+    const teamSet = new Set([...homeTeams.map(r => r.team), ...awayTeams.map(r => r.team)]);
+    return res.json({
+      championships: champs.map(r => r.championship_name),
+      teams: [...teamSet].sort(),
+    });
+  } catch (err) {
+    console.error('[calendar-autocomplete]', err.message);
+    return res.json({ championships: [], teams: [] });
+  }
+});
+
 // ── Championship match calendar — Transfermarkt gesamtspielplan ─────────────
 // GET /api/championship-calendar-tm?name=Ligue+2&season=2025
 // Also accepts legacy: ?competitionId=FR1&slug=ligue-1&season=2025
@@ -10617,7 +11181,8 @@ app.patch("/api/organizations/:id/settings", authMiddleware, async (req, res) =>
     }
     const boolKeys = ['allow_messaging', 'allow_player_sharing', 'notify_new_members', 'allow_squad_viewing',
       'allow_roadmap_editing', 'require_approval_to_join', 'allow_player_export',
-      'allow_member_directory', 'allow_external_links', 'allow_file_uploads', 'org_visibility'];
+      'allow_member_directory', 'allow_external_links', 'allow_file_uploads', 'org_visibility',
+      'enable_dashboard', 'enable_shortlist', 'enable_analytics', 'enable_advanced_chat', 'enable_mentions'];
     const safe = {};
     for (const k of boolKeys) { if (typeof settings[k] === 'boolean') safe[k] = settings[k]; }
     // max_members: 0 = unlimited, positive int = cap
@@ -11094,10 +11659,21 @@ app.get("/api/organizations/:orgId/messages", authMiddleware, async (req, res) =
 
     const before = req.query.before || null; // cursor: created_at ISO
     const limit = Math.min(parseInt(req.query.limit) || 40, 80);
+    const channelId = req.query.channel_id || null;
+
+    const params = [orgId];
+    let channelClause = '';
+    if (channelId) {
+      channelClause = 'AND m.channel_id = ?';
+      params.push(channelId);
+    }
+    if (before) params.push(before);
+    params.push(limit);
 
     const [rows] = await pool.query(`
       SELECT
-        m.id, m.org_id, m.user_id, m.content, m.reply_to_id, m.edited_at, m.deleted_at, m.created_at,
+        m.id, m.org_id, m.user_id, m.content, m.reply_to_id, m.channel_id,
+        m.edited_at, m.deleted_at, m.created_at,
         COALESCE(p.full_name, u.email)  AS author_name,
         p.photo_url                     AS author_photo,
         -- replied-to message snippet (null if soft-deleted)
@@ -11113,10 +11689,11 @@ app.get("/api/organizations/:orgId/messages", authMiddleware, async (req, res) =
       LEFT JOIN users    ru ON ru.id = rm.user_id
       LEFT JOIN profiles rp ON rp.user_id = rm.user_id
       WHERE m.org_id = ?
+        ${channelClause}
         ${before ? 'AND m.created_at < ?' : ''}
       ORDER BY m.created_at DESC
       LIMIT ?
-    `, before ? [orgId, before, limit] : [orgId, limit]);
+    `, params);
 
     // Parse reactions JSON
     const messages = rows.map(r => ({
@@ -11138,8 +11715,16 @@ app.post("/api/organizations/:orgId/messages", authMiddleware, async (req, res) 
     const member = await ensureOrgMember(orgId, req.user.id);
     if (!member) return res.status(403).json({ error: "Not a member" });
 
-    const { content, reply_to_id } = req.body || {};
+    const { content, reply_to_id, channel_id } = req.body || {};
     if (!content || typeof content !== 'string') return res.status(400).json({ error: "content required" });
+
+    // Validate channel_id if provided
+    let validChannelId = null;
+    if (channel_id) {
+      const [[ch]] = await pool.query("SELECT id FROM org_channels WHERE id = ? AND organization_id = ? LIMIT 1", [channel_id, orgId]);
+      if (!ch) return res.status(400).json({ error: "Canal introuvable" });
+      validChannelId = ch.id;
+    }
 
     // Check org-level messaging setting
     const [[orgSettingsRow]] = await pool.query("SELECT settings FROM organizations WHERE id = ? LIMIT 1", [orgId]);
@@ -11183,8 +11768,8 @@ app.post("/api/organizations/:orgId/messages", authMiddleware, async (req, res) 
 
     const id = uuidv4();
     await pool.query(
-      "INSERT INTO org_messages (id, org_id, user_id, content, reply_to_id) VALUES (?, ?, ?, ?, ?)",
-      [id, orgId, req.user.id, trimmed, validReplyId]
+      "INSERT INTO org_messages (id, org_id, user_id, content, reply_to_id, channel_id) VALUES (?, ?, ?, ?, ?, ?)",
+      [id, orgId, req.user.id, trimmed, validReplyId, validChannelId]
     );
 
     const [[sender]] = await pool.query(
@@ -11204,12 +11789,43 @@ app.post("/api/organizations/:orgId/messages", authMiddleware, async (req, res) 
       }).catch(() => {});
     }
 
-    // General notification to other org members (excluding sender and already-notified reply target)
+    // Mention notifications (when enable_mentions is on)
+    const mentionedUserIds = new Set();
+    if (orgCfg.enable_mentions !== false) {
+      const mentionMatches = [...trimmed.matchAll(/@([\wÀ-ž][\wÀ-ž\s-]{0,29})/g)]
+        .map(m => m[1].trim().toLowerCase());
+      if (mentionMatches.length > 0) {
+        const [memberRows] = await pool.query(
+          `SELECT om.user_id, COALESCE(p.full_name, '') AS full_name
+           FROM organization_members om
+           LEFT JOIN profiles p ON p.user_id = om.user_id
+           WHERE om.organization_id = ? AND om.user_id != ?`,
+          [orgId, req.user.id]
+        );
+        for (const row of memberRows) {
+          if (!row.full_name) continue;
+          const memberName = row.full_name.toLowerCase();
+          if (mentionMatches.some(q => memberName === q || memberName.startsWith(q + ' ') || q.startsWith(memberName))) {
+            mentionedUserIds.add(row.user_id);
+            createNotification(row.user_id, {
+              type: 'mention',
+              title: `${senderName} vous a mentionné`,
+              message: trimmed.length > 80 ? trimmed.slice(0, 80) + '…' : trimmed,
+              icon: 'AtSign',
+              link: `/organization/${orgId}/chat`,
+            }).catch(() => {});
+          }
+        }
+      }
+    }
+
+    // General notification to other org members (excluding sender, reply target, and already-notified mentions)
     const [members] = await pool.query(
       "SELECT user_id FROM organization_members WHERE organization_id = ? AND user_id != ? AND user_id != ?",
       [orgId, req.user.id, repliedToUserId ?? req.user.id]
     );
     for (const m of members) {
+      if (mentionedUserIds.has(m.user_id)) continue; // already got a mention notification
       createNotification(m.user_id, {
         type: 'organization',
         title: `Message de ${senderName}`,
@@ -11377,6 +11993,572 @@ app.get("/api/organizations/:orgId/typing", authMiddleware, async (req, res) => 
     return res.json({ users: getTypingUsers(orgId, req.user.id) });
   } catch (err) {
     return res.status(500).json({ users: [] });
+  }
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ORGANISATION — Dashboard, Shortlist, Analytics, Channels
+// ─────────────────────────────────────────────────────────────────────────────
+
+// GET /api/organizations/:orgId/dashboard
+app.get("/api/organizations/:orgId/dashboard", authMiddleware, async (req, res) => {
+  try {
+    const { orgId } = req.params;
+    const member = await ensureOrgMember(orgId, req.user.id);
+    if (!member) return res.status(403).json({ error: "Not a member" });
+
+    const [[stats]] = await pool.query(`
+      SELECT
+        (SELECT COUNT(*) FROM organization_members WHERE organization_id = ?) AS member_count,
+        (SELECT COUNT(*) FROM org_shortlist WHERE organization_id = ?) AS shortlist_count,
+        (SELECT COUNT(*) FROM org_messages WHERE org_id = ? AND deleted_at IS NULL AND created_at >= DATE_SUB(NOW(), INTERVAL 30 DAY)) AS messages_30d,
+        (SELECT COUNT(*) FROM org_messages WHERE org_id = ? AND deleted_at IS NULL) AS messages_total,
+        (SELECT COUNT(*) FROM org_channels WHERE organization_id = ?) AS channel_count,
+        (SELECT COUNT(*) FROM match_assignments WHERE organization_id = ? AND match_date >= CURDATE() AND status != 'cancelled') AS upcoming_matches
+    `, [orgId, orgId, orgId, orgId, orgId, orgId]);
+
+    // Recent activity: last 20 notifications for org members
+    const [activity] = await pool.query(`
+      SELECT n.id, n.user_id, n.type, n.title, n.message, n.link, n.created_at,
+             COALESCE(p.full_name, u.email) AS actor_name, p.photo_url AS actor_photo
+      FROM notifications n
+      LEFT JOIN users u ON u.id = n.user_id
+      LEFT JOIN profiles p ON p.user_id = n.user_id
+      WHERE n.user_id IN (SELECT user_id FROM organization_members WHERE organization_id = ?)
+        AND n.created_at >= DATE_SUB(NOW(), INTERVAL 7 DAY)
+      ORDER BY n.created_at DESC
+      LIMIT 20
+    `, [orgId]);
+
+    // Top active members (by messages in last 30 days)
+    const [topMembers] = await pool.query(`
+      SELECT m.user_id, COALESCE(p.full_name, u.email) AS name, p.photo_url,
+             COUNT(msg.id) AS msg_count
+      FROM organization_members m
+      LEFT JOIN users u ON u.id = m.user_id
+      LEFT JOIN profiles p ON p.user_id = m.user_id
+      LEFT JOIN org_messages msg ON msg.user_id = m.user_id AND msg.org_id = ? AND msg.deleted_at IS NULL
+        AND msg.created_at >= DATE_SUB(NOW(), INTERVAL 30 DAY)
+      WHERE m.organization_id = ?
+      GROUP BY m.user_id, name, p.photo_url
+      ORDER BY msg_count DESC
+      LIMIT 5
+    `, [orgId, orgId]);
+
+    // Recent shortlist additions
+    const [recentShortlist] = await pool.query(`
+      SELECT os.id, os.player_id, os.status, os.added_at,
+             p.name AS full_name, p.photo_url, p.position, p.club,
+             COALESCE(ap.full_name, au.email) AS added_by_name
+      FROM org_shortlist os
+      LEFT JOIN players p ON p.id = os.player_id
+      LEFT JOIN users au ON au.id = os.added_by
+      LEFT JOIN profiles ap ON ap.user_id = os.added_by
+      WHERE os.organization_id = ?
+      ORDER BY os.added_at DESC
+      LIMIT 5
+    `, [orgId]);
+
+    // Upcoming matches (next 5)
+    const [upcomingMatches] = await pool.query(`
+      SELECT id, home_team, away_team, match_date, match_time, competition,
+             home_badge, away_badge, status
+      FROM match_assignments
+      WHERE organization_id = ? AND match_date >= CURDATE() AND status != 'cancelled'
+      ORDER BY match_date ASC, match_time ASC
+      LIMIT 5
+    `, [orgId]);
+
+    // COUNT(*) returns BigInt in mysql2 — convert to Number for JSON serialization
+    const safeStats = {
+      member_count:     Number(stats.member_count),
+      shortlist_count:  Number(stats.shortlist_count),
+      messages_30d:     Number(stats.messages_30d),
+      messages_total:   Number(stats.messages_total),
+      channel_count:    Number(stats.channel_count),
+      upcoming_matches: Number(stats.upcoming_matches),
+    };
+    const safeTopMembers = topMembers.map(m => ({ ...m, msg_count: Number(m.msg_count) }));
+
+    return res.json({ stats: safeStats, activity, topMembers: safeTopMembers, recentShortlist, upcomingMatches });
+  } catch (err) {
+    console.error('[org-dashboard]', err?.message);
+    return res.status(500).json({ error: 'Erreur serveur' });
+  }
+});
+
+// ── Shortlist collective ──────────────────────────────────────────────────────
+
+// GET /api/organizations/:orgId/players/search?q=...
+// Search players shared with this org (used by shortlist add-player dialog)
+app.get("/api/organizations/:orgId/players/search", authMiddleware, async (req, res) => {
+  try {
+    const { orgId } = req.params;
+    const member = await ensureOrgMember(orgId, req.user.id);
+    if (!member) return res.status(403).json({ error: "Not a member" });
+
+    const q = (req.query.q || '').trim();
+    if (q.length < 2) return res.json({ players: [] });
+
+    const like = `%${q}%`;
+    const [rows] = await pool.query(`
+      SELECT p.id, p.full_name, p.position, p.club, p.photo_url, p.nationality, p.age
+      FROM player_org_shares pos
+      JOIN players p ON p.id = pos.player_id
+      WHERE pos.organization_id = ?
+        AND (p.full_name LIKE ? OR p.club LIKE ? OR p.position LIKE ?)
+      ORDER BY p.full_name ASC
+      LIMIT 20
+    `, [orgId, like, like, like]);
+
+    return res.json({ players: rows });
+  } catch (err) {
+    console.error('[org-players-search]', err?.message);
+    return res.status(500).json({ error: 'Erreur serveur' });
+  }
+});
+
+// GET /api/organizations/:orgId/shortlist
+app.get("/api/organizations/:orgId/shortlist", authMiddleware, async (req, res) => {
+  try {
+    const { orgId } = req.params;
+    const member = await ensureOrgMember(orgId, req.user.id);
+    if (!member) return res.status(403).json({ error: "Not a member" });
+
+    const [rows] = await pool.query(`
+      SELECT os.id, os.player_id, os.status, os.notes, os.added_at, os.added_by,
+             p.full_name, p.photo_url, p.position, p.club, p.nationality, p.age,
+             COALESCE(ap.full_name, au.email) AS added_by_name
+      FROM org_shortlist os
+      LEFT JOIN players p ON p.id = os.player_id
+      LEFT JOIN users au ON au.id = os.added_by
+      LEFT JOIN profiles ap ON ap.user_id = os.added_by
+      WHERE os.organization_id = ?
+      ORDER BY os.added_at DESC
+    `, [orgId]);
+
+    return res.json({ entries: rows });
+  } catch (err) {
+    console.error('[org-shortlist] GET:', err?.message);
+    return res.status(500).json({ error: 'Erreur serveur' });
+  }
+});
+
+// POST /api/organizations/:orgId/shortlist
+app.post("/api/organizations/:orgId/shortlist", authMiddleware, async (req, res) => {
+  try {
+    const { orgId } = req.params;
+    const member = await ensureOrgMember(orgId, req.user.id);
+    if (!member) return res.status(403).json({ error: "Not a member" });
+
+    const { player_id, status = 'en_veille', notes } = req.body || {};
+    if (!player_id) return res.status(400).json({ error: "player_id requis" });
+
+    const [[player]] = await pool.query("SELECT id, full_name FROM players WHERE id = ? LIMIT 1", [player_id]);
+    if (!player) return res.status(404).json({ error: "Joueur introuvable" });
+
+    const id = uuidv4();
+    await pool.query(
+      "INSERT INTO org_shortlist (id, organization_id, player_id, status, added_by, notes) VALUES (?, ?, ?, ?, ?, ?)",
+      [id, orgId, player_id, status, req.user.id, notes || null]
+    );
+
+    const [[entry]] = await pool.query(`
+      SELECT os.id, os.player_id, os.status, os.notes, os.added_at, os.added_by,
+             p.full_name, p.photo_url, p.position, p.club, p.nationality, p.age,
+             COALESCE(ap.full_name, au.email) AS added_by_name
+      FROM org_shortlist os
+      LEFT JOIN players p ON p.id = os.player_id
+      LEFT JOIN users au ON au.id = os.added_by
+      LEFT JOIN profiles ap ON ap.user_id = os.added_by
+      WHERE os.id = ?
+    `, [id]);
+
+    return res.status(201).json({ entry });
+  } catch (err) {
+    if (err?.code === 'ER_DUP_ENTRY') return res.status(409).json({ error: "Ce joueur est déjà dans la shortlist" });
+    console.error('[org-shortlist] POST:', err?.message);
+    return res.status(500).json({ error: 'Erreur serveur' });
+  }
+});
+
+// PATCH /api/organizations/:orgId/shortlist/:entryId
+app.patch("/api/organizations/:orgId/shortlist/:entryId", authMiddleware, async (req, res) => {
+  try {
+    const { orgId, entryId } = req.params;
+    const member = await ensureOrgMember(orgId, req.user.id);
+    if (!member) return res.status(403).json({ error: "Not a member" });
+
+    const { status, notes } = req.body || {};
+    const validStatuses = ['en_veille', 'a_observer', 'en_discussion', 'approche'];
+    if (status && !validStatuses.includes(status)) return res.status(400).json({ error: "Statut invalide" });
+
+    const sets = [];
+    const params = [];
+    if (status) { sets.push('status = ?'); params.push(status); }
+    if (notes !== undefined) { sets.push('notes = ?'); params.push(notes || null); }
+    if (!sets.length) return res.status(400).json({ error: "Rien à mettre à jour" });
+
+    params.push(entryId, orgId);
+    const [result] = await pool.query(
+      `UPDATE org_shortlist SET ${sets.join(', ')} WHERE id = ? AND organization_id = ?`,
+      params
+    );
+    if (!result.affectedRows) return res.status(404).json({ error: "Entrée introuvable" });
+
+    const [[entry]] = await pool.query(`
+      SELECT os.id, os.player_id, os.status, os.notes, os.added_at, os.added_by,
+             p.full_name, p.photo_url, p.position, p.club, p.nationality, p.age,
+             COALESCE(ap.full_name, au.email) AS added_by_name
+      FROM org_shortlist os
+      LEFT JOIN players p ON p.id = os.player_id
+      LEFT JOIN users au ON au.id = os.added_by
+      LEFT JOIN profiles ap ON ap.user_id = os.added_by
+      WHERE os.id = ?
+    `, [entryId]);
+
+    return res.json({ entry });
+  } catch (err) {
+    console.error('[org-shortlist] PATCH:', err?.message);
+    return res.status(500).json({ error: 'Erreur serveur' });
+  }
+});
+
+// DELETE /api/organizations/:orgId/shortlist/:entryId
+app.delete("/api/organizations/:orgId/shortlist/:entryId", authMiddleware, async (req, res) => {
+  try {
+    const { orgId, entryId } = req.params;
+    const member = await ensureOrgMember(orgId, req.user.id);
+    if (!member) return res.status(403).json({ error: "Not a member" });
+    await pool.query("DELETE FROM org_shortlist WHERE id = ? AND organization_id = ?", [entryId, orgId]);
+    return res.json({ ok: true });
+  } catch (err) {
+    console.error('[org-shortlist] DELETE:', err?.message);
+    return res.status(500).json({ error: 'Erreur serveur' });
+  }
+});
+
+// ── Analytics ─────────────────────────────────────────────────────────────────
+
+// GET /api/organizations/:orgId/analytics
+app.get("/api/organizations/:orgId/analytics", authMiddleware, async (req, res) => {
+  try {
+    const { orgId } = req.params;
+    const member = await ensureOrgMember(orgId, req.user.id);
+    if (!member) return res.status(403).json({ error: "Not a member" });
+
+    // Shortlist pipeline per status
+    const [pipeline] = await pool.query(`
+      SELECT status, COUNT(*) AS count FROM org_shortlist WHERE organization_id = ? GROUP BY status
+    `, [orgId]);
+
+    // Messages per day (last 30 days)
+    const [msgPerDay] = await pool.query(`
+      SELECT DATE(created_at) AS day, COUNT(*) AS count
+      FROM org_messages WHERE org_id = ? AND deleted_at IS NULL
+        AND created_at >= DATE_SUB(NOW(), INTERVAL 30 DAY)
+      GROUP BY DATE(created_at) ORDER BY day ASC
+    `, [orgId]);
+
+    // Messages per member (last 30 days)
+    const [msgPerMember] = await pool.query(`
+      SELECT COALESCE(p.full_name, u.email) AS name, COUNT(m.id) AS count
+      FROM organization_members om
+      LEFT JOIN users u ON u.id = om.user_id
+      LEFT JOIN profiles p ON p.user_id = om.user_id
+      LEFT JOIN org_messages m ON m.user_id = om.user_id AND m.org_id = ?
+        AND m.deleted_at IS NULL AND m.created_at >= DATE_SUB(NOW(), INTERVAL 30 DAY)
+      WHERE om.organization_id = ?
+      GROUP BY om.user_id, name ORDER BY count DESC LIMIT 10
+    `, [orgId, orgId]);
+
+    // Members joined per week (last 12 weeks)
+    const [membersOverTime] = await pool.query(`
+      SELECT YEARWEEK(joined_at, 1) AS yw,
+             MIN(DATE(joined_at)) AS week_start,
+             COUNT(*) AS count
+      FROM organization_members WHERE organization_id = ?
+        AND joined_at >= DATE_SUB(NOW(), INTERVAL 12 WEEK)
+      GROUP BY yw ORDER BY yw ASC
+    `, [orgId]);
+
+    // Shortlist additions per week (last 12 weeks)
+    const [shortlistOverTime] = await pool.query(`
+      SELECT YEARWEEK(added_at, 1) AS yw,
+             MIN(DATE(added_at)) AS week_start,
+             COUNT(*) AS count
+      FROM org_shortlist WHERE organization_id = ?
+        AND added_at >= DATE_SUB(NOW(), INTERVAL 12 WEEK)
+      GROUP BY yw ORDER BY yw ASC
+    `, [orgId]);
+
+    // Shortlist by position
+    const [shortlistByPosition] = await pool.query(`
+      SELECT COALESCE(p.position, 'N/A') AS position, COUNT(*) AS count
+      FROM org_shortlist os
+      LEFT JOIN players p ON p.id = os.player_id
+      WHERE os.organization_id = ?
+      GROUP BY position ORDER BY count DESC
+    `, [orgId]);
+
+    // Matches planned vs done (last 3 months)
+    const [matchStats] = await pool.query(`
+      SELECT status, COUNT(*) AS count
+      FROM match_assignments
+      WHERE organization_id = ? AND match_date >= DATE_SUB(CURDATE(), INTERVAL 3 MONTH)
+      GROUP BY status
+    `, [orgId]);
+
+    return res.json({ pipeline, msgPerDay, msgPerMember, membersOverTime, shortlistOverTime, shortlistByPosition, matchStats });
+  } catch (err) {
+    console.error('[org-analytics]', err?.message);
+    return res.status(500).json({ error: 'Erreur serveur' });
+  }
+});
+
+// ── Channels ──────────────────────────────────────────────────────────────────
+
+async function ensureDefaultChannel(orgId, creatorId) {
+  const [[existing]] = await pool.query(
+    "SELECT id FROM org_channels WHERE organization_id = ? AND is_default = 1 LIMIT 1",
+    [orgId]
+  );
+  if (existing) return existing.id;
+  const id = uuidv4();
+  await pool.query(
+    "INSERT INTO org_channels (id, organization_id, name, description, created_by, is_default) VALUES (?, ?, 'Général', 'Canal principal', ?, 1)",
+    [id, orgId, creatorId]
+  );
+  return id;
+}
+
+// GET /api/organizations/:orgId/channels
+app.get("/api/organizations/:orgId/channels", authMiddleware, async (req, res) => {
+  try {
+    const { orgId } = req.params;
+    const member = await ensureOrgMember(orgId, req.user.id);
+    if (!member) return res.status(403).json({ error: "Not a member" });
+
+    await ensureDefaultChannel(orgId, req.user.id);
+
+    const [channels] = await pool.query(`
+      SELECT c.id, c.name, c.description, c.is_default, c.created_at,
+             COALESCE(p.full_name, u.email) AS created_by_name,
+             (SELECT COUNT(*) FROM org_messages m WHERE m.channel_id = c.id AND m.deleted_at IS NULL) AS message_count
+      FROM org_channels c
+      LEFT JOIN users u ON u.id = c.created_by
+      LEFT JOIN profiles p ON p.user_id = c.created_by
+      WHERE c.organization_id = ?
+      ORDER BY c.is_default DESC, c.created_at ASC
+    `, [orgId]);
+
+    return res.json({ channels });
+  } catch (err) {
+    console.error('[org-channels] GET:', err?.message);
+    return res.status(500).json({ error: 'Erreur serveur' });
+  }
+});
+
+// POST /api/organizations/:orgId/channels
+app.post("/api/organizations/:orgId/channels", authMiddleware, async (req, res) => {
+  try {
+    const { orgId } = req.params;
+    const member = await ensureOrgMember(orgId, req.user.id);
+    if (!member) return res.status(403).json({ error: "Not a member" });
+    const isOrgAdmin = member.role === 'owner' || member.role === 'admin';
+    if (!isOrgAdmin) return res.status(403).json({ error: "Réservé aux admins de l'organisation" });
+
+    const { name, description } = req.body || {};
+    if (!name || typeof name !== 'string' || !name.trim()) return res.status(400).json({ error: "Nom requis" });
+
+    const id = uuidv4();
+    await pool.query(
+      "INSERT INTO org_channels (id, organization_id, name, description, created_by, is_default) VALUES (?, ?, ?, ?, ?, 0)",
+      [id, orgId, name.trim().slice(0, 100), (description || '').trim().slice(0, 255) || null, req.user.id]
+    );
+
+    const [[channel]] = await pool.query(
+      "SELECT id, name, description, is_default, created_at FROM org_channels WHERE id = ?",
+      [id]
+    );
+    return res.status(201).json({ channel });
+  } catch (err) {
+    console.error('[org-channels] POST:', err?.message);
+    return res.status(500).json({ error: 'Erreur serveur' });
+  }
+});
+
+// DELETE /api/organizations/:orgId/channels/:channelId
+app.delete("/api/organizations/:orgId/channels/:channelId", authMiddleware, async (req, res) => {
+  try {
+    const { orgId, channelId } = req.params;
+    const member = await ensureOrgMember(orgId, req.user.id);
+    if (!member) return res.status(403).json({ error: "Not a member" });
+    const isOrgAdmin = member.role === 'owner' || member.role === 'admin';
+    if (!isOrgAdmin) return res.status(403).json({ error: "Réservé aux admins" });
+
+    const [[ch]] = await pool.query("SELECT id, is_default FROM org_channels WHERE id = ? AND organization_id = ? LIMIT 1", [channelId, orgId]);
+    if (!ch) return res.status(404).json({ error: "Canal introuvable" });
+    if (ch.is_default) return res.status(400).json({ error: "Le canal Général ne peut pas être supprimé" });
+
+    await pool.query("DELETE FROM org_channels WHERE id = ?", [channelId]);
+    await pool.query("UPDATE org_messages SET channel_id = NULL WHERE channel_id = ? AND org_id = ?", [channelId, orgId]);
+    return res.json({ ok: true });
+  } catch (err) {
+    console.error('[org-channels] DELETE:', err?.message);
+    return res.status(500).json({ error: 'Erreur serveur' });
+  }
+});
+
+// ── Per-channel unread + mark-read ────────────────────────────────────────────
+
+// GET /api/organizations/:orgId/channels/unread — unread count per channel for current user
+app.get("/api/organizations/:orgId/channels/unread", authMiddleware, async (req, res) => {
+  try {
+    const { orgId } = req.params;
+    const member = await ensureOrgMember(orgId, req.user.id);
+    if (!member) return res.json({ unread: {} });
+
+    const [reads] = await pool.query(
+      "SELECT channel_id, last_read_at FROM org_channel_reads WHERE user_id = ?",
+      [req.user.id]
+    );
+    const readMap = new Map(reads.map(r => [r.channel_id, r.last_read_at]));
+
+    const [channels] = await pool.query(
+      "SELECT id FROM org_channels WHERE organization_id = ?", [orgId]
+    );
+
+    const unread = {};
+    for (const ch of channels) {
+      const since = readMap.get(ch.id);
+      const [[row]] = await pool.query(
+        `SELECT COUNT(*) AS cnt FROM org_messages WHERE channel_id = ? AND user_id != ? AND deleted_at IS NULL ${since ? 'AND created_at > ?' : ''}`,
+        since ? [ch.id, req.user.id, since] : [ch.id, req.user.id]
+      );
+      unread[ch.id] = Number(row?.cnt ?? 0);
+    }
+    return res.json({ unread });
+  } catch (err) {
+    console.error('[org-channel-unread]', err?.message);
+    return res.json({ unread: {} });
+  }
+});
+
+// POST /api/organizations/:orgId/channels/:channelId/read — mark channel as read
+app.post("/api/organizations/:orgId/channels/:channelId/read", authMiddleware, async (req, res) => {
+  try {
+    const { channelId } = req.params;
+    await pool.query(
+      `INSERT INTO org_channel_reads (user_id, channel_id, last_read_at) VALUES (?, ?, NOW())
+       ON DUPLICATE KEY UPDATE last_read_at = NOW()`,
+      [req.user.id, channelId]
+    );
+    return res.json({ ok: true });
+  } catch (err) {
+    return res.json({ ok: false });
+  }
+});
+
+// ── Message search ─────────────────────────────────────────────────────────────
+
+// GET /api/organizations/:orgId/messages/search?q=
+app.get("/api/organizations/:orgId/messages/search", authMiddleware, async (req, res) => {
+  try {
+    const { orgId } = req.params;
+    const member = await ensureOrgMember(orgId, req.user.id);
+    if (!member) return res.status(403).json({ error: "Not a member" });
+
+    const q = String(req.query.q ?? '').trim();
+    if (!q || q.length < 2) return res.json({ messages: [] });
+
+    const [rows] = await pool.query(`
+      SELECT m.id, m.user_id, m.content, m.channel_id, m.created_at, m.deleted_at,
+             COALESCE(p.full_name, u.email) AS author_name, p.photo_url AS author_photo,
+             c.name AS channel_name
+      FROM org_messages m
+      LEFT JOIN users u ON u.id = m.user_id
+      LEFT JOIN profiles p ON p.user_id = m.user_id
+      LEFT JOIN org_channels c ON c.id = m.channel_id
+      WHERE m.org_id = ? AND m.deleted_at IS NULL
+        AND m.content LIKE ?
+      ORDER BY m.created_at DESC
+      LIMIT 30
+    `, [orgId, `%${q}%`]);
+
+    return res.json({ messages: rows });
+  } catch (err) {
+    console.error('[org-search]', err?.message);
+    return res.status(500).json({ error: 'Erreur serveur' });
+  }
+});
+
+// ── Pinned messages ────────────────────────────────────────────────────────────
+
+// GET /api/organizations/:orgId/channels/:channelId/pins
+app.get("/api/organizations/:orgId/channels/:channelId/pins", authMiddleware, async (req, res) => {
+  try {
+    const { orgId, channelId } = req.params;
+    const member = await ensureOrgMember(orgId, req.user.id);
+    if (!member) return res.status(403).json({ error: "Not a member" });
+
+    const [pins] = await pool.query(`
+      SELECT pm.id, pm.message_id, pm.pinned_at,
+             m.content, m.created_at AS msg_created_at, m.user_id AS msg_user_id,
+             COALESCE(p.full_name, u.email) AS author_name,
+             COALESCE(pp.full_name, pu.email) AS pinned_by_name
+      FROM org_pinned_messages pm
+      JOIN org_messages m ON m.id = pm.message_id AND m.deleted_at IS NULL
+      LEFT JOIN users u ON u.id = m.user_id
+      LEFT JOIN profiles p ON p.user_id = m.user_id
+      LEFT JOIN users pu ON pu.id = pm.pinned_by
+      LEFT JOIN profiles pp ON pp.user_id = pm.pinned_by
+      WHERE pm.channel_id = ?
+      ORDER BY pm.pinned_at DESC
+    `, [channelId]);
+
+    return res.json({ pins });
+  } catch (err) {
+    return res.status(500).json({ error: 'Erreur serveur' });
+  }
+});
+
+// POST /api/organizations/:orgId/channels/:channelId/pins/:messageId
+app.post("/api/organizations/:orgId/channels/:channelId/pins/:messageId", authMiddleware, async (req, res) => {
+  try {
+    const { orgId, channelId, messageId } = req.params;
+    const member = await ensureOrgMember(orgId, req.user.id);
+    if (!member) return res.status(403).json({ error: "Not a member" });
+    const isOrgAdmin = member.role === 'owner' || member.role === 'admin';
+    if (!isOrgAdmin) return res.status(403).json({ error: "Réservé aux admins" });
+
+    const [[msg]] = await pool.query("SELECT id FROM org_messages WHERE id = ? AND org_id = ? AND deleted_at IS NULL LIMIT 1", [messageId, orgId]);
+    if (!msg) return res.status(404).json({ error: "Message introuvable" });
+
+    const id = uuidv4();
+    await pool.query(
+      "INSERT IGNORE INTO org_pinned_messages (id, channel_id, message_id, pinned_by) VALUES (?, ?, ?, ?)",
+      [id, channelId, messageId, req.user.id]
+    );
+    return res.json({ ok: true });
+  } catch (err) {
+    return res.status(500).json({ error: 'Erreur serveur' });
+  }
+});
+
+// DELETE /api/organizations/:orgId/channels/:channelId/pins/:messageId
+app.delete("/api/organizations/:orgId/channels/:channelId/pins/:messageId", authMiddleware, async (req, res) => {
+  try {
+    const { orgId, channelId, messageId } = req.params;
+    const member = await ensureOrgMember(orgId, req.user.id);
+    if (!member) return res.status(403).json({ error: "Not a member" });
+    const isOrgAdmin = member.role === 'owner' || member.role === 'admin';
+    if (!isOrgAdmin) return res.status(403).json({ error: "Réservé aux admins" });
+
+    await pool.query("DELETE FROM org_pinned_messages WHERE channel_id = ? AND message_id = ?", [channelId, messageId]);
+    return res.json({ ok: true });
+  } catch (err) {
+    return res.status(500).json({ error: 'Erreur serveur' });
   }
 });
 
@@ -12163,6 +13345,31 @@ app.get("/api/club-directory", async (_req, res) => {
     return res.json(rows);
   } catch (err) {
     console.error("[club-directory] GET error:", err);
+    return res.status(500).json({ error: "Server error" });
+  }
+});
+
+// ── Add / update a club in club_directory (admin or moderator) ───────────────
+app.post("/api/club-directory", authMiddleware, async (req, res) => {
+  try {
+    const [roles] = await pool.query("SELECT role FROM user_roles WHERE user_id = ?", [req.user.id]);
+    const allowed = roles.some(r => r.role === 'admin' || r.role === 'moderator');
+    if (!allowed) return res.status(403).json({ error: "Réservé aux administrateurs et modérateurs" });
+
+    const { club_name, competition = '', country = '', country_code = '', logo_url = null } = req.body;
+    if (!club_name || !club_name.trim()) return res.status(400).json({ error: "Le nom du club est requis" });
+
+    await pool.query(
+      `INSERT INTO club_directory (club_name, competition, country, country_code, logo_url, updated_at)
+       VALUES (?, ?, ?, ?, ?, NOW())
+       ON DUPLICATE KEY UPDATE competition = VALUES(competition), country = VALUES(country),
+         country_code = VALUES(country_code), logo_url = VALUES(logo_url), updated_at = NOW()`,
+      [club_name.trim(), competition.trim(), country.trim(), country_code.trim().toUpperCase(), logo_url || null]
+    );
+
+    return res.json({ success: true, club_name: club_name.trim() });
+  } catch (err) {
+    console.error("[club-directory] POST error:", err);
     return res.status(500).json({ error: "Server error" });
   }
 });
@@ -22898,9 +24105,250 @@ async function runWatchlistFormAlerts() {
   }
 }
 
+// ── Cron: player-transfer-alerts — daily 06:30 ──────────────────────────────
+// Detects watchlisted players whose club field changed since last check and
+// notifies all users who have that player in a watchlist (if alert_transfer = true).
+async function runPlayerTransferAlerts(dryRun = false) {
+  const logId = await logJobStart('player-transfer-alerts');
+  let notified = 0;
+  try {
+    const [watchlisted] = await pool.query(`
+      SELECT DISTINCT p.id AS player_id, p.name AS player_name, p.club AS current_club
+      FROM watchlist_players wp
+      JOIN watchlists w ON w.id = wp.watchlist_id
+      JOIN players p ON p.id = wp.player_id
+      WHERE p.is_archived = 0
+    `);
+
+    for (const player of watchlisted) {
+      const currentClub = player.current_club || '';
+      const [[state]] = await pool.query(
+        'SELECT last_known_club FROM player_alert_state WHERE player_id = ?',
+        [player.player_id]
+      );
+
+      if (!state) {
+        if (!dryRun) {
+          await pool.query(
+            'INSERT IGNORE INTO player_alert_state (player_id, last_known_club) VALUES (?, ?)',
+            [player.player_id, currentClub]
+          );
+        }
+        continue;
+      }
+
+      const lastKnown = state.last_known_club;
+      if (!lastKnown) {
+        if (!dryRun) await pool.query('UPDATE player_alert_state SET last_known_club = ? WHERE player_id = ?', [currentClub, player.player_id]);
+        continue;
+      }
+      if (lastKnown === currentClub) continue;
+
+      const [watchers] = await pool.query(`
+        SELECT DISTINCT u.id AS user_id, u.email, u.notification_prefs
+        FROM watchlist_players wp
+        JOIN watchlists w ON w.id = wp.watchlist_id
+        JOIN users u ON u.id = w.user_id
+        WHERE wp.player_id = ? AND u.is_banned = 0
+      `, [player.player_id]);
+
+      for (const watcher of watchers) {
+        let prefs = {};
+        try { prefs = JSON.parse(watcher.notification_prefs || '{}'); } catch {}
+        if (prefs.alert_transfer === false) continue;
+        notified++;
+        if (!dryRun) {
+          await createNotification(watcher.user_id, {
+            type: 'player_transfer',
+            title: `Transfert — ${player.player_name}`,
+            message: `${player.player_name} a changé de club : ${lastKnown} → ${currentClub || 'sans club'}.`,
+            icon: 'ArrowRightLeft',
+            link: `/player/${player.player_id}`,
+            playerId: player.player_id,
+          });
+          sendEmail(
+            watcher.email,
+            `[Scouty] Transfert : ${player.player_name}`,
+            `<div style="font-family:sans-serif;max-width:520px;margin:0 auto;padding:24px">
+              <h2 style="color:#6366f1">Alerte transfert</h2>
+              <p><strong>${player.player_name}</strong> a changé de club.</p>
+              <p>Ancien club : <strong>${lastKnown}</strong><br>Nouveau club : <strong>${currentClub || 'sans club'}</strong></p>
+              <p><a href="https://scouty.app/player/${player.player_id}" style="color:#6366f1">Voir le profil du joueur</a></p>
+              <p style="color:#aaa;font-size:12px;margin-top:24px">Scouty — Football Scouting CRM</p>
+            </div>`
+          ).catch(() => {});
+        }
+      }
+
+      if (!dryRun) {
+        await pool.query('UPDATE player_alert_state SET last_known_club = ? WHERE player_id = ?', [currentClub, player.player_id]);
+      }
+    }
+
+    await logJobDone(logId, { notified, dry_run: dryRun });
+    console.log(`[cron-transfer-alerts] ${notified} alert(s)${dryRun ? ' (dry-run)' : ''}`);
+  } catch (err) {
+    await logJobFailed(logId, err);
+    console.error('[cron-transfer-alerts]', err.message);
+  }
+}
+
+// ── Cron: player-injury-alerts — daily 06:45 ────────────────────────────────
+// For watchlisted players with a Transfermarkt ID, checks TM injury page (uses
+// 7-day cache) and fires a notification when injury state changes.
+async function runPlayerInjuryAlerts(dryRun = false) {
+  const logId = await logJobStart('player-injury-alerts');
+  let notified = 0;
+  try {
+    const [watchlisted] = await pool.query(`
+      SELECT DISTINCT p.id AS player_id, p.name AS player_name, p.transfermarkt_id
+      FROM watchlist_players wp
+      JOIN watchlists w ON w.id = wp.watchlist_id
+      JOIN players p ON p.id = wp.player_id
+      WHERE p.is_archived = 0 AND p.transfermarkt_id IS NOT NULL AND p.transfermarkt_id != ''
+      LIMIT 60
+    `);
+
+    for (const player of watchlisted) {
+      const tmId = String(player.transfermarkt_id);
+      if (!/^\d+$/.test(tmId)) continue;
+
+      const cacheKey = `tm-injuries:${tmId}:fr`;
+      let injuries = null;
+      try {
+        const [cached] = await pool.query(
+          'SELECT response_json FROM api_football_cache WHERE cache_key = ? AND expires_at > NOW() LIMIT 1',
+          [cacheKey]
+        );
+        if (cached.length) {
+          const parsed = typeof cached[0].response_json === 'string'
+            ? JSON.parse(cached[0].response_json)
+            : cached[0].response_json;
+          injuries = parsed?.injuries ?? null;
+        }
+      } catch {}
+
+      if (!injuries) {
+        try {
+          const tmUrl = `https://www.transfermarkt.fr/_/verletzungen/spieler/${tmId}`;
+          const resp = await fetch(tmUrl, { headers: TM_HEADERS, signal: AbortSignal.timeout(8000) });
+          if (!resp.ok) continue;
+          const html = await resp.text();
+          injuries = [];
+          const tableM = html.match(/<table class="items">([\s\S]*?)<\/table>/);
+          if (tableM) {
+            const rowRe = /<tr[^>]*class="(?:odd|even)"[^>]*>([\s\S]*?)<\/tr>/g;
+            let m;
+            while ((m = rowRe.exec(tableM[1])) !== null) {
+              const tds = [];
+              const tdRe = /<td[^>]*>([\s\S]*?)<\/td>/g;
+              let t;
+              while ((t = tdRe.exec(m[1])) !== null) tds.push(t[1]);
+              if (tds.length < 4) continue;
+              const strip = (s) => String(s || '').replace(/<[^>]*>/g, '').replace(/\s+/g, ' ').trim();
+              injuries.push({ season: strip(tds[0]), type: strip(tds[1]), from: strip(tds[2]), to: strip(tds[3]) });
+            }
+          }
+          await pool.query(
+            `INSERT INTO api_football_cache (cache_key, response_json, fetched_at, expires_at)
+             VALUES (?, ?, NOW(), DATE_ADD(NOW(), INTERVAL 7 DAY))
+             ON DUPLICATE KEY UPDATE response_json = VALUES(response_json), fetched_at = NOW(), expires_at = DATE_ADD(NOW(), INTERVAL 7 DAY)`,
+            [cacheKey, JSON.stringify({ tmId, injuries, source: 'transfermarkt' })]
+          ).catch(() => {});
+        } catch { continue; }
+      }
+
+      if (!injuries?.length) continue;
+
+      const latest = injuries[0];
+      const isInjured = !!(latest && (!latest.to || latest.to === '' || latest.to === '-'));
+      const injuryDesc = isInjured ? (latest.type || null) : null;
+
+      const [[state]] = await pool.query(
+        'SELECT is_injured FROM player_alert_state WHERE player_id = ?',
+        [player.player_id]
+      );
+
+      if (!state) {
+        if (!dryRun) {
+          await pool.query(
+            `INSERT IGNORE INTO player_alert_state (player_id, last_known_club, is_injured, injury_desc)
+             VALUES (?, '', ?, ?)`,
+            [player.player_id, isInjured ? 1 : 0, injuryDesc]
+          );
+        }
+        continue;
+      }
+
+      const prevInjured = !!state.is_injured;
+      if (prevInjured === isInjured) continue;
+
+      const becameInjured = !prevInjured && isInjured;
+      const title = becameInjured
+        ? `Blessure — ${player.player_name}`
+        : `Retour de blessure — ${player.player_name}`;
+      const message = becameInjured
+        ? `${player.player_name} est blessé${injuryDesc ? ` (${injuryDesc})` : ''}.`
+        : `${player.player_name} est de retour de blessure.`;
+
+      const [watchers] = await pool.query(`
+        SELECT DISTINCT u.id AS user_id, u.email, u.notification_prefs
+        FROM watchlist_players wp
+        JOIN watchlists w ON w.id = wp.watchlist_id
+        JOIN users u ON u.id = w.user_id
+        WHERE wp.player_id = ? AND u.is_banned = 0
+      `, [player.player_id]);
+
+      for (const watcher of watchers) {
+        let prefs = {};
+        try { prefs = JSON.parse(watcher.notification_prefs || '{}'); } catch {}
+        if (prefs.alert_injury === false) continue;
+        notified++;
+        if (!dryRun) {
+          await createNotification(watcher.user_id, {
+            type: 'player_injury',
+            title,
+            message,
+            icon: becameInjured ? 'AlertTriangle' : 'CheckCircle',
+            link: `/player/${player.player_id}`,
+            playerId: player.player_id,
+          });
+          sendEmail(
+            watcher.email,
+            `[Scouty] ${title}`,
+            `<div style="font-family:sans-serif;max-width:520px;margin:0 auto;padding:24px">
+              <h2 style="color:#6366f1">${title}</h2>
+              <p>${message}</p>
+              <p><a href="https://scouty.app/player/${player.player_id}" style="color:#6366f1">Voir le profil du joueur</a></p>
+              <p style="color:#aaa;font-size:12px;margin-top:24px">Scouty — Football Scouting CRM</p>
+            </div>`
+          ).catch(() => {});
+        }
+      }
+
+      if (!dryRun) {
+        await pool.query(
+          `INSERT INTO player_alert_state (player_id, last_known_club, is_injured, injury_desc)
+           VALUES (?, '', ?, ?)
+           ON DUPLICATE KEY UPDATE is_injured = VALUES(is_injured), injury_desc = VALUES(injury_desc)`,
+          [player.player_id, isInjured ? 1 : 0, injuryDesc]
+        );
+      }
+    }
+
+    await logJobDone(logId, { notified, dry_run: dryRun });
+    console.log(`[cron-injury-alerts] ${notified} alert(s)${dryRun ? ' (dry-run)' : ''}`);
+  } catch (err) {
+    await logJobFailed(logId, err);
+    console.error('[cron-injury-alerts]', err.message);
+  }
+}
+
 // ── Cron schedules (non-Vercel only) ────────────────────────────────────────
 
 if (!isVercel && cron) {
+  cron.schedule('30 6 * * *',  () => runPlayerTransferAlerts(false),      { timezone: 'Europe/Paris' });
+  cron.schedule('45 6 * * *',  () => runPlayerInjuryAlerts(false),        { timezone: 'Europe/Paris' });
   cron.schedule('0 7 * * *',   () => runMatchReminders(false),            { timezone: 'Europe/Paris' });
   cron.schedule('0 8 * * *',   () => runContractAlerts(false),            { timezone: 'Europe/Paris' });
   cron.schedule('30 9 * * *',  () => runReportReminders(false),           { timezone: 'Europe/Paris' });
@@ -22910,7 +24358,7 @@ if (!isVercel && cron) {
   cron.schedule('0 3 * * 1', () => runStatsBombSyncJob(false), { timezone: 'Europe/Paris' });
   // StatsBomb form alerts — every Wednesday at 09:00
   cron.schedule('0 9 * * 3', () => runWatchlistFormAlerts(), { timezone: 'Europe/Paris' });
-  console.log('[startup] Crons scheduled: match-reminders 07:00 | contract-alerts 08:00 | report-reminders 09:30 | token-cleanup 04:30 | sub-expiry 09:00 | statsbomb-sync Mon 03:00 | form-alerts Wed 09:00');
+  console.log('[startup] Crons scheduled: transfer-alerts 06:30 | injury-alerts 06:45 | match-reminders 07:00 | contract-alerts 08:00 | report-reminders 09:30 | token-cleanup 04:30 | sub-expiry 09:00 | statsbomb-sync Mon 03:00 | form-alerts Wed 09:00');
 }
 
 // ── StatsBomb sync job wrapper (logs to cron_job_logs) ───────────────────────
@@ -22958,6 +24406,8 @@ function runCronJobGuarded(jobKey, fn) {
 app.post("/api/admin/cron-trigger", authMiddleware, ensureAdmin, async (req, res) => {
   const { job, dry_run = true } = req.body || {};
   const jobs = {
+    'player-transfer-alerts': () => runPlayerTransferAlerts(!!dry_run),
+    'player-injury-alerts':   () => runPlayerInjuryAlerts(!!dry_run),
     'contract-alerts':    () => runContractAlerts(!!dry_run),
     'match-reminders':    () => runMatchReminders(!!dry_run),
     'report-reminders':   () => runReportReminders(!!dry_run),
@@ -22998,7 +24448,9 @@ app.post("/api/cron/:job", async (req, res) => {
     return res.status(401).json({ error: 'Invalid cron secret' });
   }
   const jobs = {
-    'nightly-enrichment': () => runNightlyEnrichment(),
+    'nightly-enrichment':     () => runNightlyEnrichment(),
+    'player-transfer-alerts': () => runPlayerTransferAlerts(false),
+    'player-injury-alerts':   () => runPlayerInjuryAlerts(false),
     'contract-alerts':    () => runContractAlerts(false),
     'match-reminders':    () => runMatchReminders(false),
     'report-reminders':   () => runReportReminders(false),

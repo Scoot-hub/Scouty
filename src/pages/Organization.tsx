@@ -3,6 +3,7 @@ import { Link, useParams, useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { useAuth } from '@/contexts/AuthContext';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Textarea } from '@/components/ui/textarea';
@@ -17,6 +18,7 @@ import {
   Calendar, Briefcase, Camera, Trash2, Pencil, Check, X,
   MessageSquare, Bell, Eye, SlidersHorizontal, MessageSquareOff,
   Map, Download, UserCheck, UserX, Lock, Link2Off, FileX, UserCog,
+  Crown, LayoutDashboard, ListChecks, BarChart2, Sparkles, AtSign,
 } from 'lucide-react';
 import {
   useMyOrganizations,
@@ -35,6 +37,7 @@ import {
   useHandleJoinRequest,
   slugify,
 } from '@/hooks/use-organization';
+import { useIsPremium } from '@/hooks/use-admin';
 import OrgTabBar from '@/components/OrgTabBar';
 
 const ORG_TYPES = [
@@ -330,6 +333,7 @@ function OrganizationDashboard({ org, userId }: { org: Record<string, unknown>; 
 
   const isOwner = org.myRole === 'owner';
   const isAdmin = org.myRole === 'owner' || org.myRole === 'admin';
+  const { data: isPremium } = useIsPremium();
   const [selectedMember, setSelectedMember] = useState<Record<string, unknown> | null>(null);
 
   // Parse org-level settings with defaults
@@ -338,6 +342,8 @@ function OrganizationDashboard({ org, userId }: { org: Record<string, unknown>; 
     allow_roadmap_editing: true, require_approval_to_join: false, allow_player_export: true,
     allow_member_directory: true, allow_external_links: true, allow_file_uploads: true,
     org_visibility: false, max_members: 0,
+    // Modules
+    enable_dashboard: true, enable_shortlist: false, enable_analytics: false, enable_advanced_chat: false, enable_mentions: false,
   };
   const orgSettings: Record<string, boolean | number> = (() => {
     try {
@@ -538,6 +544,130 @@ function OrganizationDashboard({ org, userId }: { org: Record<string, unknown>; 
                 </div>
               )}
             </div>
+          </CardContent>
+        </Card>
+      )}
+
+      {/* Modules de l'organisation — admin only */}
+      {isAdmin && (
+        <Card>
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2 text-base">
+              <Sparkles className="w-4 h-4 text-primary" />
+              Modules de l'organisation
+            </CardTitle>
+            <CardDescription>Activez ou désactivez les onglets visibles par les membres. Les fonctionnalités marquées <span className="inline-flex items-center gap-0.5 text-amber-500 font-medium"><Crown className="w-3 h-3" />Payant</span> nécessitent un abonnement premium.</CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-3">
+            {([
+              {
+                key: 'enable_dashboard',
+                icon: LayoutDashboard,
+                title: 'Tableau de bord',
+                desc: 'Vue d\'ensemble de l\'activité : stats, membres actifs, matchs à venir, shortlist récente.',
+                premium: false,
+              },
+              {
+                key: 'enable_shortlist',
+                icon: ListChecks,
+                title: 'Shortlist collective',
+                desc: 'Suivez collectivement les joueurs en cours d\'observation, avec statuts et notes partagées.',
+                premium: true,
+              },
+              {
+                key: 'enable_analytics',
+                icon: BarChart2,
+                title: 'Analytics',
+                desc: 'Graphiques détaillés : pipeline de recrutement, activité par membre, croissance, matchs.',
+                premium: true,
+              },
+              {
+                key: 'enable_advanced_chat',
+                icon: MessageSquare,
+                title: 'Messagerie avancée',
+                desc: 'Canaux thématiques, messages épinglés et recherche dans l\'historique.',
+                premium: true,
+              },
+              {
+                key: 'enable_mentions',
+                icon: AtSign,
+                title: 'Mentions (@)',
+                desc: 'Mentionnez des membres avec @pseudo. Ils reçoivent une notification et vous pouvez cliquer sur une mention pour voir leur profil.',
+                premium: false,
+              },
+            ] as { key: string; icon: React.ElementType; title: string; desc: string; premium: boolean }[]).map(item => {
+              const ItemIcon = item.icon;
+              const premiumLocked = item.premium && !isPremium;
+              const chatDisabled = item.key === 'enable_advanced_chat' && orgSettings.allow_messaging === false;
+              const mentionDisabled = item.key === 'enable_mentions' && !orgSettings.enable_advanced_chat && !orgSettings.allow_messaging;
+              const isLocked = premiumLocked || chatDisabled || mentionDisabled;
+
+              let lockMsg: string | null = null;
+              let tooltipMsg: string | null = null;
+              if (chatDisabled) {
+                lockMsg = 'La messagerie doit être activée (dans Paramètres avancés) pour pouvoir utiliser cette fonctionnalité.';
+                tooltipMsg = 'Activez d\'abord la messagerie dans les Paramètres avancés.';
+              } else if (mentionDisabled) {
+                lockMsg = 'Activez d\'abord la messagerie (Paramètres avancés) pour activer les mentions.';
+                tooltipMsg = 'La messagerie doit être activée pour utiliser les mentions.';
+              } else if (premiumLocked) {
+                lockMsg = 'Nécessite un abonnement Scout+ ou Scout Pro.';
+                tooltipMsg = 'Fonctionnalité réservée aux abonnés. Passez à Scout+ ou Scout Pro pour l\'activer.';
+              }
+
+              return (
+                <div
+                  key={item.key}
+                  className={`flex items-start justify-between gap-3 rounded-xl border p-3 ${
+                    item.premium
+                      ? 'border-amber-200/70 bg-amber-50/40 dark:border-amber-800/40 dark:bg-amber-900/10'
+                      : 'border-border/60 bg-muted/20'
+                  } ${(chatDisabled || mentionDisabled) ? 'opacity-60' : ''}`}
+                >
+                  <div className="min-w-0 flex-1">
+                    <div className="flex items-center gap-2 text-sm font-medium flex-wrap">
+                      <ItemIcon className={`w-4 h-4 shrink-0 ${item.premium ? 'text-amber-500' : 'text-primary'}`} />
+                      <span>{item.title}</span>
+                      {item.premium && (
+                        <span className="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded-full text-[10px] font-semibold bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300 border border-amber-200/60 dark:border-amber-700/40">
+                          <Crown className="w-2.5 h-2.5" />
+                          Payant
+                        </span>
+                      )}
+                    </div>
+                    <p className="mt-0.5 text-xs text-muted-foreground leading-relaxed">{item.desc}</p>
+                    {lockMsg && (
+                      <p className="mt-1 text-[11px] text-amber-600 dark:text-amber-400 flex items-center gap-1">
+                        <Lock className="w-3 h-3 shrink-0" />
+                        {lockMsg}
+                      </p>
+                    )}
+                  </div>
+                  <TooltipProvider delayDuration={100}>
+                    <Tooltip>
+                      <TooltipTrigger asChild>
+                        <span className="shrink-0 mt-0.5">
+                          <Switch
+                            checked={!!orgSettings[item.key]}
+                            onCheckedChange={v => {
+                              if (isLocked) return;
+                              handleOrgSetting(item.key, v);
+                            }}
+                            disabled={updateOrgSettings.isPending || isLocked}
+                            className={isLocked ? 'opacity-40 cursor-not-allowed' : ''}
+                          />
+                        </span>
+                      </TooltipTrigger>
+                      {tooltipMsg && (
+                        <TooltipContent side="left" className="text-xs max-w-[220px]">
+                          {tooltipMsg}
+                        </TooltipContent>
+                      )}
+                    </Tooltip>
+                  </TooltipProvider>
+                </div>
+              );
+            })}
           </CardContent>
         </Card>
       )}

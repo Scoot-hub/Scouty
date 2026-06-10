@@ -1,5 +1,5 @@
 import { Link, useLocation } from 'react-router-dom';
-import { Users, UserSquare2, Map, Settings, Building2, MessageSquare, Lock } from 'lucide-react';
+import { Users, UserSquare2, Map, Settings, Building2, MessageSquare, Lock, LayoutDashboard, ListChecks, BarChart2, Crown } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { slugify, useCurrentOrg } from '@/hooks/use-organization';
 import { Badge } from '@/components/ui/badge';
@@ -11,11 +11,14 @@ interface OrgTabBarProps {
 }
 
 const TABS = [
-  { key: 'squad',    label: 'Effectif',                   icon: Users,          path: 'squad'    },
-  { key: 'players',  label: "Joueurs de l'organisation",  icon: UserSquare2,    path: 'players'  },
-  { key: 'roadmap',  label: 'Feuille de route',           icon: Map,            path: 'roadmap'  },
-  { key: 'chat',     label: 'Discussion',                  icon: MessageSquare,  path: 'chat'     },
-  { key: 'settings', label: 'Paramètres',                 icon: Settings,       path: 'settings' },
+  { key: 'dashboard', label: 'Tableau de bord',  icon: LayoutDashboard, path: 'dashboard', settingKey: 'enable_dashboard',  premium: false },
+  { key: 'squad',     label: 'Effectif',          icon: Users,           path: 'squad',     settingKey: 'allow_squad_viewing', premium: false },
+  { key: 'players',   label: 'Joueurs',           icon: UserSquare2,     path: 'players',   settingKey: null,                 premium: false },
+  { key: 'shortlist', label: 'Shortlist',         icon: ListChecks,      path: 'shortlist', settingKey: 'enable_shortlist',   premium: true  },
+  { key: 'roadmap',   label: 'Feuille de route',  icon: Map,             path: 'roadmap',   settingKey: null,                 premium: false },
+  { key: 'chat',      label: 'Discussion',        icon: MessageSquare,   path: 'chat',      settingKey: null,                 premium: false },
+  { key: 'analytics', label: 'Analytics',         icon: BarChart2,       path: 'analytics', settingKey: 'enable_analytics',   premium: true  },
+  { key: 'settings',  label: 'Paramètres',        icon: Settings,        path: 'settings',  settingKey: null,                 premium: false },
 ] as const;
 
 const ORG_TYPE_LABELS: Record<string, string> = {
@@ -41,7 +44,22 @@ export default function OrgTabBar({ orgName }: OrgTabBarProps) {
     } catch { return {}; }
   })();
   const isAdmin = org?.myRole === 'owner' || org?.myRole === 'admin';
-  const squadBlocked = orgSettings.allow_squad_viewing === false && !isAdmin;
+
+  // Determine visibility/lock state for each tab
+  const tabState = (settingKey: string | null, tabKey: string): 'visible' | 'locked' | 'hidden' => {
+    if (!settingKey) return 'visible';
+    // squad: special case — blocked for non-admins if setting is false
+    if (tabKey === 'squad') {
+      return orgSettings.allow_squad_viewing === false && !isAdmin ? 'locked' : 'visible';
+    }
+    // Other setting-gated tabs (dashboard, shortlist, analytics):
+    // default true for dashboard, false for premium tabs unless explicitly set
+    const defaultOn = tabKey === 'dashboard';
+    const enabled = settingKey in orgSettings ? orgSettings[settingKey] : defaultOn;
+    if (enabled) return 'visible';
+    // Admins see it locked (can still click & go enable it), non-admins: hidden
+    return isAdmin ? 'locked' : 'hidden';
+  };
 
   return (
     <div className="space-y-4">
@@ -80,26 +98,37 @@ export default function OrgTabBar({ orgName }: OrgTabBarProps) {
 
       {/* ── Tab navigation ── */}
       <TooltipProvider delayDuration={200}>
-        <div className="flex items-center gap-1 border-b border-border pb-0 -mx-1 px-1">
-          {TABS.map(({ key, label, icon: Icon, path }) => {
+        <div className="flex items-center gap-1 border-b border-border pb-0 -mx-1 px-1 overflow-x-auto scrollbar-none">
+          {TABS.map(({ key, label, icon: Icon, path, settingKey, premium }) => {
             const href = `${base}/${path}`;
             const active = pathname.startsWith(`${base}/${path}`);
-            const blocked = key === 'squad' && squadBlocked;
+            const state = tabState(settingKey, key);
 
-            if (blocked) {
+            if (state === 'hidden') return null;
+
+            if (state === 'locked') {
+              const isPremiumLocked = premium && settingKey && !orgSettings[settingKey];
+              const tooltipMsg = isPremiumLocked
+                ? 'Fonctionnalité payante — activez-la dans les Paramètres'
+                : 'Rendu inaccessible par le propriétaire de l\'organisation';
               return (
                 <Tooltip key={key}>
                   <TooltipTrigger asChild>
-                    <span
-                      className="flex items-center gap-1.5 px-3 py-2.5 text-sm font-medium whitespace-nowrap border-b-2 -mb-px border-transparent text-muted-foreground/40 cursor-not-allowed select-none"
+                    <Link
+                      to={isAdmin ? `${base}/settings` : '#'}
+                      className="flex items-center gap-1.5 px-3 py-2.5 text-sm font-medium whitespace-nowrap border-b-2 -mb-px border-transparent text-muted-foreground/40 hover:text-muted-foreground/60 transition-colors"
                     >
                       <Icon className="w-4 h-4" />
                       {label}
-                      <Lock className="w-3 h-3 ml-0.5" />
-                    </span>
+                      {premium ? (
+                        <Crown className="w-3 h-3 ml-0.5 text-amber-400" />
+                      ) : (
+                        <Lock className="w-3 h-3 ml-0.5" />
+                      )}
+                    </Link>
                   </TooltipTrigger>
                   <TooltipContent side="bottom" className="text-xs">
-                    Rendu inaccessible par le propriétaire de l'organisation
+                    {tooltipMsg}
                   </TooltipContent>
                 </Tooltip>
               );

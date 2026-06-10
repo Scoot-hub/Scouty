@@ -8,6 +8,7 @@ import { useIsPremium, useIsAdmin } from '@/hooks/use-admin';
 import { useCredits } from '@/hooks/use-credits';
 import { useIntegrations, useSaveIntegration, useDeleteIntegration, useTestIntegration } from '@/hooks/use-integrations';
 import { useNotificationPrefs, useSaveNotificationPrefs } from '@/hooks/use-notification-prefs';
+import { usePushSubscription } from '@/hooks/use-push-subscription';
 import {
   Settings2, Globe, Pencil, Trash2, Eye, EyeOff, BellOff, MessageSquareOff, BookOpen,
   Type, Hash, ListOrdered, Link2, ToggleLeft, User, CalendarDays, Trophy,
@@ -16,6 +17,7 @@ import {
   Euro, FileText, AlertTriangle,
   AlignLeft, ListChecks, Banknote, Phone, Lock, Minus, Info,
   Image, Building2, TrendingUp, BarChart3, LayoutGrid, Sparkles, Zap, CreditCard,
+  MessageSquare, Paperclip, Smile, Pin, Search, AtSign,
 } from 'lucide-react';
 import {
   Tooltip, TooltipContent, TooltipTrigger,
@@ -315,11 +317,27 @@ export default function Settings() {
     dedupCooldownHours,
     apifootballCacheDays,
     thesportsdbCacheDays,
+    notificationPopupDuration,
+    chatEnabled,
+    chatReactions,
+    chatPins,
+    chatSearch,
+    chatMentions,
+    chatFileAttachments,
+    chatExternalLinks,
+    setChatEnabled,
+    setChatReactions,
+    setChatPins,
+    setChatSearch,
+    setChatMentions,
+    setChatFileAttachments,
+    setChatExternalLinks,
     setAnimationsEnabled,
     setEnrichmentDelayDays,
     setDedupCooldownHours,
     setApifootballCacheDays,
     setThesportsdbCacheDays,
+    setNotificationPopupDuration,
     setReducedVisionMode,
     setShowNotifications,
     setShowCredits,
@@ -416,16 +434,8 @@ export default function Settings() {
     );
   };
 
-  // Browser push permission state
-  const pushPermission = typeof Notification !== 'undefined' ? Notification.permission : 'default';
-
-  const requestPushPermission = async () => {
-    if (typeof Notification === 'undefined') return;
-    const result = await Notification.requestPermission();
-    if (result === 'granted') {
-      toast.success(t('settings.notif_push_granted'));
-    }
-  };
+  // Push subscription — shared hook with AdminSettings so the subscription is always the same
+  const { status: pushStatus, subscribe: pushSubscribe, unsubscribe: pushUnsubscribe } = usePushSubscription();
 
   return (
     <div className="max-w-5xl mx-auto">
@@ -460,6 +470,10 @@ export default function Settings() {
           <TabsTrigger value="integrations" className="flex items-center gap-1.5 rounded-lg text-sm px-3 py-2">
             <Plug className="w-4 h-4" />
             {t('settings.tab_integrations')}
+          </TabsTrigger>
+          <TabsTrigger value="advanced" className="flex items-center gap-1.5 rounded-lg text-sm px-3 py-2">
+            <Settings2 className="w-4 h-4" />
+            {t('settings.tab_advanced')}
           </TabsTrigger>
         </TabsList>
 
@@ -890,7 +904,7 @@ export default function Settings() {
                   </CardTitle>
                   <CardDescription>{t('settings.notif_web_desc')}</CardDescription>
                 </CardHeader>
-                <CardContent className="space-y-3">
+                <CardContent className="space-y-4">
                   <NotifRow
                     icon={BellOff}
                     title={t('settings.notif_web_bell')}
@@ -898,6 +912,31 @@ export default function Settings() {
                     checked={showNotifications}
                     onCheckedChange={setShowNotifications}
                   />
+                  {/* Popup auto-dismiss timer */}
+                  <div className="flex items-center justify-between gap-4 py-1">
+                    <div className="flex items-center gap-3 min-w-0">
+                      <div className="w-8 h-8 rounded-lg bg-muted flex items-center justify-center shrink-0">
+                        <Clock className="w-4 h-4 text-muted-foreground" />
+                      </div>
+                      <div className="min-w-0">
+                        <p className="text-sm font-medium leading-tight">{t('settings.notif_popup_duration_title')}</p>
+                        <p className="text-xs text-muted-foreground mt-0.5 leading-tight">{t('settings.notif_popup_duration_desc')}</p>
+                      </div>
+                    </div>
+                    <Select
+                      value={String(notificationPopupDuration)}
+                      onValueChange={v => setNotificationPopupDuration(Number(v) as 0 | 10 | 60)}
+                    >
+                      <SelectTrigger className="w-36 shrink-0 h-8 text-xs">
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="10">{t('settings.notif_popup_10s')}</SelectItem>
+                        <SelectItem value="60">{t('settings.notif_popup_60s')}</SelectItem>
+                        <SelectItem value="0">{t('settings.notif_popup_manual')}</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
                 </CardContent>
               </Card>
 
@@ -910,27 +949,38 @@ export default function Settings() {
                   </CardTitle>
                   <CardDescription>{t('settings.notif_push_desc')}</CardDescription>
                 </CardHeader>
-                <CardContent>
-                  {pushPermission === 'granted' ? (
-                    <div className="flex items-center gap-2 text-sm text-emerald-600 dark:text-emerald-400">
-                      <CheckCircle2 className="w-4 h-4 shrink-0" />
+                <CardContent className="space-y-3">
+                  <div className="flex items-center justify-between rounded-lg border border-border px-4 py-3">
+                    <div className="space-y-0.5">
+                      <p className="text-sm font-medium">{t('settings.notif_push_sub_label')}</p>
+                      <p className="text-xs text-muted-foreground">
+                        {pushStatus === 'subscribed'   && t('settings.notif_push_subscribed_desc')}
+                        {pushStatus === 'unsubscribed' && t('settings.notif_push_unsubscribed_desc')}
+                        {pushStatus === 'denied'       && t('settings.notif_push_denied')}
+                        {pushStatus === 'unsupported'  && t('settings.notif_push_unsupported')}
+                        {pushStatus === 'loading'      && '…'}
+                      </p>
+                    </div>
+                    {pushStatus === 'subscribed' ? (
+                      <Button variant="outline" size="sm" onClick={pushUnsubscribe}>
+                        {t('settings.notif_push_unsubscribe')}
+                      </Button>
+                    ) : pushStatus === 'unsubscribed' ? (
+                      <Button size="sm" className="gap-2" onClick={pushSubscribe}>
+                        <BellRing className="w-3.5 h-3.5" />
+                        {t('settings.notif_push_enable')}
+                      </Button>
+                    ) : (
+                      <span className={`text-xs px-2 py-1 rounded-full ${pushStatus === 'denied' ? 'bg-destructive/10 text-destructive' : 'bg-muted text-muted-foreground'}`}>
+                        {pushStatus === 'denied' ? t('settings.notif_push_blocked') : pushStatus === 'unsupported' ? t('settings.notif_push_unsupported') : '…'}
+                      </span>
+                    )}
+                  </div>
+                  {pushStatus === 'subscribed' && (
+                    <div className="flex items-center gap-2 text-xs text-emerald-600 dark:text-emerald-400">
+                      <CheckCircle2 className="w-3.5 h-3.5 shrink-0" />
                       {t('settings.notif_push_granted')}
                     </div>
-                  ) : pushPermission === 'denied' ? (
-                    <div className="flex items-center gap-2 text-sm text-destructive">
-                      <XCircle className="w-4 h-4 shrink-0" />
-                      {t('settings.notif_push_denied')}
-                    </div>
-                  ) : (
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      className="gap-2 rounded-xl"
-                      onClick={requestPushPermission}
-                    >
-                      <BellRing className="w-4 h-4" />
-                      {t('settings.notif_push_enable')}
-                    </Button>
                   )}
                 </CardContent>
               </Card>
@@ -995,6 +1045,22 @@ export default function Settings() {
                   </Select>
                   <p className="text-[11px] text-muted-foreground mt-1">{t('settings.alert_contract_desc')}</p>
                 </div>
+
+                <NotifRow
+                  icon={TrendingUp}
+                  title={t('settings.alert_transfer')}
+                  desc={t('settings.alert_transfer_desc')}
+                  checked={notifPrefs?.alert_transfer ?? true}
+                  onCheckedChange={v => handleNotifToggle('alert_transfer', v)}
+                />
+
+                <NotifRow
+                  icon={ShieldAlert}
+                  title={t('settings.alert_injury')}
+                  desc={t('settings.alert_injury_desc')}
+                  checked={notifPrefs?.alert_injury ?? true}
+                  onCheckedChange={v => handleNotifToggle('alert_injury', v)}
+                />
 
               </CardContent>
             </Card>
@@ -1235,6 +1301,66 @@ export default function Settings() {
               </div>
             </CardContent>
           </Card>
+        </TabsContent>
+
+        {/* ── TAB: Paramètres avancés ── */}
+        <TabsContent value="advanced" className="space-y-6">
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+
+            {/* Chat settings */}
+            <Card className="lg:col-span-2">
+              <CardHeader>
+                <CardTitle className="flex items-center gap-2 text-base">
+                  <MessageSquare className="w-4 h-4 text-primary" />
+                  {t('settings.chat_section_title')}
+                </CardTitle>
+                <CardDescription>{t('settings.chat_section_desc')}</CardDescription>
+              </CardHeader>
+              <CardContent className="space-y-4">
+                {/* Master toggle */}
+                <div className="flex items-start justify-between gap-3 rounded-xl border border-border/60 bg-muted/20 p-3">
+                  <div className="min-w-0">
+                    <div className="flex items-center gap-2 text-sm font-medium">
+                      <MessageSquare className="w-4 h-4 text-primary shrink-0" />
+                      <span className="truncate">{t('settings.chat_enabled_title')}</span>
+                    </div>
+                    <p className="mt-0.5 text-xs text-muted-foreground leading-relaxed">{t('settings.chat_enabled_desc')}</p>
+                  </div>
+                  <Switch checked={chatEnabled} onCheckedChange={setChatEnabled} className="shrink-0 mt-0.5" />
+                </div>
+
+                {/* Sub-options — grayed when master is off */}
+                <div className={`space-y-3 transition-opacity duration-200 ${chatEnabled ? '' : 'opacity-40 pointer-events-none'}`}>
+                  <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground px-1">
+                    {t('settings.chat_features_label')}
+                  </p>
+                  {([
+                    { key: 'reactions',    icon: Smile,       title: t('settings.chat_reactions_title'),        desc: t('settings.chat_reactions_desc'),        checked: chatReactions,       onCheckedChange: setChatReactions },
+                    { key: 'pins',         icon: Pin,         title: t('settings.chat_pins_title'),             desc: t('settings.chat_pins_desc'),             checked: chatPins,            onCheckedChange: setChatPins },
+                    { key: 'search',       icon: Search,      title: t('settings.chat_search_title'),           desc: t('settings.chat_search_desc'),           checked: chatSearch,          onCheckedChange: setChatSearch },
+                    { key: 'mentions',     icon: AtSign,      title: t('settings.chat_mentions_title'),         desc: t('settings.chat_mentions_desc'),         checked: chatMentions,        onCheckedChange: setChatMentions },
+                    { key: 'files',        icon: Paperclip,   title: t('settings.chat_file_attachments_title'), desc: t('settings.chat_file_attachments_desc'), checked: chatFileAttachments, onCheckedChange: setChatFileAttachments },
+                    { key: 'links',        icon: ExternalLink,title: t('settings.chat_external_links_title'),   desc: t('settings.chat_external_links_desc'),   checked: chatExternalLinks,   onCheckedChange: setChatExternalLinks },
+                  ] as const).map(item => {
+                    const ItemIcon = item.icon;
+                    return (
+                      <div key={item.key} className="flex items-start justify-between gap-3 rounded-xl border border-border/60 bg-muted/20 p-3 ml-4">
+                        <div className="min-w-0">
+                          <div className="flex items-center gap-2 text-sm font-medium">
+                            <ItemIcon className="w-4 h-4 text-primary shrink-0" />
+                            <span className="truncate">{item.title}</span>
+                          </div>
+                          <p className="mt-0.5 text-xs text-muted-foreground leading-relaxed">{item.desc}</p>
+                        </div>
+                        <Switch checked={item.checked} onCheckedChange={item.onCheckedChange} className="shrink-0 mt-0.5" disabled={!chatEnabled} />
+                      </div>
+                    );
+                  })}
+                </div>
+              </CardContent>
+            </Card>
+
+          </div>
         </TabsContent>
       </Tabs>
 

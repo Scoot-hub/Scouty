@@ -55,6 +55,7 @@ const LazyEvolutionChart = lazy(() => import('@/components/charts/EvolutionChart
 const LazyMarketValueChart = lazy(() => import('@/components/charts/MarketValueChart'));
 const LazySortableCardGrid = lazy(() => import('@/components/profile/SortableCardGrid').then(m => ({ default: m.default })));
 const LazyStatsBombTab = lazy(() => import('@/components/profile/StatsBombTab'));
+const LazyPlayerMatchesTab = lazy(() => import('@/components/profile/PlayerMatchesTab'));
 
 const SB_API = (import.meta.env.API_URL || '/api').replace(/\/$/, '');
 
@@ -115,7 +116,11 @@ export default function PlayerProfile() {
 
   // UI state
   const [editMode, setEditMode] = useState(false);
-  const [activeTab, setActiveTab] = useState(() => player?.player_type === 'coach' ? 'coach' : 'infos');
+  const [activeTab, setActiveTab] = useState<string>(() => {
+    const saved = id ? sessionStorage.getItem(`player_tab_${id}`) : null;
+    if (saved) return saved;
+    return player?.player_type === 'coach' ? 'coach' : 'infos';
+  });
   const [careerExpanded, setCareerExpanded] = useState(false);
   const [nationalCareerExpanded, setNationalCareerExpanded] = useState(false);
   const playerTmId = (player as unknown as { transfermarkt_id?: string | number } | undefined)?.transfermarkt_id;
@@ -1035,7 +1040,7 @@ export default function PlayerProfile() {
       </Card>
 
       {/* Tabs */}
-      <Tabs value={activeTab} onValueChange={setActiveTab} className="w-full">
+      <Tabs value={activeTab} onValueChange={v => { setActiveTab(v); if (id) sessionStorage.setItem(`player_tab_${id}`, v); }} className="w-full">
         <TabsList className={`w-full grid ${
           player.player_type === 'coach'
             ? (sbData?.players.length ? 'grid-cols-8' : 'grid-cols-7')
@@ -1066,6 +1071,10 @@ export default function PlayerProfile() {
             {wyscoutRows.length > 0 && (
               <Badge variant="secondary" className="ml-1 text-[10px] h-4 px-1 bg-primary/15 text-primary">WY</Badge>
             )}
+          </TabsTrigger>
+          <TabsTrigger value="matches" className="gap-2">
+            <MapPin className="w-4 h-4" />
+            <span className="hidden sm:inline">Matchs</span>
           </TabsTrigger>
           <TabsTrigger value="injuries" className="gap-2">
             <HeartPulse className="w-4 h-4" />
@@ -1764,6 +1773,18 @@ export default function PlayerProfile() {
               handleEnrich={handleEnrich}
               isPremium={!!isPremium}
               isAdmin={!!isAdmin}
+            />
+          </Suspense>
+        </TabsContent>
+
+        {/* ── Tab: Upcoming matches & heat map ── */}
+        <TabsContent value="matches" className="mt-4">
+          <Suspense fallback={<div className="flex items-center justify-center py-12 text-muted-foreground"><Loader2 className="w-5 h-5 animate-spin mr-2" />Chargement…</div>}>
+            <LazyPlayerMatchesTab
+              playerId={id ?? ''}
+              playerClub={player?.club ?? ''}
+              playerLeague={heroLeague ?? ''}
+              canEdit={!!(isAdmin || isPremium)}
             />
           </Suspense>
         </TabsContent>

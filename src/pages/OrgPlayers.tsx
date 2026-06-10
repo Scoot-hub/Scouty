@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { useOrgPlayers, useCurrentOrg } from '@/hooks/use-organization';
+import { usePlayers, useSharePlayerWithOrg, useUnsharePlayerFromOrg, usePlayerOrgShares } from '@/hooks/use-players';
 import OrgTabBar from '@/components/OrgTabBar';
 import { getPlayerAge, getOpinionBgClass, getOpinionEmoji, getOpinionTranslationKey, ALL_OPINIONS, translateFoot, resolveLeagueName, translateCountry, type Opinion, type Position, type Foot } from '@/types/player';
 import { usePositions } from '@/hooks/use-positions';
@@ -10,13 +11,14 @@ import { PlayerAvatar } from '@/components/ui/player-avatar';
 import { ClubBadge } from '@/components/ui/club-badge';
 import { LeagueLogo } from '@/components/ui/league-logo';
 import { Card, CardContent } from '@/components/ui/card';
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
 import { Checkbox } from '@/components/ui/checkbox';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { AddToWatchlistDialog } from '@/components/AddToWatchlistDialog';
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu';
-import { Search, RotateCcw, Users, ChevronDown, ChevronUp, SlidersHorizontal, Download, X, LayoutGrid, List, Building2, Eye, Loader2, Zap } from 'lucide-react';
+import { Search, RotateCcw, Users, ChevronDown, ChevronUp, SlidersHorizontal, Download, X, LayoutGrid, List, Building2, Eye, Loader2, Zap, UserPlus, CheckCircle2 } from 'lucide-react';
 import { toast } from 'sonner';
 import * as XLSX from 'xlsx';
 
@@ -65,6 +67,7 @@ export default function OrgPlayers() {
   const [viewMode, setViewMode] = useState<'compact' | 'detailed'>(() => loadFilters().viewMode ?? 'compact');
   const [exporting, setExporting] = useState(false);
   const [watchlistDialogOpen, setWatchlistDialogOpen] = useState(false);
+  const [shareDialogOpen, setShareDialogOpen] = useState(false);
 
   useEffect(() => {
     sessionStorage.setItem(FILTER_KEY, JSON.stringify({
@@ -291,6 +294,15 @@ export default function OrgPlayers() {
             open={watchlistDialogOpen}
             onOpenChange={setWatchlistDialogOpen}
           />
+          {orgSettings.allow_player_sharing !== false && (
+            <Button
+              variant="default" size="sm" className="rounded-xl"
+              onClick={() => setShareDialogOpen(true)}
+            >
+              <UserPlus className="w-4 h-4 mr-1.5" />
+              {t('org.add_player_to_org')}
+            </Button>
+          )}
           <Button
             variant="outline" size="sm" className="rounded-xl"
             onClick={handleExportExcel}
@@ -302,6 +314,15 @@ export default function OrgPlayers() {
           </Button>
         </div>
       </div>
+
+      {shareDialogOpen && (
+        <SharePlayerToOrgDialog
+          orgId={org.id as string}
+          orgName={org.name as string}
+          open={shareDialogOpen}
+          onOpenChange={setShareDialogOpen}
+        />
+      )}
 
       <div className="flex flex-col gap-6">
         {/* Search + Sort + Filter bar */}
@@ -679,6 +700,136 @@ export default function OrgPlayers() {
         </div>
       </div>
     </div>
+  );
+}
+
+// ── Dialog : partager un de ses joueurs avec l'organisation courante ──────────
+
+interface SharePlayerToOrgDialogProps {
+  orgId: string;
+  orgName: string;
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+}
+
+function SharePlayerToOrgDialog({ orgId, orgName, open, onOpenChange }: SharePlayerToOrgDialogProps) {
+  const { t } = useTranslation();
+  const { positionShort: posShort } = usePositions();
+  const { data: myPlayers = [], isLoading: playersLoading } = usePlayers();
+  const [search, setSearch] = useState('');
+
+  const activePlayers = useMemo(() => myPlayers.filter(p => !p.is_archived), [myPlayers]);
+  const playerIds = useMemo(() => activePlayers.map(p => p.id), [activePlayers]);
+  const { data: shares = [] } = usePlayerOrgShares(playerIds);
+
+  const sharedIds = useMemo(
+    () => new Set(shares.filter(s => s.organization_id === orgId).map(s => s.player_id)),
+    [shares, orgId],
+  );
+
+  const shareMutation = useSharePlayerWithOrg();
+  const unshareMutation = useUnsharePlayerFromOrg();
+  const isPending = shareMutation.isPending || unshareMutation.isPending;
+
+  const filtered = useMemo(() => {
+    if (!search.trim()) return activePlayers;
+    const s = search.toLowerCase();
+    return activePlayers.filter(p =>
+      p.name.toLowerCase().includes(s) ||
+      (p.club && p.club.toLowerCase().includes(s)),
+    );
+  }, [activePlayers, search]);
+
+  const handleToggle = async (playerId: string, isShared: boolean) => {
+    try {
+      if (isShared) {
+        await unshareMutation.mutateAsync({ playerId, organizationId: orgId });
+      } else {
+        await shareMutation.mutateAsync({ playerId, organizationId: orgId });
+        toast.success(t('players.added_to_org', { count: 1 }));
+      }
+    } catch (err: unknown) {
+      toast.error(err instanceof Error ? err.message : t('common.error'));
+    }
+  };
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="max-w-md">
+        <DialogHeader>
+          <DialogTitle>{t('org.add_player_to_org')}</DialogTitle>
+        </DialogHeader>
+        <p className="text-xs text-muted-foreground -mt-2">
+          {t('org.add_player_to_org_desc', { name: orgName })}
+        </p>
+
+        <div className="relative">
+          <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
+          <Input
+            placeholder={t('common.search')}
+            value={search}
+            onChange={e => setSearch(e.target.value)}
+            className="pl-9 rounded-xl"
+            autoFocus
+          />
+        </div>
+
+        {playersLoading ? (
+          <div className="flex justify-center py-8">
+            <Loader2 className="w-5 h-5 animate-spin text-muted-foreground" />
+          </div>
+        ) : filtered.length === 0 ? (
+          <p className="text-center text-sm text-muted-foreground py-8">
+            {activePlayers.length === 0 ? t('org.no_own_players') : t('players.no_results')}
+          </p>
+        ) : (
+          <div className="space-y-1 max-h-80 overflow-y-auto -mx-1 px-1">
+            {filtered.map(player => {
+              const isShared = sharedIds.has(player.id);
+              return (
+                <div
+                  key={player.id}
+                  className={`flex items-center gap-3 px-3 py-2 rounded-lg transition-colors ${isShared ? 'bg-primary/5' : 'hover:bg-muted'}`}
+                >
+                  <PlayerAvatar name={player.name} photoUrl={player.photo_url} size="sm" />
+                  <div className="flex-1 min-w-0">
+                    <p className="text-sm font-semibold truncate">{player.name}</p>
+                    <p className="text-xs text-muted-foreground truncate">
+                      {player.club || '—'} · {posShort[player.position as Position]}
+                    </p>
+                  </div>
+                  {isShared ? (
+                    <button
+                      onClick={() => handleToggle(player.id, true)}
+                      disabled={isPending}
+                      className="flex items-center gap-1.5 text-xs font-medium text-primary hover:text-destructive transition-colors shrink-0 px-2 py-1 rounded-lg hover:bg-destructive/10"
+                    >
+                      {isPending
+                        ? <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                        : <CheckCircle2 className="w-3.5 h-3.5" />}
+                      {t('players.shared_with_org')}
+                    </button>
+                  ) : (
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      onClick={() => handleToggle(player.id, false)}
+                      disabled={isPending}
+                      className="rounded-lg shrink-0 text-xs"
+                    >
+                      {isPending
+                        ? <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                        : <UserPlus className="w-3.5 h-3.5 mr-1" />}
+                      {t('players.share_with_org')}
+                    </Button>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </DialogContent>
+    </Dialog>
   );
 }
 

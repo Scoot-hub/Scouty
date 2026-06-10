@@ -9,6 +9,8 @@ export interface NotificationPrefs {
   // Alert preferences (used by server-side cron jobs)
   alert_no_report_days: 0 | 7 | 30;    // 0 = never, 7 = after 7 days, 30 = after 30 days
   alert_contract_months: 0 | 3 | 6 | 12; // 0 = never, otherwise months before expiry
+  alert_transfer: boolean;              // notify when a watchlisted player changes club
+  alert_injury: boolean;                // notify on injury / recovery for watchlisted players
 }
 
 export const DEFAULT_NOTIF_PREFS: NotificationPrefs = {
@@ -19,6 +21,8 @@ export const DEFAULT_NOTIF_PREFS: NotificationPrefs = {
   web_bell: true,
   alert_no_report_days: 30,
   alert_contract_months: 3,
+  alert_transfer: true,
+  alert_injury: true,
 };
 
 function getAuthHeaders(): Record<string, string> {

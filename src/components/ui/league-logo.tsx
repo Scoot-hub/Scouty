@@ -272,6 +272,12 @@ const sizeMap = {
   lg: 'w-8 h-8',
 };
 
+// Logos whose image file has an unusually wide aspect ratio — scale them up so
+// they appear visually the same size as portrait logos in the same container.
+const LOGO_SCALE_OVERRIDES: Record<string, string> = {
+  'ligue 1': 'scale-[1.55]',
+};
+
 const API_BASE = (import.meta.env.API_URL || '/api').replace(/\/$/, '');
 
 
@@ -396,9 +402,10 @@ export function LeagueLogo({ league, size = 'md', className, fallback }: LeagueL
   }, [league, key, localLogo, flagCode]);
 
   if (loaded && logoUrl) {
+    const scaleClass = LOGO_SCALE_OVERRIDES[key] ?? '';
     return (
       <div className={cn('shrink-0 overflow-hidden', sizeMap[size], className)} title={league}>
-        <img src={logoUrl} alt={league} loading="lazy" className="w-full h-full object-contain" />
+        <img src={logoUrl} alt={league} loading="lazy" className={cn('w-full h-full object-contain', scaleClass)} />
       </div>
     );
   }

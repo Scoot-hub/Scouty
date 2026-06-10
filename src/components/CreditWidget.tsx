@@ -196,7 +196,7 @@ export default function CreditWidget() {
     <Tooltip>
       <TooltipTrigger asChild>
         <Link
-          to="/account"
+          to="/account#credits"
           className="flex items-center gap-1.5 px-2 py-1 rounded-lg hover:bg-muted/60 transition-colors"
         >
           {/* Icon with sparks */}

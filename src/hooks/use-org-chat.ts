@@ -22,9 +22,9 @@ function authInit(): RequestInit {
 
 // ── Message list (paginated) ─────────────────────────────────────────────────
 
-export function useOrgMessages(orgId: string | undefined) {
+export function useOrgMessages(orgId: string | undefined, channelId?: string | null) {
   return useInfiniteQuery({
-    queryKey: ['org-messages', orgId],
+    queryKey: ['org-messages', orgId, channelId ?? null],
     enabled: !!orgId,
     initialPageParam: null as string | null,
     getNextPageParam: () => null,
@@ -33,12 +33,13 @@ export function useOrgMessages(orgId: string | undefined) {
     queryFn: async ({ pageParam }): Promise<{ messages: OrgMessage[]; has_more: boolean }> => {
       const params = new URLSearchParams({ limit: '40' });
       if (pageParam) params.set('before', pageParam);
+      if (channelId) params.set('channel_id', channelId);
       const res = await fetch(`/api/organizations/${orgId}/messages?${params}`, authInit());
       if (!res.ok) throw new Error('Failed');
       return res.json();
     },
     staleTime: 0,
-    refetchInterval: 5_000, // poll every 5 s for near-real-time feel
+    refetchInterval: 5_000,
   });
 }
 
@@ -47,11 +48,11 @@ export function useOrgMessages(orgId: string | undefined) {
 export function useSendOrgMessage(orgId: string) {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: async ({ content, reply_to_id }: { content: string; reply_to_id?: string | null }) => {
+    mutationFn: async ({ content, reply_to_id, channel_id }: { content: string; reply_to_id?: string | null; channel_id?: string | null }) => {
       const res = await fetch(`/api/organizations/${orgId}/messages`, {
         ...authInit(),
         method: 'POST',
-        body: JSON.stringify({ content, reply_to_id: reply_to_id ?? null }),
+        body: JSON.stringify({ content, reply_to_id: reply_to_id ?? null, channel_id: channel_id ?? null }),
       });
       const data = await res.json();
       if (!res.ok) throw data;
@@ -151,6 +152,154 @@ export function useBroadcastTyping(orgId: string | undefined) {
       if (!orgId) return;
       await fetch(`/api/organizations/${orgId}/typing`, { ...authInit(), method: 'POST', body: '{}' });
     },
+  });
+}
+
+// ── Channels ─────────────────────────────────────────────────────────────────
+
+export interface OrgChannel {
+  id: string;
+  name: string;
+  description: string | null;
+  is_default: number;
+  created_at: string;
+  created_by_name: string;
+  message_count: number;
+}
+
+export function useOrgChannels(orgId: string | undefined) {
+  return useQuery({
+    queryKey: ['org-channels', orgId],
+    enabled: !!orgId,
+    queryFn: async (): Promise<{ channels: OrgChannel[] }> => {
+      const res = await fetch(`/api/organizations/${orgId}/channels`, authInit());
+      if (!res.ok) throw new Error('Failed');
+      return res.json();
+    },
+    staleTime: 30_000,
+  });
+}
+
+export function useCreateOrgChannel(orgId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async ({ name, description }: { name: string; description?: string }) => {
+      const res = await fetch(`/api/organizations/${orgId}/channels`, {
+        ...authInit(), method: 'POST',
+        body: JSON.stringify({ name, description }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw data;
+      return data.channel as OrgChannel;
+    },
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['org-channels', orgId] }),
+  });
+}
+
+export function useDeleteOrgChannel(orgId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (channelId: string) => {
+      const res = await fetch(`/api/organizations/${orgId}/channels/${channelId}`, {
+        ...authInit(), method: 'DELETE',
+      });
+      if (!res.ok) throw new Error('Failed');
+    },
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['org-channels', orgId] }),
+  });
+}
+
+// ── Per-channel unread ───────────────────────────────────────────────────────
+
+export function useChannelUnread(orgId: string | undefined) {
+  return useQuery({
+    queryKey: ['org-channel-unread', orgId],
+    enabled: !!orgId,
+    queryFn: async (): Promise<{ unread: Record<string, number> }> => {
+      const res = await fetch(`/api/organizations/${orgId}/channels/unread`, authInit());
+      if (!res.ok) return { unread: {} };
+      return res.json();
+    },
+    refetchInterval: 15_000,
+    staleTime: 0,
+  });
+}
+
+export function useMarkChannelRead(orgId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (channelId: string) => {
+      await fetch(`/api/organizations/${orgId}/channels/${channelId}/read`, {
+        ...authInit(), method: 'POST', body: '{}',
+      });
+    },
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['org-channel-unread', orgId] }),
+  });
+}
+
+// ── Message search ────────────────────────────────────────────────────────────
+
+export interface SearchMessage {
+  id: string; user_id: string; content: string; channel_id: string | null;
+  created_at: string; author_name: string; author_photo: string | null; channel_name: string | null;
+}
+
+export function useOrgMessageSearch(orgId: string | undefined, q: string) {
+  return useQuery({
+    queryKey: ['org-messages-search', orgId, q],
+    enabled: !!orgId && q.length >= 2,
+    queryFn: async (): Promise<{ messages: SearchMessage[] }> => {
+      const res = await fetch(`/api/organizations/${orgId}/messages/search?q=${encodeURIComponent(q)}`, authInit());
+      if (!res.ok) return { messages: [] };
+      return res.json();
+    },
+    staleTime: 30_000,
+  });
+}
+
+// ── Pinned messages ───────────────────────────────────────────────────────────
+
+export interface PinnedMessage {
+  id: string; message_id: string; pinned_at: string;
+  content: string; author_name: string; pinned_by_name: string; msg_created_at: string;
+}
+
+export function useChannelPins(orgId: string | undefined, channelId: string | null | undefined) {
+  return useQuery({
+    queryKey: ['org-channel-pins', channelId],
+    enabled: !!orgId && !!channelId,
+    queryFn: async (): Promise<{ pins: PinnedMessage[] }> => {
+      const res = await fetch(`/api/organizations/${orgId}/channels/${channelId}/pins`, authInit());
+      if (!res.ok) return { pins: [] };
+      return res.json();
+    },
+    staleTime: 60_000,
+  });
+}
+
+export function usePinMessage(orgId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async ({ channelId, messageId }: { channelId: string; messageId: string }) => {
+      const res = await fetch(`/api/organizations/${orgId}/channels/${channelId}/pins/${messageId}`, {
+        ...authInit(), method: 'POST', body: '{}',
+      });
+      if (!res.ok) throw new Error('Failed');
+    },
+    onSuccess: (_, { channelId }) => qc.invalidateQueries({ queryKey: ['org-channel-pins', channelId] }),
+  });
+}
+
+export function useUnpinMessage(orgId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async ({ channelId, messageId }: { channelId: string; messageId: string }) => {
+      const res = await fetch(`/api/organizations/${orgId}/channels/${channelId}/pins/${messageId}`, {
+        ...authInit(), method: 'DELETE',
+      });
+      if (!res.ok) throw new Error('Failed');
+    },
+    onSuccess: (_, { channelId }) => qc.invalidateQueries({ queryKey: ['org-channel-pins', channelId] }),
   });
 }
 

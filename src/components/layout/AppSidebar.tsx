@@ -2,7 +2,7 @@ import { useState, Fragment } from 'react';
 import { Link, useLocation, useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import {
-  Users, Menu, X, LogOut, Settings, Shield, UserCircle, Eye, Sparkles, Building2, CalendarDays, CalendarCheck, Shirt, ClipboardList, ChevronLeft, ChevronRight, ChevronDown, Route, MapPinned, Gift, Search, Globe, Heart, MessageSquare, Info, Trophy, FileSpreadsheet, Newspaper, PenLine, Plus, Zap, Twitter, Star, Lock, GitCompareArrows, ArrowLeftRight, Home, BookUser, UserPlus, type LucideIcon,
+  Users, Menu, X, LogOut, Settings, Shield, UserCircle, Eye, Sparkles, Building2, CalendarDays, CalendarCheck, Shirt, ClipboardList, ChevronLeft, ChevronRight, ChevronDown, Route, MapPinned, Gift, Search, Globe, Heart, MessageSquare, Info, Trophy, FileSpreadsheet, Newspaper, PenLine, Plus, Zap, Twitter, Star, Lock, GitCompareArrows, ArrowLeftRight, Home, BookUser, UserPlus, Crown, LayoutDashboard, ListChecks, BarChart2, type LucideIcon,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { useAuth } from '@/contexts/AuthContext';
@@ -343,6 +343,7 @@ const subLinkSmClass = (active: boolean) =>
 function OrgPromotedNav({
   orgBase,
   orgId,
+  orgSettings,
   collapsed,
   isActive,
   linkClass,
@@ -350,6 +351,7 @@ function OrgPromotedNav({
 }: {
   orgBase: string;
   orgId: string;
+  orgSettings: Record<string, boolean | number>;
   collapsed: boolean;
   isActive: (path: string) => boolean;
   linkClass: (path: string, childPaths?: string[]) => string;
@@ -369,8 +371,20 @@ function OrgPromotedNav({
         : 'text-sidebar-foreground/60 hover:text-sidebar-foreground hover:bg-sidebar-accent/50'
     );
 
+  const showDashboard = orgSettings.enable_dashboard !== false;
+  const showShortlist = !!orgSettings.enable_shortlist;
+  const showAnalytics = !!orgSettings.enable_analytics;
+
   return (
     <>
+      {showDashboard && (
+        <SidebarTooltip label="Tableau de bord" collapsed={collapsed}>
+          <Link to={`${orgBase}/dashboard`} className={subClass(`${orgBase}/dashboard`)} onClick={onNav}>
+            <LayoutDashboard className="w-3.5 h-3.5 shrink-0" />
+            {!collapsed && 'Tableau de bord'}
+          </Link>
+        </SidebarTooltip>
+      )}
       <SidebarTooltip label={t('sidebar.squad')} collapsed={collapsed}>
         <Link to={`${orgBase}/squad`} className={subClass(`${orgBase}/squad`)} onClick={onNav}>
           <ClipboardList className="w-3.5 h-3.5 shrink-0" />
@@ -383,6 +397,19 @@ function OrgPromotedNav({
           {!collapsed && t('sidebar.org_players')}
         </Link>
       </SidebarTooltip>
+      {showShortlist && (
+        <SidebarTooltip label="Shortlist" collapsed={collapsed}>
+          <Link to={`${orgBase}/shortlist`} className={subClass(`${orgBase}/shortlist`)} onClick={onNav}>
+            <ListChecks className="w-3.5 h-3.5 shrink-0" />
+            {!collapsed && (
+              <span className="flex items-center gap-1.5 flex-1">
+                Shortlist
+                <Crown className="w-2.5 h-2.5 text-amber-400 shrink-0" />
+              </span>
+            )}
+          </Link>
+        </SidebarTooltip>
+      )}
       <SidebarTooltip label={t('sidebar.roadmap')} collapsed={collapsed}>
         <Link to={`${orgBase}/roadmap`} className={subClass(`${orgBase}/roadmap`)} onClick={onNav}>
           <Route className="w-3.5 h-3.5 shrink-0" />
@@ -404,6 +431,19 @@ function OrgPromotedNav({
           )}
         </Link>
       </SidebarTooltip>
+      {showAnalytics && (
+        <SidebarTooltip label="Analytics" collapsed={collapsed}>
+          <Link to={`${orgBase}/analytics`} className={subClass(`${orgBase}/analytics`)} onClick={onNav}>
+            <BarChart2 className="w-3.5 h-3.5 shrink-0" />
+            {!collapsed && (
+              <span className="flex items-center gap-1.5 flex-1">
+                Analytics
+                <Crown className="w-2.5 h-2.5 text-amber-400 shrink-0" />
+              </span>
+            )}
+          </Link>
+        </SidebarTooltip>
+      )}
       <SidebarTooltip label={t('sidebar.org_settings')} collapsed={collapsed}>
         <Link to={`${orgBase}/settings`} className={subClass(`${orgBase}/settings`)} onClick={onNav}>
           <Settings className="w-3.5 h-3.5 shrink-0" />
@@ -839,6 +879,13 @@ export default function AppSidebar({ collapsed, onToggle }: AppSidebarProps) {
                     <OrgPromotedNav
                       orgBase={`/organization/${activeOrgSlug}`}
                       orgId={activeOrg.id as string}
+                      orgSettings={(() => {
+                        try {
+                          const raw = (activeOrg as any).settings;
+                          if (!raw) return {};
+                          return typeof raw === 'string' ? JSON.parse(raw) : raw;
+                        } catch { return {}; }
+                      })()}
                       collapsed={collapsed}
                       isActive={isActive}
                       linkClass={linkClass}

@@ -40,6 +40,23 @@ interface UiPreferences {
   apifootballCacheDays: number;
   /** Cache lifetime in days for TheSportsDB club/team data. Scout/Pro/Admin only. Persisted in DB. Default 1. */
   thesportsdbCacheDays: number;
+  /** Seconds before the in-app notification popup auto-dismisses. 0 = never. */
+  notificationPopupDuration: 0 | 10 | 60;
+  // ── Chat preferences ─────────────────────────────────────────────────────
+  /** Master toggle: when false, the chat UI shows a disabled notice. */
+  chatEnabled: boolean;
+  /** Show emoji reaction buttons in the chat. */
+  chatReactions: boolean;
+  /** Show the pin button and pinned messages panel. */
+  chatPins: boolean;
+  /** Show the message search bar. */
+  chatSearch: boolean;
+  /** Show the @mention autocomplete dropdown. */
+  chatMentions: boolean;
+  /** Show the file attachment button (upcoming feature). */
+  chatFileAttachments: boolean;
+  /** Make external links clickable in messages. */
+  chatExternalLinks: boolean;
 }
 
 interface UiPreferencesContextType extends UiPreferences {
@@ -67,6 +84,14 @@ interface UiPreferencesContextType extends UiPreferences {
   setDedupCooldownHours: (value: number) => void;
   setApifootballCacheDays: (value: number) => void;
   setThesportsdbCacheDays: (value: number) => void;
+  setNotificationPopupDuration: (value: 0 | 10 | 60) => void;
+  setChatEnabled: (value: boolean) => void;
+  setChatReactions: (value: boolean) => void;
+  setChatPins: (value: boolean) => void;
+  setChatSearch: (value: boolean) => void;
+  setChatMentions: (value: boolean) => void;
+  setChatFileAttachments: (value: boolean) => void;
+  setChatExternalLinks: (value: boolean) => void;
 }
 
 const STORAGE_KEY = 'scouthub-ui-preferences';
@@ -100,6 +125,14 @@ const defaultPreferences: UiPreferences = {
   dedupCooldownHours: 72,
   apifootballCacheDays: 7,
   thesportsdbCacheDays: 7,
+  notificationPopupDuration: 10,
+  chatEnabled: true,
+  chatReactions: true,
+  chatPins: true,
+  chatSearch: true,
+  chatMentions: true,
+  chatFileAttachments: true,
+  chatExternalLinks: true,
 };
 
 const UiPreferencesContext = createContext<UiPreferencesContextType>({
@@ -128,6 +161,14 @@ const UiPreferencesContext = createContext<UiPreferencesContextType>({
   setDedupCooldownHours: () => {},
   setApifootballCacheDays: () => {},
   setThesportsdbCacheDays: () => {},
+  setNotificationPopupDuration: () => {},
+  setChatEnabled: () => {},
+  setChatReactions: () => {},
+  setChatPins: () => {},
+  setChatSearch: () => {},
+  setChatMentions: () => {},
+  setChatFileAttachments: () => {},
+  setChatExternalLinks: () => {},
 });
 
 export function UiPreferencesProvider({ children }: { children: ReactNode }) {
@@ -242,6 +283,14 @@ export function UiPreferencesProvider({ children }: { children: ReactNode }) {
     setDedupCooldownHours: (value) => setPreferences((prev) => ({ ...prev, dedupCooldownHours: value })),
     setApifootballCacheDays: (value) => setPreferences((prev) => ({ ...prev, apifootballCacheDays: value })),
     setThesportsdbCacheDays: (value) => setPreferences((prev) => ({ ...prev, thesportsdbCacheDays: value })),
+    setNotificationPopupDuration: (value) => setPreferences((prev) => ({ ...prev, notificationPopupDuration: value })),
+    setChatEnabled: (value) => setPreferences((prev) => ({ ...prev, chatEnabled: value })),
+    setChatReactions: (value) => setPreferences((prev) => ({ ...prev, chatReactions: value })),
+    setChatPins: (value) => setPreferences((prev) => ({ ...prev, chatPins: value })),
+    setChatSearch: (value) => setPreferences((prev) => ({ ...prev, chatSearch: value })),
+    setChatMentions: (value) => setPreferences((prev) => ({ ...prev, chatMentions: value })),
+    setChatFileAttachments: (value) => setPreferences((prev) => ({ ...prev, chatFileAttachments: value })),
+    setChatExternalLinks: (value) => setPreferences((prev) => ({ ...prev, chatExternalLinks: value })),
   }), [preferences]);
 
   return <UiPreferencesContext.Provider value={value}>{children}</UiPreferencesContext.Provider>;

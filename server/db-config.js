@@ -94,6 +94,12 @@ export function createDbPoolConfig(env = process.env) {
     waitForConnections: true,
     connectionLimit: 10,
     queueLimit: 0,
+    // Prevent TiDB Cloud / MySQL from silently closing idle connections.
+    // enableKeepAlive sends a TCP keepalive so the server sees the connection
+    // as active; idleTimeout/connectTimeout guard against stale pool entries.
+    enableKeepAlive: true,
+    keepAliveInitialDelay: 10000,
+    connectTimeout: 10000,
   };
 
   const databaseUrl = normalizeEnvValue(env.DATABASE_URL);

@@ -91,6 +91,8 @@ export interface PlayerCardProps {
   selected: boolean;
   /** True while this specific player's enrichment API call is in flight. */
   isEnriching?: boolean;
+  /** True when this player is being deleted (duplicate merge) — triggers dust animation. */
+  isDissolving?: boolean;
   hasOrg: boolean;
   /** Position in the visible list. Used to cap reveal animations to the first viewport. */
   index: number;
@@ -98,7 +100,7 @@ export interface PlayerCardProps {
   onDismissNews: (id: string) => void;
 }
 
-function PlayerCardImpl({ player, viewMode, selected, isEnriching = false, hasOrg, index, onToggleSelect, onDismissNews }: PlayerCardProps) {
+function PlayerCardImpl({ player, viewMode, selected, isEnriching = false, isDissolving = false, hasOrg, index, onToggleSelect, onDismissNews }: PlayerCardProps) {
   const { t } = useTranslation();
   const { positions: posLabels, positionShort: posShort } = usePositions();
   const { currency, dateFormat, showPlayerPhotos, showPlayerClub, showPlayerLeague, showPlayerLevel, showPlayerPotential, showPlayerCompletion, animationsEnabled } = useUiPreferences();
@@ -143,7 +145,7 @@ function PlayerCardImpl({ player, viewMode, selected, isEnriching = false, hasOr
     : undefined;
 
   return (
-    <div className="relative" style={animation}>
+    <div className={`relative${isDissolving ? ' player-dissolve' : ''}`} style={animation}>
       <div className="absolute top-2 right-2 z-10 flex items-center gap-1.5" onClick={(e) => e.stopPropagation()}>
         {hasOrg && (
           <div className="relative">

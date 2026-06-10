@@ -362,9 +362,10 @@ export function useUpdateOrgLogo(orgId: string | undefined) {
 
 // Save org-level settings JSON (owner/admin)
 export function useUpdateOrgSettings(orgId: string | undefined) {
+  const { user } = useAuth();
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: async (settings: Record<string, boolean>) => {
+    mutationFn: async (settings: Record<string, boolean | number>) => {
       if (!orgId) throw new Error('No org id');
       const res = await fetch(`${API_BASE}/organizations/${orgId}/settings`, {
         method: 'PATCH',
@@ -375,6 +376,27 @@ export function useUpdateOrgSettings(orgId: string | undefined) {
       const json = await res.json();
       if (!res.ok) throw new Error(json.error || 'Erreur');
       return json;
+    },
+    onMutate: async (newSettings) => {
+      // Optimistically update the cache so OrgTabBar and sidebar react immediately
+      await queryClient.cancelQueries({ queryKey: ['my-organizations'] });
+      const previous = queryClient.getQueryData<Record<string, unknown>[]>(['my-organizations', user?.id]);
+      if (previous) {
+        queryClient.setQueryData(
+          ['my-organizations', user?.id],
+          previous.map(org =>
+            (org as Record<string, unknown>).id === orgId
+              ? { ...org, settings: JSON.stringify({ ...(typeof (org as any).settings === 'string' ? JSON.parse((org as any).settings || '{}') : ((org as any).settings || {})), ...newSettings }) }
+              : org
+          )
+        );
+      }
+      return { previous };
+    },
+    onError: (_err, _vars, context) => {
+      if (context?.previous) {
+        queryClient.setQueryData(['my-organizations', user?.id], context.previous);
+      }
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['my-organizations'] });

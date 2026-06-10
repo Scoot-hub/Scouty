@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef } from 'react';
 import { useTranslation } from 'react-i18next';
+import { useLocation } from 'react-router-dom';
 import { formatDate } from '@/lib/format-utils';
 import { useUiPreferences } from '@/contexts/UiPreferencesContext';
 import { useAuth } from '@/contexts/AuthContext';
@@ -546,14 +547,26 @@ export default function Account() {
   const { data: creditsData } = useCredits();
   const isScoutPlan = creditsData?.plan_type === 'scout';
 
+  // Scroll to hash anchor (e.g. /account#credits) — re-runs when creditsData arrives
+  // because the target card is conditionally rendered and may not exist on first paint.
+  const { hash } = useLocation();
+  useEffect(() => {
+    if (!hash) return;
+    const id = hash.slice(1);
+    const t = setTimeout(() => {
+      document.getElementById(id)?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }, 80);
+    return () => clearTimeout(t);
+  }, [hash, creditsData]);
+
   return (
-    <div className="max-w-2xl mx-auto space-y-6">
+    <div className="max-w-5xl mx-auto space-y-6">
       <div>
         <h1 className="text-2xl font-bold tracking-tight">{t('account.title')}</h1>
         <p className="text-muted-foreground text-sm">{t('account.subtitle')}</p>
       </div>
 
-      {/* Profile info */}
+      {/* Profile info — full width */}
       <Card>
         <CardHeader>
           <CardTitle className="flex items-center gap-2 text-lg">
@@ -799,6 +812,12 @@ export default function Account() {
         </CardContent>
       </Card>
 
+      {/* ── 2-column grid ─────────────────────────────────────────────────── */}
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 items-start">
+
+      {/* ── Left column: Email / Password / 2FA ── */}
+      <div className="space-y-6">
+
       {/* Email */}
       <Card>
         <CardHeader>
@@ -1031,6 +1050,11 @@ export default function Account() {
         </CardContent>
       </Card>
 
+      </div>{/* end left column */}
+
+      {/* ── Right column: Subscription / Credits / Referral ── */}
+      <div className="space-y-6">
+
       {/* Subscription */}
       <Card className={isPremium ? 'border-primary/40' : ''}>
         <CardHeader>
@@ -1116,7 +1140,7 @@ export default function Account() {
 
       {/* Credits */}
       {creditsData && (
-        <Card>
+        <Card id="credits">
           <CardHeader>
             <CardTitle className="flex items-center gap-2 text-lg">
               <Zap className="w-5 h-5 text-yellow-500" />
@@ -1230,7 +1254,10 @@ export default function Account() {
         </Card>
       )}
 
-      {/* RGPD — Data export & account deletion */}
+      </div>{/* end right column */}
+      </div>{/* end 2-column grid */}
+
+      {/* RGPD — Data export & account deletion — full width */}
       <Card className="border-destructive/20">
         <CardHeader>
           <CardTitle className="flex items-center gap-2 text-lg">

@@ -1,4 +1,5 @@
-import { useState } from 'react';
+import { useState, useRef, useEffect } from 'react';
+import { usePushSubscription } from '@/hooks/use-push-subscription';
 import { useTranslation } from 'react-i18next';
 import { useIsAdmin } from '@/hooks/use-admin';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
@@ -21,6 +22,9 @@ import {
   AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent,
   AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle,
 } from '@/components/ui/alert-dialog';
+import {
+  Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
+} from '@/components/ui/select';
 
 const API = (import.meta.env.API_URL || '/api').replace(/\/$/, '');
 
@@ -179,6 +183,67 @@ export default function AdminSettings() {
   const [testEmail, setTestEmail] = useState('');
   const [sendingEmail, setSendingEmail] = useState(false);
   const [emailResult, setEmailResult] = useState<{ ok: boolean; message: string } | null>(null);
+
+  // ── Push notifications ──
+  const { status: pushStatus, subscribe: pushSubscribe, unsubscribe: pushUnsubscribe } = usePushSubscription();
+  const [sendingPush, setSendingPush]   = useState(false);
+  const [pushResult, setPushResult]     = useState<{ ok: boolean; message: string } | null>(null);
+  const [pushDelay, setPushDelay]       = useState<number>(0);   // seconds before sending
+  const [pushCountdown, setPushCountdown] = useState<number>(0); // live countdown
+  const countdownRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const cancelledRef = useRef(false);
+
+  // Cleanup countdown on unmount
+  useEffect(() => () => { if (countdownRef.current) clearInterval(countdownRef.current); }, []);
+
+  const cancelScheduledPush = () => {
+    cancelledRef.current = true;
+    if (countdownRef.current) { clearInterval(countdownRef.current); countdownRef.current = null; }
+    setPushCountdown(0);
+    setSendingPush(false);
+    setPushResult(null);
+  };
+
+  const handleTestPush = async () => {
+    setPushResult(null);
+    cancelledRef.current = false;
+
+    if (pushDelay > 0) {
+      // Client-side countdown then fire
+      setSendingPush(true);
+      setPushCountdown(pushDelay);
+      countdownRef.current = setInterval(() => {
+        setPushCountdown(prev => {
+          if (prev <= 1) {
+            clearInterval(countdownRef.current!);
+            countdownRef.current = null;
+            return 0;
+          }
+          return prev - 1;
+        });
+      }, 1000);
+      await new Promise(resolve => setTimeout(resolve, pushDelay * 1000));
+      if (cancelledRef.current) return;
+      setPushCountdown(0);
+    } else {
+      setSendingPush(true);
+    }
+
+    try {
+      const res = await fetch(`${API}/admin/test-push`, { method: 'POST', ...authFetchInit() });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error);
+      setPushResult({ ok: true, message: data.message ?? 'Notification envoyée !' });
+      toast.success('Notification push envoyée.');
+    } catch (err: unknown) {
+      if (cancelledRef.current) return;
+      const msg = err instanceof Error ? err.message : t('common.error');
+      setPushResult({ ok: false, message: msg });
+      toast.error(msg);
+    } finally {
+      if (!cancelledRef.current) setSendingPush(false);
+    }
+  };
 
   // ── Fix player leagues ──
   const [fixingLeagues, setFixingLeagues] = useState(false);
@@ -374,7 +439,95 @@ export default function AdminSettings() {
         </CardContent>
       </Card>
 
-      {/* ── 1bis. Fix player leagues ── */}
+      {/* ── 1bis. Test Push Notification ── */}
+      <Card>
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2 text-base">
+            <Bell className="w-4 h-4 text-primary" />
+            Notifications push navigateur
+          </CardTitle>
+          <CardDescription>
+            Activez les notifications push sur ce navigateur et envoyez une notification de test pour vérifier la configuration.
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          {/* Subscription toggle */}
+          <div className="flex items-center justify-between rounded-lg border border-border px-4 py-3">
+            <div className="space-y-0.5">
+              <p className="text-sm font-medium">Abonnement push</p>
+              <p className="text-xs text-muted-foreground">
+                {pushStatus === 'subscribed' && 'Ce navigateur est abonné aux notifications push.'}
+                {pushStatus === 'unsubscribed' && 'Ce navigateur n\'est pas encore abonné.'}
+                {pushStatus === 'denied' && 'Les notifications sont bloquées par le navigateur.'}
+                {pushStatus === 'unsupported' && 'Les notifications push ne sont pas supportées sur ce navigateur.'}
+                {pushStatus === 'loading' && 'Chargement…'}
+              </p>
+            </div>
+            {pushStatus === 'subscribed' ? (
+              <Button variant="outline" size="sm" onClick={pushUnsubscribe}>
+                Se désabonner
+              </Button>
+            ) : pushStatus === 'unsubscribed' ? (
+              <Button size="sm" onClick={pushSubscribe}>
+                S'abonner
+              </Button>
+            ) : (
+              <span className={`text-xs px-2 py-1 rounded-full ${pushStatus === 'denied' ? 'bg-red-100 text-red-700 dark:bg-red-950/30 dark:text-red-400' : 'bg-muted text-muted-foreground'}`}>
+                {pushStatus === 'denied' ? 'Bloqué' : pushStatus === 'unsupported' ? 'Non supporté' : '…'}
+              </span>
+            )}
+          </div>
+
+          {/* Delay selector + test send */}
+          <div className="space-y-3">
+            <div className="flex items-center gap-2">
+              <Select value={String(pushDelay)} onValueChange={v => setPushDelay(Number(v))} disabled={sendingPush}>
+                <SelectTrigger className="w-36 h-8 text-xs">
+                  <Clock className="w-3.5 h-3.5 mr-1.5 text-muted-foreground" />
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="0">Immédiat</SelectItem>
+                  <SelectItem value="5">5 secondes</SelectItem>
+                  <SelectItem value="10">10 secondes</SelectItem>
+                  <SelectItem value="30">30 secondes</SelectItem>
+                </SelectContent>
+              </Select>
+
+              {sendingPush && pushCountdown > 0 ? (
+                <>
+                  <div className="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-amber-500/10 border border-amber-500/20 text-amber-700 dark:text-amber-400 text-sm font-medium">
+                    <Clock className="w-3.5 h-3.5 animate-pulse" />
+                    Envoi dans {pushCountdown}s…
+                  </div>
+                  <Button variant="outline" size="sm" onClick={cancelScheduledPush} className="text-destructive border-destructive/40 hover:bg-destructive/10">
+                    Annuler
+                  </Button>
+                </>
+              ) : (
+                <Button
+                  onClick={handleTestPush}
+                  disabled={sendingPush || pushStatus !== 'subscribed'}
+                  size="sm"
+                >
+                  {sendingPush && pushCountdown === 0
+                    ? <Loader2 className="w-4 h-4 animate-spin mr-2" />
+                    : <Bell className="w-4 h-4 mr-2" />}
+                  Envoyer une notification test
+                </Button>
+              )}
+            </div>
+
+            {pushResult && (
+              <p className={`text-sm px-3 py-2 rounded-lg ${pushResult.ok ? 'bg-green-50 text-green-700 dark:bg-green-950/30 dark:text-green-400' : 'bg-red-50 text-red-700 dark:bg-red-950/30 dark:text-red-400'}`}>
+                {pushResult.message}
+              </p>
+            )}
+          </div>
+        </CardContent>
+      </Card>
+
+      {/* ── Fix player leagues ── */}
       <Card>
         <CardHeader>
           <CardTitle className="flex items-center gap-2 text-base">

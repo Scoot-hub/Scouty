@@ -105,6 +105,9 @@ const MyMatches = lazy(() => import("@/pages/MyMatches"));
 const MyChampionships = lazy(() => import("@/pages/MyChampionships"));
 const OrgRoadmap = lazy(() => import("@/pages/OrgRoadmap"));
 const OrgChat = lazy(() => import("@/pages/OrgChat"));
+const OrgDashboard = lazy(() => import("@/pages/OrgDashboard"));
+const OrgShortlist = lazy(() => import("@/pages/OrgShortlist"));
+const OrgAnalytics = lazy(() => import("@/pages/OrgAnalytics"));
 const Contacts = lazy(() => import("@/pages/Contacts"));
 const ForgotPassword = lazy(() => import("@/pages/ForgotPassword"));
 const ResetPassword = lazy(() => import("@/pages/ResetPassword"));
@@ -238,13 +241,16 @@ const App = () => {
                 <Route path="/premium-success" element={<PremiumSuccess />} />
                 <Route path="/account" element={<Account />} />
                 <Route path="/organization" element={<Organization />} />
-                <Route path="/organization/:orgSlug" element={<Navigate to="squad" replace />} />
+                <Route path="/organization/:orgSlug" element={<Navigate to="dashboard" replace />} />
                 <Route path="/organization/:orgSlug/settings" element={<Organization />} />
+                <Route path="/organization/:orgSlug/dashboard" element={<OrgDashboard />} />
                 <Route path="/organization/:orgSlug/squad" element={<Squad />} />
                 <Route path="/organization/:orgSlug/players" element={<OrgPlayers />} />
                 <Route path="/organization/:orgSlug/player/:id" element={<PlayerProfile />} />
+                <Route path="/organization/:orgSlug/shortlist" element={<OrgShortlist />} />
                 <Route path="/organization/:orgSlug/roadmap" element={<OrgRoadmap />} />
                 <Route path="/organization/:orgSlug/chat" element={<OrgChat />} />
+                <Route path="/organization/:orgSlug/analytics" element={<OrgAnalytics />} />
                 <Route path="/booking" element={<Booking />} />
                 <Route path="/discover" element={<Discover />} />
                 <Route path="/community" element={<Community />} />

@@ -1,18 +1,28 @@
 import { useState, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
-import { useQuery } from '@tanstack/react-query';
+import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { usePlayers } from '@/hooks/use-players';
 import { useFollowedClubs, useUnfollowClub, useReorderFollowedClubs, type FollowedClub } from '@/hooks/use-followed-clubs';
+import { useIsAdminOrModerator } from '@/hooks/use-admin';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Badge } from '@/components/ui/badge';
 import { ClubBadge } from '@/components/ui/club-badge';
-import { Search, Building2, Heart, HeartOff, Database, Users, ArrowRight, X, Globe, ChevronDown, GripVertical, Layers } from 'lucide-react';
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '@/components/ui/dialog';
+import { Search, Building2, Heart, HeartOff, Database, Users, ArrowRight, X, Globe, ChevronDown, GripVertical, Layers, Plus, Loader2 } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import { toast } from 'sonner';
 
 const API = (import.meta.env.API_URL || '/api').replace(/\/$/, '');
+
+function getAuthHeaders(): Record<string, string> {
+  try {
+    const s = JSON.parse(localStorage.getItem('scouthub_session') || '{}');
+    return s?.access_token ? { Authorization: `Bearer ${s.access_token}` } : {};
+  } catch { return {}; }
+}
 
 interface ClubSuggestion {
   club_name: string;
@@ -85,6 +95,130 @@ function useClubDivisions(country: string) {
 function countryFlag(code: string) {
   if (!code || code.length !== 2) return '';
   return String.fromCodePoint(...code.toUpperCase().split('').map(c => 0x1F1E6 + c.charCodeAt(0) - 65));
+}
+
+// ── Add club dialog ───────────────────────────────────────────────────────────
+
+interface AddClubForm { club_name: string; competition: string; country: string; country_code: string; logo_url: string }
+const EMPTY_FORM: AddClubForm = { club_name: '', competition: '', country: '', country_code: '', logo_url: '' };
+
+function AddClubDialog({ open, onOpenChange, initialName = '', onCreated }: {
+  open: boolean;
+  onOpenChange: (v: boolean) => void;
+  initialName?: string;
+  onCreated: (clubName: string) => void;
+}) {
+  const qc = useQueryClient();
+  const [form, setForm] = useState<AddClubForm>({ ...EMPTY_FORM, club_name: initialName });
+
+  useEffect(() => {
+    if (open) setForm(f => ({ ...f, club_name: initialName }));
+  }, [open, initialName]);
+
+  const add = useMutation({
+    mutationFn: async () => {
+      const res = await fetch(`${API}/club-directory`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
+        body: JSON.stringify(form),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Erreur serveur');
+      return data;
+    },
+    onSuccess: (data) => {
+      qc.invalidateQueries({ queryKey: ['club-search'] });
+      qc.invalidateQueries({ queryKey: ['club-countries'] });
+      toast.success(`Club "${data.club_name}" ajouté avec succès`);
+      onCreated(data.club_name);
+      onOpenChange(false);
+      setForm(EMPTY_FORM);
+    },
+    onError: (e: Error) => toast.error(e.message),
+  });
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="max-w-sm">
+        <DialogHeader>
+          <DialogTitle className="flex items-center gap-2">
+            <Plus className="w-4 h-4" />
+            Ajouter un club
+          </DialogTitle>
+        </DialogHeader>
+        <div className="space-y-3 py-1">
+          <div className="space-y-1">
+            <label className="text-xs text-muted-foreground font-medium">Nom du club *</label>
+            <Input
+              value={form.club_name}
+              onChange={e => setForm(f => ({ ...f, club_name: e.target.value }))}
+              placeholder="Ex : AS Saint-Étienne"
+              className="h-9 text-sm rounded-xl"
+              autoFocus
+            />
+          </div>
+          <div className="grid grid-cols-2 gap-2">
+            <div className="space-y-1">
+              <label className="text-xs text-muted-foreground font-medium">Compétition</label>
+              <Input
+                value={form.competition}
+                onChange={e => setForm(f => ({ ...f, competition: e.target.value }))}
+                placeholder="Ex : Ligue 1"
+                className="h-9 text-sm rounded-xl"
+              />
+            </div>
+            <div className="space-y-1">
+              <label className="text-xs text-muted-foreground font-medium">Pays</label>
+              <Input
+                value={form.country}
+                onChange={e => setForm(f => ({ ...f, country: e.target.value }))}
+                placeholder="Ex : France"
+                className="h-9 text-sm rounded-xl"
+              />
+            </div>
+          </div>
+          <div className="grid grid-cols-2 gap-2">
+            <div className="space-y-1">
+              <label className="text-xs text-muted-foreground font-medium">Code pays</label>
+              <Input
+                value={form.country_code}
+                onChange={e => setForm(f => ({ ...f, country_code: e.target.value.toUpperCase().slice(0, 2) }))}
+                placeholder="FR"
+                maxLength={2}
+                className="h-9 text-sm rounded-xl"
+              />
+            </div>
+            <div className="space-y-1">
+              <label className="text-xs text-muted-foreground font-medium">URL logo</label>
+              <Input
+                value={form.logo_url}
+                onChange={e => setForm(f => ({ ...f, logo_url: e.target.value }))}
+                placeholder="https://…"
+                className="h-9 text-sm rounded-xl"
+              />
+            </div>
+          </div>
+          {form.logo_url && (
+            <div className="flex items-center gap-2">
+              <img src={form.logo_url} alt="" className="w-10 h-10 object-contain rounded border" onError={e => { (e.target as HTMLImageElement).style.display = 'none'; }} />
+              <span className="text-xs text-muted-foreground">Aperçu du logo</span>
+            </div>
+          )}
+        </div>
+        <DialogFooter>
+          <Button variant="ghost" size="sm" onClick={() => onOpenChange(false)}>Annuler</Button>
+          <Button
+            size="sm"
+            className="rounded-xl"
+            onClick={() => add.mutate()}
+            disabled={add.isPending || !form.club_name.trim()}
+          >
+            {add.isPending ? <Loader2 className="w-4 h-4 animate-spin" /> : 'Ajouter'}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
 }
 
 // ── Drag-and-drop followed clubs ─────────────────────────────────────────────
@@ -250,6 +384,7 @@ export default function ClubSearch() {
   const { data: players = [] } = usePlayers();
   const { data: followedClubs = [] } = useFollowedClubs();
   const unfollowClub = useUnfollowClub();
+  const { data: isAdminOrMod } = useIsAdminOrModerator();
 
   const [search, setSearch] = useState('');
   const [selectedCountry, setSelectedCountry] = useState('');
@@ -257,6 +392,7 @@ export default function ClubSearch() {
   const [showSuggestions, setShowSuggestions] = useState(false);
   const [showCountryDropdown, setShowCountryDropdown] = useState(false);
   const [showDivisionDropdown, setShowDivisionDropdown] = useState(false);
+  const [showAddClub, setShowAddClub] = useState(false);
 
   const { data: suggestions = [] } = useClubSuggestions(search, selectedCountry, selectedDivision);
   const { data: countries = [] } = useClubCountries();
@@ -303,11 +439,24 @@ export default function ClubSearch() {
         <div className="w-10 h-10 rounded-xl bg-primary/10 flex items-center justify-center">
           <Building2 className="w-5 h-5 text-primary" />
         </div>
-        <div>
+        <div className="flex-1">
           <h1 className="text-2xl font-extrabold tracking-tight">{t('club.search_title')}</h1>
           <p className="text-sm text-muted-foreground">{t('club.search_subtitle')}</p>
         </div>
+        {isAdminOrMod && (
+          <Button size="sm" variant="outline" className="gap-1.5 rounded-xl shrink-0" onClick={() => setShowAddClub(true)}>
+            <Plus className="w-3.5 h-3.5" />
+            Ajouter un club
+          </Button>
+        )}
       </div>
+
+      <AddClubDialog
+        open={showAddClub}
+        onOpenChange={setShowAddClub}
+        initialName={search}
+        onCreated={name => { setSearch(name); navigate(`/club?club=${encodeURIComponent(name)}`); }}
+      />
 
       {/* Search bar */}
       <Card>
@@ -442,6 +591,20 @@ export default function ClubSearch() {
                 )}
 
                 {/* Autocomplete dropdown */}
+                {showSuggestions && isAdminOrMod && search.trim().length >= 2 && suggestions.length === 0 && filteredScoutedClubs.length === 0 && (
+                  <div className="absolute z-50 top-full left-0 right-0 mt-1.5 rounded-xl border bg-popover shadow-xl overflow-hidden">
+                    <div className="p-1.5">
+                      <button
+                        type="button"
+                        onClick={() => { setShowSuggestions(false); setShowAddClub(true); }}
+                        className="w-full flex items-center gap-2.5 px-2.5 py-2.5 rounded-lg text-left hover:bg-muted transition-colors text-sm"
+                      >
+                        <Plus className="w-4 h-4 text-primary shrink-0" />
+                        <span>Ajouter <strong>"{search}"</strong> à la base de données</span>
+                      </button>
+                    </div>
+                  </div>
+                )}
                 {showSuggestions && hasSuggestions && (
                   <div className="absolute z-50 top-full left-0 right-0 mt-1.5 rounded-xl border bg-popover shadow-xl overflow-hidden">
                     <div className="p-1.5 max-h-80 overflow-y-auto space-y-0.5">
