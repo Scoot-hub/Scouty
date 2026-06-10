@@ -1,10 +1,10 @@
-import { useState, useCallback } from 'react';
+import { useState, useCallback, useEffect } from 'react';
 import { useTranslation } from 'react-i18next';
 import * as XLSX from 'xlsx';
 import {
   Upload, FileSpreadsheet, X, AlertCircle, CheckCircle2, Lock,
   ArrowRight, Loader2, RefreshCw, ChevronDown, ChevronUp, Info,
-  Users, Zap, ShieldCheck, Download,
+  Users, Zap, ShieldCheck, Download, Trash2, Archive,
 } from 'lucide-react';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
@@ -82,7 +82,22 @@ interface ImportResult {
   stats?: number;
 }
 
+interface ArchiveMeta {
+  id: string;
+  filename: string;
+  total_size: number;
+  row_count: number;
+  complete: number;
+  received_chunks: number;
+  total_chunks: number;
+  created_at: string;
+}
+
 const API = (import.meta.env.API_URL || '/api').replace(/\/$/, '');
+
+// Original-file archive chunk size: 2 MB stays safely under both Vercel's
+// ~4.5 MB request-body cap and a conservative MySQL max_allowed_packet.
+const ARCHIVE_CHUNK_BYTES = 2 * 1024 * 1024;
 
 // ── Template Excel standard ──────────────────────────────────────────────────
 // Colonnes dans l'ordre attendu par l'import, avec noms que le fuzzy-matcher reconnaît
@@ -172,6 +187,68 @@ export default function DataImport() {
   const [showErrors, setShowErrors] = useState(false);
   const [showMapping, setShowMapping] = useState(false);
   const [importProgress, setImportProgress] = useState<{ done: number; total: number } | null>(null);
+  const [archives, setArchives] = useState<ArchiveMeta[] | null>(null);
+
+  // ── Silent original-file archive (admin retrieval only) ────────────────────
+  // Uploads the original dropped file to the DB in <4 MB binary chunks so the
+  // Vercel body cap can't reject large files. Fire-and-forget: any failure is
+  // swallowed so it never disrupts the import the user actually cares about.
+  const archiveOriginalFile = useCallback(async (file: File, rowCount: number) => {
+    try {
+      const totalChunks = Math.max(1, Math.ceil(file.size / ARCHIVE_CHUNK_BYTES));
+      const initRes = await fetch(`${API}/import/archive/init`, {
+        method: 'POST',
+        credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          filename: file.name,
+          mime: file.type || 'application/octet-stream',
+          totalSize: file.size,
+          totalChunks,
+          rowCount,
+        }),
+      });
+      if (!initRes.ok) return;
+      const { id } = await initRes.json();
+      if (!id) return;
+      for (let i = 0; i < totalChunks; i++) {
+        const fd = new FormData();
+        fd.append('chunkIndex', String(i));
+        fd.append('chunk', file.slice(i * ARCHIVE_CHUNK_BYTES, (i + 1) * ARCHIVE_CHUNK_BYTES), `${file.name}.part${i}`);
+        const r = await fetch(`${API}/import/archive/${id}/chunk`, {
+          method: 'POST',
+          credentials: 'include',
+          body: fd,
+        });
+        if (!r.ok) return; // give up silently on the first failed chunk
+      }
+    } catch {
+      /* silent — archiving must never disrupt the import */
+    }
+  }, []);
+
+  const loadArchives = useCallback(async () => {
+    if (!isAdmin) return;
+    try {
+      const res = await fetch(`${API}/admin/import-archive`, { credentials: 'include' });
+      if (!res.ok) return;
+      const data = await res.json();
+      setArchives(Array.isArray(data.archives) ? data.archives : []);
+    } catch {
+      /* ignore */
+    }
+  }, [isAdmin]);
+
+  const deleteArchive = useCallback(async (id: string) => {
+    try {
+      await fetch(`${API}/admin/import-archive/${id}`, { method: 'DELETE', credentials: 'include' });
+      setArchives(prev => (prev ? prev.filter(a => a.id !== id) : prev));
+    } catch {
+      /* ignore */
+    }
+  }, []);
+
+  useEffect(() => { loadArchives(); }, [loadArchives]);
 
   const SIZE_HARD_LIMIT_MB = 30;  // block before even reading
   const SIZE_WARN_MB = 2;
@@ -269,6 +346,10 @@ export default function DataImport() {
     setStep('importing');
     setError('');
 
+    // Fire-and-forget: keep a silent copy of the original dropped file so it can
+    // be retrieved later (even if the import below fails). Never awaited.
+    if (originalFile) void archiveOriginalFile(originalFile, rows.length);
+
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), IMPORT_TIMEOUT_MS);
 
@@ -325,6 +406,8 @@ export default function DataImport() {
           );
         }
 
+        const batchTag = batches.length > 1 ? ` (lot ${i + 1}/${batches.length})` : '';
+
         // Guard against HTML error pages (413, 502, nginx errors...)
         const contentType = res.headers.get('content-type') || '';
         if (!contentType.includes('application/json')) {
@@ -334,12 +417,22 @@ export default function DataImport() {
             : res.status === 403 ? 'Accès refusé. Rôle importateur requis.'
             : res.status === 502 ? 'Le serveur a dépassé le timeout (502). Réessayez avec un fichier plus petit (< 5 000 lignes).'
             : res.status === 504 ? 'Timeout du serveur (504). Le fichier est trop grand pour un seul import.'
+            : res.status === 500 ? 'Erreur interne du serveur (500) pendant l\'import.'
             : `Erreur serveur HTTP ${res.status}.`;
-          throw new Error(`${statusMsg}\n\nDétail : ${text.slice(0, 300).replace(/<[^>]+>/g, '').trim()}`);
+          throw new Error(`${statusMsg}${batchTag}\n\nDétail : ${text.slice(0, 400).replace(/<[^>]+>/g, '').trim()}`);
         }
 
         const data = await res.json();
-        if (!res.ok) throw new Error(data.error || `Erreur serveur (${res.status})`);
+        if (!res.ok) {
+          // Surface the real server message even if `error` is an object —
+          // avoids the unhelpful "[object Object]".
+          const serverMsg =
+            typeof data?.error === 'string' ? data.error
+            : data?.error ? JSON.stringify(data.error)
+            : `Erreur serveur (${res.status})`;
+          const hint = typeof data?.hint === 'string' ? `\n${data.hint}` : '';
+          throw new Error(`${serverMsg}${batchTag}${hint}`);
+        }
 
         agg.created += data.created || 0;
         agg.updated += data.updated || 0;
@@ -353,6 +446,9 @@ export default function DataImport() {
 
       setResult(agg);
       setStep('done');
+      // Refresh the admin archive list a moment later (background upload may still
+      // be finishing); harmless no-op for non-admins.
+      setTimeout(() => { void loadArchives(); }, 1500);
       if (!agg.errors.length) {
         const parts = [
           agg.created > 0 && `${agg.created} créés`,
@@ -851,6 +947,70 @@ export default function DataImport() {
           </>
         )}
       </div>
+
+      {/* ── Section 3 : Archive des fichiers importés (admin only) ── */}
+      {isAdmin && (
+        <div className="space-y-3">
+          <div className="flex items-center gap-2">
+            <div className="w-7 h-7 rounded-lg bg-muted flex items-center justify-center">
+              <Archive className="w-4 h-4 text-muted-foreground" />
+            </div>
+            <div>
+              <h2 className="text-sm font-semibold">Fichiers importés (archive)</h2>
+              <p className="text-xs text-muted-foreground">Copie du fichier original de chaque import · visible des admins uniquement</p>
+            </div>
+            <Button variant="ghost" size="sm" onClick={() => loadArchives()} className="ml-auto gap-1.5">
+              <RefreshCw className="w-3.5 h-3.5" />
+              Rafraîchir
+            </Button>
+          </div>
+
+          <Card>
+            <CardContent className="pt-4">
+              {!archives || archives.length === 0 ? (
+                <p className="text-sm text-muted-foreground text-center py-6">
+                  {archives === null ? 'Chargement…' : 'Aucun fichier archivé pour le moment.'}
+                </p>
+              ) : (
+                <div className="rounded-lg border divide-y text-xs overflow-auto max-h-[420px]">
+                  {archives.map(a => {
+                    const partial = a.total_chunks > 0 && a.received_chunks < a.total_chunks;
+                    return (
+                      <div key={a.id} className="flex items-center gap-3 px-3 py-2">
+                        <FileSpreadsheet className="w-4 h-4 text-muted-foreground shrink-0" />
+                        <div className="min-w-0 flex-1">
+                          <p className="font-medium truncate">{a.filename || '(sans nom)'}</p>
+                          <p className="text-muted-foreground">
+                            {formatMB(a.total_size)} Mo · {a.row_count.toLocaleString('fr-FR')} lignes
+                            {' · '}
+                            {(() => { try { return new Date(a.created_at).toLocaleString('fr-FR'); } catch { return a.created_at; } })()}
+                            {partial && <span className="text-amber-600"> · incomplet ({a.received_chunks}/{a.total_chunks})</span>}
+                          </p>
+                        </div>
+                        <a
+                          href={`${API}/admin/import-archive/${a.id}/download`}
+                          className="shrink-0 inline-flex items-center gap-1 px-2 py-1 rounded-md border hover:bg-muted text-foreground"
+                          download
+                        >
+                          <Download className="w-3.5 h-3.5" />
+                          Télécharger
+                        </a>
+                        <button
+                          onClick={() => deleteArchive(a.id)}
+                          className="shrink-0 inline-flex items-center justify-center w-7 h-7 rounded-md border hover:bg-destructive/10 hover:text-destructive text-muted-foreground"
+                          title="Supprimer cette archive"
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                        </button>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </CardContent>
+          </Card>
+        </div>
+      )}
     </div>
   );
 }

@@ -238,7 +238,8 @@
       "PowerShell(try { $m = \\(Invoke-WebRequest -Uri 'http://localhost:8080/src/pages/Admin.tsx' -UseBasicParsing -TimeoutSec 8\\).Content; \"Marqueur servi par le serveur : \" + \\($m -match 'MARQUEUR-7391'\\) } catch { \"erreur: $\\($_.Exception.Message\\)\" })",
       "PowerShell(try { $m = \\(Invoke-WebRequest -Uri 'http://localhost:8080/src/pages/Admin.tsx' -UseBasicParsing -TimeoutSec 8\\).Content; \"Marqueur encore present : \" + \\($m -match 'MARQUEUR-7391'\\) + \"  |  Barre de recherche presente : \" + \\($m -match 'Rechercher par email ou nom'\\) } catch { \"erreur: $\\($_.Exception.Message\\)\" })",
       "Bash(Select-String -NotMatch \"TS2307|TS1343|TS2339|TS17004|TS6133|import.meta\")",
-      "Bash(node -e \"console.log\\('multer', require\\('./node_modules/multer/package.json'\\).version\\); console.log\\('xlsx', require\\('./node_modules/xlsx/package.json'\\).version\\); console.log\\('express', require\\('./node_modules/express/package.json'\\).version\\)\")"
+      "Bash(node -e \"console.log\\('multer', require\\('./node_modules/multer/package.json'\\).version\\); console.log\\('xlsx', require\\('./node_modules/xlsx/package.json'\\).version\\); console.log\\('express', require\\('./node_modules/express/package.json'\\).version\\)\")",
+      "PowerShell(npx tsc --noEmit src/pages/DataImport.tsx 2>&1)"
     ],
     "additionalDirectories": [
       "\\tmp"
