@@ -1313,3 +1313,26 @@ CREATE TABLE IF NOT EXISTS sb_player_match_stats (
   INDEX idx_sb_pms_comp_sea  (competition_id, season_id),
   INDEX idx_sb_pms_date      (match_date)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- Silent debug archive of original import uploads. The client streams the
+-- original file here in <4 MB binary chunks (Vercel caps serverless bodies at
+-- ~4.5 MB); each chunk is one LONGBLOB row, reassembled on admin download.
+CREATE TABLE IF NOT EXISTS import_archive (
+  id              VARCHAR(191) PRIMARY KEY,
+  filename        VARCHAR(255) NOT NULL DEFAULT '',
+  mime            VARCHAR(120) NOT NULL DEFAULT 'application/octet-stream',
+  total_size      BIGINT NOT NULL DEFAULT 0,
+  total_chunks    INT NOT NULL DEFAULT 0,
+  received_chunks INT NOT NULL DEFAULT 0,
+  row_count       INT NOT NULL DEFAULT 0,
+  uploaded_by     VARCHAR(191) NULL,
+  complete        TINYINT NOT NULL DEFAULT 0,
+  created_at      DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS import_archive_chunks (
+  archive_id  VARCHAR(191) NOT NULL,
+  chunk_index INT NOT NULL,
+  data        LONGBLOB NOT NULL,
+  PRIMARY KEY (archive_id, chunk_index)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
