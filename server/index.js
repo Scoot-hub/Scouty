@@ -2677,6 +2677,43 @@ async function _legacyRunMigrations() {
     if (!err?.message?.includes("already exists")) console.warn("[warn] uploaded_images table migration:", err?.message);
   }
 
+  // ── import_archive: silent debug copy of original import uploads ──
+  // The original file no longer reaches the server during an import (the client
+  // sends parsed JSON rows in batches to dodge Vercel's ~4.5 MB body cap). To
+  // keep a retrievable copy of the ORIGINAL bytes, the client streams the file
+  // here in <4 MB binary chunks, stored one LONGBLOB row each and reassembled on
+  // download. Admin-only retrieval. COLLATE set explicitly (see DB collation gotcha).
+  try {
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS import_archive (
+        id VARCHAR(191) PRIMARY KEY,
+        filename VARCHAR(255) NOT NULL DEFAULT '',
+        mime VARCHAR(120) NOT NULL DEFAULT 'application/octet-stream',
+        total_size BIGINT NOT NULL DEFAULT 0,
+        total_chunks INT NOT NULL DEFAULT 0,
+        received_chunks INT NOT NULL DEFAULT 0,
+        row_count INT NOT NULL DEFAULT 0,
+        uploaded_by VARCHAR(191) NULL,
+        complete TINYINT NOT NULL DEFAULT 0,
+        created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+    `);
+  } catch (err) {
+    if (!err?.message?.includes("already exists")) console.warn("[warn] import_archive table migration:", err?.message);
+  }
+  try {
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS import_archive_chunks (
+        archive_id VARCHAR(191) NOT NULL,
+        chunk_index INT NOT NULL,
+        data LONGBLOB NOT NULL,
+        PRIMARY KEY (archive_id, chunk_index)
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+    `);
+  } catch (err) {
+    if (!err?.message?.includes("already exists")) console.warn("[warn] import_archive_chunks table migration:", err?.message);
+  }
+
   await migrateLegacyProfilePhotosToDb();
 
   // ── User sessions (live analytics / heartbeat) ──
@@ -8089,20 +8126,30 @@ app.post("/api/import/wyscout", authMiddleware, wyscoutUploadMiddleware, async (
   if (!roles.includes('admin') && !roles.includes('importateur'))
     return res.status(403).json({ error: "Accès refusé. Rôle importateur requis." });
 
-  if (!req.file)
-    return res.status(400).json({ error: "Fichier requis (xlsx, xls ou csv)." });
-
-  log(`file received: ${req.file.originalname} (${(req.file.size/1024/1024).toFixed(1)} Mo)`);
-
-  // ── Parse Excel ──────────────────────────────────────────────────────────────
+  // ── Resolve rows from either an uploaded file (xlsx/xls/csv) OR a pre-parsed
+  // JSON batch. The client parses the workbook in-browser and POSTs the rows in
+  // chunks, because Vercel caps serverless request bodies at ~4.5 MB: a raw
+  // multipart upload of a large Wyscout export is rejected at the edge with
+  // FUNCTION_PAYLOAD_TOO_LARGE before this handler ever runs. ───────────────────
   let rows;
-  try {
-    const wb = XLSXLib.read(req.file.buffer, { type: 'buffer' });
-    const ws = wb.Sheets[wb.SheetNames[0]];
-    rows = XLSXLib.utils.sheet_to_json(ws, { defval: '' });
-  } catch (e) {
-    log(`XLSX parse error: ${e.message}`);
-    return res.status(400).json({ error: "Impossible de lire le fichier Excel : " + e.message });
+  if (req.file) {
+    log(`file received: ${req.file.originalname} (${(req.file.size/1024/1024).toFixed(1)} Mo)`);
+    try {
+      const wb = XLSXLib.read(req.file.buffer, { type: 'buffer' });
+      const ws = wb.Sheets[wb.SheetNames[0]];
+      rows = XLSXLib.utils.sheet_to_json(ws, { defval: '' });
+    } catch (e) {
+      log(`XLSX parse error: ${e.message}`);
+      return res.status(400).json({ error: "Impossible de lire le fichier Excel : " + e.message });
+    }
+  } else if (Array.isArray(req.body?.rows)) {
+    const b = req.body;
+    log(`JSON batch received: ${b.rows.length} rows` +
+        (b.batchCount ? ` (batch ${Number(b.batchIndex) + 1}/${b.batchCount})` : '') +
+        (b.fileName ? ` from ${b.fileName}` : ''));
+    rows = b.rows;
+  } else {
+    return res.status(400).json({ error: "Fichier requis (xlsx, xls ou csv) ou lignes JSON." });
   }
 
   if (!Array.isArray(rows) || rows.length === 0)
@@ -8357,6 +8404,120 @@ app.post("/api/import/wyscout", authMiddleware, wyscoutUploadMiddleware, async (
         error: `Erreur serveur lors de l'import (${durationMs}ms) : ${fatalErr?.message || 'Erreur inconnue'}`,
         hint: 'Consultez les logs du serveur pour plus de détails (npm run api).',
       });
+  }
+});
+
+// ── Import file archive (silent debug copy of original uploads) ──────────────
+// The original file never reaches the server during a normal import (the client
+// sends parsed JSON rows). To keep a retrievable copy of the ORIGINAL bytes, the
+// client streams the file here in <4 MB binary chunks (Vercel caps serverless
+// bodies at ~4.5 MB); each chunk is one LONGBLOB row, reassembled on download.
+// Upload allowed for importers; retrieval/delete admin-only. All failures here
+// are non-fatal on the client side (archiving must never disrupt an import).
+const archiveUpload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 5 * 1024 * 1024 }, // 5 MB ceiling per chunk
+});
+
+async function ensureImporter(req, res, next) {
+  try {
+    const [r] = await pool.query(
+      "SELECT 1 FROM user_roles WHERE user_id = ? AND role IN ('admin','importateur') LIMIT 1",
+      [req.user.id]
+    );
+    if (!r.length) return res.status(403).json({ error: "Accès refusé. Rôle importateur requis." });
+    next();
+  } catch (e) {
+    return res.status(500).json({ error: e?.message || 'role check failed' });
+  }
+}
+
+// Create an archive record, return its id. Body: {filename, mime, totalSize, totalChunks, rowCount}
+app.post('/api/import/archive/init', authMiddleware, ensureImporter, async (req, res) => {
+  try {
+    const { filename = '', mime = 'application/octet-stream', totalSize = 0, totalChunks = 0, rowCount = 0 } = req.body || {};
+    const id = uuidv4();
+    await pool.query(
+      `INSERT INTO import_archive (id, filename, mime, total_size, total_chunks, received_chunks, row_count, uploaded_by, complete)
+       VALUES (?, ?, ?, ?, ?, 0, ?, ?, 0)`,
+      [id, String(filename).slice(0, 255), String(mime).slice(0, 120),
+       Number(totalSize) || 0, Number(totalChunks) || 0, Number(rowCount) || 0, req.user.id]
+    );
+    return res.json({ id });
+  } catch (e) {
+    return res.status(500).json({ error: e?.message || 'archive init failed' });
+  }
+});
+
+// Upload one binary chunk (multipart field 'chunk', form field 'chunkIndex').
+app.post('/api/import/archive/:id/chunk', authMiddleware, ensureImporter, archiveUpload.single('chunk'), async (req, res) => {
+  try {
+    const { id } = req.params;
+    const chunkIndex = parseInt(req.body?.chunkIndex, 10);
+    if (!req.file || Number.isNaN(chunkIndex)) return res.status(400).json({ error: 'chunk ou chunkIndex manquant' });
+    const [arch] = await pool.query('SELECT total_chunks FROM import_archive WHERE id = ? LIMIT 1', [id]);
+    if (!arch.length) return res.status(404).json({ error: 'archive introuvable' });
+    await pool.query(
+      `INSERT INTO import_archive_chunks (archive_id, chunk_index, data) VALUES (?, ?, ?)
+       ON DUPLICATE KEY UPDATE data = VALUES(data)`,
+      [id, chunkIndex, req.file.buffer]
+    );
+    const [[{ n }]] = await pool.query('SELECT COUNT(*) AS n FROM import_archive_chunks WHERE archive_id = ?', [id]);
+    const total = arch[0].total_chunks || 0;
+    await pool.query('UPDATE import_archive SET received_chunks = ?, complete = ? WHERE id = ?',
+      [n, total > 0 && n >= total ? 1 : 0, id]);
+    return res.json({ ok: true, received: n, total });
+  } catch (e) {
+    return res.status(500).json({ error: e?.message || 'chunk upload failed' });
+  }
+});
+
+// Admin: list archived imports (metadata only).
+app.get('/api/admin/import-archive', authMiddleware, ensureAdmin, async (_req, res) => {
+  try {
+    const [rows] = await pool.query(
+      `SELECT id, filename, mime, total_size, total_chunks, received_chunks,
+              row_count, complete, uploaded_by, created_at
+       FROM import_archive
+       ORDER BY created_at DESC
+       LIMIT 200`
+    );
+    return res.json({ archives: rows });
+  } catch (e) {
+    return res.status(500).json({ error: e?.message || 'list failed' });
+  }
+});
+
+// Admin: download the reassembled original file.
+app.get('/api/admin/import-archive/:id/download', authMiddleware, ensureAdmin, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const [meta] = await pool.query('SELECT filename, mime FROM import_archive WHERE id = ? LIMIT 1', [id]);
+    if (!meta.length) return res.status(404).json({ error: 'archive introuvable' });
+    const [chunks] = await pool.query(
+      'SELECT data FROM import_archive_chunks WHERE archive_id = ? ORDER BY chunk_index ASC', [id]
+    );
+    if (!chunks.length) return res.status(404).json({ error: 'aucun morceau stocké' });
+    const buf = Buffer.concat(chunks.map(c => c.data));
+    const safeName = (String(meta[0].filename || 'import').replace(/[^\w.\- ]+/g, '_').slice(0, 200)) || 'import';
+    res.set('Content-Type', meta[0].mime || 'application/octet-stream');
+    res.set('Content-Disposition', `attachment; filename="${safeName}"`);
+    res.set('Content-Length', String(buf.length));
+    return res.end(buf);
+  } catch (e) {
+    return res.status(500).json({ error: e?.message || 'download failed' });
+  }
+});
+
+// Admin: delete an archive and its chunks.
+app.delete('/api/admin/import-archive/:id', authMiddleware, ensureAdmin, async (req, res) => {
+  try {
+    const { id } = req.params;
+    await pool.query('DELETE FROM import_archive_chunks WHERE archive_id = ?', [id]);
+    await pool.query('DELETE FROM import_archive WHERE id = ?', [id]);
+    return res.json({ ok: true });
+  } catch (e) {
+    return res.status(500).json({ error: e?.message || 'delete failed' });
   }
 });
 

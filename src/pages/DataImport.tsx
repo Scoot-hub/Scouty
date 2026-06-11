@@ -1,10 +1,10 @@
-import { useState, useCallback } from 'react';
+import { useState, useCallback, useEffect } from 'react';
 import { useTranslation } from 'react-i18next';
 import * as XLSX from 'xlsx';
 import {
   Upload, FileSpreadsheet, X, AlertCircle, CheckCircle2, Lock,
   ArrowRight, Loader2, RefreshCw, ChevronDown, ChevronUp, Info,
-  Users, Zap, ShieldCheck, Download,
+  Users, Zap, ShieldCheck, Download, Trash2, Archive,
 } from 'lucide-react';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
@@ -78,9 +78,26 @@ interface ImportResult {
   updated: number;
   errors: { name: string; error: string }[];
   total: number;
+  linked?: number;
+  stats?: number;
+}
+
+interface ArchiveMeta {
+  id: string;
+  filename: string;
+  total_size: number;
+  row_count: number;
+  complete: number;
+  received_chunks: number;
+  total_chunks: number;
+  created_at: string;
 }
 
 const API = (import.meta.env.API_URL || '/api').replace(/\/$/, '');
+
+// Original-file archive chunk size: 2 MB stays safely under both Vercel's
+// ~4.5 MB request-body cap and a conservative MySQL max_allowed_packet.
+const ARCHIVE_CHUNK_BYTES = 2 * 1024 * 1024;
 
 // ── Template Excel standard ──────────────────────────────────────────────────
 // Colonnes dans l'ordre attendu par l'import, avec noms que le fuzzy-matcher reconnaît
@@ -169,6 +186,69 @@ export default function DataImport() {
   const [result, setResult] = useState<ImportResult | null>(null);
   const [showErrors, setShowErrors] = useState(false);
   const [showMapping, setShowMapping] = useState(false);
+  const [importProgress, setImportProgress] = useState<{ done: number; total: number } | null>(null);
+  const [archives, setArchives] = useState<ArchiveMeta[] | null>(null);
+
+  // ── Silent original-file archive (admin retrieval only) ────────────────────
+  // Uploads the original dropped file to the DB in <4 MB binary chunks so the
+  // Vercel body cap can't reject large files. Fire-and-forget: any failure is
+  // swallowed so it never disrupts the import the user actually cares about.
+  const archiveOriginalFile = useCallback(async (file: File, rowCount: number) => {
+    try {
+      const totalChunks = Math.max(1, Math.ceil(file.size / ARCHIVE_CHUNK_BYTES));
+      const initRes = await fetch(`${API}/import/archive/init`, {
+        method: 'POST',
+        credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          filename: file.name,
+          mime: file.type || 'application/octet-stream',
+          totalSize: file.size,
+          totalChunks,
+          rowCount,
+        }),
+      });
+      if (!initRes.ok) return;
+      const { id } = await initRes.json();
+      if (!id) return;
+      for (let i = 0; i < totalChunks; i++) {
+        const fd = new FormData();
+        fd.append('chunkIndex', String(i));
+        fd.append('chunk', file.slice(i * ARCHIVE_CHUNK_BYTES, (i + 1) * ARCHIVE_CHUNK_BYTES), `${file.name}.part${i}`);
+        const r = await fetch(`${API}/import/archive/${id}/chunk`, {
+          method: 'POST',
+          credentials: 'include',
+          body: fd,
+        });
+        if (!r.ok) return; // give up silently on the first failed chunk
+      }
+    } catch {
+      /* silent — archiving must never disrupt the import */
+    }
+  }, []);
+
+  const loadArchives = useCallback(async () => {
+    if (!isAdmin) return;
+    try {
+      const res = await fetch(`${API}/admin/import-archive`, { credentials: 'include' });
+      if (!res.ok) return;
+      const data = await res.json();
+      setArchives(Array.isArray(data.archives) ? data.archives : []);
+    } catch {
+      /* ignore */
+    }
+  }, [isAdmin]);
+
+  const deleteArchive = useCallback(async (id: string) => {
+    try {
+      await fetch(`${API}/admin/import-archive/${id}`, { method: 'DELETE', credentials: 'include' });
+      setArchives(prev => (prev ? prev.filter(a => a.id !== id) : prev));
+    } catch {
+      /* ignore */
+    }
+  }, []);
+
+  useEffect(() => { loadArchives(); }, [loadArchives]);
 
   const SIZE_HARD_LIMIT_MB = 30;  // block before even reading
   const SIZE_WARN_MB = 2;
@@ -243,79 +323,141 @@ export default function DataImport() {
     setError('');
     setResult(null);
     setShowErrors(false);
+    setImportProgress(null);
   };
 
   // ── Import submission ────────────────────────────────────────────────────
   const IMPORT_TIMEOUT_MS = 10 * 60 * 1000; // 10 minutes max
+
+  // Vercel rejects any serverless request body over ~4.5 MB at the edge
+  // (FUNCTION_PAYLOAD_TOO_LARGE), so we never upload the raw file. Instead we
+  // send the already-parsed rows as JSON batches kept safely under that cap.
+  const MAX_BATCH_BYTES = 3_000_000; // 3 MB — ~1.5 MB headroom below the 4.5 MB cap
 
   const handleImport = async () => {
     if (!canImport) {
       toast.error("Vous n'avez pas la permission d'importer.");
       return;
     }
-    if (!originalFile) {
-      toast.error('Fichier introuvable. Veuillez recharger le fichier.');
+    if (!rows.length) {
+      toast.error('Aucune ligne à importer. Veuillez recharger le fichier.');
       return;
     }
     setStep('importing');
+    setError('');
+
+    // Fire-and-forget: keep a silent copy of the original dropped file so it can
+    // be retrieved later (even if the import below fails). Never awaited.
+    if (originalFile) void archiveOriginalFile(originalFile, rows.length);
 
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), IMPORT_TIMEOUT_MS);
 
+    // Split rows into JSON batches sized by serialized bytes (not row count) so
+    // both slim CSVs and 200-column Wyscout exports stay under the Vercel cap.
+    const batches: Record<string, unknown>[][] = [];
+    let cur: Record<string, unknown>[] = [];
+    let curBytes = 0;
+    for (const row of rows) {
+      const rowBytes = JSON.stringify(row).length + 1;
+      if (cur.length && curBytes + rowBytes > MAX_BATCH_BYTES) {
+        batches.push(cur);
+        cur = [];
+        curBytes = 0;
+      }
+      cur.push(row);
+      curBytes += rowBytes;
+    }
+    if (cur.length) batches.push(cur);
+
+    setImportProgress({ done: 0, total: batches.length });
+
+    // Aggregate per-batch results into a single summary for the "done" screen.
+    const agg: ImportResult = { created: 0, updated: 0, linked: 0, stats: 0, total: 0, errors: [] };
+
     try {
-      const formData = new FormData();
-      formData.append('file', originalFile, originalFile.name);
+      for (let i = 0; i < batches.length; i++) {
+        let res: Response;
+        try {
+          res = await fetch(`${API}/import/wyscout`, {
+            method: 'POST',
+            credentials: 'include',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              rows: batches[i],
+              fileName,
+              batchIndex: i,
+              batchCount: batches.length,
+            }),
+            signal: controller.signal,
+          });
+        } catch (fetchErr: unknown) {
+          // Translate low-level network errors into actionable messages
+          if (fetchErr instanceof DOMException && fetchErr.name === 'AbortError')
+            throw new Error(`Import annulé : délai dépassé (${IMPORT_TIMEOUT_MS / 60000} min). Le fichier est peut-être trop volumineux ou le serveur est surchargé.`);
+          const isOffline = !navigator.onLine;
+          throw new Error(
+            isOffline
+              ? 'Impossible de joindre le serveur : vérifiez votre connexion réseau.'
+              : `Impossible de joindre le serveur d'import. Causes possibles :\n` +
+                `• Le serveur n'est pas démarré (npm run api)\n` +
+                `• Le proxy Vite a expiré (redémarrez le serveur de dev)\n` +
+                `• Erreur réseau (${(fetchErr as Error)?.message ?? 'Unknown'})`
+          );
+        }
 
-      let res: Response;
-      try {
-        res = await fetch(`${API}/import/wyscout`, {
-          method: 'POST',
-          credentials: 'include',
-          body: formData,
-          signal: controller.signal,
-        });
-      } catch (fetchErr: unknown) {
-        // Translate low-level network errors into actionable messages
-        if (fetchErr instanceof DOMException && fetchErr.name === 'AbortError')
-          throw new Error(`Import annulé : délai dépassé (${IMPORT_TIMEOUT_MS / 60000} min). Le fichier est peut-être trop volumineux ou le serveur est surchargé.`);
-        const isOffline = !navigator.onLine;
-        throw new Error(
-          isOffline
-            ? 'Impossible de joindre le serveur : vérifiez votre connexion réseau.'
-            : `Impossible de joindre le serveur d'import. Causes possibles :\n` +
-              `• Le serveur n'est pas démarré (npm run api)\n` +
-              `• Le proxy Vite a expiré (redémarrez le serveur de dev)\n` +
-              `• Erreur réseau (${(fetchErr as Error)?.message ?? 'Unknown'})`
-        );
+        const batchTag = batches.length > 1 ? ` (lot ${i + 1}/${batches.length})` : '';
+
+        // Guard against HTML error pages (413, 502, nginx errors...)
+        const contentType = res.headers.get('content-type') || '';
+        if (!contentType.includes('application/json')) {
+          const text = await res.text();
+          const statusMsg =
+            res.status === 413 ? 'Lot de données refusé par le serveur (413). Réessayez ; si le problème persiste, réduisez la taille du fichier ou contactez le support.'
+            : res.status === 403 ? 'Accès refusé. Rôle importateur requis.'
+            : res.status === 502 ? 'Le serveur a dépassé le timeout (502). Réessayez avec un fichier plus petit (< 5 000 lignes).'
+            : res.status === 504 ? 'Timeout du serveur (504). Le fichier est trop grand pour un seul import.'
+            : res.status === 500 ? 'Erreur interne du serveur (500) pendant l\'import.'
+            : `Erreur serveur HTTP ${res.status}.`;
+          throw new Error(`${statusMsg}${batchTag}\n\nDétail : ${text.slice(0, 400).replace(/<[^>]+>/g, '').trim()}`);
+        }
+
+        const data = await res.json();
+        if (!res.ok) {
+          // Surface the real server message even if `error` is an object —
+          // avoids the unhelpful "[object Object]".
+          const serverMsg =
+            typeof data?.error === 'string' ? data.error
+            : data?.error ? JSON.stringify(data.error)
+            : `Erreur serveur (${res.status})`;
+          const hint = typeof data?.hint === 'string' ? `\n${data.hint}` : '';
+          throw new Error(`${serverMsg}${batchTag}${hint}`);
+        }
+
+        agg.created += data.created || 0;
+        agg.updated += data.updated || 0;
+        agg.linked = (agg.linked ?? 0) + (data.linked || 0);
+        agg.stats = (agg.stats ?? 0) + (data.stats || 0);
+        agg.total += data.total || 0;
+        if (Array.isArray(data.errors) && data.errors.length) agg.errors.push(...data.errors);
+
+        setImportProgress({ done: i + 1, total: batches.length });
       }
 
-      // Guard against HTML error pages (413, 502, nginx errors...)
-      const contentType = res.headers.get('content-type') || '';
-      if (!contentType.includes('application/json')) {
-        const text = await res.text();
-        const statusMsg =
-          res.status === 413 ? 'Fichier trop volumineux pour le serveur (limite 30 Mo). Découpez le fichier en plusieurs parties.'
-          : res.status === 403 ? 'Accès refusé. Rôle importateur requis.'
-          : res.status === 502 ? 'Le serveur a dépassé le timeout (502). Réessayez avec un fichier plus petit (< 5 000 lignes).'
-          : res.status === 504 ? 'Timeout du serveur (504). Le fichier est trop grand pour un seul import.'
-          : `Erreur serveur HTTP ${res.status}.`;
-        throw new Error(`${statusMsg}\n\nDétail : ${text.slice(0, 300).replace(/<[^>]+>/g, '').trim()}`);
-      }
-
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || `Erreur serveur (${res.status})`);
-
-      setResult(data);
+      setResult(agg);
       setStep('done');
-      if (!data.errors?.length) {
+      // Refresh the admin archive list a moment later (background upload may still
+      // be finishing); harmless no-op for non-admins.
+      setTimeout(() => { void loadArchives(); }, 1500);
+      if (!agg.errors.length) {
         const parts = [
-          data.created > 0 && `${data.created} créés`,
-          data.updated > 0 && `${data.updated} mis à jour`,
-          (data.linked ?? 0) > 0 && `${data.linked} liés`,
+          agg.created > 0 && `${agg.created} créés`,
+          agg.updated > 0 && `${agg.updated} mis à jour`,
+          (agg.linked ?? 0) > 0 && `${agg.linked} liés`,
         ].filter(Boolean).join(', ');
         toast.success(`Import terminé : ${parts || 'aucun changement'}.`);
       } else {
-        toast.warning(`Import terminé avec ${data.errors.length} erreur(s).`);
+        toast.warning(`Import terminé avec ${agg.errors.length} erreur(s).`);
       }
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : 'Erreur inconnue';
@@ -324,6 +466,7 @@ export default function DataImport() {
       toast.error(msg.split('\n')[0]); // show first line in toast, full in card
     } finally {
       clearTimeout(timer);
+      setImportProgress(null);
     }
   };
 
@@ -689,6 +832,11 @@ export default function DataImport() {
               <p className="text-sm text-muted-foreground mt-1">
                 Traitement de {rows.length} joueur{rows.length > 1 ? 's' : ''}, veuillez patienter.
               </p>
+              {importProgress && importProgress.total > 1 && (
+                <p className="text-xs text-muted-foreground mt-2">
+                  Lot {importProgress.done} / {importProgress.total}
+                </p>
+              )}
             </div>
           </CardContent>
         </Card>
@@ -799,6 +947,70 @@ export default function DataImport() {
           </>
         )}
       </div>
+
+      {/* ── Section 3 : Archive des fichiers importés (admin only) ── */}
+      {isAdmin && (
+        <div className="space-y-3">
+          <div className="flex items-center gap-2">
+            <div className="w-7 h-7 rounded-lg bg-muted flex items-center justify-center">
+              <Archive className="w-4 h-4 text-muted-foreground" />
+            </div>
+            <div>
+              <h2 className="text-sm font-semibold">Fichiers importés (archive)</h2>
+              <p className="text-xs text-muted-foreground">Copie du fichier original de chaque import · visible des admins uniquement</p>
+            </div>
+            <Button variant="ghost" size="sm" onClick={() => loadArchives()} className="ml-auto gap-1.5">
+              <RefreshCw className="w-3.5 h-3.5" />
+              Rafraîchir
+            </Button>
+          </div>
+
+          <Card>
+            <CardContent className="pt-4">
+              {!archives || archives.length === 0 ? (
+                <p className="text-sm text-muted-foreground text-center py-6">
+                  {archives === null ? 'Chargement…' : 'Aucun fichier archivé pour le moment.'}
+                </p>
+              ) : (
+                <div className="rounded-lg border divide-y text-xs overflow-auto max-h-[420px]">
+                  {archives.map(a => {
+                    const partial = a.total_chunks > 0 && a.received_chunks < a.total_chunks;
+                    return (
+                      <div key={a.id} className="flex items-center gap-3 px-3 py-2">
+                        <FileSpreadsheet className="w-4 h-4 text-muted-foreground shrink-0" />
+                        <div className="min-w-0 flex-1">
+                          <p className="font-medium truncate">{a.filename || '(sans nom)'}</p>
+                          <p className="text-muted-foreground">
+                            {formatMB(a.total_size)} Mo · {a.row_count.toLocaleString('fr-FR')} lignes
+                            {' · '}
+                            {(() => { try { return new Date(a.created_at).toLocaleString('fr-FR'); } catch { return a.created_at; } })()}
+                            {partial && <span className="text-amber-600"> · incomplet ({a.received_chunks}/{a.total_chunks})</span>}
+                          </p>
+                        </div>
+                        <a
+                          href={`${API}/admin/import-archive/${a.id}/download`}
+                          className="shrink-0 inline-flex items-center gap-1 px-2 py-1 rounded-md border hover:bg-muted text-foreground"
+                          download
+                        >
+                          <Download className="w-3.5 h-3.5" />
+                          Télécharger
+                        </a>
+                        <button
+                          onClick={() => deleteArchive(a.id)}
+                          className="shrink-0 inline-flex items-center justify-center w-7 h-7 rounded-md border hover:bg-destructive/10 hover:text-destructive text-muted-foreground"
+                          title="Supprimer cette archive"
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                        </button>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </CardContent>
+          </Card>
+        </div>
+      )}
     </div>
   );
 }
