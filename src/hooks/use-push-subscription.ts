@@ -20,7 +20,7 @@ export function usePushSubscription() {
 
   useEffect(() => {
     if (!user) return;
-    if (!('serviceWorker' in navigator) || !('PushManager' in window)) {
+    if (!('serviceWorker' in navigator) || !('PushManager' in window) || !('Notification' in window)) {
       setStatus('unsupported');
       return;
     }

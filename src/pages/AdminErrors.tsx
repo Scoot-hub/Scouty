@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { formatDateTime } from '@/lib/format-utils';
 import { useUiPreferences } from '@/contexts/UiPreferencesContext';
-import { AlertTriangle, CheckCircle2, Trash2, ChevronDown, ChevronUp, Filter, ArrowLeft } from 'lucide-react';
+import { AlertTriangle, CheckCircle2, Trash2, ChevronDown, ChevronUp, Filter, ArrowLeft, Copy, CopyCheck, ExternalLink } from 'lucide-react';
 import { Link } from 'react-router-dom';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
@@ -43,6 +43,39 @@ export default function AdminErrors() {
   const [expandedId, setExpandedId] = useState<number | null>(null);
   const [resolveDialog, setResolveDialog] = useState<{ open: boolean; error: FrontendError | null }>({ open: false, error: null });
   const [resolutionNote, setResolutionNote] = useState('');
+  const [copiedId, setCopiedId] = useState<number | null>(null);
+
+  function buildLlmPrompt(err: FrontendError): string {
+    const source = err.source === 'build' ? 'Build' : err.source === 'server' ? 'Serveur' : 'Frontend';
+    const lines: string[] = [
+      `J'ai une erreur **${source}** dans mon application. Voici les détails — peux-tu identifier la cause et me proposer le correctif ?`,
+      ``,
+      `## Contexte`,
+      `- **Page :** \`${err.page_url}\``,
+      `- **Type :** \`${err.error_name}\``,
+      err.user_email ? `- **Utilisateur :** ${err.user_email}` : '',
+      `- **Date :** ${err.created_at}`,
+      ``,
+      `## Message d'erreur`,
+      `\`\`\``,
+      err.error_message,
+      `\`\`\``,
+    ];
+    if (err.error_stack) {
+      lines.push(``, `## Stack trace`, `\`\`\``, err.error_stack, `\`\`\``);
+    }
+    if (err.component_stack) {
+      lines.push(``, `## Component stack`, `\`\`\``, err.component_stack.trim(), `\`\`\``);
+    }
+    return lines.filter(l => l !== null && l !== undefined).join('\n');
+  }
+
+  async function copyForLlm(e: React.MouseEvent, err: FrontendError) {
+    e.stopPropagation();
+    await navigator.clipboard.writeText(buildLlmPrompt(err));
+    setCopiedId(err.id);
+    setTimeout(() => setCopiedId(null), 2000);
+  }
 
   const { data: errors = [], isLoading } = useQuery({
     queryKey: ['admin-errors', filter],
@@ -165,6 +198,31 @@ export default function AdminErrors() {
                   </div>
                 </div>
                 <div className="shrink-0 flex items-center gap-2">
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    className="text-muted-foreground hover:text-foreground gap-1.5 text-xs"
+                    title="Voir la page"
+                    asChild
+                    onClick={(e) => e.stopPropagation()}
+                  >
+                    <a href={err.page_url} target="_blank" rel="noreferrer">
+                      <ExternalLink className="w-3.5 h-3.5" />
+                      <span className="hidden sm:inline">Voir</span>
+                    </a>
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    className={`gap-1.5 text-xs ${copiedId === err.id ? 'text-emerald-600' : 'text-muted-foreground hover:text-foreground'}`}
+                    title="Copier pour LLM"
+                    onClick={(e) => copyForLlm(e, err)}
+                  >
+                    {copiedId === err.id
+                      ? <><CopyCheck className="w-3.5 h-3.5" /><span className="hidden sm:inline">Copié</span></>
+                      : <><Copy className="w-3.5 h-3.5" /><span className="hidden sm:inline">Copier</span></>
+                    }
+                  </Button>
                   {!err.is_resolved && (
                     <Button
                       size="sm"

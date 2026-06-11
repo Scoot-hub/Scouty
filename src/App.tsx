@@ -108,6 +108,8 @@ const OrgChat = lazy(() => import("@/pages/OrgChat"));
 const OrgDashboard = lazy(() => import("@/pages/OrgDashboard"));
 const OrgShortlist = lazy(() => import("@/pages/OrgShortlist"));
 const OrgAnalytics = lazy(() => import("@/pages/OrgAnalytics"));
+const OrgDiscover = lazy(() => import("@/pages/OrgDiscover"));
+const OrgPublicProfile = lazy(() => import("@/pages/OrgPublicProfile"));
 const Contacts = lazy(() => import("@/pages/Contacts"));
 const ForgotPassword = lazy(() => import("@/pages/ForgotPassword"));
 const ResetPassword = lazy(() => import("@/pages/ResetPassword"));
@@ -160,6 +162,8 @@ const DataProjection = lazy(() => import("@/pages/DataProjection"));
 const Banned = lazy(() => import("@/pages/Banned"));
 const NotFound = lazy(() => import("@/pages/NotFound"));
 const SecurityBlock = lazy(() => import("@/pages/SecurityBlock"));
+const SavedMatchDetail = lazy(() => import("@/pages/SavedMatchDetail"));
+const MyMatchDetail = lazy(() => import("@/pages/MyMatchDetail"));
 
 // Inner wrapper — lives inside BrowserRouter so hooks can call useLocation/useNavigate
 function AppInner() {
@@ -224,7 +228,10 @@ const App = () => {
                 <Route path="/shadow-team" element={<ShadowTeamPage />} />
                 <Route path="/fixtures" element={<Fixtures />} />
                 <Route path="/match/:matchId" element={<MatchDetail />} />
+                <Route path="/match-library" element={<Navigate to="/my-matches" replace />} />
+                <Route path="/saved-match/:id" element={<SavedMatchDetail />} />
                 <Route path="/my-matches" element={<MyMatches />} />
+                <Route path="/my-matches/:id" element={<MyMatchDetail />} />
                 <Route path="/my-championships" element={<MyChampionships />} />
                 <Route path="/contacts" element={<Contacts />} />
                 <Route path="/settings" element={<Settings />} />
@@ -241,6 +248,8 @@ const App = () => {
                 <Route path="/premium-success" element={<PremiumSuccess />} />
                 <Route path="/account" element={<Account />} />
                 <Route path="/organization" element={<Organization />} />
+                <Route path="/organization/discover" element={<OrgDiscover />} />
+                <Route path="/organization/discover/:orgId" element={<OrgPublicProfile />} />
                 <Route path="/organization/:orgSlug" element={<Navigate to="dashboard" replace />} />
                 <Route path="/organization/:orgSlug/settings" element={<Organization />} />
                 <Route path="/organization/:orgSlug/dashboard" element={<OrgDashboard />} />

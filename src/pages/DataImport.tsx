@@ -294,7 +294,7 @@ export default function DataImport() {
       if (!contentType.includes('application/json')) {
         const text = await res.text();
         const statusMsg =
-          res.status === 413 ? 'Fichier trop volumineux pour le serveur (limite 25 Mo). Découpez le fichier en plusieurs parties.'
+          res.status === 413 ? 'Fichier trop volumineux pour le serveur (limite 30 Mo). Découpez le fichier en plusieurs parties.'
           : res.status === 403 ? 'Accès refusé. Rôle importateur requis.'
           : res.status === 502 ? 'Le serveur a dépassé le timeout (502). Réessayez avec un fichier plus petit (< 5 000 lignes).'
           : res.status === 504 ? 'Timeout du serveur (504). Le fichier est trop grand pour un seul import.'

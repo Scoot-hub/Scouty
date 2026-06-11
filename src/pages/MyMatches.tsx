@@ -8,7 +8,7 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { useToast } from '@/hooks/use-toast';
 import {
-  CalendarDays, Clock, Loader2, MapPin, Search, Trash2, CheckCircle2, Circle, XCircle, ChevronRight,
+  CalendarDays, Clock, Loader2, Search, Trash2, CheckCircle2, Circle, XCircle, ChevronRight,
 } from 'lucide-react';
 import { useUtcOffset, formatTimeWithOffset } from '@/hooks/use-utc-offset';
 import { cn } from '@/lib/utils';
@@ -59,7 +59,6 @@ export default function MyMatches() {
     return list;
   }, [matches, search, filter, todayStr]);
 
-  // Group by date
   const grouped = useMemo(() => {
     const map = new Map<string, MatchAssignment[]>();
     for (const m of filtered) {
@@ -128,7 +127,6 @@ export default function MyMatches() {
         </div>
       </div>
 
-      {/* Loading */}
       {isLoading && (
         <div className="flex items-center justify-center min-h-[30vh] gap-2">
           <Loader2 className="w-5 h-5 animate-spin text-primary" />
@@ -136,7 +134,6 @@ export default function MyMatches() {
         </div>
       )}
 
-      {/* Empty */}
       {!isLoading && filtered.length === 0 && (
         <div className="text-center py-20">
           <p className="text-5xl mb-4">📋</p>
@@ -150,7 +147,6 @@ export default function MyMatches() {
         </div>
       )}
 
-      {/* Matches grouped by date */}
       {!isLoading && grouped.length > 0 && (
         <div className="space-y-6">
           {grouped.map(([date, dayMatches]) => {
@@ -171,7 +167,14 @@ export default function MyMatches() {
                 </div>
                 <div className="grid gap-2.5 grid-cols-1 md:grid-cols-2 xl:grid-cols-3">
                   {dayMatches.map(m => (
-                    <MatchCard key={m.id} match={m} onCycleStatus={() => handleCycleStatus(m)} onRemove={() => handleRemove(m.id)} t={t} utcOffset={utcOffset} />
+                    <MatchCard
+                      key={m.id}
+                      match={m}
+                      onCycleStatus={() => handleCycleStatus(m)}
+                      onRemove={() => handleRemove(m.id)}
+                      t={t}
+                      utcOffset={utcOffset}
+                    />
                   ))}
                 </div>
               </div>
@@ -194,70 +197,73 @@ function MatchCard({ match, onCycleStatus, onRemove, t, utcOffset }: {
   const statusColor = STATUS_COLORS[match.status] ?? 'text-muted-foreground';
 
   return (
-    <Card className="overflow-hidden transition-all duration-200 hover:scale-[1.01]">
-      <CardContent className="p-3.5">
-        {/* Top row: competition + status + actions */}
-        <div className="flex items-center justify-between mb-2">
-          <div className="flex items-center gap-1.5 min-w-0">
-            {match.competition && (
-              <span className="text-[10px] font-semibold text-muted-foreground truncate max-w-[160px]">
-                {match.competition}
-              </span>
-            )}
+    <Link to={`/my-matches/${match.id}`} className="block group">
+      <Card className="overflow-hidden transition-all duration-200 group-hover:scale-[1.01] group-hover:border-primary/40">
+        <CardContent className="p-3.5">
+          {/* Top row: competition + status + actions */}
+          <div className="flex items-center justify-between mb-2">
+            <div className="flex items-center gap-1.5 min-w-0">
+              {match.competition && (
+                <span className="text-[10px] font-semibold text-muted-foreground truncate max-w-[160px]">
+                  {match.competition}
+                </span>
+              )}
+            </div>
+            <div className="flex items-center gap-1.5 shrink-0">
+              {match.match_time && (
+                <span className="flex items-center gap-1 text-[11px] font-medium text-muted-foreground">
+                  <Clock className="w-3 h-3" />
+                  {formatTimeWithOffset(match.match_time, utcOffset)}
+                </span>
+              )}
+              <button
+                onClick={e => { e.preventDefault(); e.stopPropagation(); onCycleStatus(); }}
+                className={cn('p-1 rounded-md transition-colors hover:bg-muted', statusColor)}
+                title={t(`my_matches.status_${match.status}`)}
+              >
+                <StatusIcon className="w-4 h-4" />
+              </button>
+              <button
+                onClick={e => { e.preventDefault(); e.stopPropagation(); onRemove(); }}
+                className="p-1 rounded-md text-muted-foreground hover:text-destructive hover:bg-destructive/10 transition-colors"
+              >
+                <Trash2 className="w-3.5 h-3.5" />
+              </button>
+            </div>
           </div>
-          <div className="flex items-center gap-1.5 shrink-0">
-            {match.match_time && (
-              <span className="flex items-center gap-1 text-[11px] font-medium text-muted-foreground">
-                <Clock className="w-3 h-3" />
-                {formatTimeWithOffset(match.match_time, utcOffset)}
-              </span>
-            )}
-            <button
-              onClick={onCycleStatus}
-              className={cn('p-1 rounded-md transition-colors hover:bg-muted', statusColor)}
-              title={t(`my_matches.status_${match.status}`)}
-            >
-              <StatusIcon className="w-4 h-4" />
-            </button>
-            <button onClick={onRemove} className="p-1 rounded-md text-muted-foreground hover:text-destructive hover:bg-destructive/10 transition-colors">
-              <Trash2 className="w-3.5 h-3.5" />
-            </button>
-          </div>
-        </div>
 
-        {/* Teams */}
-        <div className="flex items-center gap-2.5">
-          <div className="flex-1 flex items-center justify-end gap-2 min-w-0">
-            <ClubLink club={match.home_team} className="font-semibold text-sm truncate text-right block">{match.home_team}</ClubLink>
-            {match.home_badge && (
-              <img src={match.home_badge} alt="" className="w-6 h-6 object-contain shrink-0" loading="lazy" />
-            )}
+          {/* Teams */}
+          <div className="flex items-center gap-2.5">
+            <div className="flex-1 flex items-center justify-end gap-2 min-w-0">
+              <ClubLink club={match.home_team} className="font-semibold text-sm truncate text-right block">{match.home_team}</ClubLink>
+              {match.home_badge && (
+                <img src={match.home_badge} alt="" className="w-6 h-6 object-contain shrink-0" loading="lazy" />
+              )}
+            </div>
+            <span className="shrink-0 text-[11px] font-bold text-muted-foreground uppercase tracking-wider">VS</span>
+            <div className="flex-1 flex items-center gap-2 min-w-0">
+              {match.away_badge && (
+                <img src={match.away_badge} alt="" className="w-6 h-6 object-contain shrink-0" loading="lazy" />
+              )}
+              <ClubLink club={match.away_team} className="font-semibold text-sm truncate block">{match.away_team}</ClubLink>
+            </div>
           </div>
-          <span className="shrink-0 text-[11px] font-bold text-muted-foreground uppercase tracking-wider">VS</span>
-          <div className="flex-1 flex items-center gap-2 min-w-0">
-            {match.away_badge && (
-              <img src={match.away_badge} alt="" className="w-6 h-6 object-contain shrink-0" loading="lazy" />
-            )}
-            <ClubLink club={match.away_team} className="font-semibold text-sm truncate block">{match.away_team}</ClubLink>
-          </div>
-        </div>
 
-        {/* Status pill */}
-        <div className="mt-2 flex items-center gap-2">
-          <span className={cn(
-            'px-2 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wider',
-            match.status === 'planned' && 'bg-blue-500/10 text-blue-600 dark:text-blue-400',
-            match.status === 'confirmed' && 'bg-amber-500/10 text-amber-600 dark:text-amber-400',
-            match.status === 'completed' && 'bg-green-500/10 text-green-600 dark:text-green-400',
-            match.status === 'cancelled' && 'bg-muted text-muted-foreground',
-          )}>
-            {t(`my_matches.status_${match.status}`)}
-          </span>
-          {match.notes && (
-            <span className="text-[10px] text-muted-foreground truncate">{match.notes}</span>
-          )}
-        </div>
-      </CardContent>
-    </Card>
+          {/* Status pill + chevron */}
+          <div className="mt-2 flex items-center justify-between gap-2">
+            <span className={cn(
+              'px-2 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wider',
+              match.status === 'planned' && 'bg-blue-500/10 text-blue-600 dark:text-blue-400',
+              match.status === 'confirmed' && 'bg-amber-500/10 text-amber-600 dark:text-amber-400',
+              match.status === 'completed' && 'bg-green-500/10 text-green-600 dark:text-green-400',
+              match.status === 'cancelled' && 'bg-muted text-muted-foreground',
+            )}>
+              {t(`my_matches.status_${match.status}`)}
+            </span>
+            <ChevronRight className="w-3.5 h-3.5 text-muted-foreground group-hover:text-primary transition-colors" />
+          </div>
+        </CardContent>
+      </Card>
+    </Link>
   );
 }

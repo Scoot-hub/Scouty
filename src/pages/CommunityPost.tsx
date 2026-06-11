@@ -16,8 +16,9 @@ import { cn } from '@/lib/utils';
 import {
   ArrowLeft, Heart, MessageCircle, Eye, Send, Globe, X,
   HelpCircle, Lightbulb, Trophy, Users, MessageSquare,
-  User, Calendar, ExternalLink, CheckCircle2, Lock, Building2,
+  User, Calendar, ExternalLink, CheckCircle2, Lock, Building2, Flag, Archive,
 } from 'lucide-react';
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { LeagueLogo } from '@/components/ui/league-logo';
 import { moderateFields } from '@/lib/content-moderation';
 
@@ -185,6 +186,8 @@ export default function CommunityPost() {
   const [replyContent, setReplyContent] = useState('');
   const [translateDismissed, setTranslateDismissed] = useState(false);
   const [liked, setLiked] = useState(false);
+  const [reportModal, setReportModal] = useState<{ type: 'post' | 'reply'; id: string } | null>(null);
+  const [reportReason, setReportReason] = useState('');
 
   // ── Fetch post ──────────────────────────────────────────────────────────────
   const { data: post, isLoading: postLoading } = useQuery<Post | null>({
@@ -266,6 +269,25 @@ export default function CommunityPost() {
       if (err.message === 'empty') return;
       toast.error(err.message || 'Erreur lors de la publication');
     },
+  });
+
+  // ── Report content ─────────────────────────────────────────────────────────
+  const reportContent = useMutation({
+    mutationFn: async ({ type, id, reason }: { type: 'post' | 'reply'; id: string; reason: string }) => {
+      const body = type === 'post' ? { post_id: id, reason } : { reply_id: id, reason };
+      const r = await fetch(`${API}/community/reports`, {
+        method: 'POST', credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      if (!r.ok) throw new Error((await r.json()).error || 'Erreur');
+    },
+    onSuccess: () => {
+      toast.success('Signalement envoyé. Merci pour votre vigilance.');
+      setReportModal(null);
+      setReportReason('');
+    },
+    onError: (err: unknown) => toast.error(err instanceof Error ? err.message : String(err)),
   });
 
   // ── Translation ─────────────────────────────────────────────────────────────
@@ -389,6 +411,15 @@ export default function CommunityPost() {
             <span className="flex items-center gap-1.5 text-sm text-muted-foreground">
               <Eye className="w-4 h-4" />{post.views}
             </span>
+            {user && post.user_id !== user.id && (
+              <button
+                onClick={() => setReportModal({ type: 'post', id: post.id })}
+                className="ml-auto flex items-center gap-1 text-xs text-muted-foreground hover:text-destructive transition-colors"
+                title="Signaler ce post"
+              >
+                <Flag className="w-3.5 h-3.5" />Signaler
+              </button>
+            )}
           </div>
         </CardContent>
       </Card>
@@ -415,6 +446,15 @@ export default function CommunityPost() {
                         <CheckCircle2 className="w-3 h-3" /> Réponse acceptée
                       </Badge>
                     )}
+                    {user && reply.user_id !== user.id && (
+                      <button
+                        onClick={() => setReportModal({ type: 'reply', id: reply.id })}
+                        className={`ml-auto text-muted-foreground hover:text-destructive transition-colors${isAccepted ? '' : ''}`}
+                        title="Signaler cette réponse"
+                      >
+                        <Flag className="w-3 h-3" />
+                      </button>
+                    )}
                   </div>
                   <div className="text-sm leading-relaxed whitespace-pre-line text-foreground/85 pl-9">
                     {renderContent(reply.content)}
@@ -427,7 +467,7 @@ export default function CommunityPost() {
       )}
 
       {/* Reply form */}
-      {user && isPremium && !post.is_closed && (
+      {user && isPremium && !post.is_closed && !post.is_archived && (
         <Card className="card-warm">
           <CardContent className="pt-4 pb-4 space-y-3">
             <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">Votre réponse</p>
@@ -463,12 +503,58 @@ export default function CommunityPost() {
         </Card>
       )}
 
-      {post.is_closed && (
+      {post.is_archived && (
+        <div className="flex items-center gap-2 px-4 py-3 rounded-xl bg-muted/60 border border-border text-muted-foreground text-xs">
+          <Archive className="w-3.5 h-3.5 shrink-0" />
+          Ce post est archivé. Les nouvelles réponses sont désactivées.
+        </div>
+      )}
+
+      {!post.is_archived && post.is_closed && (
         <div className="flex items-center gap-2 px-4 py-3 rounded-xl bg-amber-50 dark:bg-amber-950/20 border border-amber-200 dark:border-amber-800/30 text-amber-700 dark:text-amber-300 text-xs">
           <Lock className="w-3.5 h-3.5 shrink-0" />
           Cette discussion est clôturée.
         </div>
       )}
+
+      {/* Report dialog */}
+      <Dialog open={!!reportModal} onOpenChange={open => { if (!open) { setReportModal(null); setReportReason(''); } }}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <Flag className="w-4 h-4 text-destructive" />
+              Signaler {reportModal?.type === 'reply' ? 'une réponse' : 'ce post'}
+            </DialogTitle>
+            <DialogDescription>Choisissez la raison du signalement. Notre équipe examinera votre demande.</DialogDescription>
+          </DialogHeader>
+          <div className="space-y-2 py-2">
+            {[
+              { key: 'spam', label: 'Contenu spam ou publicitaire' },
+              { key: 'inappropriate', label: 'Contenu inapproprié ou offensant' },
+              { key: 'misinformation', label: 'Informations fausses ou trompeuses' },
+              { key: 'harassment', label: 'Harcèlement ou intimidation' },
+            ].map(r => (
+              <button
+                key={r.key}
+                onClick={() => setReportReason(r.key)}
+                className={`w-full text-left px-3 py-2.5 rounded-lg border text-sm transition-all ${reportReason === r.key ? 'border-destructive/50 bg-destructive/5 text-destructive font-medium' : 'border-border text-foreground hover:bg-muted/40'}`}
+              >
+                {r.label}
+              </button>
+            ))}
+          </div>
+          <DialogFooter>
+            <Button variant="ghost" onClick={() => { setReportModal(null); setReportReason(''); }}>Annuler</Button>
+            <Button
+              variant="destructive"
+              disabled={!reportReason || reportContent.isPending}
+              onClick={() => reportModal && reportContent.mutate({ type: reportModal.type, id: reportModal.id, reason: reportReason })}
+            >
+              <Flag className="w-3.5 h-3.5 mr-2" />Signaler
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

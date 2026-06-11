@@ -146,6 +146,7 @@ function PushAutoSubscribe() {
     if (prompted.current) return;
     prompted.current = true;
 
+    if (typeof Notification === 'undefined') return;
     if (Notification.permission === 'default') {
       // Not yet asked — show the permission prompt after a short delay
       const timer = setTimeout(() => subscribe(), 3000);

@@ -284,7 +284,7 @@ export default function Auth() {
                   <Label htmlFor="fullName">{t('auth.full_name')}</Label>
                   <Input
                     id="fullName" type="text" placeholder={t('auth.full_name_placeholder')}
-                    value={fullName} onChange={e => setFullName(e.target.value)}
+                    value={fullName} onChange={e => setFullName(e.target.value.replace(/@/g, ''))}
                     required autoComplete="name"
                   />
                 </div>

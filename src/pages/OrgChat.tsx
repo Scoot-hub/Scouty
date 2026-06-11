@@ -20,6 +20,7 @@ import { cn } from '@/lib/utils';
 import {
   Send, ArrowDown, Reply, Smile, Trash2, Pencil, X, ChevronUp,
   AlertCircle, Loader2, Hash, Plus, Search, Pin, PinOff, MessageSquareOff, AtSign, User,
+  Calendar, Shield, Briefcase,
 } from 'lucide-react';
 import { Input } from '@/components/ui/input';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
@@ -32,11 +33,16 @@ const EMOJI_LIST = ['👍', '❤️', '😂', '😮', '😢', '🔥'];
 const MAX_CHARS = 512;
 const EDIT_WINDOW_MS = 10 * 60 * 1000; // 10 min
 
+// Multi-word mention names use NBSP ( ) instead of regular space when inserted,
+// so the render regex can stop cleanly at a real space without eating subsequent words.
 function renderWithMentions(text: string, isOwn = false, onMentionClick?: (name: string) => void) {
-  const parts = text.split(/(@[\wÀ-ž][\wÀ-ž\s-]{0,29})/g);
+  // Match @Name or @Name Surname (NBSP-joined multi-word names), no regular spaces
+  const parts = text.split(/(@[\wÀ-ž][\wÀ-ž -]{0,29})/g);
   return parts.map((part, i) => {
     if (!/^@[\wÀ-ž]/.test(part)) return part;
-    const name = part.slice(1); // strip @
+    // Convert NBSP back to regular space for display and lookup
+    const name = part.slice(1).replace(/ /g, ' ');
+    const displayText = '@' + name;
     const className = isOwn
       ? 'font-bold bg-white/25 rounded-sm px-0.5'
       : 'text-violet-600 dark:text-violet-400 font-semibold';
@@ -48,23 +54,46 @@ function renderWithMentions(text: string, isOwn = false, onMentionClick?: (name:
           onClick={e => { e.stopPropagation(); onMentionClick(name); }}
           className={`${className} cursor-pointer hover:underline`}
         >
-          {part}
+          {displayText}
         </button>
       );
     }
-    return <span key={i} className={className}>{part}</span>;
+    return <span key={i} className={className}>{displayText}</span>;
   });
 }
 
-// Detect active @mention query at cursor position
+// Detect active @mention query at cursor position.
+// Matches "@" alone (empty query → show all) or "@word…" (filter by query).
 function getMentionQuery(text: string, cursor: number): { query: string; start: number } | null {
   const before = text.slice(0, cursor);
-  const match = before.match(/@([\wÀ-ÿ][\wÀ-ÿ\s]{0,25})$/);
+  const match = before.match(/@([\wÀ-ÿ][\wÀ-ÿ\s]{0,25})?$/);
   if (!match) return null;
-  return { query: match[1].toLowerCase(), start: before.lastIndexOf('@') };
+  return { query: (match[1] ?? '').toLowerCase(), start: before.lastIndexOf('@') };
 }
 
-interface OrgMemberRaw { user_id: string; full_name?: string | null; email?: string; photo_url?: string | null; }
+interface OrgMemberProfile {
+  full_name?: string | null;
+  club?: string | null;
+  role?: string | null;
+  photo_url?: string | null;
+}
+
+interface OrgMemberRaw {
+  user_id: string;
+  role?: string | null;           // org role: owner | admin | member
+  joined_at?: string | null;      // date joined the org
+  user_created_at?: string | null; // Scouty account creation date
+  email?: string | null;
+  profile?: OrgMemberProfile | null;
+}
+
+function memberFullName(m: OrgMemberRaw): string {
+  return (m.profile?.full_name ?? '').trim();
+}
+
+function memberPhotoUrl(m: OrgMemberRaw): string | undefined {
+  return m.profile?.photo_url ?? undefined;
+}
 
 interface MentionDropdownProps {
   members: OrgMemberRaw[];
@@ -73,10 +102,9 @@ interface MentionDropdownProps {
 }
 
 function MentionDropdown({ members, query, onSelect }: MentionDropdownProps) {
-  // Only use full_name — never use email (it contains @ which breaks mentions)
   const filtered = members
     .filter(m => {
-      const name = (m.full_name?.trim() ?? '').toLowerCase();
+      const name = memberFullName(m).toLowerCase();
       return name.length > 0 && name.includes(query);
     })
     .slice(0, 6);
@@ -86,7 +114,7 @@ function MentionDropdown({ members, query, onSelect }: MentionDropdownProps) {
   return (
     <div className="absolute bottom-full left-0 mb-1 w-64 bg-card border border-border rounded-xl shadow-xl z-50 overflow-hidden">
       {filtered.map(m => {
-        const name = m.full_name!.trim();
+        const name = memberFullName(m);
         return (
           <button
             key={m.user_id}
@@ -419,9 +447,26 @@ export default function OrgChat() {
   const broadcastTyping = useBroadcastTyping(orgId);
   const typingUsers = typingData?.users ?? [];
 
-  // @mentions
+  // @mentions — preserve full nested structure from get_org_members
   const { data: membersData } = useOrganizationMembers(orgId);
-  const orgMembers = (membersData ?? []) as OrgMemberRaw[];
+  const orgMembers = useMemo<OrgMemberRaw[]>(() =>
+    (membersData ?? [])
+      .filter((m: any) => m.user_id !== user?.id)
+      .map((m: any): OrgMemberRaw => ({
+        user_id: m.user_id,
+        role: m.role ?? null,
+        joined_at: m.joined_at ?? null,
+        user_created_at: m.user_created_at ?? null,
+        email: m.email ?? null,
+        profile: {
+          full_name: m.profile?.full_name ?? null,
+          club: m.profile?.club ?? null,
+          role: m.profile?.role ?? null,
+          photo_url: m.profile?.photo_url ?? null,
+        },
+      })),
+    [membersData, user?.id]
+  );
   const [mentionState, setMentionState] = useState<{ query: string; start: number } | null>(null);
   const [mentionProfile, setMentionProfile] = useState<OrgMemberRaw | null>(null);
 
@@ -429,15 +474,16 @@ export default function OrgChat() {
   const memberByName = useMemo(() => {
     const map = new Map<string, OrgMemberRaw>();
     for (const m of orgMembers) {
-      const name = m.full_name?.trim();
+      const name = memberFullName(m);
       if (name) map.set(name.toLowerCase(), m);
     }
     return map;
   }, [orgMembers]);
 
   const handleMentionProfileClick = (name: string) => {
-    const key = name.trim().toLowerCase();
-    const member = memberByName.get(key);
+    // NBSP was used when inserting multi-word names; normalize to space for lookup
+    const normalized = name.replace(/ /g, ' ').trim().toLowerCase();
+    const member = memberByName.get(normalized);
     if (member) setMentionProfile(member);
   };
 
@@ -446,7 +492,8 @@ export default function OrgChat() {
     const cursor = inputRef.current.selectionStart ?? input.length;
     const before = input.slice(0, mentionState.start);
     const after = input.slice(cursor);
-    const newVal = `${before}@${name} ${after}`;
+    const insertedName = name.replace(/ /g, ' '); // NBSP keeps multi-word names as one token
+    const newVal = `${before}@${insertedName} ${after}`;
     setInput(newVal.slice(0, MAX_CHARS));
     setMentionState(null);
     // Restore focus and move cursor after the inserted mention
@@ -705,26 +752,69 @@ export default function OrgChat() {
 
       {/* Member profile dialog — shown on mention click */}
       <Dialog open={!!mentionProfile} onOpenChange={v => { if (!v) setMentionProfile(null); }}>
-        <DialogContent className="max-w-xs">
+        <DialogContent className="max-w-sm">
           <DialogHeader>
             <DialogTitle>Profil du membre</DialogTitle>
           </DialogHeader>
-          {mentionProfile && (
-            <div className="relative flex flex-col items-center gap-3 py-2">
-              <Avatar className="w-16 h-16">
-                <AvatarImage src={mentionProfile.photo_url ?? undefined} />
-                <AvatarFallback className="text-lg font-semibold bg-violet-100 dark:bg-violet-900/40 text-violet-700 dark:text-violet-300">
-                  {mentionProfile.full_name?.[0]?.toUpperCase() ?? <User className="w-6 h-6" />}
-                </AvatarFallback>
-              </Avatar>
-              <div className="text-center">
-                <p className="font-semibold text-base">{mentionProfile.full_name}</p>
-                {mentionProfile.email && (
-                  <p className="text-xs text-muted-foreground mt-0.5">{mentionProfile.email}</p>
-                )}
+          {mentionProfile && (() => {
+            const fullName = memberFullName(mentionProfile);
+            const photoUrl = memberPhotoUrl(mentionProfile);
+            const orgRoleLabel = mentionProfile.role === 'owner'
+              ? 'Propriétaire' : mentionProfile.role === 'admin' ? 'Administrateur' : 'Membre';
+            const scoutyDate = mentionProfile.user_created_at
+              ? new Date(mentionProfile.user_created_at).toLocaleDateString('fr-FR', { month: 'long', year: 'numeric' })
+              : null;
+            const joinedDate = mentionProfile.joined_at
+              ? new Date(mentionProfile.joined_at).toLocaleDateString('fr-FR', { day: 'numeric', month: 'long', year: 'numeric' })
+              : null;
+            const club = mentionProfile.profile?.club;
+            const profileRole = mentionProfile.profile?.role;
+            return (
+              <div className="space-y-4 pb-1">
+                {/* Header: avatar + name */}
+                <div className="flex items-center gap-3">
+                  <Avatar className="w-14 h-14 shrink-0">
+                    <AvatarImage src={photoUrl} />
+                    <AvatarFallback className="text-base font-semibold bg-violet-100 dark:bg-violet-900/40 text-violet-700 dark:text-violet-300">
+                      {fullName?.[0]?.toUpperCase() ?? <User className="w-5 h-5" />}
+                    </AvatarFallback>
+                  </Avatar>
+                  <div className="min-w-0">
+                    <p className="font-semibold text-base truncate">{fullName || mentionProfile.email}</p>
+                    <Badge variant="secondary" className="text-[10px] mt-0.5 px-1.5 py-0 h-4">
+                      {orgRoleLabel}
+                    </Badge>
+                  </div>
+                </div>
+
+                {/* Info rows */}
+                <div className="space-y-2 rounded-xl bg-muted/40 p-3 text-sm">
+                  {scoutyDate && (
+                    <div className="flex items-center gap-2 text-muted-foreground">
+                      <Calendar className="w-3.5 h-3.5 shrink-0 text-primary/70" />
+                      <span>Sur Scouty depuis <span className="font-medium text-foreground">{scoutyDate}</span></span>
+                    </div>
+                  )}
+                  {joinedDate && (
+                    <div className="flex items-center gap-2 text-muted-foreground">
+                      <Shield className="w-3.5 h-3.5 shrink-0 text-primary/70" />
+                      <span>Dans l'organisation depuis <span className="font-medium text-foreground">{joinedDate}</span></span>
+                    </div>
+                  )}
+                  {(club || profileRole) && (
+                    <div className="flex items-center gap-2 text-muted-foreground">
+                      <Briefcase className="w-3.5 h-3.5 shrink-0 text-primary/70" />
+                      <span className="truncate">
+                        {[profileRole, club].filter(Boolean).map((v, i) => (
+                          <span key={i}>{i > 0 && <span className="mx-1 opacity-40">·</span>}<span className="font-medium text-foreground">{v}</span></span>
+                        ))}
+                      </span>
+                    </div>
+                  )}
+                </div>
               </div>
-            </div>
-          )}
+            );
+          })()}
         </DialogContent>
       </Dialog>
 

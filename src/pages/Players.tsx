@@ -1,4 +1,4 @@
-import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import React, { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useSearchParams, useNavigate } from 'react-router-dom';
 import { useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
@@ -37,7 +37,7 @@ const LazyAddToWatchlistDialog = lazy(() => import('@/components/AddToWatchlistD
 const LazyBulkShareDialog = lazy(() => import('@/components/ShareWithOrgPopover').then(m => ({ default: m.BulkShareDialog })));
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from '@/components/ui/dropdown-menu';
 import { supabase } from '@/integrations/supabase/client';
-import { Search, RotateCcw, Users, RefreshCw, ChevronDown, ChevronUp, SlidersHorizontal, Download, X, LayoutGrid, List, Rows3, Building2, Eye, Zap, Check, Sparkles, Copy, Trash2, FileText, Upload, FilePlus, ClipboardList, Trophy, TrendingUp, BarChart3, CalendarDays, Info, FileSpreadsheet } from 'lucide-react';
+import { Search, RotateCcw, Users, RefreshCw, ChevronDown, ChevronUp, SlidersHorizontal, Download, X, LayoutGrid, List, Rows3, Building2, Eye, Zap, Check, Sparkles, Copy, Trash2, FileText, Upload, FilePlus, ClipboardList, Trophy, TrendingUp, BarChart3, CalendarDays, Info, FileSpreadsheet, Crown } from 'lucide-react';
 import { useRemainingCredits } from '@/hooks/use-credits';
 import { CreditLimitDialog } from '@/components/CreditLimitDialog';
 import { getPlayerPerfStats, CHART_COLORS } from '@/lib/player-stats';
@@ -1161,86 +1161,135 @@ export default function Players() {
                 <ChevronDown className="w-3.5 h-3.5 ml-1" />
               </Button>
             </DropdownMenuTrigger>
-            <DropdownMenuContent align="end" className="w-56">
-              {selectedIds.size > 0 && (
-                <>
-                  <DropdownMenuItem onClick={() => setWatchlistDialogOpen(true)}>
-                    <Eye className="w-4 h-4 mr-2" />
-                    {t('watchlist.add_to_watchlist')} ({selectedIds.size})
-                  </DropdownMenuItem>
-                  {hasOrg && (
-                    <DropdownMenuItem onClick={() => setOrgDialogOpen(true)}>
-                      <Building2 className="w-4 h-4 mr-2" />
-                      {t('players.add_to_org')} ({selectedIds.size})
-                    </DropdownMenuItem>
-                  )}
-                  {selectedIds.size >= 2 && selectedIds.size <= 4 && (
-                    <DropdownMenuItem onClick={handleCompare}>
-                      <BarChart3 className="w-4 h-4 mr-2" />
-                      {t('players.compare_button')} ({selectedIds.size})
-                      <span className="ml-auto flex items-center gap-0.5 text-[10px] text-amber-500 font-bold">
-                        <Zap className="w-2.5 h-2.5" />{selectedIds.size}
-                      </span>
-                    </DropdownMenuItem>
-                  )}
-                  {(() => {
-                    const selPlayers = filtered.filter(p => selectedIds.has(p.id));
-                    const primaryCount = selPlayers.filter(p => !p.external_data_fetched_at || computeCompletionPct(p) <= 50).length;
-                    const secondaryCount = selPlayers.length - primaryCount;
-                    return (
-                      <Tooltip>
-                        <TooltipTrigger asChild>
-                          <DropdownMenuItem
-                            onClick={() => handleBulkEnrich('selected')}
-                            disabled={enriching}
-                          >
+            <DropdownMenuContent align="end" className="w-60">
+              {/* ── Actions sur la sélection ── */}
+              {(() => {
+                const noSel = selectedIds.size === 0;
+                const selCount = selectedIds.size;
+                const canCompare = selCount >= 2 && selCount <= 4;
+                const compareReason = selCount === 0 ? 'Sélectionnez 2 à 4 joueurs pour comparer.'
+                  : selCount === 1 ? 'Sélectionnez au moins 2 joueurs (max 4) pour comparer.'
+                  : selCount > 4 ? 'Maximum 4 joueurs pour la comparaison.' : undefined;
+
+                const selPlayers = filtered.filter(p => selectedIds.has(p.id));
+                const primaryCount = selPlayers.filter(p => !p.external_data_fetched_at || computeCompletionPct(p) <= 50).length;
+                const secondaryCount = selPlayers.length - primaryCount;
+
+                const DisabledItem = ({ reason, children }: { reason?: string; children: React.ReactNode }) => (
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <span className="block w-full cursor-not-allowed">{children}</span>
+                    </TooltipTrigger>
+                    {reason && <TooltipContent side="left" className="text-xs max-w-[220px]">{reason}</TooltipContent>}
+                  </Tooltip>
+                );
+
+                return (
+                  <>
+                    {/* Watchlist */}
+                    <DisabledItem reason={noSel ? 'Sélectionnez au moins un joueur.' : undefined}>
+                      <DropdownMenuItem disabled={noSel} onClick={noSel ? undefined : () => setWatchlistDialogOpen(true)}>
+                        <Eye className="w-4 h-4 mr-2" />
+                        {t('watchlist.add_to_watchlist')}{selCount > 0 ? ` (${selCount})` : ''}
+                      </DropdownMenuItem>
+                    </DisabledItem>
+
+                    {/* Partager à l'org */}
+                    <DisabledItem reason={!hasOrg ? "Rejoignez d'abord une organisation." : noSel ? 'Sélectionnez au moins un joueur.' : undefined}>
+                      <DropdownMenuItem disabled={noSel || !hasOrg} onClick={noSel || !hasOrg ? undefined : () => setOrgDialogOpen(true)}>
+                        <Building2 className="w-4 h-4 mr-2" />
+                        {t('players.add_to_org')}{selCount > 0 ? ` (${selCount})` : ''}
+                        {!hasOrg && <Crown className="ml-auto w-3 h-3 text-amber-500" />}
+                      </DropdownMenuItem>
+                    </DisabledItem>
+
+                    {/* Comparer */}
+                    <DisabledItem reason={compareReason}>
+                      <DropdownMenuItem disabled={!canCompare} onClick={canCompare ? handleCompare : undefined}>
+                        <BarChart3 className="w-4 h-4 mr-2" />
+                        {t('players.compare_button')}{canCompare ? ` (${selCount})` : ''}
+                        {canCompare
+                          ? <span className="ml-auto flex items-center gap-0.5 text-[10px] text-amber-500 font-bold"><Zap className="w-2.5 h-2.5" />{selCount}</span>
+                          : <span className="ml-auto text-[10px] text-muted-foreground/60">2–4 joueurs</span>
+                        }
+                      </DropdownMenuItem>
+                    </DisabledItem>
+
+                    {/* Enrichir sélection */}
+                    <Tooltip>
+                      <TooltipTrigger asChild>
+                        <span className={noSel ? 'block w-full cursor-not-allowed' : 'block w-full'}>
+                          <DropdownMenuItem disabled={enriching || noSel} onClick={noSel ? undefined : () => handleBulkEnrich('selected')}>
                             <RefreshCw className={`w-4 h-4 mr-2 ${enriching ? 'animate-spin' : ''}`} />
                             {enriching
                               ? t('players.enriching_progress', { current: enrichProgress.current, total: enrichProgress.total })
-                              : t('players.enrich_selected', { count: selectedIds.size })}
-                            {!enriching && (
+                              : t('players.enrich_selected', { count: selCount || 0 })}
+                            {!enriching && selCount > 0 && (
                               <span className="ml-auto flex items-center gap-0.5 text-[10px] text-amber-500 font-bold">
-                                <Zap className="w-2.5 h-2.5" />{selectedIds.size}
+                                <Zap className="w-2.5 h-2.5" />{selCount}
                               </span>
                             )}
+                            {!enriching && noSel && <span className="ml-auto text-[10px] text-muted-foreground/60">0 sélectionné</span>}
                           </DropdownMenuItem>
-                        </TooltipTrigger>
-                        <TooltipContent side="right" className="max-w-[260px] space-y-1.5 p-3">
-                          <p className="text-xs font-semibold">{t('players.enrich_tooltip_title')}</p>
-                          <ul className="text-[11px] text-muted-foreground space-y-1">
-                            <li>• <span className="text-foreground font-medium">{primaryCount} {t('players.enrich_tooltip_primary')}</span> — {t('players.enrich_tooltip_primary_desc')}</li>
-                            {secondaryCount > 0 && <li>• <span className="text-muted-foreground">{secondaryCount} {t('players.enrich_tooltip_secondary')}</span> — {t('players.enrich_tooltip_secondary_desc')}</li>}
-                            <li>• {t('players.enrich_tooltip_order')}</li>
-                          </ul>
-                        </TooltipContent>
-                      </Tooltip>
-                    );
-                  })()}
-                  <DropdownMenuItem onClick={() => setBulkReportOpen(true)}>
-                    <FilePlus className="w-4 h-4 mr-2" />
-                    {t('players.bulk_report', { count: selectedIds.size })}
-                  </DropdownMenuItem>
-                  <DropdownMenuItem onClick={() => setBulkTaskOpen(true)}>
-                    <ClipboardList className="w-4 h-4 mr-2" />
-                    {t('players.bulk_task', { count: selectedIds.size })}
-                  </DropdownMenuItem>
-                  <DropdownMenuItem onClick={async () => {
-                    const archive = !showArchived;
-                    for (const id of selectedIds) {
-                      await toggleArchive.mutateAsync({ playerId: id, archived: archive });
-                    }
-                    setSelectedIds(new Set());
-                    toast.success(archive ? t('players.archived_success', { count: selectedIds.size }) : t('players.unarchived_success', { count: selectedIds.size }));
-                  }}>
-                    <X className="w-4 h-4 mr-2" />
-                    {showArchived
-                      ? t('players.unarchive_selected', { count: selectedIds.size })
-                      : t('players.archive_selected', { count: selectedIds.size })}
-                  </DropdownMenuItem>
-                  <DropdownMenuSeparator />
-                </>
-              )}
-              {selectedIds.size === 0 && (() => {
+                        </span>
+                      </TooltipTrigger>
+                      <TooltipContent side="left" className="max-w-[260px] space-y-1.5 p-3">
+                        {noSel
+                          ? <p className="text-xs">Sélectionnez au moins un joueur pour enrichir.</p>
+                          : <>
+                              <p className="text-xs font-semibold">{t('players.enrich_tooltip_title')}</p>
+                              <ul className="text-[11px] text-muted-foreground space-y-1">
+                                <li>• <span className="text-foreground font-medium">{primaryCount} {t('players.enrich_tooltip_primary')}</span> — {t('players.enrich_tooltip_primary_desc')}</li>
+                                {secondaryCount > 0 && <li>• <span className="text-muted-foreground">{secondaryCount} {t('players.enrich_tooltip_secondary')}</span> — {t('players.enrich_tooltip_secondary_desc')}</li>}
+                                <li>• {t('players.enrich_tooltip_order')}</li>
+                              </ul>
+                            </>
+                        }
+                      </TooltipContent>
+                    </Tooltip>
+
+                    {/* Rapport en masse */}
+                    <DisabledItem reason={noSel ? 'Sélectionnez au moins un joueur.' : undefined}>
+                      <DropdownMenuItem disabled={noSel} onClick={noSel ? undefined : () => setBulkReportOpen(true)}>
+                        <FilePlus className="w-4 h-4 mr-2" />
+                        {t('players.bulk_report', { count: selCount || 0 })}
+                      </DropdownMenuItem>
+                    </DisabledItem>
+
+                    {/* Tâche en masse */}
+                    <DisabledItem reason={noSel ? 'Sélectionnez au moins un joueur.' : undefined}>
+                      <DropdownMenuItem disabled={noSel} onClick={noSel ? undefined : () => setBulkTaskOpen(true)}>
+                        <ClipboardList className="w-4 h-4 mr-2" />
+                        {t('players.bulk_task', { count: selCount || 0 })}
+                      </DropdownMenuItem>
+                    </DisabledItem>
+
+                    {/* Archiver / Désarchiver */}
+                    <DisabledItem reason={noSel ? 'Sélectionnez au moins un joueur.' : undefined}>
+                      <DropdownMenuItem disabled={noSel} onClick={noSel ? undefined : async () => {
+                        const archive = !showArchived;
+                        for (const id of selectedIds) {
+                          await toggleArchive.mutateAsync({ playerId: id, archived: archive });
+                        }
+                        setSelectedIds(new Set());
+                        toast.success(archive
+                          ? t('players.archived_success', { count: selCount })
+                          : t('players.unarchived_success', { count: selCount }));
+                      }}>
+                        <X className="w-4 h-4 mr-2" />
+                        {showArchived
+                          ? t('players.unarchive_selected', { count: selCount || 0 })
+                          : t('players.archive_selected', { count: selCount || 0 })}
+                      </DropdownMenuItem>
+                    </DisabledItem>
+
+                    <DropdownMenuSeparator />
+                  </>
+                );
+              })()}
+
+              {/* ── Actions globales ── */}
+              {(() => {
                 const allPrimaryCount = filtered.filter(p => !p.external_data_fetched_at || computeCompletionPct(p) <= 50).length;
                 const allSecondaryCount = filtered.length - allPrimaryCount;
                 const rem = !remainingCredits || remainingCredits.daily === -1 ? null : Math.min(
@@ -1251,26 +1300,25 @@ export default function Players() {
                 return (
                   <Tooltip>
                     <TooltipTrigger asChild>
-                      <DropdownMenuItem
-                        onClick={() => handleBulkEnrich('all')}
-                        disabled={enriching}
-                      >
-                        <RefreshCw className={`w-4 h-4 mr-2 ${enriching ? 'animate-spin' : ''}`} />
-                        {enriching
-                          ? t('players.enriching_progress', { current: enrichProgress.current, total: enrichProgress.total })
-                          : t('players.enrich_all')}
-                        {!enriching && (
-                          isAdmin
-                            ? <span className="ml-auto flex items-center gap-0.5 text-[10px] text-violet-500 font-bold"><Zap className="w-2.5 h-2.5" />∞</span>
-                            : rem !== null && rem > 0 && (
-                              <span className="ml-auto flex items-center gap-0.5 text-[10px] text-amber-500 font-bold">
-                                <Zap className="w-2.5 h-2.5" />{t('players.enrich_all_credits', { count: rem })}
-                              </span>
-                            )
-                        )}
-                      </DropdownMenuItem>
+                      <span className="block w-full">
+                        <DropdownMenuItem onClick={() => handleBulkEnrich('all')} disabled={enriching}>
+                          <RefreshCw className={`w-4 h-4 mr-2 ${enriching ? 'animate-spin' : ''}`} />
+                          {enriching
+                            ? t('players.enriching_progress', { current: enrichProgress.current, total: enrichProgress.total })
+                            : t('players.enrich_all')}
+                          {!enriching && (
+                            isAdmin
+                              ? <span className="ml-auto flex items-center gap-0.5 text-[10px] text-violet-500 font-bold"><Zap className="w-2.5 h-2.5" />∞</span>
+                              : rem !== null && rem > 0 && (
+                                <span className="ml-auto flex items-center gap-0.5 text-[10px] text-amber-500 font-bold">
+                                  <Zap className="w-2.5 h-2.5" />{t('players.enrich_all_credits', { count: rem })}
+                                </span>
+                              )
+                          )}
+                        </DropdownMenuItem>
+                      </span>
                     </TooltipTrigger>
-                    <TooltipContent side="right" className="max-w-[280px] space-y-1.5 p-3">
+                    <TooltipContent side="left" className="max-w-[280px] space-y-1.5 p-3">
                       <p className="text-xs font-semibold">{t('players.enrich_tooltip_title')}</p>
                       <ul className="text-[11px] text-muted-foreground space-y-1">
                         <li>• <span className="text-foreground font-medium">{allPrimaryCount} {t('players.enrich_tooltip_primary')}</span> — {t('players.enrich_tooltip_primary_desc')}</li>
@@ -1285,18 +1333,22 @@ export default function Players() {
                   </Tooltip>
                 );
               })()}
+
               <DropdownMenuSeparator />
+
               <Tooltip>
                 <TooltipTrigger asChild>
-                  <DropdownMenuItem onClick={handleFindDuplicates}>
-                    <Copy className="w-4 h-4 mr-2" />
-                    {t('players.find_duplicates')}
-                    <span className="ml-auto flex items-center gap-0.5 text-[10px] text-amber-500 font-bold">
-                      <Zap className="w-2.5 h-2.5" />1
-                    </span>
-                  </DropdownMenuItem>
+                  <span className="block w-full">
+                    <DropdownMenuItem onClick={handleFindDuplicates}>
+                      <Copy className="w-4 h-4 mr-2" />
+                      {t('players.find_duplicates')}
+                      <span className="ml-auto flex items-center gap-0.5 text-[10px] text-amber-500 font-bold">
+                        <Zap className="w-2.5 h-2.5" />1
+                      </span>
+                    </DropdownMenuItem>
+                  </span>
                 </TooltipTrigger>
-                <TooltipContent side="right" className="max-w-[240px] p-3 space-y-1">
+                <TooltipContent side="left" className="max-w-[240px] p-3 space-y-1">
                   <p className="text-xs font-semibold">{t('players.duplicates_tooltip_title')}</p>
                   <p className="text-[11px] text-muted-foreground">{t('players.duplicates_tooltip_desc')}</p>
                 </TooltipContent>

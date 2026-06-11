@@ -14,7 +14,7 @@ import { Skeleton } from '@/components/ui/skeleton';
 import { toast } from 'sonner';
 import {
   Newspaper, Plus, Search, Eye, Calendar, User, Tag,
-  Edit, Trash2, BookOpen, FileEdit, FilePen,
+  Edit, Trash2, BookOpen, FileEdit, FilePen, TrendingUp, UserCheck, UserPlus, MessageSquare,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import {
@@ -60,6 +60,7 @@ export default function Editorial() {
   const [search, setSearch] = useState('');
   const [deleteId, setDeleteId] = useState<string | null>(null);
   const [canWrite, setCanWrite] = useState(false);
+  const [feedType, setFeedType] = useState<'recent' | 'trending' | 'following'>('recent');
 
   // Always use 'published' filter: returns published articles + current user's own drafts
   const { data, isLoading } = useQuery({
@@ -91,6 +92,30 @@ export default function Editorial() {
     staleTime: 5 * 60_000,
   });
 
+  // Following list — reuses community_follows table
+  const { data: followingIds = [] } = useQuery<string[]>({
+    queryKey: ['community-following-early', user?.id],
+    queryFn: async () => {
+      if (!user) return [];
+      const r = await fetch(`${API}/community/following`, { credentials: 'include' });
+      return r.ok ? r.json() : [];
+    },
+    enabled: !!user,
+    staleTime: 60_000,
+  });
+
+  const followUser = useMutation({
+    mutationFn: async ({ userId, isFollowing }: { userId: string; isFollowing: boolean }) => {
+      const r = await fetch(`${API}/community/follow/${userId}`, {
+        method: isFollowing ? 'DELETE' : 'POST',
+        credentials: 'include',
+      });
+      if (!r.ok) throw new Error((await r.json()).error || 'Erreur');
+    },
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['community-following-early'] }),
+    onError: () => toast.error('Erreur lors de la mise à jour de l\'abonnement'),
+  });
+
   const deleteMut = useMutation({
     mutationFn: async (id: string) => {
       const res = await fetch(`${API}/editorial/${id}`, { method: 'DELETE', credentials: 'include' });
@@ -104,7 +129,23 @@ export default function Editorial() {
     onError: () => toast.error(t('common.error')),
   });
 
-  const articles = data?.articles ?? [];
+  const rawArticles = data?.articles ?? [];
+
+  const articles = (() => {
+    let list = rawArticles;
+    if (feedType === 'following') {
+      list = list.filter(a => a.user_id && followingIds.includes(a.user_id));
+    }
+    if (feedType === 'trending') {
+      list = [...list].sort((a, b) => {
+        const ageA = Math.max((Date.now() - new Date(a.updated_at).getTime()) / 3600000, 1);
+        const ageB = Math.max((Date.now() - new Date(b.updated_at).getTime()) / 3600000, 1);
+        return (b.views / Math.pow(ageB + 2, 1.2)) - (a.views / Math.pow(ageA + 2, 1.2));
+      });
+    }
+    return list;
+  })();
+
   const isWriter = !!(canWrite || isAdmin);
 
   return (
@@ -126,6 +167,29 @@ export default function Editorial() {
             {t('editorial.new_article')}
           </Button>
         )}
+      </div>
+
+      {/* Feed selector */}
+      <div className="flex items-center gap-1.5 mb-4">
+        {([
+          { key: 'recent', label: 'Récent', icon: MessageSquare },
+          { key: 'trending', label: 'Tendances', icon: TrendingUp },
+          { key: 'following', label: 'Abonnements', icon: UserCheck },
+        ] as const).map(({ key, label, icon: Icon }) => (
+          <button
+            key={key}
+            onClick={() => setFeedType(key)}
+            className={cn(
+              'flex items-center gap-1.5 px-4 py-1.5 rounded-full text-sm font-semibold border transition-all',
+              feedType === key
+                ? 'bg-primary text-primary-foreground border-primary shadow-sm'
+                : 'bg-background text-muted-foreground border-border hover:border-primary/40 hover:text-foreground'
+            )}
+          >
+            <Icon className="w-3.5 h-3.5" />
+            {label}
+          </button>
+        ))}
       </div>
 
       {/* Toolbar */}
@@ -150,8 +214,15 @@ export default function Editorial() {
         <Card>
           <CardContent className="py-20 text-center">
             <BookOpen className="w-12 h-12 mx-auto mb-3 text-muted-foreground opacity-20" />
-            <p className="text-sm font-medium text-muted-foreground mb-1">{t('editorial.no_articles')}</p>
-            {isWriter && (
+            <p className="text-sm font-medium text-muted-foreground mb-1">
+              {feedType === 'following'
+                ? 'Aucun article de vos abonnements'
+                : t('editorial.no_articles')}
+            </p>
+            {feedType === 'following' && (
+              <p className="text-xs text-muted-foreground mt-1">Abonnez-vous à des auteurs depuis la communauté ou les articles pour voir leur contenu ici.</p>
+            )}
+            {isWriter && feedType !== 'following' && (
               <Button size="sm" className="rounded-xl gap-2 mt-4" onClick={() => navigate('/editorial/new')}>
                 <Plus className="w-4 h-4" />
                 {t('editorial.new_article')}
@@ -240,6 +311,16 @@ export default function Editorial() {
                   <div className="flex items-center justify-between text-[10px] text-muted-foreground">
                     <div className="flex items-center gap-2">
                       <span className="flex items-center gap-1"><User className="w-3 h-3" />{article.author_name || article.author_email}</span>
+                      {user && article.user_id && article.user_id !== user.id && (
+                        <button
+                          onClick={e => { e.stopPropagation(); e.preventDefault(); followUser.mutate({ userId: article.user_id, isFollowing: followingIds.includes(article.user_id) }); }}
+                          className={cn('flex items-center gap-0.5 px-1.5 py-0.5 rounded-full border text-[10px] font-semibold transition-all', followingIds.includes(article.user_id) ? 'border-primary/40 bg-primary/5 text-primary' : 'border-border hover:border-primary/30 hover:text-primary')}
+                          title={followingIds.includes(article.user_id) ? 'Se désabonner' : 'Suivre cet auteur'}
+                        >
+                          {followingIds.includes(article.user_id) ? <UserCheck className="w-2.5 h-2.5" /> : <UserPlus className="w-2.5 h-2.5" />}
+                          {followingIds.includes(article.user_id) ? 'Abonné' : 'Suivre'}
+                        </button>
+                      )}
                       <span className="flex items-center gap-1"><Calendar className="w-3 h-3" />{fmtDate(article.updated_at, dateFormat)}</span>
                       {!isUnpublished && <span className="flex items-center gap-1"><Eye className="w-3 h-3" />{article.views}</span>}
                     </div>

@@ -8,7 +8,7 @@ import { Badge } from '@/components/ui/badge';
 import { Skeleton } from '@/components/ui/skeleton';
 import {
   ChevronLeft, Edit, Calendar, Eye, User, Tag, Share2, Check,
-  ThumbsUp, ThumbsDown, Link2, Twitter, MessageSquare, Globe, X,
+  ThumbsUp, ThumbsDown, Link2, Twitter, MessageSquare, Globe, X, UserPlus, UserCheck,
 } from 'lucide-react';
 import { useState, useEffect } from 'react';
 import { toast } from 'sonner';
@@ -215,6 +215,30 @@ export default function EditorialView() {
   const kw = parseKeywords(article.keywords);
   const canEdit = article.user_id === user?.id || isAdmin;
   const authorName = article.author_name || article.author_email;
+
+  // Follow state for this article's author
+  const { data: followingIds = [] } = useQuery<string[]>({
+    queryKey: ['community-following-early', user?.id],
+    queryFn: async () => {
+      if (!user) return [];
+      const r = await fetch(`${API}/community/following`, { credentials: 'include' });
+      return r.ok ? r.json() : [];
+    },
+    enabled: !!user,
+    staleTime: 60_000,
+  });
+  const followMutation = useMutation({
+    mutationFn: async (isFollowing: boolean) => {
+      const r = await fetch(`${API}/community/follow/${article.user_id}`, {
+        method: isFollowing ? 'DELETE' : 'POST',
+        credentials: 'include',
+      });
+      if (!r.ok) throw new Error((await r.json()).error || 'Erreur');
+    },
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['community-following-early'] }),
+    onError: () => toast.error('Erreur lors de la mise à jour de l\'abonnement'),
+  });
+  const isFollowingAuthor = article.user_id ? followingIds.includes(article.user_id) : false;
   const r = reactions ?? { likes: 0, dislikes: 0, user_reaction: null };
   const totalReactions = r.likes + r.dislikes;
   const likeRatio = totalReactions > 0 ? Math.round((r.likes / totalReactions) * 100) : null;
@@ -306,6 +330,21 @@ export default function EditorialView() {
             )}
           </div>
         </div>
+        {user && article.user_id !== user.id && (
+          <button
+            onClick={() => followMutation.mutate(isFollowingAuthor)}
+            disabled={followMutation.isPending}
+            className={cn(
+              'flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-semibold border transition-all shrink-0',
+              isFollowingAuthor
+                ? 'border-primary/40 bg-primary/5 text-primary hover:bg-destructive/5 hover:border-destructive/40 hover:text-destructive'
+                : 'border-border text-muted-foreground hover:border-primary/40 hover:text-primary'
+            )}
+          >
+            {isFollowingAuthor ? <UserCheck className="w-3.5 h-3.5" /> : <UserPlus className="w-3.5 h-3.5" />}
+            {isFollowingAuthor ? 'Abonné' : 'Suivre'}
+          </button>
+        )}
       </div>
 
       {/* Keywords */}

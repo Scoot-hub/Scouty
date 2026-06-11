@@ -1,11 +1,14 @@
 import { useState, lazy, Suspense } from 'react';
-import { useParams, useSearchParams, Link } from 'react-router-dom';
+import { useParams, useSearchParams, Link, useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
+import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useMatchDetail, type MatchEvent, type MatchStat } from '@/hooks/use-api-football';
 import { useScoreBatVideos, useFotMobXG, useFDOrgForm, useFDOrgH2H, type FormEntry } from '@/hooks/use-match-enrichment';
 import { Card, CardContent } from '@/components/ui/card';
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs';
-import { Loader2, ChevronLeft, MapPin, User, AlertTriangle, ExternalLink, Play, TrendingUp, History, Zap } from 'lucide-react';
+import { Button } from '@/components/ui/button';
+import { toast } from 'sonner';
+import { Loader2, ChevronLeft, MapPin, User, AlertTriangle, ExternalLink, Play, TrendingUp, History, Zap, Bookmark, BookmarkCheck } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { useUtcOffset, formatTimeWithOffset } from '@/hooks/use-utc-offset';
 import { useResolvePlayerNames, type PlayerNameMatch } from '@/hooks/use-resolve-player-names';
@@ -318,11 +321,24 @@ function LineupColumn({ team, formation, players, subs, side, matches }: {
 
 // ── Main component ────────────────────────────────────────────────────────────
 
+function getAuthHeaders(): Record<string, string> {
+  try {
+    const raw = localStorage.getItem('scouthub_session');
+    if (!raw) return {};
+    const s = JSON.parse(raw);
+    const token = s?.access_token ?? s?.token ?? s?.session?.access_token;
+    if (!token) return {};
+    return { Authorization: `Bearer ${token}` };
+  } catch { return {}; }
+}
+
 export default function MatchDetail() {
   const { matchId } = useParams<{ matchId: string }>();
   const [searchParams] = useSearchParams();
   const { t, i18n } = useTranslation();
   const { utcOffset } = useUtcOffset();
+  const navigate = useNavigate();
+  const queryClient = useQueryClient();
 
   // StatsBomb match: matchId starts with "sb-"
   const isSbMatch = matchId?.startsWith('sb-');
@@ -396,6 +412,55 @@ export default function MatchDetail() {
   );
   const matches = nameMatches ?? {};
 
+  // Saved match state
+  const { data: savedData } = useQuery({
+    queryKey: ['saved-match-check', matchId],
+    queryFn: () => fetch(`/api/saved-matches?livescore_match_id=${encodeURIComponent(matchId ?? '')}`, {
+      headers: getAuthHeaders(),
+    }).then(r => r.json()),
+    enabled: !!matchId && !isSbMatch,
+    staleTime: 30_000,
+  });
+  const savedMatch = savedData?.matches?.[0] ?? null;
+
+  const { mutate: saveMatch, isPending: isSaving } = useMutation({
+    mutationFn: async () => {
+      const body = {
+        livescore_match_id: matchId,
+        home_team: data?.home_team ?? initHomeTeam,
+        away_team: data?.away_team ?? initAwayTeam,
+        home_badge: data?.home_badge ?? null,
+        away_badge: data?.away_badge ?? null,
+        score_home: data?.score_home ?? null,
+        score_away: data?.score_away ?? null,
+        ht_score_home: data?.ht_score_home ?? null,
+        ht_score_away: data?.ht_score_away ?? null,
+        competition: data?.competition ?? initCompetition,
+        country: data?.country ?? null,
+        country_code: data?.country_code ?? null,
+        match_date: data?.match_date ?? initDate ?? null,
+        match_time: data?.match_time ?? null,
+        venue: data?.venue ?? null,
+        referee: data?.referee ?? null,
+        status: data?.status ?? null,
+      };
+      const r = await fetch('/api/saved-matches', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
+        body: JSON.stringify(body),
+      });
+      if (!r.ok) throw new Error('Erreur lors de la sauvegarde');
+      return r.json();
+    },
+    onSuccess: (result) => {
+      queryClient.invalidateQueries({ queryKey: ['saved-match-check', matchId] });
+      queryClient.invalidateQueries({ queryKey: ['saved-matches'] });
+      toast.success('Match ajouté à votre bibliothèque');
+      navigate(`/saved-match/${result.id}`);
+    },
+    onError: () => toast.error('Impossible de sauvegarder ce match'),
+  });
+
   return (
     <div className="max-w-3xl mx-auto">
       {/* Back navigation */}
@@ -410,18 +475,44 @@ export default function MatchDetail() {
       </div>
 
       {/* Competition header */}
-      <div className="flex items-center gap-2 mb-4">
-        {flag && <span className="text-lg">{flag}</span>}
-        <div>
-          <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">
-            {competition || t('match_detail.loading')}
-          </p>
-          {matchDate && (
-            <p className="text-[11px] text-muted-foreground">
-              {formatMatchDate(matchDate, i18n.language)}
+      <div className="flex items-center justify-between gap-2 mb-4">
+        <div className="flex items-center gap-2">
+          {flag && <span className="text-lg">{flag}</span>}
+          <div>
+            <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">
+              {competition || t('match_detail.loading')}
             </p>
-          )}
+            {matchDate && (
+              <p className="text-[11px] text-muted-foreground">
+                {formatMatchDate(matchDate, i18n.language)}
+              </p>
+            )}
+          </div>
         </div>
+        {!isSbMatch && (
+          savedMatch ? (
+            <Button
+              size="sm"
+              variant="outline"
+              className="gap-1.5 text-primary border-primary/40"
+              onClick={() => navigate(`/saved-match/${savedMatch.id}`)}
+            >
+              <BookmarkCheck className="w-4 h-4" />
+              Ma bibliothèque
+            </Button>
+          ) : (
+            <Button
+              size="sm"
+              variant="outline"
+              disabled={isSaving || isLoading}
+              onClick={() => saveMatch()}
+              className="gap-1.5"
+            >
+              {isSaving ? <Loader2 className="w-4 h-4 animate-spin" /> : <Bookmark className="w-4 h-4" />}
+              Enregistrer
+            </Button>
+          )
+        )}
       </div>
 
       {/* ── Scoreboard card ── */}

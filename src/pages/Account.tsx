@@ -640,18 +640,18 @@ export default function Account() {
             </div>
             <div>
               <label className="text-xs font-medium text-muted-foreground">{t('account.first_name')}</label>
-              <Input className="mt-1" value={firstName} onChange={e => setFirstName(e.target.value)} placeholder={t('account.first_name_placeholder')} />
+              <Input className="mt-1" value={firstName} onChange={e => setFirstName(e.target.value.replace(/@/g, ''))} placeholder={t('account.first_name_placeholder')} />
             </div>
             <div>
               <label className="text-xs font-medium text-muted-foreground">{t('account.last_name')}</label>
-              <Input className="mt-1" value={lastName} onChange={e => setLastName(e.target.value)} placeholder={t('account.last_name_placeholder')} />
+              <Input className="mt-1" value={lastName} onChange={e => setLastName(e.target.value.replace(/@/g, ''))} placeholder={t('account.last_name_placeholder')} />
             </div>
           </div>
 
           {/* Display name (full_name) */}
           <div>
             <label className="text-sm font-medium text-muted-foreground">{t('account.display_name')}</label>
-            <Input className="mt-1" value={fullName} onChange={e => setFullName(e.target.value)} placeholder={t('auth.full_name_placeholder')} />
+            <Input className="mt-1" value={fullName} onChange={e => setFullName(e.target.value.replace(/@/g, ''))} placeholder={t('auth.full_name_placeholder')} />
             <p className="text-xs text-muted-foreground mt-1">{t('account.display_name_desc')}</p>
           </div>
 

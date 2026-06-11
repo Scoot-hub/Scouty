@@ -1088,6 +1088,10 @@ function sanitizeValueByColumn(col, value) {
   if (col === "name") {
     return sanitizePlayerName(value);
   }
+  // Profile name fields must never contain @ (breaks the @mention system)
+  if (col === 'full_name' || col === 'first_name' || col === 'last_name') {
+    return typeof value === 'string' ? value.replace(/@/g, '') : value;
+  }
   return value;
 }
 
@@ -2492,6 +2496,22 @@ async function _legacyRunMigrations() {
   try { await pool.query("ALTER TABLE organizations ADD COLUMN logo_url TEXT NULL"); } catch (err) { if (err?.errno !== 1060) console.warn("[warn] org logo_url migration:", err?.message); }
   try { await pool.query("ALTER TABLE organizations ADD COLUMN description TEXT NULL"); } catch (err) { if (err?.errno !== 1060) console.warn("[warn] org description migration:", err?.message); }
 
+  // org public-page customization columns
+  for (const [col, def] of [
+    ['slogan',             'VARCHAR(150) NULL'],
+    ['banner_url',         'TEXT NULL'],
+    ['website_url',        'VARCHAR(500) NULL'],
+    ['contact_email',      'VARCHAR(255) NULL'],
+    ['social_x',          'VARCHAR(255) NULL'],
+    ['social_linkedin',    'VARCHAR(255) NULL'],
+    ['social_instagram',   'VARCHAR(255) NULL'],
+    ['recruitment_status', "VARCHAR(20) NOT NULL DEFAULT 'open'"],
+    ['accent_color',       'CHAR(7) NULL'],
+  ]) {
+    try { await pool.query(`ALTER TABLE organizations ADD COLUMN \`${col}\` ${def}`); }
+    catch (err) { if (err?.errno !== 1060) console.warn(`[warn] org ${col} migration:`, err?.message); }
+  }
+
   // Ensure player_research table exists
   try {
     await pool.query(`
@@ -3230,6 +3250,17 @@ app.get("/api/page-access-info", authMiddleware, async (req, res) => {
   }
 });
 
+// ── Org slug helper (mirrors frontend slugify in use-organization.ts) ────
+function slugifyOrgName(name) {
+  if (!name) return '';
+  return String(name)
+    .normalize('NFD')
+    .replace(/[̀-ͯ]/g, '')   // strip combining diacritical marks
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/(^-|-$)/g, '');
+}
+
 // ── Notification helper ──────────────────────────────────────────────────
 async function createNotification(userId, { type, title, message, icon, link, playerId } = {}) {
   try {
@@ -3420,7 +3451,7 @@ app.post("/api/auth/signup", rateLimitAuth, async (req, res) => {
   const { email, password, fullName = "", club = "", role = "scout", referralCode = "",
           country = "", _hp = "", _t = "" } = req.body || {};
   const normalizedEmail = String(email || "").trim().toLowerCase();
-  const normalizedFullName = String(fullName || "").trim();
+  const normalizedFullName = String(fullName || "").trim().replace(/@/g, '');
   const normalizedClub = String(club || "").trim();
   const normalizedRole = String(role || "scout").trim();
   const normalizedCountry = String(country || "").trim().slice(0, 100);
@@ -3724,13 +3755,15 @@ app.post("/api/auth/google", rateLimitAuth, async (req, res) => {
         [oauthSub, loginIpHashGoogle, userId]
       );
       // Update profile with Google name/photo if fields are empty
+      const gFirst = (given_name || '').replace(/@/g, '') || null;
+      const gLast  = (family_name || '').replace(/@/g, '') || null;
       await conn.query(
         `UPDATE profiles SET
           first_name = COALESCE(NULLIF(first_name, ''), ?),
           last_name  = COALESCE(NULLIF(last_name, ''), ?),
           photo_url  = COALESCE(NULLIF(photo_url, ''), ?)
          WHERE user_id = ?`,
-        [given_name || null, family_name || null, picture || null, userId]
+        [gFirst, gLast, picture || null, userId]
       );
     } else {
       isNew = true;
@@ -3742,11 +3775,13 @@ app.post("/api/auth/google", rateLimitAuth, async (req, res) => {
         [userId, normalizedEmail, oauthSub, ip, ipHash]
       );
 
-      const fullName = [given_name, family_name].filter(Boolean).join(" ").trim();
+      const gFirstNew = (given_name || '').replace(/@/g, '') || null;
+      const gLastNew  = (family_name || '').replace(/@/g, '') || null;
+      const fullName = [gFirstNew, gLastNew].filter(Boolean).join(" ").trim();
       await conn.query(
         `INSERT INTO profiles (id, user_id, full_name, first_name, last_name, photo_url, role, created_at, updated_at)
          VALUES (?, ?, ?, ?, ?, ?, 'scout', NOW(), NOW())`,
-        [uuidv4(), userId, fullName || normalizedEmail, given_name || null, family_name || null, picture || null]
+        [uuidv4(), userId, fullName || normalizedEmail, gFirstNew, gLastNew, picture || null]
       );
       await conn.query("INSERT INTO user_roles (id, user_id, role, created_at) VALUES (?, ?, 'user', NOW())", [uuidv4(), userId]);
       await conn.query("INSERT INTO user_subscriptions (id, user_id, is_premium, premium_since, created_at, updated_at) VALUES (?, ?, 0, NULL, NOW(), NOW())", [uuidv4(), userId]);
@@ -7120,7 +7155,7 @@ app.post("/api/rpc/get_org_members", authMiddleware, async (req, res) => {
       `SELECT om.id, om.user_id, om.role, om.joined_at, om.messaging_blocked,
               p.full_name, p.club, p.role AS profile_role, p.photo_url,
               p.social_x, p.social_instagram, p.social_linkedin, p.social_public,
-              u.email
+              u.email, u.created_at AS user_created_at
        FROM organization_members om
        LEFT JOIN profiles p ON p.user_id = om.user_id
        LEFT JOIN users u ON u.id = om.user_id
@@ -7134,6 +7169,7 @@ app.post("/api/rpc/get_org_members", authMiddleware, async (req, res) => {
       user_id: r.user_id,
       role: r.role,
       joined_at: r.joined_at,
+      user_created_at: r.user_created_at,
       email: r.email,
       messaging_blocked: !!r.messaging_blocked,
       profile: {
@@ -7720,6 +7756,117 @@ app.post("/api/community/bulk", authMiddleware, async (req, res) => {
     console.error("[community/bulk]", err);
     return res.status(500).json({ error: "Erreur serveur" });
   }
+});
+
+// ── Community: Polls ─────────────────────────────────────────────────────────
+
+app.post("/api/community/polls", authMiddleware, async (req, res) => {
+  const { post_id, options } = req.body || {};
+  const validOpts = Array.isArray(options) ? options.map(o => String(o).trim()).filter(Boolean) : [];
+  if (!post_id || validOpts.length < 2) return res.status(400).json({ error: "post_id et 2 options minimum requis" });
+  try {
+    const pollId = uuidv4();
+    await pool.query("INSERT INTO community_polls (id, post_id) VALUES (?, ?)", [pollId, post_id]);
+    for (let i = 0; i < validOpts.length; i++) {
+      await pool.query("INSERT INTO community_poll_options (id, poll_id, label, display_order) VALUES (?, ?, ?, ?)", [uuidv4(), pollId, validOpts[i], i]);
+    }
+    return res.json({ id: pollId });
+  } catch (err) { console.error("[community/polls POST]", err); return res.status(500).json({ error: "Erreur serveur" }); }
+});
+
+app.get("/api/community/polls", authMiddleware, async (req, res) => {
+  const rawIds = String(req.query.post_ids || '');
+  const post_ids = rawIds.split(',').map(s => s.trim()).filter(Boolean);
+  if (!post_ids.length) return res.json({});
+  try {
+    const ph = post_ids.map(() => '?').join(',');
+    const [rows] = await pool.query(
+      `SELECT p.id as poll_id, p.post_id, o.id as option_id, o.label, o.vote_count, o.display_order
+       FROM community_polls p JOIN community_poll_options o ON o.poll_id = p.id
+       WHERE p.post_id IN (${ph}) ORDER BY p.post_id, o.display_order`,
+      post_ids
+    );
+    const pollIds = [...new Set(rows.map(r => r.poll_id))];
+    let voteMap = {};
+    if (pollIds.length) {
+      const phP = pollIds.map(() => '?').join(',');
+      const [votes] = await pool.query(`SELECT poll_id, option_id FROM community_poll_votes WHERE poll_id IN (${phP}) AND user_id = ?`, [...pollIds, req.user.id]);
+      for (const v of votes) voteMap[v.poll_id] = v.option_id;
+    }
+    const result = {};
+    for (const row of rows) {
+      if (!result[row.post_id]) result[row.post_id] = { id: row.poll_id, post_id: row.post_id, myVote: voteMap[row.poll_id] || null, options: [] };
+      result[row.post_id].options.push({ id: row.option_id, label: row.label, vote_count: Number(row.vote_count) });
+    }
+    return res.json(result);
+  } catch (err) { console.error("[community/polls GET]", err); return res.status(500).json({ error: "Erreur serveur" }); }
+});
+
+app.post("/api/community/polls/:pollId/vote", authMiddleware, async (req, res) => {
+  const { option_id } = req.body || {};
+  if (!option_id) return res.status(400).json({ error: "option_id requis" });
+  try {
+    const [[poll]] = await pool.query("SELECT id FROM community_polls WHERE id = ?", [req.params.pollId]);
+    if (!poll) return res.status(404).json({ error: "Sondage introuvable" });
+    const [[option]] = await pool.query("SELECT id FROM community_poll_options WHERE id = ? AND poll_id = ?", [option_id, req.params.pollId]);
+    if (!option) return res.status(404).json({ error: "Option introuvable" });
+    const [[existing]] = await pool.query("SELECT id, option_id FROM community_poll_votes WHERE poll_id = ? AND user_id = ?", [req.params.pollId, req.user.id]);
+    if (existing) {
+      if (existing.option_id !== option_id) {
+        await pool.query("UPDATE community_poll_options SET vote_count = GREATEST(vote_count - 1, 0) WHERE id = ?", [existing.option_id]);
+        await pool.query("UPDATE community_poll_options SET vote_count = vote_count + 1 WHERE id = ?", [option_id]);
+        await pool.query("UPDATE community_poll_votes SET option_id = ? WHERE id = ?", [option_id, existing.id]);
+      }
+    } else {
+      await pool.query("INSERT INTO community_poll_votes (id, poll_id, option_id, user_id) VALUES (?, ?, ?, ?)", [uuidv4(), req.params.pollId, option_id, req.user.id]);
+      await pool.query("UPDATE community_poll_options SET vote_count = vote_count + 1 WHERE id = ?", [option_id]);
+    }
+    const [options] = await pool.query("SELECT id, label, vote_count, display_order FROM community_poll_options WHERE poll_id = ? ORDER BY display_order", [req.params.pollId]);
+    return res.json({ options: options.map(o => ({ ...o, vote_count: Number(o.vote_count) })), myVote: option_id });
+  } catch (err) { console.error("[community/polls/vote]", err); return res.status(500).json({ error: "Erreur serveur" }); }
+});
+
+// ── Community: Follows ────────────────────────────────────────────────────────
+
+app.get("/api/community/following", authMiddleware, async (req, res) => {
+  try {
+    const [rows] = await pool.query("SELECT following_id FROM community_follows WHERE follower_id = ?", [req.user.id]);
+    return res.json(rows.map(r => r.following_id));
+  } catch (err) { return res.status(500).json({ error: "Erreur serveur" }); }
+});
+
+app.post("/api/community/follow/:userId", authMiddleware, async (req, res) => {
+  if (req.params.userId === req.user.id) return res.status(400).json({ error: "Impossible de vous suivre vous-même" });
+  try {
+    await pool.query("INSERT IGNORE INTO community_follows (id, follower_id, following_id) VALUES (?, ?, ?)", [uuidv4(), req.user.id, req.params.userId]);
+    return res.json({ ok: true });
+  } catch (err) { return res.status(500).json({ error: "Erreur serveur" }); }
+});
+
+app.delete("/api/community/follow/:userId", authMiddleware, async (req, res) => {
+  try {
+    await pool.query("DELETE FROM community_follows WHERE follower_id = ? AND following_id = ?", [req.user.id, req.params.userId]);
+    return res.json({ ok: true });
+  } catch (err) { return res.status(500).json({ error: "Erreur serveur" }); }
+});
+
+// ── Community: Reports ────────────────────────────────────────────────────────
+
+app.post("/api/community/reports", authMiddleware, async (req, res) => {
+  const { post_id, reply_id, reason } = req.body || {};
+  if (!reason || (!post_id && !reply_id)) return res.status(400).json({ error: "Raison et cible requis" });
+  try {
+    if (post_id) {
+      const [[ex]] = await pool.query("SELECT id FROM community_reports WHERE reporter_id = ? AND post_id = ?", [req.user.id, post_id]);
+      if (ex) return res.status(409).json({ error: "Déjà signalé" });
+    }
+    if (reply_id) {
+      const [[ex]] = await pool.query("SELECT id FROM community_reports WHERE reporter_id = ? AND reply_id = ?", [req.user.id, reply_id]);
+      if (ex) return res.status(409).json({ error: "Déjà signalé" });
+    }
+    await pool.query("INSERT INTO community_reports (id, reporter_id, post_id, reply_id, reason) VALUES (?, ?, ?, ?, ?)", [uuidv4(), req.user.id, post_id || null, reply_id || null, reason]);
+    return res.json({ ok: true });
+  } catch (err) { console.error("[community/reports]", err); return res.status(500).json({ error: "Erreur serveur" }); }
 });
 
 // ── Community: admin clear all ───────────────────────────────────────────
@@ -11070,6 +11217,173 @@ app.post("/api/account/apply-referral", authMiddleware, async (req, res) => {
   }
 });
 
+// GET /api/organizations/public — list public organisations (org_visibility = true), optional ?q= search
+app.get("/api/organizations/public", authMiddleware, async (req, res) => {
+  const q = (req.query.q || '').trim();
+  try {
+    let sql = `
+      SELECT o.id, o.name, o.type, o.logo_url, o.description, o.settings, o.invite_code,
+             COUNT(om.user_id) AS member_count
+      FROM organizations o
+      LEFT JOIN organization_members om ON om.organization_id = o.id
+      WHERE o.settings IS NOT NULL
+    `;
+    const params = [];
+    if (q) { sql += ` AND o.name LIKE ?`; params.push(`%${q}%`); }
+    sql += ` GROUP BY o.id ORDER BY member_count DESC LIMIT 100`;
+    const [rows] = await pool.query(sql, params);
+
+    const results = rows
+      .filter(row => {
+        try {
+          const s = typeof row.settings === 'string' ? JSON.parse(row.settings) : (row.settings || {});
+          return s.org_visibility === true;
+        } catch { return false; }
+      })
+      .map(o => {
+        const s = typeof o.settings === 'string' ? JSON.parse(o.settings) : (o.settings || {});
+        return {
+          id: o.id,
+          name: o.name,
+          type: o.type,
+          logo_url: o.logo_url || null,
+          description: o.description || null,
+          member_count: Number(o.member_count),
+          max_members: Number(s.max_members) || 0,
+          require_approval_to_join: !!s.require_approval_to_join,
+          recruitment_status: s.recruitment_status || 'open',
+          slogan: s.slogan || null,
+          theme: s.theme || null,
+          invite_code: o.invite_code,
+        };
+      });
+
+    return res.json(results);
+  } catch (err) {
+    console.error("[org/public]", err);
+    return res.status(500).json({ error: "Erreur serveur." });
+  }
+});
+
+// GET /api/organizations/public/:id — single public org profile
+app.get("/api/organizations/public/:id", authMiddleware, async (req, res) => {
+  const { id } = req.params;
+  try {
+    const [rows] = await pool.query(`
+      SELECT o.id, o.name, o.type, o.logo_url, o.description, o.settings, o.invite_code,
+             o.slogan, o.banner_url, o.website_url, o.contact_email,
+             o.social_x, o.social_linkedin, o.social_instagram,
+             o.recruitment_status AS db_recruitment_status, o.accent_color, o.created_at,
+             COUNT(om.user_id) AS member_count
+      FROM organizations o
+      LEFT JOIN organization_members om ON om.organization_id = o.id
+      WHERE o.id = ?
+      GROUP BY o.id
+    `, [id]);
+    if (!rows.length) return res.status(404).json({ error: "Organisation introuvable." });
+    const row = rows[0];
+    const s = typeof row.settings === 'string' ? JSON.parse(row.settings) : (row.settings || {});
+    if (!s.org_visibility) return res.status(404).json({ error: "Organisation introuvable." });
+    return res.json({
+      id: row.id,
+      name: row.name,
+      type: row.type,
+      logo_url: row.logo_url || null,
+      description: row.description || null,
+      member_count: Number(row.member_count),
+      max_members: Number(s.max_members) || 0,
+      require_approval_to_join: !!s.require_approval_to_join,
+      recruitment_status: row.db_recruitment_status || s.recruitment_status || 'open',
+      slogan: row.slogan || s.slogan || null,
+      theme: s.theme || null,
+      invite_code: row.invite_code,
+      banner_url: row.banner_url || null,
+      website_url: row.website_url || null,
+      contact_email: row.contact_email || null,
+      social_x: row.social_x || null,
+      social_linkedin: row.social_linkedin || null,
+      social_instagram: row.social_instagram || null,
+      accent_color: row.accent_color || null,
+      created_at: row.created_at || null,
+      allow_member_directory: !!s.allow_member_directory,
+    });
+  } catch (err) {
+    console.error("[org/public/:id]", err);
+    return res.status(500).json({ error: "Erreur serveur." });
+  }
+});
+
+// GET /api/organizations/public/:id/members — public member list (only if allow_member_directory enabled)
+app.get("/api/organizations/public/:id/members", authMiddleware, async (req, res) => {
+  const { id } = req.params;
+  try {
+    const [[orgRow]] = await pool.query(
+      "SELECT settings FROM organizations WHERE id = ? LIMIT 1", [id]
+    );
+    if (!orgRow) return res.status(404).json({ error: "Organisation introuvable." });
+    const s = typeof orgRow.settings === 'string' ? JSON.parse(orgRow.settings) : (orgRow.settings || {});
+    if (!s.org_visibility || !s.allow_member_directory) {
+      return res.status(403).json({ error: "Annuaire non disponible." });
+    }
+    const [members] = await pool.query(`
+      SELECT om.user_id, om.role, om.joined_at,
+             p.full_name, p.photo_url, p.club, p.role AS profile_role
+      FROM organization_members om
+      LEFT JOIN profiles p ON p.user_id = om.user_id
+      WHERE om.organization_id = ?
+      ORDER BY FIELD(om.role,'owner','admin','moderator','member'), p.full_name ASC
+      LIMIT 50
+    `, [id]);
+    return res.json(members.map(m => ({
+      user_id: m.user_id,
+      role: m.role,
+      joined_at: m.joined_at,
+      full_name: m.full_name || null,
+      photo_url: m.photo_url || null,
+      club: m.club || null,
+      profile_role: m.profile_role || null,
+    })));
+  } catch (err) {
+    console.error("[org/public/:id/members]", err);
+    return res.status(500).json({ error: "Erreur serveur." });
+  }
+});
+
+// POST /api/organizations — create a new organisation (max 2 owned per user)
+app.post("/api/organizations", authMiddleware, async (req, res) => {
+  const userId = req.user.id;
+  const { name, type } = req.body;
+  if (!name?.trim()) return res.status(400).json({ error: "Le nom est requis." });
+
+  try {
+    // Enforce 2-org ownership limit
+    const [[{ cnt }]] = await pool.query(
+      "SELECT COUNT(*) AS cnt FROM organization_members WHERE user_id = ? AND role = 'owner'",
+      [userId]
+    );
+    if (Number(cnt) >= 2) return res.status(403).json({ error: "MAX_ORGS_REACHED" });
+
+    const orgId = require('crypto').randomUUID();
+    const inviteCode = require('crypto').randomUUID().replace(/-/g, '').substring(0, 16).toLowerCase();
+
+    await pool.query(
+      "INSERT INTO organizations (id, name, type, invite_code, created_by) VALUES (?, ?, ?, ?, ?)",
+      [orgId, name.trim(), type || 'club', inviteCode, userId]
+    );
+    const memberId = require('crypto').randomUUID();
+    await pool.query(
+      "INSERT INTO organization_members (id, organization_id, user_id, role) VALUES (?, ?, ?, 'owner')",
+      [memberId, orgId, userId]
+    );
+
+    const [[org]] = await pool.query("SELECT * FROM organizations WHERE id = ? LIMIT 1", [orgId]);
+    return res.json(org);
+  } catch (err) {
+    console.error("[org/create]", err);
+    return res.status(500).json({ error: "Erreur serveur." });
+  }
+});
+
 // PATCH /api/organizations/:id/logo — upload org logo (owner/admin only)
 app.patch("/api/organizations/:id/logo", authMiddleware, upload.single("file"), async (req, res) => {
   const { id } = req.params;
@@ -11134,6 +11448,92 @@ app.delete("/api/organizations/:id/logo", authMiddleware, async (req, res) => {
   }
 });
 
+// PATCH /api/organizations/:id/public-page — update public page text fields (owner/admin)
+app.patch("/api/organizations/:id/public-page", authMiddleware, async (req, res) => {
+  const { id } = req.params;
+  try {
+    const [memberRows] = await pool.query(
+      "SELECT role FROM organization_members WHERE organization_id = ? AND user_id = ? LIMIT 1",
+      [id, req.user.id]
+    );
+    if (!memberRows.length || !['owner', 'admin'].includes(memberRows[0].role)) {
+      return res.status(403).json({ error: "Réservé au propriétaire et aux admins." });
+    }
+    const { slogan, website_url, contact_email, social_x, social_linkedin, social_instagram, recruitment_status, accent_color } = req.body || {};
+    const VALID_STATUS = ['open', 'recruiting', 'closed'];
+    const VALID_COLOR = /^#[0-9a-fA-F]{6}$/;
+    const updates = [];
+    const params = [];
+    if (slogan !== undefined)          { updates.push('slogan = ?');            params.push(slogan === '' ? null : String(slogan).slice(0, 150)); }
+    if (website_url !== undefined)     { updates.push('website_url = ?');       params.push(website_url === '' ? null : String(website_url).slice(0, 500)); }
+    if (contact_email !== undefined)   { updates.push('contact_email = ?');     params.push(contact_email === '' ? null : String(contact_email).slice(0, 255)); }
+    if (social_x !== undefined)        { updates.push('social_x = ?');          params.push(social_x === '' ? null : String(social_x).slice(0, 255)); }
+    if (social_linkedin !== undefined) { updates.push('social_linkedin = ?');   params.push(social_linkedin === '' ? null : String(social_linkedin).slice(0, 255)); }
+    if (social_instagram !== undefined){ updates.push('social_instagram = ?');  params.push(social_instagram === '' ? null : String(social_instagram).slice(0, 255)); }
+    if (recruitment_status !== undefined && VALID_STATUS.includes(recruitment_status)) {
+      updates.push('recruitment_status = ?'); params.push(recruitment_status);
+    }
+    if (accent_color !== undefined) {
+      updates.push('accent_color = ?');
+      params.push(accent_color === '' ? null : (VALID_COLOR.test(accent_color) ? accent_color : null));
+    }
+    if (!updates.length) return res.status(400).json({ error: "Rien à mettre à jour." });
+    updates.push('updated_at = NOW()');
+    params.push(id);
+    await pool.query(`UPDATE organizations SET ${updates.join(', ')} WHERE id = ?`, params);
+    return res.json({ ok: true });
+  } catch (err) {
+    console.error("[org/public-page]", err);
+    return res.status(500).json({ error: "Erreur serveur." });
+  }
+});
+
+// PATCH /api/organizations/:id/banner — upload banner image (owner/admin)
+app.patch("/api/organizations/:id/banner", authMiddleware, upload.single("file"), async (req, res) => {
+  const { id } = req.params;
+  if (!req.file) return res.status(400).json({ error: "Aucun fichier fourni." });
+  try {
+    const [memberRows] = await pool.query(
+      "SELECT role FROM organization_members WHERE organization_id = ? AND user_id = ? LIMIT 1",
+      [id, req.user.id]
+    );
+    if (!memberRows.length || !['owner', 'admin'].includes(memberRows[0].role)) {
+      try { fs.unlinkSync(req.file.path); } catch {}
+      return res.status(403).json({ error: "Non autorisé." });
+    }
+    const [orgRows] = await pool.query("SELECT banner_url FROM organizations WHERE id = ? LIMIT 1", [id]);
+    await deleteImageFromDb(orgRows[0]?.banner_url);
+    await deleteStoredFile(orgRows[0]?.banner_url);
+    const publicUrl = await saveImageToDb(req.file.path, `org_banner_${id}`, req.file.mimetype);
+    await pool.query("UPDATE organizations SET banner_url = ?, updated_at = NOW() WHERE id = ?", [publicUrl, id]);
+    return res.json({ banner_url: publicUrl });
+  } catch (err) {
+    try { if (req.file?.path) fs.unlinkSync(req.file.path); } catch {}
+    return res.status(500).json({ error: err?.message || "Erreur serveur." });
+  }
+});
+
+// DELETE /api/organizations/:id/banner — remove banner (owner/admin)
+app.delete("/api/organizations/:id/banner", authMiddleware, async (req, res) => {
+  const { id } = req.params;
+  try {
+    const [memberRows] = await pool.query(
+      "SELECT role FROM organization_members WHERE organization_id = ? AND user_id = ? LIMIT 1",
+      [id, req.user.id]
+    );
+    if (!memberRows.length || !['owner', 'admin'].includes(memberRows[0].role)) {
+      return res.status(403).json({ error: "Non autorisé." });
+    }
+    const [orgRows] = await pool.query("SELECT banner_url FROM organizations WHERE id = ? LIMIT 1", [id]);
+    await deleteImageFromDb(orgRows[0]?.banner_url);
+    await deleteStoredFile(orgRows[0]?.banner_url);
+    await pool.query("UPDATE organizations SET banner_url = NULL, updated_at = NOW() WHERE id = ?", [id]);
+    return res.json({ ok: true });
+  } catch (err) {
+    return res.status(500).json({ error: "Erreur serveur." });
+  }
+});
+
 // PATCH /api/organizations/:id — update name and/or description (owner/admin)
 app.patch("/api/organizations/:id", authMiddleware, async (req, res) => {
   const { id } = req.params;
@@ -11188,6 +11588,16 @@ app.patch("/api/organizations/:id/settings", authMiddleware, async (req, res) =>
     // max_members: 0 = unlimited, positive int = cap
     if (typeof settings.max_members === 'number' && settings.max_members >= 0) {
       safe.max_members = Math.floor(settings.max_members);
+    }
+    // String fields
+    if (['open', 'recruiting', 'closed'].includes(settings.recruitment_status)) {
+      safe.recruitment_status = settings.recruitment_status;
+    }
+    if (typeof settings.slogan === 'string') {
+      safe.slogan = settings.slogan.trim().slice(0, 200);
+    }
+    if (typeof settings.theme === 'string') {
+      safe.theme = settings.theme.trim().slice(0, 50);
     }
     await pool.query("UPDATE organizations SET settings = ?, updated_at = NOW() WHERE id = ?", [JSON.stringify(safe), id]);
     return res.json({ ok: true, settings: safe });
@@ -11727,8 +12137,9 @@ app.post("/api/organizations/:orgId/messages", authMiddleware, async (req, res) 
     }
 
     // Check org-level messaging setting
-    const [[orgSettingsRow]] = await pool.query("SELECT settings FROM organizations WHERE id = ? LIMIT 1", [orgId]);
+    const [[orgSettingsRow]] = await pool.query("SELECT settings, name FROM organizations WHERE id = ? LIMIT 1", [orgId]);
     const orgCfg = (() => { try { const s = orgSettingsRow?.settings; return typeof s === 'string' ? JSON.parse(s) : (s || {}); } catch { return {}; } })();
+    const orgSlug = slugifyOrgName(orgSettingsRow?.name) || orgId;
     if (orgCfg.allow_messaging === false) {
       return res.status(403).json({ error: "messaging_disabled" });
     }
@@ -11778,6 +12189,8 @@ app.post("/api/organizations/:orgId/messages", authMiddleware, async (req, res) 
     );
     const senderName = sender?.name ?? 'quelqu\'un';
 
+    const chatLink = `/organization/${orgSlug}/chat`;
+
     // Targeted reply notification (to the message author, if different from sender)
     if (validReplyId && repliedToUserId && repliedToUserId !== req.user.id) {
       createNotification(repliedToUserId, {
@@ -11785,15 +12198,15 @@ app.post("/api/organizations/:orgId/messages", authMiddleware, async (req, res) 
         title: `${senderName} a répondu à votre message`,
         message: trimmed.length > 80 ? trimmed.slice(0, 80) + '…' : trimmed,
         icon: 'Reply',
-        link: `/organization/${orgId}/chat`,
+        link: chatLink,
       }).catch(() => {});
     }
 
-    // Mention notifications (when enable_mentions is on)
+    // Mention notifications — only when enable_mentions is explicitly true
     const mentionedUserIds = new Set();
-    if (orgCfg.enable_mentions !== false) {
+    if (orgCfg.enable_mentions === true) {
       const mentionMatches = [...trimmed.matchAll(/@([\wÀ-ž][\wÀ-ž\s-]{0,29})/g)]
-        .map(m => m[1].trim().toLowerCase());
+        .map(m => m[1].trim().replace(/ /g, ' ').toLowerCase());
       if (mentionMatches.length > 0) {
         const [memberRows] = await pool.query(
           `SELECT om.user_id, COALESCE(p.full_name, '') AS full_name
@@ -11812,7 +12225,7 @@ app.post("/api/organizations/:orgId/messages", authMiddleware, async (req, res) 
               title: `${senderName} vous a mentionné`,
               message: trimmed.length > 80 ? trimmed.slice(0, 80) + '…' : trimmed,
               icon: 'AtSign',
-              link: `/organization/${orgId}/chat`,
+              link: chatLink,
             }).catch(() => {});
           }
         }
@@ -11831,7 +12244,7 @@ app.post("/api/organizations/:orgId/messages", authMiddleware, async (req, res) 
         title: `Message de ${senderName}`,
         message: trimmed.length > 80 ? trimmed.slice(0, 80) + '…' : trimmed,
         icon: 'MessageSquare',
-        link: `/organization/${orgId}/chat`,
+        link: chatLink,
       }).catch(() => {});
     }
 
@@ -25325,6 +25738,344 @@ app.get('/api/statsbomb/match/:id', authMiddleware, async (req, res) => {
     return res.json({ match, performers, lineups });
   } catch (err) {
     return res.status(500).json({ error: err?.message });
+  }
+});
+
+// ── Community: Polls, Follows, Reports ────────────────────────────────────────
+
+pool.query(`CREATE TABLE IF NOT EXISTS community_polls (
+  id VARCHAR(36) PRIMARY KEY,
+  post_id VARCHAR(36) NOT NULL,
+  question VARCHAR(500) NOT NULL DEFAULT '',
+  ends_at DATETIME NULL,
+  created_at DATETIME DEFAULT NOW(),
+  INDEX idx_cp_post (post_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`).catch(() => {});
+
+pool.query(`CREATE TABLE IF NOT EXISTS community_poll_options (
+  id VARCHAR(36) PRIMARY KEY,
+  poll_id VARCHAR(36) NOT NULL,
+  label VARCHAR(255) NOT NULL,
+  vote_count INT NOT NULL DEFAULT 0,
+  display_order INT NOT NULL DEFAULT 0,
+  INDEX idx_cpo_poll (poll_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`).catch(() => {});
+
+pool.query(`CREATE TABLE IF NOT EXISTS community_poll_votes (
+  id VARCHAR(36) PRIMARY KEY,
+  poll_id VARCHAR(36) NOT NULL,
+  option_id VARCHAR(36) NOT NULL,
+  user_id VARCHAR(36) NOT NULL,
+  created_at DATETIME DEFAULT NOW(),
+  UNIQUE KEY uniq_poll_vote (poll_id, user_id),
+  INDEX idx_cpv_poll (poll_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`).catch(() => {});
+
+pool.query(`CREATE TABLE IF NOT EXISTS community_follows (
+  id VARCHAR(36) PRIMARY KEY,
+  follower_id VARCHAR(36) NOT NULL,
+  following_id VARCHAR(36) NOT NULL,
+  created_at DATETIME DEFAULT NOW(),
+  UNIQUE KEY uniq_community_follow (follower_id, following_id),
+  INDEX idx_cf_follower (follower_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`).catch(() => {});
+
+pool.query(`CREATE TABLE IF NOT EXISTS community_reports (
+  id VARCHAR(36) PRIMARY KEY,
+  reporter_id VARCHAR(36) NOT NULL,
+  post_id VARCHAR(36) NULL,
+  reply_id VARCHAR(36) NULL,
+  reason VARCHAR(100) NOT NULL,
+  created_at DATETIME DEFAULT NOW(),
+  INDEX idx_cr_post (post_id),
+  INDEX idx_cr_reply (reply_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`).catch(() => {});
+
+// ── Match Assignment extras (rich_notes + files) ─────────────────────────────
+
+pool.query(`ALTER TABLE match_assignments ADD COLUMN rich_notes LONGTEXT NULL`).catch(() => {});
+
+pool.query(`CREATE TABLE IF NOT EXISTS match_assignment_files (
+  id VARCHAR(36) PRIMARY KEY,
+  assignment_id VARCHAR(36) NOT NULL,
+  user_id VARCHAR(36) NOT NULL,
+  file_name VARCHAR(500) NOT NULL,
+  file_url TEXT NOT NULL,
+  mime_type VARCHAR(200),
+  file_size BIGINT,
+  uploaded_at DATETIME DEFAULT NOW(),
+  INDEX idx_maf_assignment (assignment_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`).catch(() => {});
+
+// GET /api/match-assignments/:id — single assignment + its extra files
+app.get("/api/match-assignments/:id", authMiddleware, async (req, res) => {
+  try {
+    const [[row]] = await pool.query(
+      "SELECT * FROM match_assignments WHERE id = ? AND (user_id = ? OR assigned_to = ?)",
+      [req.params.id, req.user.id, req.user.id]
+    );
+    if (!row) return res.status(404).json({ error: "Affectation introuvable" });
+    const [files] = await pool.query(
+      "SELECT id, file_name, file_url, mime_type, file_size, uploaded_at FROM match_assignment_files WHERE assignment_id = ? ORDER BY uploaded_at DESC",
+      [req.params.id]
+    );
+    return res.json({ assignment: row, files });
+  } catch (err) {
+    return res.status(500).json({ error: err?.message });
+  }
+});
+
+// PUT /api/match-assignments/:id/rich-notes — update rich notes
+app.put("/api/match-assignments/:id/rich-notes", authMiddleware, async (req, res) => {
+  try {
+    const { rich_notes } = req.body || {};
+    const [[row]] = await pool.query(
+      "SELECT id, user_id, assigned_to FROM match_assignments WHERE id = ?",
+      [req.params.id]
+    );
+    if (!row) return res.status(404).json({ error: "Affectation introuvable" });
+    if (row.user_id !== req.user.id && row.assigned_to !== req.user.id) return res.status(403).json({ error: "Non autorisé" });
+    await pool.query("UPDATE match_assignments SET rich_notes = ? WHERE id = ?", [rich_notes ?? null, req.params.id]);
+    return res.json({ ok: true });
+  } catch (err) {
+    return res.status(500).json({ error: err?.message });
+  }
+});
+
+// POST /api/match-assignments/:id/files — upload a file
+app.post("/api/match-assignments/:id/files", authMiddleware, upload.single('file'), async (req, res) => {
+  try {
+    const [[row]] = await pool.query(
+      "SELECT id, user_id, assigned_to FROM match_assignments WHERE id = ?",
+      [req.params.id]
+    );
+    if (!row) return res.status(404).json({ error: "Affectation introuvable" });
+    if (row.user_id !== req.user.id && row.assigned_to !== req.user.id) return res.status(403).json({ error: "Non autorisé" });
+    if (!req.file) return res.status(400).json({ error: "Fichier manquant" });
+    const ext = path.extname(req.file.originalname) || '';
+    const safeName = `massign_${req.params.id}_${Date.now()}${ext}`;
+    const fileUrl = await saveUploadedFile(req.file.path, safeName, req.file.mimetype);
+    const fileId = uuidv4();
+    await pool.query(
+      "INSERT INTO match_assignment_files (id, assignment_id, user_id, file_name, file_url, mime_type, file_size) VALUES (?, ?, ?, ?, ?, ?, ?)",
+      [fileId, req.params.id, req.user.id, req.file.originalname, fileUrl, req.file.mimetype, req.file.size]
+    );
+    return res.status(201).json({ id: fileId, file_name: req.file.originalname, file_url: fileUrl, mime_type: req.file.mimetype, file_size: req.file.size });
+  } catch (err) {
+    return res.status(500).json({ error: err?.message });
+  }
+});
+
+// DELETE /api/match-assignments/:id/files/:fileId
+app.delete("/api/match-assignments/:id/files/:fileId", authMiddleware, async (req, res) => {
+  try {
+    const [[file]] = await pool.query(
+      "SELECT file_url FROM match_assignment_files WHERE id = ? AND assignment_id = ? AND user_id = ?",
+      [req.params.fileId, req.params.id, req.user.id]
+    );
+    if (!file) return res.status(404).json({ error: "Fichier introuvable" });
+    await deleteStoredFile(file.file_url).catch(() => {});
+    await pool.query("DELETE FROM match_assignment_files WHERE id = ?", [req.params.fileId]);
+    return res.json({ ok: true });
+  } catch (err) {
+    return res.status(500).json({ error: err?.message });
+  }
+});
+
+// ── Saved Matches (Match Library) ────────────────────────────────────────────
+
+pool.query(`CREATE TABLE IF NOT EXISTS saved_matches (
+  id VARCHAR(36) PRIMARY KEY,
+  user_id VARCHAR(36) NOT NULL,
+  livescore_match_id VARCHAR(100) NULL,
+  home_team VARCHAR(255),
+  away_team VARCHAR(255),
+  home_badge TEXT,
+  away_badge TEXT,
+  score_home INT,
+  score_away INT,
+  ht_score_home INT,
+  ht_score_away INT,
+  competition VARCHAR(255),
+  country VARCHAR(100),
+  country_code CHAR(5),
+  match_date DATE,
+  match_time VARCHAR(20),
+  venue TEXT,
+  referee VARCHAR(255),
+  status VARCHAR(20),
+  rich_notes LONGTEXT,
+  saved_at DATETIME DEFAULT NOW(),
+  updated_at DATETIME DEFAULT NOW() ON UPDATE NOW(),
+  INDEX idx_sm_user (user_id),
+  INDEX idx_sm_livescore (livescore_match_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`).catch(() => {});
+
+pool.query(`CREATE TABLE IF NOT EXISTS saved_match_files (
+  id VARCHAR(36) PRIMARY KEY,
+  saved_match_id VARCHAR(36) NOT NULL,
+  user_id VARCHAR(36) NOT NULL,
+  file_name VARCHAR(500) NOT NULL,
+  file_url TEXT NOT NULL,
+  mime_type VARCHAR(200),
+  file_size BIGINT,
+  uploaded_at DATETIME DEFAULT NOW(),
+  INDEX idx_smf_match (saved_match_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`).catch(() => {});
+
+// POST /api/saved-matches — save a match snapshot
+app.post("/api/saved-matches", authMiddleware, async (req, res) => {
+  try {
+    const {
+      livescore_match_id, home_team, away_team, home_badge, away_badge,
+      score_home, score_away, ht_score_home, ht_score_away,
+      competition, country, country_code, match_date, match_time,
+      venue, referee, status,
+    } = req.body || {};
+    if (!home_team && !away_team) return res.status(400).json({ error: "home_team ou away_team requis" });
+
+    // Prevent duplicates: check if already saved
+    if (livescore_match_id) {
+      const [[existing]] = await pool.query(
+        "SELECT id FROM saved_matches WHERE user_id = ? AND livescore_match_id = ?",
+        [req.user.id, String(livescore_match_id)]
+      );
+      if (existing) return res.json({ id: existing.id, alreadySaved: true });
+    }
+
+    const id = uuidv4();
+    await pool.query(
+      `INSERT INTO saved_matches (id, user_id, livescore_match_id, home_team, away_team, home_badge, away_badge,
+        score_home, score_away, ht_score_home, ht_score_away, competition, country, country_code,
+        match_date, match_time, venue, referee, status)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [id, req.user.id, livescore_match_id || null,
+       home_team || null, away_team || null, home_badge || null, away_badge || null,
+       score_home != null ? parseInt(score_home) : null, score_away != null ? parseInt(score_away) : null,
+       ht_score_home != null ? parseInt(ht_score_home) : null, ht_score_away != null ? parseInt(ht_score_away) : null,
+       competition || null, country || null, country_code || null,
+       match_date || null, match_time || null, venue || null, referee || null, status || null]
+    );
+    return res.status(201).json({ id, alreadySaved: false });
+  } catch (err) {
+    console.error("[saved-matches] POST error:", err.message);
+    return res.status(500).json({ error: "Erreur serveur" });
+  }
+});
+
+// GET /api/saved-matches — list user's saved matches
+app.get("/api/saved-matches", authMiddleware, async (req, res) => {
+  try {
+    const livescoreId = req.query.livescore_match_id ? String(req.query.livescore_match_id) : null;
+    let query = "SELECT id, livescore_match_id, home_team, away_team, home_badge, away_badge, score_home, score_away, competition, match_date, status, saved_at FROM saved_matches WHERE user_id = ?";
+    const params = [req.user.id];
+    if (livescoreId) { query += " AND livescore_match_id = ?"; params.push(livescoreId); }
+    query += " ORDER BY saved_at DESC";
+    const [rows] = await pool.query(query, params);
+    return res.json({ matches: rows });
+  } catch (err) {
+    console.error("[saved-matches] GET list error:", err.message);
+    return res.status(500).json({ error: "Erreur serveur" });
+  }
+});
+
+// GET /api/saved-matches/:id — get single saved match with files
+app.get("/api/saved-matches/:id", authMiddleware, async (req, res) => {
+  try {
+    const [[match]] = await pool.query(
+      "SELECT * FROM saved_matches WHERE id = ? AND user_id = ?",
+      [req.params.id, req.user.id]
+    );
+    if (!match) return res.status(404).json({ error: "Match introuvable" });
+    const [files] = await pool.query(
+      "SELECT id, file_name, file_url, mime_type, file_size, uploaded_at FROM saved_match_files WHERE saved_match_id = ? ORDER BY uploaded_at DESC",
+      [req.params.id]
+    );
+    return res.json({ match, files });
+  } catch (err) {
+    console.error("[saved-matches] GET detail error:", err.message);
+    return res.status(500).json({ error: "Erreur serveur" });
+  }
+});
+
+// PUT /api/saved-matches/:id/notes — update rich notes
+app.put("/api/saved-matches/:id/notes", authMiddleware, async (req, res) => {
+  try {
+    const { rich_notes } = req.body || {};
+    const [result] = await pool.query(
+      "UPDATE saved_matches SET rich_notes = ?, updated_at = NOW() WHERE id = ? AND user_id = ?",
+      [rich_notes ?? null, req.params.id, req.user.id]
+    );
+    if (!result.affectedRows) return res.status(404).json({ error: "Match introuvable" });
+    return res.json({ ok: true });
+  } catch (err) {
+    console.error("[saved-matches] PUT notes error:", err.message);
+    return res.status(500).json({ error: "Erreur serveur" });
+  }
+});
+
+// POST /api/saved-matches/:id/files — upload a file
+app.post("/api/saved-matches/:id/files", authMiddleware, upload.single('file'), async (req, res) => {
+  try {
+    const [[match]] = await pool.query(
+      "SELECT id FROM saved_matches WHERE id = ? AND user_id = ?",
+      [req.params.id, req.user.id]
+    );
+    if (!match) return res.status(404).json({ error: "Match introuvable" });
+    if (!req.file) return res.status(400).json({ error: "Fichier manquant" });
+
+    const ext = path.extname(req.file.originalname) || '';
+    const safeName = `smatch_${req.params.id}_${Date.now()}${ext}`;
+    const fileUrl = await saveUploadedFile(req.file.path, safeName, req.file.mimetype);
+
+    const fileId = uuidv4();
+    await pool.query(
+      "INSERT INTO saved_match_files (id, saved_match_id, user_id, file_name, file_url, mime_type, file_size) VALUES (?, ?, ?, ?, ?, ?, ?)",
+      [fileId, req.params.id, req.user.id, req.file.originalname, fileUrl, req.file.mimetype, req.file.size]
+    );
+    return res.status(201).json({ id: fileId, file_name: req.file.originalname, file_url: fileUrl, mime_type: req.file.mimetype, file_size: req.file.size });
+  } catch (err) {
+    console.error("[saved-matches] POST file error:", err.message);
+    return res.status(500).json({ error: "Erreur serveur" });
+  }
+});
+
+// DELETE /api/saved-matches/:id/files/:fileId — delete a file
+app.delete("/api/saved-matches/:id/files/:fileId", authMiddleware, async (req, res) => {
+  try {
+    const [[file]] = await pool.query(
+      "SELECT file_url FROM saved_match_files WHERE id = ? AND saved_match_id = ? AND user_id = ?",
+      [req.params.fileId, req.params.id, req.user.id]
+    );
+    if (!file) return res.status(404).json({ error: "Fichier introuvable" });
+    await deleteStoredFile(file.file_url);
+    await pool.query("DELETE FROM saved_match_files WHERE id = ?", [req.params.fileId]);
+    return res.json({ ok: true });
+  } catch (err) {
+    console.error("[saved-matches] DELETE file error:", err.message);
+    return res.status(500).json({ error: "Erreur serveur" });
+  }
+});
+
+// DELETE /api/saved-matches/:id — remove saved match (also cascades files)
+app.delete("/api/saved-matches/:id", authMiddleware, async (req, res) => {
+  try {
+    // Clean up files from storage first
+    const [files] = await pool.query(
+      "SELECT file_url FROM saved_match_files WHERE saved_match_id = ? AND user_id = ?",
+      [req.params.id, req.user.id]
+    );
+    for (const f of files) { await deleteStoredFile(f.file_url).catch(() => {}); }
+    await pool.query("DELETE FROM saved_match_files WHERE saved_match_id = ?", [req.params.id]);
+    const [result] = await pool.query(
+      "DELETE FROM saved_matches WHERE id = ? AND user_id = ?",
+      [req.params.id, req.user.id]
+    );
+    if (!result.affectedRows) return res.status(404).json({ error: "Match introuvable" });
+    return res.json({ ok: true });
+  } catch (err) {
+    console.error("[saved-matches] DELETE error:", err.message);
+    return res.status(500).json({ error: "Erreur serveur" });
   }
 });
 

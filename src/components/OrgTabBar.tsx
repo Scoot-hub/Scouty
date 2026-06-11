@@ -1,7 +1,7 @@
 import { Link, useLocation } from 'react-router-dom';
 import { Users, UserSquare2, Map, Settings, Building2, MessageSquare, Lock, LayoutDashboard, ListChecks, BarChart2, Crown } from 'lucide-react';
 import { cn } from '@/lib/utils';
-import { slugify, useCurrentOrg } from '@/hooks/use-organization';
+import { slugify, useCurrentOrg, useJoinRequests } from '@/hooks/use-organization';
 import { Badge } from '@/components/ui/badge';
 import { useOrgUnread } from '@/hooks/use-org-chat';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
@@ -44,6 +44,9 @@ export default function OrgTabBar({ orgName }: OrgTabBarProps) {
     } catch { return {}; }
   })();
   const isAdmin = org?.myRole === 'owner' || org?.myRole === 'admin';
+
+  const { data: joinRequestsData } = useJoinRequests(isAdmin ? orgId : undefined);
+  const pendingJoinCount = joinRequestsData?.length ?? 0;
 
   // Determine visibility/lock state for each tab
   const tabState = (settingKey: string | null, tabKey: string): 'visible' | 'locked' | 'hidden' => {
@@ -98,7 +101,7 @@ export default function OrgTabBar({ orgName }: OrgTabBarProps) {
 
       {/* ── Tab navigation ── */}
       <TooltipProvider delayDuration={200}>
-        <div className="flex items-center gap-1 border-b border-border pb-0 -mx-1 px-1 overflow-x-auto overflow-x-auto scrollbar-none">
+        <div className="flex flex-wrap items-center gap-1 border-b border-border -mx-1 px-1">
           {TABS.map(({ key, label, icon: Icon, path, settingKey, premium }) => {
             const href = `${base}/${path}`;
             const active = pathname.startsWith(`${base}/${path}`);
@@ -116,7 +119,7 @@ export default function OrgTabBar({ orgName }: OrgTabBarProps) {
                   <TooltipTrigger asChild>
                     <Link
                       to={isAdmin ? `${base}/settings` : '#'}
-                      className="flex items-center gap-1.5 px-3 py-2.5 text-sm font-medium whitespace-nowrap shrink-0 border-b-2 -mb-px border-transparent text-muted-foreground/40 hover:text-muted-foreground/60 transition-colors"
+                      className="flex items-center gap-1.5 px-3 py-2.5 text-sm font-medium whitespace-nowrap border-b-2 -mb-px border-transparent text-muted-foreground/40 hover:text-muted-foreground/60 transition-colors"
                     >
                       <Icon className="w-4 h-4" />
                       {label}
@@ -139,7 +142,7 @@ export default function OrgTabBar({ orgName }: OrgTabBarProps) {
                 key={key}
                 to={href}
                 className={cn(
-                  'flex items-center gap-1.5 px-3 py-2.5 text-sm font-medium whitespace-nowrap shrink-0 border-b-2 -mb-px transition-colors',
+                  'flex items-center gap-1.5 px-3 py-2.5 text-sm font-medium whitespace-nowrap border-b-2 -mb-px transition-colors',
                   active
                     ? 'border-primary text-primary'
                     : 'border-transparent text-muted-foreground hover:text-foreground hover:border-border'
@@ -150,6 +153,11 @@ export default function OrgTabBar({ orgName }: OrgTabBarProps) {
                 {key === 'chat' && unreadCount > 0 && (
                   <span className="ml-0.5 min-w-[18px] h-[18px] px-1 rounded-full bg-red-500 text-white text-[10px] font-bold flex items-center justify-center">
                     {unreadCount > 99 ? '99+' : unreadCount}
+                  </span>
+                )}
+                {key === 'settings' && isAdmin && pendingJoinCount > 0 && (
+                  <span className="ml-0.5 min-w-[18px] h-[18px] px-1 rounded-full bg-red-500 text-white text-[10px] font-bold flex items-center justify-center">
+                    {pendingJoinCount > 99 ? '99+' : pendingJoinCount}
                   </span>
                 )}
               </Link>

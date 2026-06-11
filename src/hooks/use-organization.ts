@@ -77,36 +77,36 @@ export function useOrganizationMembers(organizationId: string | undefined) {
   });
 }
 
-// Create a new organization
+// Create a new organization (server-side, enforces 2-org limit)
 export function useCreateOrganization() {
-  const { user } = useAuth();
   const queryClient = useQueryClient();
 
   return useMutation({
     mutationFn: async ({ name, type, logoFile }: { name: string; type: string; logoFile?: File }) => {
-      if (!user) throw new Error('Not authenticated');
+      const session = localStorage.getItem('scouthub_session');
+      const token = session ? JSON.parse(session)?.access_token : null;
 
-      // Generate invite code (16 chars)
-      const inviteCode = crypto.randomUUID().replace(/-/g, '').substring(0, 16).toLowerCase();
+      const res = await fetch('/api/organizations', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+        credentials: 'include',
+        body: JSON.stringify({ name, type }),
+      });
 
-      const { data: org, error: orgErr } = await supabase
-        .from('organizations')
-        .insert({ name, type, invite_code: inviteCode, created_by: user.id })
-        .select()
-        .single();
-      if (orgErr) throw orgErr;
-
-      // Add creator as owner
-      const { error: memErr } = await supabase
-        .from('organization_members')
-        .insert({ organization_id: org.id, user_id: user.id, role: 'owner' });
-      if (memErr) throw memErr;
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.error || 'Erreur serveur');
+      }
+      const org = await res.json();
 
       // Upload logo if provided
       if (logoFile) {
         const form = new FormData();
         form.append('file', logoFile);
-        await fetch(`${API_BASE}/organizations/${org.id}/logo`, {
+        await fetch(`/api/organizations/${org.id}/logo`, {
           method: 'PATCH',
           credentials: 'include',
           body: form,
@@ -118,6 +118,99 @@ export function useCreateOrganization() {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['my-organizations'] });
     },
+  });
+}
+
+// Fetch public organisations (opt-in to directory via org_visibility setting)
+export function usePublicOrganizations(q: string) {
+  return useQuery({
+    queryKey: ['public-organizations', q],
+    queryFn: async () => {
+      const session = localStorage.getItem('scouthub_session');
+      const token = session ? JSON.parse(session)?.access_token : null;
+      const url = `/api/organizations/public${q ? `?q=${encodeURIComponent(q)}` : ''}`;
+      const res = await fetch(url, {
+        credentials: 'include',
+        headers: token ? { Authorization: `Bearer ${token}` } : {},
+      });
+      if (!res.ok) throw new Error('Failed');
+      return res.json() as Promise<PublicOrg[]>;
+    },
+    staleTime: 60_000,
+  });
+}
+
+export interface PublicOrg {
+  id: string;
+  name: string;
+  type: string;
+  logo_url: string | null;
+  description: string | null;
+  member_count: number;
+  max_members?: number;
+  require_approval_to_join?: boolean;
+  recruitment_status?: 'open' | 'recruiting' | 'closed';
+  slogan?: string | null;
+  theme?: string | null;
+  invite_code?: string;
+  banner_url?: string | null;
+  website_url?: string | null;
+  contact_email?: string | null;
+  social_x?: string | null;
+  social_linkedin?: string | null;
+  social_instagram?: string | null;
+  accent_color?: string | null;
+  created_at?: string | null;
+  allow_member_directory?: boolean;
+}
+
+export interface PublicOrgMember {
+  user_id: string;
+  role: string;
+  joined_at: string | null;
+  full_name: string | null;
+  photo_url: string | null;
+  club: string | null;
+  profile_role: string | null;
+}
+
+// Fetch a single public org by id
+export function usePublicOrg(id: string | undefined) {
+  return useQuery({
+    queryKey: ['public-org', id],
+    queryFn: async () => {
+      if (!id) return null;
+      const session = localStorage.getItem('scouthub_session');
+      const token = session ? JSON.parse(session)?.access_token : null;
+      const res = await fetch(`/api/organizations/public/${id}`, {
+        credentials: 'include',
+        headers: token ? { Authorization: `Bearer ${token}` } : {},
+      });
+      if (!res.ok) throw new Error('Failed');
+      return res.json() as Promise<PublicOrg>;
+    },
+    enabled: !!id,
+    staleTime: 60_000,
+  });
+}
+
+// Fetch public member list for a public org (only when allow_member_directory is enabled)
+export function usePublicOrgMembers(id: string | undefined, enabled: boolean) {
+  return useQuery({
+    queryKey: ['public-org-members', id],
+    queryFn: async () => {
+      if (!id) return [];
+      const session = localStorage.getItem('scouthub_session');
+      const token = session ? JSON.parse(session)?.access_token : null;
+      const res = await fetch(`/api/organizations/public/${id}/members`, {
+        credentials: 'include',
+        headers: token ? { Authorization: `Bearer ${token}` } : {},
+      });
+      if (!res.ok) return [];
+      return res.json() as Promise<PublicOrgMember[]>;
+    },
+    enabled: !!id && enabled,
+    staleTime: 120_000,
   });
 }
 
@@ -365,7 +458,7 @@ export function useUpdateOrgSettings(orgId: string | undefined) {
   const { user } = useAuth();
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: async (settings: Record<string, boolean | number>) => {
+    mutationFn: async (settings: Record<string, boolean | number | string>) => {
       if (!orgId) throw new Error('No org id');
       const res = await fetch(`${API_BASE}/organizations/${orgId}/settings`, {
         method: 'PATCH',
@@ -402,6 +495,82 @@ export function useUpdateOrgSettings(orgId: string | undefined) {
       queryClient.invalidateQueries({ queryKey: ['my-organizations'] });
     },
   });
+}
+
+// Update org public page text fields (owner/admin)
+export function useUpdateOrgPublicPage(orgId: string | undefined) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async (data: {
+      slogan?: string;
+      website_url?: string;
+      contact_email?: string;
+      social_x?: string;
+      social_linkedin?: string;
+      social_instagram?: string;
+      recruitment_status?: 'open' | 'recruiting' | 'closed';
+      accent_color?: string;
+    }) => {
+      if (!orgId) throw new Error('No org id');
+      const res = await fetch(`${API_BASE}/organizations/${orgId}/public-page`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify(data),
+      });
+      const json = await res.json();
+      if (!res.ok) throw new Error(json.error || 'Erreur');
+      return json;
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['my-organizations'] });
+      queryClient.invalidateQueries({ queryKey: ['public-org', orgId] });
+    },
+  });
+}
+
+// Upload or remove org banner image (owner/admin)
+export function useUpdateOrgBanner(orgId: string | undefined) {
+  const queryClient = useQueryClient();
+
+  const upload = useMutation({
+    mutationFn: async (file: File) => {
+      if (!orgId) throw new Error('No org id');
+      const form = new FormData();
+      form.append('file', file);
+      const res = await fetch(`${API_BASE}/organizations/${orgId}/banner`, {
+        method: 'PATCH',
+        credentials: 'include',
+        body: form,
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.error || 'Upload failed');
+      }
+      return res.json() as Promise<{ banner_url: string }>;
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['my-organizations'] });
+      queryClient.invalidateQueries({ queryKey: ['public-org', orgId] });
+    },
+  });
+
+  const remove = useMutation({
+    mutationFn: async () => {
+      if (!orgId) throw new Error('No org id');
+      const res = await fetch(`${API_BASE}/organizations/${orgId}/banner`, {
+        method: 'DELETE',
+        credentials: 'include',
+      });
+      if (!res.ok) throw new Error('Delete failed');
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['my-organizations'] });
+      queryClient.invalidateQueries({ queryKey: ['public-org', orgId] });
+    },
+  });
+
+  return { upload, remove };
 }
 
 // Toggle messaging block for a specific member (owner/admin)

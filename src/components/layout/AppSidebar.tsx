@@ -526,7 +526,7 @@ export default function AppSidebar({ collapsed, onToggle }: AppSidebarProps) {
   const [champOpenOverride, setChampOpenOverride] = useState<boolean | null>(null);
 
   const playersChildPaths = ['/discover', '/watchlist', '/transfers', '/shadow-team'];
-  const fixturesChildPaths = ['/my-matches', '/map'];
+  const fixturesChildPaths = ['/my-matches', '/map', '/saved-match', '/match-library'];
   const champChildPaths = ['/my-championships', '/my-clubs', '/club', '/club-search'];
 
   const playersOpen = playersOpenOverride ?? hasActiveChild(playersChildPaths);
@@ -830,7 +830,26 @@ export default function AppSidebar({ collapsed, onToggle }: AppSidebarProps) {
                     >
                       {t('sidebar.org_create_or_join')}
                     </Link>
+                    <Link
+                      to="/organization/discover"
+                      className="inline-flex items-center justify-center gap-1.5 w-full mt-2 px-3 py-2 rounded-lg border border-sidebar-border text-xs font-medium text-sidebar-foreground/70 hover:text-sidebar-foreground hover:bg-sidebar-accent/50 transition-all"
+                      onClick={() => setMobileOpen(false)}
+                    >
+                      <Globe className="w-3.5 h-3.5" />
+                      Découvrir des organisations
+                    </Link>
                   </>
+                )}
+                {collapsed && (
+                  <SidebarTooltip label="Découvrir des organisations" collapsed={collapsed}>
+                    <Link
+                      to="/organization/discover"
+                      className="flex items-center justify-center px-2 py-2 rounded-xl text-sidebar-foreground/60 hover:text-sidebar-foreground hover:bg-sidebar-accent/50 transition-all"
+                      onClick={() => setMobileOpen(false)}
+                    >
+                      <Globe className="w-4 h-4" />
+                    </Link>
+                  </SidebarTooltip>
                 )}
               </div>
             ) : (
@@ -846,53 +865,76 @@ export default function AppSidebar({ collapsed, onToggle }: AppSidebarProps) {
                   const slug = slugify(org.name);
                   const orgBase = `/organization/${slug}`;
                   const isThisOrgActive = slug === activeOrgSlug;
+                  const orgSettings = (() => {
+                    try {
+                      const raw = (org as any).settings;
+                      if (!raw) return {};
+                      return typeof raw === 'string' ? JSON.parse(raw) : raw;
+                    } catch { return {}; }
+                  })();
                   return (
-                    <SidebarTooltip key={org.id} label={org.name} collapsed={collapsed}>
-                      <Link
-                        to={`${orgBase}/squad`}
-                        className={cn(
-                          'flex items-center gap-3 rounded-xl text-sm font-medium transition-all duration-200',
-                          collapsed ? 'justify-center px-2 py-2' : 'px-4 py-2',
-                          isThisOrgActive
-                            ? 'bg-sidebar-accent text-sidebar-accent-foreground shadow-sm'
-                            : 'text-sidebar-foreground/70 hover:text-sidebar-foreground hover:bg-sidebar-accent/50'
-                        )}
-                        onClick={() => setMobileOpen(false)}
-                      >
-                        <div className={cn('rounded overflow-hidden flex items-center justify-center shrink-0', collapsed ? 'w-5 h-5' : 'w-4 h-4')}>
-                          {org.logo_url ? (
-                            <img src={org.logo_url} alt={org.name} className="w-full h-full object-cover" />
-                          ) : (
-                            <Building2 className="w-full h-full" />
+                    <Fragment key={org.id}>
+                      <SidebarTooltip label={org.name} collapsed={collapsed}>
+                        <Link
+                          to={`${orgBase}/squad`}
+                          className={cn(
+                            'flex items-center gap-3 rounded-xl text-sm font-medium transition-all duration-200',
+                            collapsed ? 'justify-center px-2 py-2' : 'px-4 py-2',
+                            isThisOrgActive
+                              ? 'bg-sidebar-accent text-sidebar-accent-foreground shadow-sm'
+                              : 'text-sidebar-foreground/70 hover:text-sidebar-foreground hover:bg-sidebar-accent/50'
                           )}
+                          onClick={() => setMobileOpen(false)}
+                        >
+                          <div className={cn('rounded overflow-hidden flex items-center justify-center shrink-0', collapsed ? 'w-5 h-5' : 'w-4 h-4')}>
+                            {org.logo_url ? (
+                              <img src={org.logo_url} alt={org.name} className="w-full h-full object-cover" />
+                            ) : (
+                              <Building2 className="w-full h-full" />
+                            )}
+                          </div>
+                          {!collapsed && <span className="truncate">{org.name}</span>}
+                        </Link>
+                      </SidebarTooltip>
+
+                      {/* Sub-menu: rendered immediately below its org, only when active */}
+                      {isThisOrgActive && (
+                        <div className={cn(
+                          collapsed ? 'mt-0.5 mb-1' : 'mt-0.5 mb-1 ml-3 pl-3 border-l border-sidebar-border/40'
+                        )}>
+                          <OrgPromotedNav
+                            orgBase={orgBase}
+                            orgId={org.id as string}
+                            orgSettings={orgSettings}
+                            collapsed={collapsed}
+                            isActive={isActive}
+                            linkClass={linkClass}
+                            onNav={() => setMobileOpen(false)}
+                          />
                         </div>
-                        {!collapsed && <span className="truncate">{org.name}</span>}
-                      </Link>
-                    </SidebarTooltip>
+                      )}
+                    </Fragment>
                   );
                 })}
 
-                {activeOrg && (
-                  <div className={cn(
-                    collapsed ? 'mt-1' : 'mt-0.5 ml-3 pl-3 border-l border-sidebar-border/40'
-                  )}>
-                    <OrgPromotedNav
-                      orgBase={`/organization/${activeOrgSlug}`}
-                      orgId={activeOrg.id as string}
-                      orgSettings={(() => {
-                        try {
-                          const raw = (activeOrg as any).settings;
-                          if (!raw) return {};
-                          return typeof raw === 'string' ? JSON.parse(raw) : raw;
-                        } catch { return {}; }
-                      })()}
-                      collapsed={collapsed}
-                      isActive={isActive}
-                      linkClass={linkClass}
-                      onNav={() => setMobileOpen(false)}
-                    />
-                  </div>
-                )}
+                {/* Découvrir des organisations publiques */}
+                {!collapsed && <div className="mx-3 mt-2 border-t border-sidebar-border/40" />}
+                <SidebarTooltip label="Découvrir des organisations" collapsed={collapsed}>
+                  <Link
+                    to="/organization/discover"
+                    className={cn(
+                      'flex items-center gap-3 rounded-xl text-sm font-medium transition-all duration-200 mt-1',
+                      collapsed ? 'justify-center px-2 py-2' : 'px-4 py-2',
+                      isActive('/organization/discover')
+                        ? 'bg-sidebar-accent text-sidebar-accent-foreground shadow-sm'
+                        : 'text-sidebar-foreground/60 hover:text-sidebar-foreground hover:bg-sidebar-accent/50'
+                    )}
+                    onClick={() => setMobileOpen(false)}
+                  >
+                    <Globe className="w-4 h-4 shrink-0" />
+                    {!collapsed && <span>Découvrir</span>}
+                  </Link>
+                </SidebarTooltip>
               </>
             )}
           </>

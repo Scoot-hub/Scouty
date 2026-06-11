@@ -22,6 +22,7 @@ import {
   Link2, ImageIcon, Archive, ArchiveRestore, Building2, Search, Pin, PinOff, Eye, ChevronDown, ChevronUp,
   ShieldCheck, MoreVertical, ArrowUp, ArrowDown, X as XClose, CheckSquare, Square,
   CheckCircle2, Lock, Unlock, Globe, Upload, Loader2, Hash, Tag,
+  Flag, BarChart2, TrendingUp, UserPlus, UserCheck, Plus, Minus,
 } from 'lucide-react';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from '@/components/ui/dialog';
 import { moderateFields } from '@/lib/content-moderation';
@@ -605,6 +606,11 @@ function CommunityFull() {
   const [moderationMode, setModerationMode] = useState(false);
   const [selectedPosts, setSelectedPosts] = useState<Set<string>>(new Set());
   const [closeModalPost, setCloseModalPost] = useState<CommunityPost | null>(null);
+  const [feedType, setFeedType] = useState<'recent' | 'trending' | 'following'>('recent');
+  const [hasPoll, setHasPoll] = useState(false);
+  const [pollOptions, setPollOptions] = useState(['', '']);
+  const [reportModal, setReportModal] = useState<{ type: 'post' | 'reply'; id: string; postId?: string } | null>(null);
+  const [reportReason, setReportReason] = useState('');
   const viewedPostsRef = useRef<Set<string>>(new Set());
   const postRefs = useRef<Record<string, HTMLDivElement | null>>({});
   const replyInputRef = useRef<HTMLInputElement>(null);
@@ -871,9 +877,25 @@ function CommunityFull() {
       .slice(0, 6);
   }, [posts, searchQuery, isAdmin]);
 
+  // --- Following list (for Abonnements feed) — must be before visiblePosts ---
+  const { data: followingIdsEarly = [] } = useQuery<string[]>({
+    queryKey: ['community-following-early', user?.id],
+    queryFn: async () => {
+      if (!user) return [];
+      const r = await fetch(`${API_BASE}/community/following`, { credentials: 'include' });
+      if (!r.ok) return [];
+      return r.json();
+    },
+    enabled: !!user && !!isPremium,
+    staleTime: 60 * 1000,
+  });
+
   // Non-admins never see archived posts; admins see everything. Also apply country/search/tag filters.
   const visiblePosts = useMemo(() => {
     let filtered = isAdmin ? posts : posts.filter(p => !p.is_archived);
+    if (feedType === 'following') {
+      filtered = filtered.filter(p => p.user_id && followingIdsEarly.includes(p.user_id));
+    }
     if (countryFilter !== 'all') filtered = filtered.filter(p => p.country === countryFilter);
     const q = searchQuery.trim().toLowerCase();
     if (q.length >= 2) {
@@ -886,8 +908,19 @@ function CommunityFull() {
         [...activeTagFilters].some(tag => (p.tags || []).includes(tag))
       );
     }
+    if (feedType === 'trending') {
+      filtered = [...filtered].sort((a, b) => {
+        const ageA = Math.max((Date.now() - new Date(a.created_at).getTime()) / 3600000, 0.5);
+        const ageB = Math.max((Date.now() - new Date(b.created_at).getTime()) / 3600000, 0.5);
+        const scoreA = ((a.likes || 0) + (a.replies_count || 0) * 2) / Math.pow(ageA + 2, 1.4);
+        const scoreB = ((b.likes || 0) + (b.replies_count || 0) * 2) / Math.pow(ageB + 2, 1.4);
+        if (b.is_pinned && !a.is_pinned) return 1;
+        if (a.is_pinned && !b.is_pinned) return -1;
+        return scoreB - scoreA;
+      });
+    }
     return filtered;
-  }, [posts, isAdmin, countryFilter, searchQuery, activeTagFilters]);
+  }, [posts, isAdmin, countryFilter, searchQuery, activeTagFilters, feedType, followingIdsEarly]);
 
   // --- Fetch user's likes ---
   const { data: likedPostIds = [] } = useQuery({
@@ -909,6 +942,9 @@ function CommunityFull() {
   useEffect(() => {
     setLikedPosts(new Set(likedPostIds));
   }, [likedPostIds]);
+
+  // followingIds aliased from the early query above (same data, no duplicate fetch)
+  const followingIds = followingIdsEarly;
 
   // --- Fetch replies for ALL posts ---
   const postIds = posts.map(p => p.id);
@@ -932,6 +968,18 @@ function CommunityFull() {
     return acc;
   }, {});
 
+  // --- Fetch polls for visible posts ---
+  const visiblePostIds = posts.map(p => p.id);
+  const [pollsMap, setPollsMap] = useState<Record<string, { id: string; post_id: string; myVote: string | null; options: { id: string; label: string; vote_count: number }[] }>>({});
+  useEffect(() => {
+    if (!user || !visiblePostIds.length) return;
+    fetch(`${API_BASE}/community/polls?post_ids=${visiblePostIds.join(',')}`, { credentials: 'include' })
+      .then(r => r.ok ? r.json() : {})
+      .then(data => setPollsMap(data))
+      .catch(() => {});
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [visiblePostIds.join(','), user?.id]);
+
   // --- Create post ---
   const createPost = useMutation({
     mutationFn: async () => {
@@ -945,7 +993,9 @@ function CommunityFull() {
         .single();
       const authorName = (profile as any)?.full_name || user!.email?.split('@')[0] || 'Scout';
       const serialized = serializeContent(content.trim());
+      const postId = crypto.randomUUID();
       const { error } = await supabase.from('community_posts').insert({
+        id: postId,
         user_id: user!.id,
         author_name: authorName,
         category,
@@ -958,9 +1008,16 @@ function CommunityFull() {
         tags: newTags.length > 0 ? newTags : null,
       } as any);
       if (error) throw error;
-      return { authorName, mentionedIds: extractMentionedUserIds(serialized) };
+      if (hasPoll && pollOptions.filter(o => o.trim()).length >= 2) {
+        await fetch(`${API_BASE}/community/polls`, {
+          method: 'POST', credentials: 'include',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ post_id: postId, options: pollOptions.filter(o => o.trim()) }),
+        });
+      }
+      return { authorName, mentionedIds: extractMentionedUserIds(serialized), postId };
     },
-    onSuccess: ({ authorName, mentionedIds }) => {
+    onSuccess: ({ authorName, mentionedIds, postId }) => {
       toast.success(t('community.post_created'));
       sendMentionNotifications(mentionedIds, authorName, 'post');
       mentionMapRef.current.clear();
@@ -968,14 +1025,13 @@ function CommunityFull() {
       setContent('');
       setNewTags([]);
       setTagInput('');
+      setHasPoll(false);
+      setPollOptions(['', '']);
       setComposing(false);
       setPostLang(i18n.language.split('-')[0]);
       queryClient.invalidateQueries({ queryKey: ['community-posts'] });
       queryClient.invalidateQueries({ queryKey: ['community-mentionable-users'] });
-      setTimeout(() => {
-        const allPosts = queryClient.getQueryData<CommunityPost[]>(['community-posts', filter]);
-        if (allPosts?.[0]) setJustPosted(allPosts[0].id);
-      }, 300);
+      setTimeout(() => setJustPosted(postId), 300);
       setTimeout(() => setJustPosted(null), 1500);
     },
     onError: (err: unknown) => toast.error(err instanceof Error ? err.message : String(err)),
@@ -1018,6 +1074,8 @@ function CommunityFull() {
   // --- Reply to post ---
   const replyToPost = useMutation({
     mutationFn: async (postId: string) => {
+      const parentPost = queryClient.getQueryData<CommunityPost[]>(['community-posts', filter])?.find(p => p.id === postId);
+      if (parentPost?.is_archived) throw new Error('Ce post est archivé. Les nouvelles réponses sont désactivées.');
       // Content moderation check
       const modResult = moderateFields(replyContent);
       if (!modResult.clean) throw new Error(t('moderation.blocked'));
@@ -1059,6 +1117,57 @@ function CommunityFull() {
       queryClient.invalidateQueries({ queryKey: ['community-mentionable-users'] });
       setJustReplied(postId);
       setTimeout(() => setJustReplied(null), 1200);
+    },
+    onError: (err: unknown) => toast.error(err instanceof Error ? err.message : String(err)),
+  });
+
+  // --- Follow/unfollow user ---
+  const followUser = useMutation({
+    mutationFn: async ({ userId, isFollowing }: { userId: string; isFollowing: boolean }) => {
+      const method = isFollowing ? 'DELETE' : 'POST';
+      const r = await fetch(`${API_BASE}/community/follow/${userId}`, { method, credentials: 'include' });
+      if (!r.ok) throw new Error((await r.json()).error || 'Erreur');
+    },
+    onSuccess: () => { queryClient.invalidateQueries({ queryKey: ['community-following-early'] }); },
+    onError: (err: unknown) => toast.error(err instanceof Error ? err.message : String(err)),
+  });
+
+  // --- Vote on poll ---
+  const votePoll = useMutation({
+    mutationFn: async ({ pollId, optionId }: { pollId: string; optionId: string }) => {
+      const r = await fetch(`${API_BASE}/community/polls/${pollId}/vote`, {
+        method: 'POST', credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ option_id: optionId }),
+      });
+      if (!r.ok) throw new Error((await r.json()).error || 'Erreur');
+      return r.json() as Promise<{ options: { id: string; label: string; vote_count: number }[]; myVote: string }>;
+    },
+    onSuccess: (data, { pollId }) => {
+      setPollsMap(prev => {
+        const entry = Object.values(prev).find(p => p.id === pollId);
+        if (!entry) return prev;
+        return { ...prev, [entry.post_id]: { ...entry, options: data.options, myVote: data.myVote } };
+      });
+    },
+    onError: (err: unknown) => toast.error(err instanceof Error ? err.message : String(err)),
+  });
+
+  // --- Report post or reply ---
+  const reportContent = useMutation({
+    mutationFn: async ({ type, id, reason }: { type: 'post' | 'reply'; id: string; reason: string }) => {
+      const body = type === 'post' ? { post_id: id, reason } : { reply_id: id, reason };
+      const r = await fetch(`${API_BASE}/community/reports`, {
+        method: 'POST', credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      if (!r.ok) throw new Error((await r.json()).error || 'Erreur');
+    },
+    onSuccess: () => {
+      toast.success('Signalement envoyé. Merci pour votre vigilance.');
+      setReportModal(null);
+      setReportReason('');
     },
     onError: (err: unknown) => toast.error(err instanceof Error ? err.message : String(err)),
   });
@@ -1598,8 +1707,50 @@ function CommunityFull() {
                 </div>
               )}
             </div>
+            {/* Poll composer */}
+            <div className="border-t border-border/60 pt-3">
+              <button
+                type="button"
+                onClick={() => { setHasPoll(p => !p); if (hasPoll) setPollOptions(['', '']); }}
+                className={cn(
+                  'flex items-center gap-1.5 text-xs font-medium px-3 py-1.5 rounded-lg border transition-all',
+                  hasPoll
+                    ? 'border-primary/40 bg-primary/5 text-primary'
+                    : 'border-border text-muted-foreground hover:border-primary/30 hover:text-foreground'
+                )}
+              >
+                <BarChart2 className="w-3.5 h-3.5" />
+                {hasPoll ? 'Retirer le sondage' : 'Ajouter un sondage'}
+              </button>
+              {hasPoll && (
+                <div className="mt-2 space-y-1.5 animate-in fade-in duration-150">
+                  {pollOptions.map((opt, i) => (
+                    <div key={i} className="flex items-center gap-2">
+                      <Input
+                        value={opt}
+                        onChange={e => setPollOptions(prev => prev.map((o, j) => j === i ? e.target.value : o))}
+                        placeholder={`Option ${i + 1}…`}
+                        className="h-8 text-xs flex-1"
+                        maxLength={100}
+                      />
+                      {pollOptions.length > 2 && (
+                        <button type="button" onClick={() => setPollOptions(prev => prev.filter((_, j) => j !== i))} className="text-muted-foreground hover:text-destructive transition-colors">
+                          <Minus className="w-3.5 h-3.5" />
+                        </button>
+                      )}
+                    </div>
+                  ))}
+                  {pollOptions.length < 4 && (
+                    <button type="button" onClick={() => setPollOptions(prev => [...prev, ''])} className="flex items-center gap-1 text-xs text-primary hover:underline mt-1">
+                      <Plus className="w-3 h-3" />Ajouter une option
+                    </button>
+                  )}
+                </div>
+              )}
+            </div>
+
             <div className="flex items-center gap-2 justify-end">
-              <Button variant="ghost" size="sm" onClick={() => { setComposing(false); setTitle(''); setContent(''); setNewTags([]); setTagInput(''); closeAllToolbars(); }}>
+              <Button variant="ghost" size="sm" onClick={() => { setComposing(false); setTitle(''); setContent(''); setNewTags([]); setTagInput(''); setHasPoll(false); setPollOptions(['', '']); closeAllToolbars(); }}>
                 {t('common.cancel')}
               </Button>
               <Button
@@ -1658,6 +1809,29 @@ function CommunityFull() {
             ))}
           </div>
         )}
+      </div>
+
+      {/* Feed type selector */}
+      <div className="flex items-center gap-1.5">
+        {([
+          { key: 'recent', label: 'Récent', icon: MessageSquare },
+          { key: 'trending', label: 'Tendances', icon: TrendingUp },
+          { key: 'following', label: 'Abonnements', icon: UserCheck },
+        ] as const).map(({ key, label, icon: Icon }) => (
+          <button
+            key={key}
+            onClick={() => setFeedType(key)}
+            className={cn(
+              'flex items-center gap-1.5 px-4 py-1.5 rounded-full text-sm font-semibold border transition-all',
+              feedType === key
+                ? 'bg-primary text-primary-foreground border-primary shadow-sm'
+                : 'bg-background text-muted-foreground border-border hover:border-primary/40 hover:text-foreground'
+            )}
+          >
+            <Icon className="w-3.5 h-3.5" />
+            {label}
+          </button>
+        ))}
       </div>
 
       {/* Category + Country filters */}
@@ -2003,6 +2177,50 @@ function CommunityFull() {
                           {renderContent(post.content)}
                         </div>
 
+                        {/* Poll widget */}
+                        {pollsMap[post.id] && (() => {
+                          const poll = pollsMap[post.id];
+                          const totalVotes = poll.options.reduce((s, o) => s + o.vote_count, 0);
+                          const hasVoted = !!poll.myVote;
+                          return (
+                            <div className="mt-3 p-3 rounded-xl border border-border bg-muted/30 space-y-2 animate-in fade-in duration-150">
+                              <p className="text-[11px] font-bold text-muted-foreground flex items-center gap-1.5 uppercase tracking-wide">
+                                <BarChart2 className="w-3 h-3" />Sondage · {totalVotes} vote{totalVotes !== 1 ? 's' : ''}
+                              </p>
+                              {poll.options.map(opt => {
+                                const pct = totalVotes > 0 ? Math.round((opt.vote_count / totalVotes) * 100) : 0;
+                                const isMyVote = poll.myVote === opt.id;
+                                return (
+                                  <button
+                                    key={opt.id}
+                                    disabled={!user || !isPremium}
+                                    onClick={() => votePoll.mutate({ pollId: poll.id, optionId: opt.id })}
+                                    className={cn(
+                                      'relative w-full text-left rounded-lg px-3 py-2 text-xs font-medium border transition-all overflow-hidden',
+                                      isMyVote
+                                        ? 'border-primary bg-primary/10 text-primary'
+                                        : hasVoted
+                                        ? 'border-border bg-muted/20 text-muted-foreground'
+                                        : 'border-border bg-background hover:border-primary/40 hover:text-foreground text-foreground'
+                                    )}
+                                  >
+                                    {hasVoted && (
+                                      <span
+                                        className={cn('absolute inset-y-0 left-0 rounded-l-lg transition-all', isMyVote ? 'bg-primary/20' : 'bg-muted/50')}
+                                        style={{ width: `${pct}%` }}
+                                      />
+                                    )}
+                                    <span className="relative flex items-center justify-between gap-2">
+                                      <span>{opt.label}</span>
+                                      {hasVoted && <span className="shrink-0 tabular-nums">{pct}%</span>}
+                                    </span>
+                                  </button>
+                                );
+                              })}
+                            </div>
+                          );
+                        })()}
+
                         {/* Stats + actions row */}
                         <div className="flex items-center gap-3 mt-3 flex-wrap">
                           {/* Like */}
@@ -2057,6 +2275,26 @@ function CommunityFull() {
                           >
                             <ExternalLink className="w-3 h-3" />
                           </Link>
+                          {/* Follow author */}
+                          {user && post.user_id && post.user_id !== user.id && (
+                            <button
+                              onClick={() => followUser.mutate({ userId: post.user_id, isFollowing: followingIds.includes(post.user_id) })}
+                              className={cn('flex items-center gap-1 text-xs transition-colors ml-1', followingIds.includes(post.user_id) ? 'text-primary' : 'text-muted-foreground hover:text-primary')}
+                              title={followingIds.includes(post.user_id) ? 'Se désabonner' : 'Suivre cet auteur'}
+                            >
+                              {followingIds.includes(post.user_id) ? <UserCheck className="w-3.5 h-3.5" /> : <UserPlus className="w-3.5 h-3.5" />}
+                            </button>
+                          )}
+                          {/* Report post */}
+                          {user && post.user_id !== user.id && (
+                            <button
+                              onClick={() => setReportModal({ type: 'post', id: post.id })}
+                              className="flex items-center gap-1 text-xs text-muted-foreground hover:text-destructive transition-colors ml-1"
+                              title="Signaler ce post"
+                            >
+                              <Flag className="w-3 h-3" />
+                            </button>
+                          )}
                         </div>
 
                         {/* ── Expanded content ── */}
@@ -2096,6 +2334,12 @@ function CommunityFull() {
                                         <button onClick={() => { setReplyingTo(post.id); if (reply.user_id) mentionMapRef.current.set(reply.author_name, reply.user_id); setReplyContent(prev => `@${reply.author_name} ${prev}`); }}
                                           className="text-[10px] text-primary hover:underline">{t('community.mention')}</button>
                                       )}
+                                      {user && reply.user_id !== user.id && (
+                                        <button onClick={() => setReportModal({ type: 'reply', id: reply.id, postId: post.id })}
+                                          className="text-muted-foreground hover:text-destructive transition-colors" title="Signaler">
+                                          <Flag className="w-3 h-3" />
+                                        </button>
+                                      )}
                                       {(isAdmin || reply.user_id === user?.id) && (
                                         <button onClick={() => setDeleteReplyId(`${reply.id}::${post.id}`)}
                                           className="ml-auto text-muted-foreground hover:text-destructive transition-colors">
@@ -2112,8 +2356,15 @@ function CommunityFull() {
 
                             {/* Reply input — anchor for scroll */}
                             <div data-reply-anchor className="relative pt-3 border-t border-border">
+                            {/* Notice si archivé */}
+                            {isArchived && (
+                              <div className="flex items-center gap-2 py-2 px-3 rounded-lg bg-muted/60 text-xs text-muted-foreground mb-2">
+                                <Archive className="w-3.5 h-3.5 shrink-0 text-muted-foreground" />
+                                <span>Ce post est <strong>archivé</strong>. Les nouvelles réponses sont désactivées.</span>
+                              </div>
+                            )}
                             {/* Notice si question clôturée */}
-                            {isClosed && (
+                            {!isArchived && isClosed && (
                               <div className="flex items-center gap-2 py-2 px-3 rounded-lg bg-muted/60 text-xs text-muted-foreground mb-2">
                                 <Lock className="w-3.5 h-3.5 shrink-0 text-green-600" />
                                 <span>Cette question est <strong>clôturée</strong>. Les nouvelles réponses sont désactivées.</span>
@@ -2122,7 +2373,7 @@ function CommunityFull() {
                                 )}
                               </div>
                             )}
-                            {!isClosed && (
+                            {!isClosed && !isArchived && (
                               <div className="flex gap-2">
                                 <div className="relative flex-1">
                                   <Input ref={replyInputRef} value={replyContent} onChange={e => handleReplyChange(e.target.value)}
@@ -2237,6 +2488,51 @@ function CommunityFull() {
             >
               <Trash2 className="w-4 h-4 mr-2" />
               {t('common.delete')}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Report dialog */}
+      <Dialog open={!!reportModal} onOpenChange={open => { if (!open) { setReportModal(null); setReportReason(''); } }}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <Flag className="w-4 h-4 text-destructive" />
+              Signaler {reportModal?.type === 'reply' ? 'une réponse' : 'un post'}
+            </DialogTitle>
+            <DialogDescription>Choisissez la raison du signalement. Notre équipe examinera votre demande.</DialogDescription>
+          </DialogHeader>
+          <div className="space-y-2 py-2">
+            {[
+              { key: 'spam', label: 'Contenu spam ou publicitaire' },
+              { key: 'inappropriate', label: 'Contenu inapproprié ou offensant' },
+              { key: 'misinformation', label: 'Informations fausses ou trompeuses' },
+              { key: 'harassment', label: 'Harcèlement ou intimidation' },
+            ].map(r => (
+              <button
+                key={r.key}
+                onClick={() => setReportReason(r.key)}
+                className={cn(
+                  'w-full text-left px-3 py-2.5 rounded-lg border text-sm transition-all',
+                  reportReason === r.key
+                    ? 'border-destructive/50 bg-destructive/5 text-destructive font-medium'
+                    : 'border-border text-foreground hover:border-border/80 hover:bg-muted/40'
+                )}
+              >
+                {r.label}
+              </button>
+            ))}
+          </div>
+          <DialogFooter>
+            <Button variant="ghost" onClick={() => { setReportModal(null); setReportReason(''); }}>Annuler</Button>
+            <Button
+              variant="destructive"
+              disabled={!reportReason || reportContent.isPending}
+              onClick={() => reportModal && reportContent.mutate({ type: reportModal.type, id: reportModal.id, reason: reportReason })}
+            >
+              <Flag className="w-3.5 h-3.5 mr-2" />
+              Signaler
             </Button>
           </DialogFooter>
         </DialogContent>
